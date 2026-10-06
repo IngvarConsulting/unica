@@ -3,6 +3,7 @@ use crate::application::metadata::{parse_metadata_request, MetadataOperation, Me
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::metadata::{MetaDiagnosticCode, MetaEditOperation, MetadataKind};
+use crate::domain::project_sources::SourceSetKind;
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::metadata_descriptor_relative;
 use crate::infrastructure::metadata_kinds::metadata_layout;
@@ -14,7 +15,9 @@ use crate::infrastructure::native_operations::apply_families::request::{
     IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use crate::infrastructure::native_operations::meta::{
-    apply_typed_operations_to_image_with_seed, meta_edit_object_identity,
+    apply_typed_operations_to_image_with_seed, meta_default_text_language,
+    meta_edit_object_identity, meta_mltext_property_replacement,
+    typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
 use crate::infrastructure::workspace_actor::{MetadataApplyAuthority, ProviderRootBinding};
 use serde_json::{json, Map, Value};
@@ -966,6 +969,7 @@ pub(crate) fn plan_metadata_batch(
             MetadataPlanKind::Create { kind, name } => {
                 stage_object_create(
                     &mut staged,
+                    authority.source_kind(),
                     authority.workspace_context(),
                     authority.source_set_name(),
                     authority.source_root(),
@@ -1040,6 +1044,7 @@ pub(crate) fn plan_metadata_batch(
             } => {
                 stage_simple_props(
                     &mut staged,
+                    authority.source_kind(),
                     *kind,
                     name,
                     relative,
@@ -1112,9 +1117,15 @@ pub(crate) fn plan_metadata_batch(
             edit,
             sha2::Sha256::digest(&preimage)
         );
+        let lang = if typed_operations_write_multilingual_text(std::slice::from_ref(edit)) {
+            staged_text_language(&mut staged, authority.source_kind(), op_index)?
+        } else {
+            String::new()
+        };
         apply_typed_operations_to_image_with_seed(
             &mut postimage,
             std::slice::from_ref(edit),
+            &lang,
             uuid_seed.as_bytes(),
         )
         .map_err(|failure| {
@@ -1275,6 +1286,7 @@ pub(super) fn owner_registration_image(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn stage_object_create(
     staged: &mut ApplyStagedState,
+    source_kind: SourceSetKind,
     context: &crate::domain::workspace::WorkspaceContext,
     source_set_name: &str,
     root: &std::path::Path,
@@ -1292,6 +1304,9 @@ pub(super) fn stage_object_create(
         source_set_name,
     )
     .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
+    // The new descriptor's synonym is written in the source set's default
+    // language, read from the staged image like every other edit (#909).
+    let language = staged_text_language(staged, source_kind, op_index)?;
     let post_image = PlatformMetadataTemplateCatalog
         .minimal_object(
             &source,
@@ -1303,6 +1318,7 @@ pub(super) fn stage_object_create(
             },
             source_set_name,
             context,
+            &language,
         )
         .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
     let owner_relative = staged_relative(root, &source.owner_path, op_index)?;
@@ -1613,8 +1629,10 @@ pub(super) fn preserve_descriptor_image(preimage: &[u8], source: &str, updated: 
     image
 }
 
-/// Sets the `lang` item of a multilingual property inside `<Properties>`,
-/// keeping the other languages; an empty element becomes a one-item block.
+/// Sets the `lang` item of a multilingual property of the descriptor's own
+/// `<Properties>`, keeping the other languages byte for byte; an empty
+/// element becomes a one-item block. `None` when the descriptor is not XML
+/// or has no such property.
 pub(super) fn set_ml_property(
     text: &str,
     tag: &str,
@@ -1622,51 +1640,55 @@ pub(super) fn set_ml_property(
     lang: &str,
     value: &str,
 ) -> Option<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let empty = format!("<{tag}/>");
-    let properties_start = text.find("<Properties>")?;
-    let properties_end = text[properties_start..].find("</Properties>")? + properties_start;
-    let scope = &text[properties_start..properties_end];
-    if let Some(index) = scope.find(&empty) {
-        let mut updated = text.to_string();
-        let at = properties_start + index;
-        updated.replace_range(
-            at..at + empty.len(),
-            ml_text_block(indent, tag, value).trim_start(),
-        );
-        return Some(updated);
-    }
-    let block_start = scope.find(&open)? + properties_start;
-    let block_end = text[block_start..].find(&close)? + block_start;
-    let block = &text[block_start..block_end];
-    let escaped = value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    let lang_marker = format!("<v8:lang>{lang}</v8:lang>");
+    edit_descriptor_property(text, tag, |source, property| {
+        meta_mltext_property_replacement(source, property, indent, lang, value)
+    })
+}
+
+/// Sets a plain-text property of the descriptor's own `<Properties>`,
+/// spelled with the element name the source uses.
+fn set_plain_property(text: &str, tag: &str, value: &str) -> Option<String> {
+    edit_descriptor_property(text, tag, |source, property| {
+        let open = &source[property.range().start + 1..];
+        let name = &open[..open
+            .find(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+            .unwrap_or(open.len())];
+        if value.is_empty() {
+            format!("<{name}/>")
+        } else {
+            format!(
+                "<{name}>{}</{name}>",
+                value
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            )
+        }
+    })
+}
+
+/// Rewrites the property `tag` of the first `<Properties>` of the document,
+/// which is the descriptor object's own; `replace` builds the new element
+/// from the source text and the property node.
+fn edit_descriptor_property(
+    text: &str,
+    tag: &str,
+    replace: impl FnOnce(&str, roxmltree::Node<'_, '_>) -> String,
+) -> Option<String> {
+    let document = roxmltree::Document::parse(text).ok()?;
+    let property = document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "Properties")?
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == tag)?;
+    let replacement = replace(text, property);
     let mut updated = text.to_string();
-    if let Some(lang_at) = block.find(&lang_marker) {
-        let content_start = block[lang_at..].find("<v8:content>")? + lang_at + "<v8:content>".len();
-        let content_end = block[content_start..].find("</v8:content>")? + content_start;
-        updated.replace_range(
-            block_start + content_start..block_start + content_end,
-            &escaped,
-        );
-        return Some(updated);
-    }
-    let item = format!(
-        "{indent}\t<v8:item>\n{indent}\t\t<v8:lang>{lang}</v8:lang>\n{indent}\t\t<v8:content>{escaped}</v8:content>\n{indent}\t</v8:item>\n"
-    );
-    let line_start = text[..block_end]
-        .rfind('\n')
-        .map_or(block_end, |index| index + 1);
-    updated.insert_str(line_start, &item);
+    updated.replace_range(property.range(), &replacement);
     Some(updated)
 }
 
-/// `<Tag>` as a multilingual text block (ru), or the empty element.
-fn ml_text_block(indent: &str, tag: &str, text: &str) -> String {
+/// `<Tag>` as a multilingual text block in `lang`, or the empty element.
+fn ml_text_block(indent: &str, tag: &str, lang: &str, text: &str) -> String {
     if text.is_empty() {
         return format!("{indent}<{tag}/>");
     }
@@ -1675,8 +1697,50 @@ fn ml_text_block(indent: &str, tag: &str, text: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;");
     format!(
-        "{indent}<{tag}>\n{indent}\t<v8:item>\n{indent}\t\t<v8:lang>ru</v8:lang>\n{indent}\t\t<v8:content>{escaped}</v8:content>\n{indent}\t</v8:item>\n{indent}</{tag}>"
+        "{indent}<{tag}>\n{indent}\t<v8:item>\n{indent}\t\t<v8:lang>{lang}</v8:lang>\n{indent}\t\t<v8:content>{escaped}</v8:content>\n{indent}\t</v8:item>\n{indent}</{tag}>"
     )
+}
+
+/// `LanguageCode` of the default language of the edited source set: new
+/// multilingual values are written in it (#909). It is read from the staged
+/// `Configuration.xml` and `Languages/<Name>.xml`, so an extension uses its
+/// own adopted languages. External processors and reports have no language
+/// profile; see [`EXTERNAL_SOURCE_TEXT_LANGUAGE`].
+pub(super) fn staged_text_language(
+    staged: &mut ApplyStagedState,
+    source_kind: SourceSetKind,
+    op_index: usize,
+) -> Result<String, ApplyPlanError> {
+    if matches!(
+        source_kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Ok(EXTERNAL_SOURCE_TEXT_LANGUAGE.to_string());
+    }
+    let at_path = format!("ops[{op_index}].args.at");
+    let unavailable = |message: String| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            format!("the configuration default language is unavailable: {message}"),
+        )
+        .at_path(at_path.clone())
+    };
+    let configuration = staged
+        .read(Path::new("Configuration.xml"))
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .ok_or_else(|| unavailable("the source set has no Configuration.xml".to_string()))?;
+    let mut staging_error = None;
+    let language = meta_default_text_language(&configuration, |relative| {
+        staged.read(relative).map_err(|error| {
+            let message = error.to_string();
+            staging_error = Some(error);
+            message
+        })
+    });
+    if let Some(error) = staging_error {
+        return Err(ApplyPlanError::staging(error, at_path));
+    }
+    language.map_err(unavailable)
 }
 
 /// Replaces the first `<Tag>…</Tag>` or `<Tag/>` inside `<Properties>`.
@@ -1702,8 +1766,10 @@ fn replace_property_block(text: &str, tag: &str, replacement: &str) -> Option<St
     Some(updated)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_simple_props(
     staged: &mut ApplyStagedState,
+    source_kind: SourceSetKind,
     kind: NodeKind,
     name: &str,
     relative: &std::path::Path,
@@ -1763,14 +1829,16 @@ fn stage_simple_props(
             let mut text = source.clone();
             let indent = "\t\t\t";
             if let Some(synonym) = text_value("synonym")?.or(text_value("Synonym")?) {
-                text =
-                    set_ml_property(&text, "Synonym", indent, "ru", &synonym).ok_or_else(|| {
+                let lang = staged_text_language(staged, source_kind, op_index)?;
+                text = set_ml_property(&text, "Synonym", indent, &lang, &synonym).ok_or_else(
+                    || {
                         ApplyPlanError::new(
                             ApplyPlanErrorKind::InvalidSource,
                             "the role descriptor has no Synonym property",
                         )
                         .at_path(at_path.clone())
-                    })?;
+                    },
+                )?;
             }
             if let Some(comment) = text_value("comment")?.or(text_value("Comment")?) {
                 let block = if comment.is_empty() {
@@ -1795,15 +1863,28 @@ fn stage_simple_props(
             text
         }
         NodeKind::Subsystem => {
-            let mut model =
-                crate::infrastructure::native_operations::common::parse_subsystem_edit_model(
-                    &source,
-                    &relative.display().to_string(),
+            // Parsing proves the descriptor is a subsystem. The properties are
+            // then edited in place: regenerating the descriptor from the parsed
+            // model kept one language of Synonym and Explanation and dropped
+            // the others (#909).
+            crate::infrastructure::native_operations::common::parse_subsystem_edit_model(
+                &source,
+                &relative.display().to_string(),
+            )
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            let mut text = source.clone();
+            let indent = "\t\t\t";
+            let mut lang = None;
+            let missing = |tag: &str| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    format!("the subsystem descriptor has no {tag} property"),
                 )
-                .map_err(|message| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                        .at_path(at_path.clone())
-                })?;
+                .at_path(at_path.clone())
+            };
             for (key, value) in values {
                 let bool_text = || -> Result<String, ApplyPlanError> {
                     match value {
@@ -1818,19 +1899,33 @@ fn stage_simple_props(
                         .at_path(format!("ops[{op_index}].args.values.{key}"))),
                     }
                 };
-                match key.as_str() {
-                    "synonym" | "Synonym" => model.synonym = text_value(key)?.unwrap_or_default(),
-                    "comment" | "Comment" => model.comment = text_value(key)?.unwrap_or_default(),
-                    "explanation" | "Explanation" => {
-                        model.explanation = text_value(key)?.unwrap_or_default()
+                let flag_tag = match key.as_str() {
+                    "synonym" | "Synonym" | "explanation" | "Explanation" => {
+                        let tag = if key.eq_ignore_ascii_case("synonym") {
+                            "Synonym"
+                        } else {
+                            "Explanation"
+                        };
+                        let value = text_value(key)?.unwrap_or_default();
+                        if lang.is_none() {
+                            lang = Some(staged_text_language(staged, source_kind, op_index)?);
+                        }
+                        let lang = lang.as_deref().expect("the language was just resolved");
+                        text = set_ml_property(&text, tag, indent, lang, &value)
+                            .ok_or_else(|| missing(tag))?;
+                        continue;
                     }
-                    "includeHelpInContents" | "IncludeHelpInContents" => {
-                        model.include_help = bool_text()?
+                    "comment" | "Comment" => {
+                        let comment = text_value(key)?.unwrap_or_default();
+                        text = set_plain_property(&text, "Comment", &comment)
+                            .ok_or_else(|| missing("Comment"))?;
+                        continue;
                     }
+                    "includeHelpInContents" | "IncludeHelpInContents" => "IncludeHelpInContents",
                     "includeInCommandInterface" | "IncludeInCommandInterface" => {
-                        model.include_ci = bool_text()?
+                        "IncludeInCommandInterface"
                     }
-                    "useOneCommand" | "UseOneCommand" => model.use_one_command = bool_text()?,
+                    "useOneCommand" | "UseOneCommand" => "UseOneCommand",
                     other => {
                         return Err(ApplyPlanError::new(
                             ApplyPlanErrorKind::BadValue,
@@ -1840,9 +1935,11 @@ fn stage_simple_props(
                         )
                         .at_path(format!("ops[{op_index}].args.values.{other}")))
                     }
-                }
+                };
+                text = set_plain_property(&text, flag_tag, &bool_text()?)
+                    .ok_or_else(|| missing(flag_tag))?;
             }
-            crate::infrastructure::native_operations::common::emit_subsystem_edit_model(&model)
+            text
         }
         _ => unreachable!("simple props are parsed for roles and subsystems only"),
     };
@@ -1873,11 +1970,12 @@ fn template_descriptor_xml(
     kind: crate::domain::metadata::MetaTemplateKind,
     format_version: &str,
     uuid: &str,
+    lang: &str,
 ) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{format_version}\">\n\t<Template uuid=\"{uuid}\">\n\t\t<Properties>\n\t\t\t<Name>{name}</Name>\n{}\n\t\t\t<Comment/>\n\t\t\t<TemplateType>{}</TemplateType>\n\t\t</Properties>\n\t</Template>\n</MetaDataObject>\n",
         crate::infrastructure::native_operations::template::full_md_namespace_declarations(),
-        ml_text_block("\t\t\t", "Synonym", &crate::infrastructure::native_operations::common::split_camel_case(name)),
+        ml_text_block("\t\t\t", "Synonym", lang, &crate::infrastructure::native_operations::common::split_camel_case(name)),
         kind.as_str()
     )
 }
@@ -1978,6 +2076,7 @@ fn stage_template_add(
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
     let mut owner_text = owner_source.clone();
     let templates_dir = owner_relative.with_extension("").join("Templates");
+    let lang = staged_text_language(staged, authority.source_kind(), op_index)?;
     let mut touched = Vec::new();
     for (index, (name, kind)) in items.iter().enumerate() {
         let name_path = format!("ops[{op_index}].args.items[{index}].name");
@@ -2017,7 +2116,8 @@ fn stage_template_add(
             bytes[8] = (bytes[8] & 0x3f) | 0x80;
             uuid::Uuid::from_bytes(bytes).to_string()
         };
-        let descriptor = template_descriptor_xml(name, *kind, authority.expected_format(), &uuid);
+        let descriptor =
+            template_descriptor_xml(name, *kind, authority.expected_format(), &uuid, &lang);
         let descriptor_relative = templates_dir.join(format!("{name}.xml"));
         let content_relative = templates_dir.join(name).join("Ext/Template.xml");
         for (relative, text) in [
@@ -2119,7 +2219,8 @@ fn stage_template_set(
     };
     let indent = "\t\t\t";
     if let Some(synonym) = string_value("synonym")? {
-        text = set_ml_property(&text, "Synonym", indent, "ru", &synonym).ok_or_else(|| {
+        let lang = staged_text_language(staged, authority.source_kind(), op_index)?;
+        text = set_ml_property(&text, "Synonym", indent, &lang, &synonym).ok_or_else(|| {
             ApplyPlanError::new(
                 ApplyPlanErrorKind::InvalidSource,
                 "the template descriptor has no Synonym property",
@@ -2384,23 +2485,49 @@ mod tests {
         descriptor: PathBuf,
     }
 
+    const RU_CONFIGURATION_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#;
+
+    fn language_xml(name: &str, code: &str) -> String {
+        format!(
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>{name}</Name><Comment/><LanguageCode>{code}</LanguageCode></Properties></Language></MetaDataObject>"#
+        )
+    }
+
     impl MetadataFixture {
         fn new() -> Self {
+            Self::with_files(&[
+                ("Configuration.xml", RU_CONFIGURATION_XML),
+                ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+                ("Documents/Order.xml", ORDER_XML),
+            ])
+        }
+
+        /// A `main` configuration source set made of `files` (relative
+        /// path, text); `descriptor` is `Documents/Order.xml`.
+        fn with_files(files: &[(&str, &str)]) -> Self {
+            Self::with_kind_and_files(SourceSetKind::Configuration, files)
+        }
+
+        fn with_kind_and_files(kind: SourceSetKind, files: &[(&str, &str)]) -> Self {
             let root = tempfile::tempdir().unwrap();
             let source = root.path().join("src");
-            std::fs::create_dir_all(source.join("Documents")).unwrap();
+            std::fs::create_dir_all(&source).unwrap();
+            let project_kind = match kind {
+                SourceSetKind::Configuration => "CONFIGURATION",
+                SourceSetKind::Extension => "EXTENSION",
+                other => panic!("unsupported fixture kind {other:?}"),
+            };
             std::fs::write(
                 root.path().join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                format!("format: DESIGNER\nsource-set:\n  - name: main\n    type: {project_kind}\n    path: src\n"),
             )
             .unwrap();
-            std::fs::write(
-                source.join("Configuration.xml"),
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#,
-            )
-            .unwrap();
+            for (relative, text) in files {
+                let path = source.join(relative);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
             let descriptor = source.join("Documents/Order.xml");
-            std::fs::write(&descriptor, ORDER_XML).unwrap();
             let workspace_root = std::fs::canonicalize(root.path()).unwrap();
             let source = std::fs::canonicalize(source).unwrap();
             let context = WorkspaceContext {
@@ -2414,7 +2541,7 @@ mod tests {
                 [WorkspaceSourceSetInput::new(
                     "main",
                     &source,
-                    SourceSetKind::Configuration,
+                    kind,
                     SourceFormat::PlatformXml,
                     SourceProfile::platform_xml_8_3_27_format_2_20(),
                 )],
@@ -2852,9 +2979,497 @@ mod tests {
         assert_eq!(effects[0].event().artifact, "Document.Order");
     }
 
+    /// Every staged file of a plan, as text by relative path.
+    fn staged_texts(
+        staged: &crate::infrastructure::native_operations::apply::ApplyStagedState,
+    ) -> std::collections::BTreeMap<PathBuf, String> {
+        staged
+            .planned_changes()
+            .into_iter()
+            .filter_map(|change| match change.current {
+                StagedFileState::Bytes(bytes) => {
+                    Some((change.relative_path, String::from_utf8(bytes).unwrap()))
+                }
+                StagedFileState::Absent => None,
+            })
+            .collect()
+    }
+
+    /// `(lang, content)` of the multilingual property `tag` of the element
+    /// whose `Name` is `name`.
+    fn ml_values(text: &str, name: &str, tag: &str) -> Vec<(String, String)> {
+        const CORE: &str = "http://v8.1c.ru/8.1/data/core";
+        let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let properties = document
+            .descendants()
+            .filter(|node| node.has_tag_name("Properties"))
+            .find(|node| {
+                node.children()
+                    .any(|child| child.has_tag_name("Name") && child.text() == Some(name))
+            })
+            .unwrap_or_else(|| panic!("{name} is not described\n{text}"));
+        let property = properties
+            .children()
+            .find(|child| child.is_element() && child.tag_name().name() == tag)
+            .unwrap_or_else(|| panic!("{name} has no {tag}\n{text}"));
+        property
+            .children()
+            .filter(|item| item.has_tag_name((CORE, "item")))
+            .map(|item| {
+                let child = |local: &str| {
+                    item.children()
+                        .find(|child| child.has_tag_name((CORE, local)))
+                        .and_then(|child| child.text())
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                (child("lang"), child("content"))
+            })
+            .collect()
+    }
+
+    fn plan_all(
+        fixture: &MetadataFixture,
+        operations: &[(&str, serde_json::Value)],
+    ) -> Result<
+        crate::infrastructure::native_operations::apply::ApplyStagedState,
+        crate::infrastructure::native_operations::apply::ApplyPlanError,
+    > {
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let parsed = operations
+            .iter()
+            .enumerate()
+            .map(|(index, (name, args))| fixture.parse(name, args.clone(), index))
+            .collect::<Vec<_>>();
+        plan_metadata_batch(staged, authority, &parsed).map(|(staged, _)| staged)
+    }
+
+    const KINDS_ENUM_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<Enum uuid="66666666-6666-4666-8666-666666666666">
+		<Properties>
+			<Name>Kinds</Name>
+			<Synonym/>
+			<Comment/>
+		</Properties>
+		<ChildObjects/>
+	</Enum>
+</MetaDataObject>
+"#;
+
+    const READER_ROLE_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<Role uuid="77777777-7777-4777-8777-777777777777">
+		<Properties>
+			<Name>Reader</Name>
+			<Synonym/>
+			<Comment/>
+		</Properties>
+	</Role>
+</MetaDataObject>
+"#;
+
+    const SALES_SUBSYSTEM_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<Subsystem uuid="88888888-8888-4888-8888-888888888888">
+		<Properties>
+			<Name>Sales</Name>
+			<Synonym/>
+			<Comment/>
+			<IncludeHelpInContents>true</IncludeHelpInContents>
+			<IncludeInCommandInterface>true</IncludeInCommandInterface>
+			<UseOneCommand>false</UseOneCommand>
+			<Explanation/>
+			<Picture/>
+			<Content/>
+		</Properties>
+		<ChildObjects/>
+	</Subsystem>
+</MetaDataObject>
+"#;
+
+    #[test]
+    fn new_multilingual_values_take_the_configuration_default_language() {
+        let fixture = MetadataFixture::with_files(&[
+            (
+                "Configuration.xml",
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name><DefaultLanguage>Language.English</DefaultLanguage></Properties><ChildObjects><Language>English</Language><Document>Order</Document><Enum>Kinds</Enum><Role>Reader</Role><Subsystem>Sales</Subsystem></ChildObjects></Configuration></MetaDataObject>"#,
+            ),
+            ("Languages/English.xml", &language_xml("English", "en")),
+            ("Documents/Order.xml", ORDER_XML),
+            ("Enums/Kinds.xml", KINDS_ENUM_XML),
+            ("Roles/Reader.xml", READER_ROLE_XML),
+            ("Subsystems/Sales.xml", SALES_SUBSYSTEM_XML),
+        ]);
+        let staged = plan_all(
+            &fixture,
+            &[
+                (
+                    "props.set",
+                    json!({"at": "main:Document.Order", "values": {"Synonym": "Sales order"}}),
+                ),
+                (
+                    "attribute.add",
+                    json!({"at": "main:Document.Order", "items": [{"name": "Total"}, {"name": "Note"}]}),
+                ),
+                (
+                    "attribute.set",
+                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "Grand total"}}),
+                ),
+                (
+                    "tabularSection.add",
+                    json!({"at": "main:Document.Order", "items": [{"name": "Lines", "attributes": [{"name": "Qty"}]}]}),
+                ),
+                (
+                    "attribute.add",
+                    json!({"at": "main:Document.Order", "scope": {"tabularSection": "Lines"}, "items": [{"name": "Price"}]}),
+                ),
+                (
+                    "command.add",
+                    json!({"at": "main:Document.Order", "items": [{"name": "Print"}]}),
+                ),
+                (
+                    "template.add",
+                    json!({"at": "main:Document.Order", "items": [{"name": "Layout", "templateType": "SpreadsheetDocument"}]}),
+                ),
+                (
+                    "enumValue.add",
+                    json!({"at": "main:Enum.Kinds", "items": [{"name": "Retail"}]}),
+                ),
+                (
+                    "props.set",
+                    json!({"at": "main:Role.Reader", "values": {"synonym": "Reader"}}),
+                ),
+                (
+                    "props.set",
+                    json!({"at": "main:Subsystem.Sales", "values": {"synonym": "Sales", "explanation": "Sales area"}}),
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let texts = staged_texts(&staged);
+        let text = |relative: &str| {
+            texts
+                .get(Path::new(relative))
+                .unwrap_or_else(|| panic!("{relative} is not staged"))
+                .as_str()
+        };
+        let english = |content: &str| vec![("en".to_string(), content.to_string())];
+        let order = text("Documents/Order.xml");
+        assert_eq!(ml_values(order, "Order", "Synonym"), english("Sales order"));
+        assert_eq!(ml_values(order, "Total", "Synonym"), english("Grand total"));
+        assert_eq!(ml_values(order, "Note", "Synonym"), english("Note"));
+        assert_eq!(ml_values(order, "Lines", "Synonym"), english("Lines"));
+        assert_eq!(ml_values(order, "Qty", "Synonym"), english("Qty"));
+        assert_eq!(ml_values(order, "Price", "Synonym"), english("Price"));
+        assert_eq!(ml_values(order, "Print", "Synonym"), english("Print"));
+        assert_eq!(
+            ml_values(
+                text("Documents/Order/Templates/Layout.xml"),
+                "Layout",
+                "Synonym"
+            ),
+            english("Layout")
+        );
+        assert_eq!(
+            ml_values(text("Enums/Kinds.xml"), "Retail", "Synonym"),
+            english("Retail")
+        );
+        assert_eq!(
+            ml_values(text("Roles/Reader.xml"), "Reader", "Synonym"),
+            english("Reader")
+        );
+        let sales = text("Subsystems/Sales.xml");
+        assert_eq!(ml_values(sales, "Sales", "Synonym"), english("Sales"));
+        assert_eq!(
+            ml_values(sales, "Sales", "Explanation"),
+            english("Sales area")
+        );
+        for (relative, text) in &texts {
+            assert!(
+                !text.contains("<v8:lang>ru</v8:lang>"),
+                "{} invents a ru value\n{text}",
+                relative.display()
+            );
+        }
+    }
+
+    const ENGLISH_ONLY_CONFIGURATION_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name><DefaultLanguage>Language.English</DefaultLanguage></Properties><ChildObjects><Language>English</Language><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#;
+
+    #[test]
+    fn object_create_writes_the_configuration_default_language() {
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", ENGLISH_ONLY_CONFIGURATION_XML),
+            ("Languages/English.xml", &language_xml("English", "en")),
+            ("Documents/Order.xml", ORDER_XML),
+        ]);
+        let kinds = [
+            ("Catalog", "Catalogs", "Products"),
+            ("Document", "Documents", "Invoice"),
+            ("Enum", "Enums", "Statuses"),
+            ("InformationRegister", "InformationRegisters", "Prices"),
+            ("CommonModule", "CommonModules", "Helpers"),
+            ("Report", "Reports", "Sales"),
+        ];
+        let operations = kinds
+            .iter()
+            .map(|(kind, _, name)| {
+                (
+                    "object.create",
+                    json!({"at": "main:Configuration", "values": {"kind": kind, "name": name}}),
+                )
+            })
+            .collect::<Vec<_>>();
+        let staged = plan_all(&fixture, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let texts = staged_texts(&staged);
+        for (kind, directory, name) in kinds {
+            let relative = format!("{directory}/{name}.xml");
+            let text = texts
+                .get(Path::new(&relative))
+                .unwrap_or_else(|| panic!("{kind}: {relative} is not staged"));
+            assert_eq!(
+                ml_values(text, name, "Synonym"),
+                vec![("en".to_string(), name.to_string())],
+                "{kind}"
+            );
+        }
+        for (relative, text) in &texts {
+            assert!(
+                !text.contains("<v8:lang>ru</v8:lang>"),
+                "{} invents a ru value\n{text}",
+                relative.display()
+            );
+        }
+
+        let refused = MetadataFixture::with_files(&[
+            (
+                "Configuration.xml",
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+            ),
+            ("Documents/Order.xml", ORDER_XML),
+        ]);
+        let error = plan_all(
+            &refused,
+            &[(
+                "object.create",
+                json!({"at": "main:Configuration", "values": {"kind": "Catalog", "name": "Products"}}),
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+        assert_eq!(error.path(), Some("ops[0].args.at"));
+    }
+
+    #[test]
+    fn an_extension_writes_new_values_in_its_own_default_language() {
+        // The extension's own Configuration.xml and adopted language decide;
+        // nothing is read from the configuration it extends.
+        let configuration = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="99999999-9999-4999-8999-999999999999"><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>Ext</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><NamePrefix>Ext_</NamePrefix><DefaultLanguage>Language.English</DefaultLanguage></Properties><ChildObjects><Language>English</Language><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#;
+        let language = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><InternalInfo/><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>English</Name><Comment/><ExtendedConfigurationObject>44444444-4444-4444-8444-444444444444</ExtendedConfigurationObject><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#;
+        let fixture = MetadataFixture::with_kind_and_files(
+            SourceSetKind::Extension,
+            &[
+                ("Configuration.xml", configuration),
+                ("Languages/English.xml", language),
+                ("Documents/Order.xml", ORDER_XML),
+            ],
+        );
+        let staged = plan_all(
+            &fixture,
+            &[
+                (
+                    "object.create",
+                    json!({"at": "main:Configuration", "values": {"kind": "Catalog", "name": "Ext_Products"}}),
+                ),
+                (
+                    "attribute.add",
+                    json!({"at": "main:Document.Order", "items": [{"name": "Total"}]}),
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let texts = staged_texts(&staged);
+        assert_eq!(
+            ml_values(
+                &texts[Path::new("Catalogs/Ext_Products.xml")],
+                "Ext_Products",
+                "Synonym"
+            ),
+            vec![("en".to_string(), "Ext_products".to_string())]
+        );
+        assert_eq!(
+            ml_values(&texts[Path::new("Documents/Order.xml")], "Total", "Synonym"),
+            vec![("en".to_string(), "Total".to_string())]
+        );
+    }
+
+    #[test]
+    fn editing_a_multilingual_value_changes_only_the_default_language_item() {
+        const WORKSPACE: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acceptance/workspace/src"
+        );
+        let read =
+            |relative: &str| std::fs::read_to_string(Path::new(WORKSPACE).join(relative)).unwrap();
+        let language_aware = read("Enums/LanguageAware.xml");
+        let item = |lang: &str, content: &str, indent: &str| {
+            format!(
+                "{indent}<v8:item>\n{indent}\t<v8:lang>{lang}</v8:lang>\n{indent}\t<v8:content>{content}</v8:content>\n{indent}</v8:item>\n"
+            )
+        };
+        let bilingual = |name: &str, ru: &str, en: &str| {
+            let indent = "\t\t\t\t\t\t\t";
+            format!(
+                "<Properties><Name>{name}</Name><Synonym>\n{}{}\t\t\t\t\t\t</Synonym><Comment/>",
+                item("ru", ru, indent),
+                item("en", en, indent)
+            )
+        };
+        let order = ORDER_XML.replace(
+            "<ChildObjects/>\n\t</Document>",
+            &format!(
+                "<ChildObjects><Attribute uuid=\"22222222-2222-4222-8222-222222222222\">{}</Properties></Attribute><TabularSection uuid=\"33333333-3333-4333-8333-333333333334\"><Properties><Name>Lines</Name><Synonym/><Comment/></Properties><ChildObjects><Attribute uuid=\"44444444-4444-4444-8444-444444444445\">{}</Properties></Attribute></ChildObjects></TabularSection></ChildObjects>\n\t</Document>",
+                bilingual("Total", "Итого", "Total"),
+                bilingual("Qty", "Количество", "Quantity"),
+            ),
+        );
+        let kinds = KINDS_ENUM_XML.replace(
+            "<ChildObjects/>",
+            &format!(
+                "<ChildObjects><EnumValue uuid=\"55555555-5555-4555-8555-555555555557\">{}</Properties></EnumValue></ChildObjects>",
+                bilingual("Retail", "Розница", "Retail")
+            ),
+        );
+        let block = |tag: &str, ru: &str, en: &str| {
+            format!(
+                "<{tag}>\n{}{}\t\t\t</{tag}>",
+                item("ru", ru, "\t\t\t\t"),
+                item("en", en, "\t\t\t\t")
+            )
+        };
+        let sales = SALES_SUBSYSTEM_XML
+            .replace("<Synonym/>", &block("Synonym", "Продажи", "Sales"))
+            .replace(
+                "<Explanation/>",
+                &block("Explanation", "Раздел продаж", "Sales area"),
+            )
+            .replace(
+                "<Content/>",
+                "<Content>\n\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">Document.Order</xr:Item>\n\t\t\t</Content>",
+            )
+            .replace(
+                "xmlns:xr=",
+                "xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xr=",
+            );
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &read("Configuration.xml")),
+            ("Languages/Русский.xml", &read("Languages/Русский.xml")),
+            ("Languages/English.xml", &read("Languages/English.xml")),
+            ("Enums/LanguageAware.xml", &language_aware),
+            ("Enums/Kinds.xml", &kinds),
+            ("Documents/Order.xml", &order),
+            ("Subsystems/Sales.xml", &sales),
+        ]);
+        let staged = plan_all(
+            &fixture,
+            &[
+                (
+                    "props.set",
+                    json!({"at": "main:Enum.LanguageAware", "values": {"Synonym": "Короткое & новое"}}),
+                ),
+                (
+                    "attribute.set",
+                    json!({"at": "main:Document.Order.Attribute.Total", "values": {"synonym": "Всего"}}),
+                ),
+                (
+                    "attribute.set",
+                    json!({"at": "main:Document.Order.TabularSection.Lines.Attribute.Qty", "values": {"synonym": "Кол-во"}}),
+                ),
+                (
+                    "enumValue.set",
+                    json!({"at": "main:Enum.Kinds", "values": {"name": "Retail", "synonym": "Розничная"}}),
+                ),
+                (
+                    "props.set",
+                    json!({"at": "main:Subsystem.Sales", "values": {
+                        "synonym": "Продажи и маркетинг",
+                        "explanation": "Новый раздел",
+                        "comment": "Отдел"
+                    }}),
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let texts = staged_texts(&staged);
+        // The default language is Русский (`ru`): its content is the only
+        // change, and the English items stay byte for byte.
+        assert_eq!(
+            texts[Path::new("Enums/LanguageAware.xml")],
+            language_aware.replace(
+                "Очень длинное наименование перечисления для интерфейса команд",
+                "Короткое &amp; новое"
+            )
+        );
+        assert_eq!(
+            texts[Path::new("Documents/Order.xml")],
+            order
+                .replace("Итого", "Всего")
+                .replace("Количество", "Кол-во")
+        );
+        assert_eq!(
+            texts[Path::new("Enums/Kinds.xml")],
+            kinds.replace("Розница", "Розничная")
+        );
+        // The subsystem is edited in place: English, Picture and Content
+        // keep their bytes.
+        assert_eq!(
+            texts[Path::new("Subsystems/Sales.xml")],
+            sales
+                .replace(
+                    "<v8:content>Продажи</v8:content>",
+                    "<v8:content>Продажи и маркетинг</v8:content>"
+                )
+                .replace("Раздел продаж", "Новый раздел")
+                .replace("<Comment/>", "<Comment>Отдел</Comment>")
+        );
+    }
+
+    #[test]
+    fn a_configuration_without_a_default_language_refuses_new_text_but_not_other_edits() {
+        let fixture = MetadataFixture::with_files(&[
+            (
+                "Configuration.xml",
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#,
+            ),
+            ("Documents/Order.xml", ORDER_XML),
+        ]);
+        let error = plan_all(
+            &fixture,
+            &[(
+                "attribute.add",
+                json!({"at": "main:Document.Order", "items": [{"name": "Total"}]}),
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+        assert_eq!(error.path(), Some("ops[0].args.at"));
+        assert_eq!(fixture.disk_bytes(), ORDER_XML.as_bytes());
+
+        plan_all(
+            &fixture,
+            &[(
+                "props.set",
+                json!({"at": "main:Document.Order", "values": {"Comment": "typed"}}),
+            )],
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+    }
+
     #[test]
     fn multilingual_property_edits_keep_the_other_languages() {
-        let text = "<Properties>\n\t\t\t<Name>SalesReader</Name>\n\t\t\t<Synonym>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>en</v8:lang>\n\t\t\t\t\t<v8:content>Sales reader</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t\t\t<v8:content>Старое</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t</Synonym>\n\t\t\t<Comment/>\n\t\t</Properties>";
+        let text = "<Properties xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">\n\t\t\t<Name>SalesReader</Name>\n\t\t\t<Synonym>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>en</v8:lang>\n\t\t\t\t\t<v8:content>Sales reader</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t\t<v8:item>\n\t\t\t\t\t<v8:lang>ru</v8:lang>\n\t\t\t\t\t<v8:content>Старое</v8:content>\n\t\t\t\t</v8:item>\n\t\t\t</Synonym>\n\t\t\t<Comment/>\n\t\t</Properties>";
         let updated = set_ml_property(text, "Synonym", "\t\t\t", "ru", "Новое & лучшее").unwrap();
         assert!(updated.contains("<v8:content>Sales reader</v8:content>"));
         assert!(updated.contains("<v8:content>Новое &amp; лучшее</v8:content>"));
@@ -2872,7 +3487,7 @@ mod tests {
         );
         assert_eq!(updated.matches("<v8:item>").count(), 2);
 
-        let empty = "<Properties>\n\t\t\t<Name>X</Name>\n\t\t\t<Synonym/>\n\t\t</Properties>";
+        let empty = "<Properties xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">\n\t\t\t<Name>X</Name>\n\t\t\t<Synonym/>\n\t\t</Properties>";
         let updated = set_ml_property(empty, "Synonym", "\t\t\t", "ru", "Икс").unwrap();
         assert!(updated.contains("<Synonym>\n\t\t\t\t<v8:item>"));
         assert!(updated.contains("<v8:content>Икс</v8:content>"));

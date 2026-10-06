@@ -513,6 +513,15 @@ pub(crate) fn prepare_meta_add(
         matches!(operation, MetaEditOperation::SetProperties { values }
             if values.entries().iter().any(|(key, _)| *key == MetaPropertyKey::Handler))
     });
+    let language = super::edit::source_set_text_language(&source.owner_preimage, |relative| {
+        let path = source.source_root.join(relative);
+        match fs::read(&path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("failed to read {}: {error}", path.display())),
+        }
+    })
+    .map_err(MetaFailure::from)?;
     let mut post_image = PlatformMetadataTemplateCatalog.minimal_object(
         &source,
         request.kind,
@@ -523,6 +532,7 @@ pub(crate) fn prepare_meta_add(
         },
         &request.source_set,
         context,
+        &language,
     )?;
     let target = post_image.metadata_path.clone();
     let descriptor_file = post_image

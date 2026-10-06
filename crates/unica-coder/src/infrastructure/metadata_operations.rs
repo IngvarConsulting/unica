@@ -2337,6 +2337,7 @@ pub(crate) mod tests {
 
     #[test]
     fn typed_edit_uses_explicit_lf_policy_when_source_has_no_line_endings() {
+        let synonym = regex::Regex::new("<Synonym>.*?</Synonym>").unwrap();
         for has_bom in [false, true] {
             let label = if has_bom {
                 "no-eol-explicit-lf-bom"
@@ -2349,6 +2350,10 @@ pub(crate) mod tests {
                 .trim_start_matches('\u{feff}')
                 .replace("\r\n", "")
                 .replace(['\r', '\n'], "");
+            // An existing synonym is edited in place; an empty one makes the
+            // edit insert a multi-line block, whose line endings the explicit
+            // policy decides.
+            let normalized = synonym.replace(&normalized, "<Synonym/>").into_owned();
             let mut source = Vec::new();
             if has_bom {
                 source.extend_from_slice(b"\xef\xbb\xbf");

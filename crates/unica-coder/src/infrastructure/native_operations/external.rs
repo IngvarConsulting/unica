@@ -321,6 +321,8 @@ fn build_content(plan: &ScaffoldPlan) -> Result<ScaffoldContent, String> {
                 plan.kind.root_tag(),
                 FORMAT_VERSION,
                 &Uuid::new_v4().to_string(),
+                // External processors have no language profile of their own.
+                crate::infrastructure::native_operations::meta::EXTERNAL_SOURCE_TEXT_LANGUAGE,
             )),
             Some(form_add_content_xml(
                 plan.kind.root_tag(),

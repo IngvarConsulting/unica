@@ -24,6 +24,9 @@ use roxmltree::Document;
 use std::path::{Component, Path, PathBuf};
 
 pub(crate) trait MetadataTemplateCatalog {
+    /// `language` is the `LanguageCode` the new object's multilingual values
+    /// are written in: the default language of the source set.
+    #[allow(clippy::too_many_arguments)]
     fn minimal_object(
         &self,
         source: &ResolvedSourceSet,
@@ -32,6 +35,7 @@ pub(crate) trait MetadataTemplateCatalog {
         overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
+        language: &str,
     ) -> Result<MetadataPostImage, MetaFailure>;
 }
 
@@ -82,6 +86,8 @@ pub(super) struct MinimalTemplateContext {
     pub(super) event_source: Option<String>,
     pub(super) event_handler: Option<String>,
     pub(super) dependencies: Vec<MetadataTemplateFile>,
+    /// `LanguageCode` of the source set's default language.
+    pub(super) language: String,
 }
 
 impl MinimalTemplateContext {
@@ -92,8 +98,10 @@ impl MinimalTemplateContext {
         overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
+        language: &str,
     ) -> Result<Self, MetaFailure> {
         let mut context = Self {
+            language: language.to_string(),
             chart_of_accounts: None,
             task: None,
             registered_documents: Vec::new(),
@@ -480,6 +488,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
         overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
+        language: &str,
     ) -> Result<MetadataPostImage, MetaFailure> {
         if !is_1c_identifier(name) {
             return Err(MetaDiagnostic::error(
@@ -503,7 +512,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
             )
         })?;
         let context = MinimalTemplateContext::from_source(
-            source, kind, name, overrides, source_set, workspace,
+            source, kind, name, overrides, source_set, workspace, language,
         )?;
         let (xml, _) = minimal_metadata_xml(kind, name, &source.format_version, &context)
             .map_err(|message| template_failure(&metadata_path, message))?;
@@ -636,6 +645,7 @@ pub(super) struct MetaTemplateDefinition {
     method_name: Option<String>,
     sources: Vec<String>,
     handler: Option<String>,
+    language: String,
 }
 
 fn emit_meta_catalog_xml(
@@ -681,6 +691,7 @@ pub(super) fn minimal_metadata_xml(
         method_name: context.method_name.clone(),
         sources: context.event_source.clone().into_iter().collect(),
         handler: context.event_handler.clone(),
+        language: context.language.clone(),
     };
     if kind == crate::domain::metadata::MetadataKind::Catalog {
         return emit_meta_catalog_xml(&defn, obj_name, format_version);
@@ -811,6 +822,7 @@ pub(crate) fn minimal_metadata_xml_for_tests(
             event_source: None,
             event_handler: None,
             dependencies: Vec::new(),
+            language: "ru".to_string(),
         },
     )
 }
@@ -1160,12 +1172,12 @@ pub(super) fn emit_meta_catalog_properties(
 pub(super) fn emit_meta_base_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    _defn: &MetaTemplateDefinition,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
     lines.push(format!("{indent}<Name>{}</Name>", escape_xml(obj_name)));
-    emit_meta_mltext(lines, indent, "Synonym", synonym);
+    emit_meta_mltext(lines, indent, "Synonym", &defn.language, synonym);
     lines.push(format!("{indent}<Comment/>"));
 }
 
@@ -2516,6 +2528,7 @@ pub(super) fn emit_meta_enum_value<F>(
     lines: &mut Vec<String>,
     indent: &str,
     value: &MetadataEnumValueTemplate,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -2526,7 +2539,13 @@ pub(super) fn emit_meta_enum_value<F>(
         "{indent}\t\t<Name>{}</Name>",
         escape_xml(&value.name)
     ));
-    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &value.synonym);
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        lang,
+        &value.synonym,
+    );
     if value.comment.is_empty() {
         lines.push(format!("{indent}\t\t<Comment/>"));
     } else {
@@ -2545,6 +2564,7 @@ pub(super) fn emit_meta_register_field<F>(
     field_tag: &str,
     attr: &MetadataAttributeTemplate,
     register_type: &str,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -2555,7 +2575,13 @@ pub(super) fn emit_meta_register_field<F>(
         "{indent}\t\t<Name>{}</Name>",
         escape_xml(&attr.name)
     ));
-    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &attr.synonym);
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        lang,
+        &attr.synonym,
+    );
     lines.push(format!("{indent}\t\t<Comment/>"));
     let type_indent = format!("{indent}\t\t");
     lines.push(format!("{type_indent}<Type>"));
@@ -2868,6 +2894,7 @@ pub(super) fn emit_meta_attribute<F>(
     indent: &str,
     attr: &MetadataAttributeTemplate,
     context: &str,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -2878,7 +2905,13 @@ pub(super) fn emit_meta_attribute<F>(
         "{indent}\t\t<Name>{}</Name>",
         escape_xml(&attr.name)
     ));
-    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &attr.synonym);
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        lang,
+        &attr.synonym,
+    );
     lines.push(format!("{indent}\t\t<Comment/>"));
     lines.push(format!("{indent}\t\t<Type>"));
     lines.push(format!("{indent}\t\t\t<v8:Type>xs:string</v8:Type>"));
@@ -2956,12 +2989,26 @@ pub(super) fn meta_attribute_context(object_type: &str) -> &'static str {
     }
 }
 
+/// Profile of an attribute nested in a tabular section of `object_type`.
+///
+/// Both writers of tabular-section attributes — a section created with its
+/// columns and a column added to an existing section — take it from here, so
+/// they cannot drift apart.
+pub(super) fn meta_tabular_attribute_context(object_type: &str) -> &'static str {
+    if matches!(object_type, "DataProcessor" | "Report") {
+        "processor-tabular"
+    } else {
+        "tabular"
+    }
+}
+
 pub(super) fn emit_meta_tabular_section<F>(
     lines: &mut Vec<String>,
     indent: &str,
     section: &MetadataTabularSectionTemplate,
     object_type: &str,
     object_name: &str,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -3006,6 +3053,7 @@ pub(super) fn emit_meta_tabular_section<F>(
         lines,
         &format!("{indent}\t\t"),
         "Synonym",
+        lang,
         &split_meta_camel_case(&section.name),
     );
     lines.push(format!("{indent}\t\t<Comment/>"));
@@ -3024,17 +3072,13 @@ pub(super) fn emit_meta_tabular_section<F>(
     }
     lines.push(format!("{indent}\t</Properties>"));
     lines.push(format!("{indent}\t<ChildObjects>"));
-    let column_context = if matches!(object_type, "DataProcessor" | "Report") {
-        "processor-tabular"
-    } else {
-        "tabular"
-    };
     for column in &section.columns {
         emit_meta_attribute(
             lines,
             &format!("{indent}\t\t"),
             column,
-            column_context,
+            meta_tabular_attribute_context(object_type),
+            lang,
             next_uuid,
         );
     }
@@ -3098,6 +3142,7 @@ mod typed_template_tests {
             event_source: Some("CatalogRef.MetaAddSource".to_string()),
             event_handler: Some("CommonModule.MetaAddHandlers.Handle".to_string()),
             dependencies: Vec::new(),
+            language: "ru".to_string(),
         }
     }
 

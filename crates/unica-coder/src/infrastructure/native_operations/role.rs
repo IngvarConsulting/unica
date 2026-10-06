@@ -1482,7 +1482,9 @@ fn compile_role_internal(
             require_role_configuration_owner_validation(&config_xml_path, context)?;
         }
         let uid = fresh_metadata_uuid();
-        let metadata_xml = role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid);
+        // The pre-v0.13 role compiler has no language profile; it keeps ru.
+        let metadata_xml =
+            role_metadata_xml(&role_name, &synonym, &comment, &format_version, &uid, "ru");
         validate_compiled_role_metadata_xml(&metadata_xml, &role_name, &format_version)?;
         validate_compiled_role_rights_xml(&rights_xml, &format_version)?;
         transaction.create_utf8_bom_text(&metadata_path, &metadata_xml)?;
@@ -1592,12 +1594,14 @@ fn compile_role_internal(
     }
 }
 
+/// `lang` is the `LanguageCode` the synonym is written in.
 pub(crate) fn role_metadata_xml(
     role_name: &str,
     synonym: &str,
     comment: &str,
     format_version: &str,
     uid: &str,
+    lang: &str,
 ) -> String {
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -1629,7 +1633,10 @@ pub(crate) fn role_metadata_xml(
     ));
     lines.push("            <Synonym>".to_string());
     lines.push("                <v8:item>".to_string());
-    lines.push("                    <v8:lang>ru</v8:lang>".to_string());
+    lines.push(format!(
+        "                    <v8:lang>{}</v8:lang>",
+        escape_xml(lang)
+    ));
     lines.push(format!(
         "                    <v8:content>{}</v8:content>",
         escape_xml(synonym)
@@ -5132,6 +5139,7 @@ pub(crate) mod role_compile_contract_tests {
             "",
             "2.20",
             "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "ru",
         );
 
         let doc = Document::parse(&xml).unwrap();
