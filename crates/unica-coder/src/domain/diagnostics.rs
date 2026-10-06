@@ -2,7 +2,6 @@ pub use crate::domain::code_intelligence::ProviderDeadline;
 pub(crate) mod stream_error;
 use crate::domain::{
     cancellation::CancellationToken,
-    operational_config::DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS,
     project_sources::ProjectSourceSet,
     source_location::SourceLocation,
     source_roots::ResolvedSourceRoot,
@@ -63,11 +62,11 @@ pub const LIVE_DIAGNOSTIC_PROVIDERS: &[DiagnosticProviderId] = &[BSL_ANALYZER_PR
 
 pub const DIAGNOSTIC_LIMIT_DEFAULT: usize = 200;
 
-/// Budget for the actions that never resolve an `OperationalConfig`
-/// (INV-APP-CONFIG-SNAPSHOT): `findings`, `status` and `catalog`. It is the
-/// compiled analyze fallback, so both budgets stay one number.
-pub const DIAGNOSTIC_BUDGET_WITHOUT_CONFIG: Duration =
-    Duration::from_secs(DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS);
+/// Budget for the resident actions that never resolve an `OperationalConfig`
+/// (INV-APP-CONFIG-SNAPSHOT): `findings`, `status` and `catalog` of the
+/// retired `code.diagnostics` surface. `analyze`, the action `check` runs,
+/// does not use it: without a configured timeout it has no deadline.
+pub const DIAGNOSTIC_BUDGET_WITHOUT_CONFIG: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticRequest {

@@ -3125,23 +3125,21 @@ fn run_bsl_diagnostics(
         // findings. `check` must decide its verdict from the complete set;
         // its public page limit is applied afterwards.
         limit: usize::MAX,
-        // Срок берётся из настройки пользователя. Подменять его выдуманным
-        // умолчанием нельзя: человек настроил срок и не узнал бы, что
-        // настройка не читается.
-        timeout: Some(
-            match crate::infrastructure::operational_config::load_operational_config(
-                &context.workspace_root,
-            ) {
-                Ok(config) => config.code_diagnostics().analyze_timeout(),
-                Err(diagnostic) => {
-                    return Err(Box::new(error_result(
-                        Some(address.to_string()),
-                        RefusalCode::InvalidState,
-                        format!("operational config is unreadable: {diagnostic}"),
-                    )))
-                }
-            },
-        ),
+        // Срок берётся только из настройки пользователя. Без настройки
+        // срока нет и анализ идёт до конца (#1251); заданный срок
+        // соблюдается, а нечитаемая настройка — отказ, а не умолчание.
+        timeout: match crate::infrastructure::operational_config::load_operational_config(
+            &context.workspace_root,
+        ) {
+            Ok(config) => config.code_diagnostics().analyze_timeout(),
+            Err(diagnostic) => {
+                return Err(Box::new(error_result(
+                    Some(address.to_string()),
+                    RefusalCode::InvalidState,
+                    format!("operational config is unreadable: {diagnostic}"),
+                )))
+            }
+        },
     };
     match DiagnosticCoordinator::new(registry, &mapping).execute_scoped(
         &request,
@@ -5098,9 +5096,7 @@ mod tests {
     }
 
     #[test]
-    fn logical_read_operation_budget_outlives_task_handoff_and_completes_once() {
-        crate::infrastructure::daemon::server::actor_capacity_tests::assert_operation_budget_survives_handoff_and_completes_once(
-            crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-        );
+    fn unfinished_work_outlives_task_handoff_and_completes_once() {
+        crate::infrastructure::daemon::server::actor_capacity_tests::assert_unfinished_work_survives_handoff_and_completes_once();
     }
 }

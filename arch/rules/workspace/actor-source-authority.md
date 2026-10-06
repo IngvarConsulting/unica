@@ -10,7 +10,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::capabilities_do_not_cross_distinct_actor_instances_with_equal_identity
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_reads_preserve_deadline_without_source_scans_or_mutation_lane_wait
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::logical_reads_run_without_deadline_source_scans_or_mutation_lane_wait
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_reader_never_follows_a_source_set_remap_after_admission
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_configuration_support_and_home_page_sidecars_are_retained
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::actor_owned_typed_form_reader_never_follows_a_source_set_remap

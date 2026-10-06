@@ -1,8 +1,6 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
-#[cfg(test)]
-use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -181,7 +179,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 revision_service,
             ),
             profile,
-            ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
+            ProviderDeadline::no_deadline(),
         )
     }
 

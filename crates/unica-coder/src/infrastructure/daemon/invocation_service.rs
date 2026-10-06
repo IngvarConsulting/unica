@@ -5,7 +5,6 @@ use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::shared_work::{
     LongWorkFailure, ProviderHostKey, ProviderHostOwner, SharedWorkLease, SharedWorkProducer,
 };
-use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
 use crate::domain::address::QualifiedAddress;
 use crate::domain::apply::ApplyRequest;
 use crate::domain::cancellation::CancellationToken;
@@ -29,9 +28,7 @@ use crate::infrastructure::workspace_actor::{
 };
 use std::io::BufRead;
 use std::sync::Arc;
-use std::time::Duration;
 
-const ACTOR_OPERATION_BUDGET: Duration = Duration::from_secs(7);
 const CANONICAL_SEARCH_MAX_ENTRIES: usize = 16_384;
 // Regex anchors and Unicode columns require a complete line. Keep that
 // indivisible unit bounded; neither file nor corpus size is a memory budget.
@@ -552,30 +549,13 @@ impl ActorBoundInvocation {
             .map(|source| &source.binding)
     }
 
-    #[cfg(test)]
-    pub(super) fn begin_execution_with_logical_deadline_for_test(
-        self,
-        cancellation: &CancellationToken,
-        logical_deadline: ProviderDeadline,
-    ) -> Result<ActorBoundExecution, String> {
-        self.begin_execution_with_logical_deadline(cancellation, logical_deadline)
-    }
-
     pub(super) fn begin_execution(
         self,
         cancellation: &CancellationToken,
     ) -> Result<ActorBoundExecution, String> {
-        self.begin_execution_with_logical_deadline(
-            cancellation,
-            ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),
-        )
-    }
-
-    fn begin_execution_with_logical_deadline(
-        self,
-        cancellation: &CancellationToken,
-        logical_deadline: ProviderDeadline,
-    ) -> Result<ActorBoundExecution, String> {
+        // Логическое чтение идёт до конечного исхода: срок ему не задан,
+        // остановить его может только явная отмена (#1251).
+        let logical_deadline = ProviderDeadline::no_deadline();
         if cancellation.is_cancelled() {
             return Err("source operation was cancelled before admission".into());
         }
@@ -855,7 +835,7 @@ impl ActorBoundExecution {
             &dependencies,
             request.if_rev(),
             request.dry_run(),
-            ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+            ProviderDeadline::no_deadline(),
             cancellation,
         )?;
         Ok((binding, admission))
@@ -905,7 +885,7 @@ impl ActorBoundExecution {
         };
         let result = self.invocation.actor.execute_saved_apply(
             token,
-            ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
+            ProviderDeadline::no_deadline(),
             cancellation,
             finish,
         )?;
@@ -1143,16 +1123,8 @@ impl ActorBoundExecution {
             ActorExecutionRevision::Legacy(revision) => self
                 .invocation
                 .actor
-                .begin_publication(
-                    &revision,
-                    ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-                    cancellation,
-                )?
-                .publish(
-                    staged,
-                    ProviderDeadline::from_budget(ACTOR_OPERATION_BUDGET),
-                    cancellation,
-                ),
+                .begin_publication(&revision, ProviderDeadline::no_deadline(), cancellation)?
+                .publish(staged, ProviderDeadline::no_deadline(), cancellation),
             // A layout directory publishes no revision state: `find` neither
             // captures a lease nor confirms one, so its result stands as read.
             ActorExecutionRevision::LayoutRead(lease) => {

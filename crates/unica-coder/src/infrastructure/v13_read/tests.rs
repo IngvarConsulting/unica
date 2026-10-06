@@ -3237,13 +3237,6 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
 }
 
 #[test]
-fn logical_read_operation_budget_survives_handoff_and_completes_once() {
-    crate::infrastructure::daemon::server::actor_capacity_tests::assert_operation_budget_survives_handoff_and_completes_once(
-        crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-    );
-}
-
-#[test]
 fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantics() {
     let fixture = RealReaderFixture::new();
     fixture.install_accepted_profile_sources();
@@ -3289,9 +3282,7 @@ pub(crate) fn operation_lease_find_traversal_scans_once_then_confirms_once() {
     let revisions = Arc::new(
         SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
     );
-    let deadline = crate::domain::code_intelligence::ProviderDeadline::from_budget(
-        crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-    );
+    let deadline = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
     let lease = revisions
         .begin_retained_operation(&root, deadline, &fixture.cancellation)
         .unwrap();
@@ -3352,9 +3343,7 @@ fn operation_lease_rejects_named_root_replacement_before_node_read() {
     let revisions = Arc::new(
         SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
     );
-    let deadline = crate::domain::code_intelligence::ProviderDeadline::from_budget(
-        crate::application::v13::LOGICAL_READ_OPERATION_BUDGET,
-    );
+    let deadline = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
     let lease = revisions
         .begin_retained_operation(&root, deadline, &fixture.cancellation)
         .unwrap();
@@ -4120,8 +4109,7 @@ impl RealExternalReaderFixture {
         let revisions = Arc::new(
             SourceRevisionService::new_reconciling_for_test(&self.context, source).unwrap(),
         );
-        let deadline =
-            ProviderDeadline::from_budget(crate::application::v13::LOGICAL_READ_OPERATION_BUDGET);
+        let deadline = ProviderDeadline::no_deadline();
         let lease = revisions
             .begin_retained_operation(&root, deadline, &self.cancellation)
             .unwrap();
@@ -4605,8 +4593,7 @@ impl RealReaderFixture {
         let revisions = Arc::new(
             SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
         );
-        let deadline =
-            ProviderDeadline::from_budget(crate::application::v13::LOGICAL_READ_OPERATION_BUDGET);
+        let deadline = ProviderDeadline::no_deadline();
         let lease = revisions
             .begin_retained_operation(&root, deadline, &self.cancellation)
             .unwrap();

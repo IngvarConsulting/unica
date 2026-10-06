@@ -943,7 +943,7 @@ mod tests {
         canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity();
         actor_bound_publication_rejects_root_replacement_and_hides_staged_bytes();
         actor_bound_read_publication_allows_source_content_change();
-        super::server::actor_capacity_tests::logical_reads_preserve_deadline_without_source_scans_or_mutation_lane_wait();
+        super::server::actor_capacity_tests::logical_reads_run_without_deadline_source_scans_or_mutation_lane_wait();
     }
 
     #[test]

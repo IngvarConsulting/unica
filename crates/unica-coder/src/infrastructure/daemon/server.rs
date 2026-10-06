@@ -1128,7 +1128,6 @@ pub(crate) mod actor_capacity_tests {
     use crate::application::shared_work::{
         ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey, ProviderHostKey,
     };
-    use crate::application::v13::LOGICAL_READ_OPERATION_BUDGET;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::invocation::InvocationStatus;
     use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
@@ -5425,7 +5424,7 @@ struct ActorLogicalReadLease {"#,
             ),
             (
                 "deadline: lease.deadline,",
-                "deadline: ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),",
+                "deadline: ProviderDeadline::from_budget(Duration::from_secs(120)),",
             ),
             (
                 "registration_cache: Arc::clone(&source.registration_cache),",
@@ -5520,7 +5519,7 @@ struct ActorLogicalReadLease {"#,
         let source = include_str!("invocation_service.rs");
         let replenished_deadline = source.replacen(
             "platform_profile,\n                self.deadline,",
-            "platform_profile,\n                ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET),",
+            "platform_profile,\n                ProviderDeadline::from_budget(Duration::from_secs(120)),",
             1,
         );
         assert!(
@@ -5534,7 +5533,7 @@ struct ActorLogicalReadLease {"#,
         let source = include_str!("invocation_service.rs");
         let replenished_search = source.replacen(
             "self.deadline.is_elapsed()",
-            "ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET).is_elapsed()",
+            "ProviderDeadline::from_budget(Duration::from_secs(120)).is_elapsed()",
             1,
         );
         assert_ne!(replenished_search, source, "the hostile search must change");
@@ -8959,83 +8958,41 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn logical_read_admission_deadline_returns_canonical_rejection() {
-        assert_logical_read_deadline_case(LogicalReadDeadlineCase::Admission);
-    }
-
-    #[test]
-    fn logical_read_publication_deadline_discards_staged_source_data() {
-        assert_logical_read_deadline_case(LogicalReadDeadlineCase::Publication);
-    }
-
-    #[test]
     fn logical_read_admission_does_not_scan_source_revisions() {
-        assert_logical_read_deadline_case(LogicalReadDeadlineCase::AdmissionNoScan);
+        assert_logical_read_does_not_scan(LogicalReadScanCase::Admission);
     }
 
     #[test]
     fn logical_read_publication_does_not_scan_source_revisions() {
-        assert_logical_read_deadline_case(LogicalReadDeadlineCase::PublicationNoScan);
+        assert_logical_read_does_not_scan(LogicalReadScanCase::Publication);
     }
 
     #[test]
-    fn logical_read_expired_clock_does_not_reclassify_execution_failure() {
-        assert_logical_read_deadline_case(LogicalReadDeadlineCase::ExecutionFailure);
-    }
-
-    #[test]
-    fn logical_read_parent_publication_deadline_discards_staged_extension_data() {
-        assert_logical_read_deadline_case(LogicalReadDeadlineCase::ParentPublication);
-    }
-
-    #[test]
-    fn logical_read_admission_deadline_is_preserved_by_every_read_tool() {
-        for tool in [
-            ToolIdentity::Resolve,
-            ToolIdentity::Search,
-            ToolIdentity::Check,
-            ToolIdentity::Diff,
-        ] {
-            assert_logical_read_deadline_for_tool(LogicalReadDeadlineCase::Admission, tool);
-        }
+    fn logical_read_parent_publication_does_not_scan_source_revisions() {
+        assert_logical_read_does_not_scan(LogicalReadScanCase::ParentPublication);
     }
 
     #[derive(Clone, Copy)]
-    enum LogicalReadDeadlineCase {
+    enum LogicalReadScanCase {
         Admission,
-        AdmissionNoScan,
         Publication,
-        PublicationNoScan,
-        ExecutionFailure,
         ParentPublication,
     }
 
-    fn assert_logical_read_deadline_case(case: LogicalReadDeadlineCase) {
-        assert_logical_read_deadline_for_tool(case, ToolIdentity::View);
-    }
-
-    fn assert_logical_read_deadline_for_tool(case: LogicalReadDeadlineCase, tool: ToolIdentity) {
-        let parent_publication = matches!(case, LogicalReadDeadlineCase::ParentPublication);
+    /// The probe clock moves only when a retained revision scan starts, so an
+    /// unchanged reading proves that no scan ran. The read itself goes
+    /// through the production admission, which gives it no deadline (#1251).
+    fn assert_logical_read_does_not_scan(case: LogicalReadScanCase) {
+        let parent_publication = matches!(case, LogicalReadScanCase::ParentPublication);
         let workspace = if parent_publication {
             borrowing_view_fixture("normal")
         } else {
             source_selection_read_fixture().0
         };
         let runtime = bootstrap_runtime();
-        let arguments = match tool {
-            ToolIdentity::Search => {
-                serde_json::json!({"query": "Items", "scope": "main:Configuration"})
-            }
-            ToolIdentity::Diff => {
-                serde_json::json!({"left": "main:Catalog.Items", "right": "main:Catalog.Items"})
-            }
-            _ => {
-                serde_json::json!({"at": if parent_publication { "ext:Catalog.Items" } else { "main:Catalog.Items" }})
-            }
-        };
         let request = InvocationRequest::new(
-            tool,
-            arguments,
+            ToolIdentity::View,
+            serde_json::json!({"at": if parent_publication { "ext:Catalog.Items" } else { "main:Catalog.Items" }}),
             std::fs::canonicalize(workspace.path())
                 .unwrap()
                 .to_string_lossy(),
@@ -9053,101 +9010,54 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         let started = Instant::now();
-        let expires = started + LOGICAL_READ_OPERATION_BUDGET;
-        set_logical_read_now(if matches!(case, LogicalReadDeadlineCase::Admission) {
-            expires
-        } else {
-            started
-        });
-        let deadline = ProviderDeadline::with_clock(expires, logical_read_now);
+        let scanned = started + Duration::from_secs(120);
+        set_logical_read_now(started);
         let cancellation = CancellationToken::new();
         let _admission_scan = matches!(
             case,
-            LogicalReadDeadlineCase::AdmissionNoScan | LogicalReadDeadlineCase::ParentPublication
+            LogicalReadScanCase::Admission | LogicalReadScanCase::ParentPublication
         )
         .then(|| {
             crate::infrastructure::source_revision::set_retained_scan_test_mutation(
                 crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                move || set_logical_read_now(expires),
+                move || set_logical_read_now(scanned),
             )
         });
-        let execution = invocation
-            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
-            .unwrap_or_else(|error| {
-                panic!("deadline must remain a domain rejection at admission: {error}")
-            });
+        let execution = invocation.begin_execution(&cancellation).unwrap();
         let service =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
         let staged = service.execute(&execution, cancellation.clone()).unwrap();
+        assert!(staged.ok, "{staged:?}");
+        assert!(
+            staged.data.is_some(),
+            "the reader must stage actual source data"
+        );
         if parent_publication {
-            assert_eq!(
-                logical_read_now(),
-                started,
-                "parent read must not run the old revision scan"
-            );
             assert_eq!(
                 staged.data.as_ref().unwrap()["props"]["parentStatus"],
                 "resolved"
             );
         }
-        if !matches!(
-            case,
-            LogicalReadDeadlineCase::Admission | LogicalReadDeadlineCase::AdmissionNoScan
-        ) {
-            assert!(staged.ok, "{staged:?}");
-            assert!(
-                staged.data.is_some(),
-                "the reader must stage actual source data"
-            );
-            if !matches!(case, LogicalReadDeadlineCase::PublicationNoScan) {
-                set_logical_read_now(expires);
-            }
-        }
-        if matches!(case, LogicalReadDeadlineCase::ExecutionFailure) {
-            let failure = InvocationFailure::new("reader_failed", "unrelated provider failure");
-            let published = execution
-                .publish(Err(failure.clone()), &cancellation)
-                .unwrap();
-            assert_eq!(published, Err(failure));
-            return;
-        }
-        let _publication_scan =
-            matches!(case, LogicalReadDeadlineCase::PublicationNoScan).then(|| {
-                crate::infrastructure::source_revision::set_retained_scan_test_mutation(
+        let _publication_scan = matches!(case, LogicalReadScanCase::Publication).then(|| {
+            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
                 crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                move || set_logical_read_now(expires),
+                move || set_logical_read_now(scanned),
             )
-            });
+        });
         let result = execution
             .publish(Ok(staged), &cancellation)
-            .unwrap_or_else(|error| {
-                panic!("deadline must remain a domain rejection at publication: {error}")
-            })
-            .expect("deadline must not become an invocation failure");
-        if matches!(
-            case,
-            LogicalReadDeadlineCase::AdmissionNoScan | LogicalReadDeadlineCase::PublicationNoScan
-        ) {
-            assert_eq!(
-                logical_read_now(),
-                started,
-                "logical read invoked a global source revision scan"
-            );
-            assert!(result.ok, "{result:?}");
-            assert!(
-                result.data.is_some(),
-                "successful read must keep source data"
-            );
-            return;
-        }
-        assert!(!result.ok);
-        assert_eq!(result.diagnostics[0]["code"], "deadline_exceeded");
-        assert_eq!(result.diagnostics[0]["outcome"], "retry");
-        assert!(
-            result.data.is_none(),
-            "expired source data escaped: {result:?}"
+            .unwrap()
+            .expect("a logical read publishes a domain result");
+        assert_eq!(
+            logical_read_now(),
+            started,
+            "logical read invoked a global source revision scan"
         );
-        assert!(result.rev.is_none(), "expired revision escaped: {result:?}");
+        assert!(result.ok, "{result:?}");
+        assert!(
+            result.data.is_some(),
+            "successful read must keep source data"
+        );
     }
 
     struct ManualInvocationClock(Mutex<Instant>);
@@ -9170,7 +9080,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    pub(crate) fn logical_reads_preserve_deadline_without_source_scans_or_mutation_lane_wait() {
+    pub(crate) fn logical_reads_run_without_deadline_source_scans_or_mutation_lane_wait() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         let sibling = workspace.path().join("dep");
@@ -9235,12 +9145,11 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
         let started = Instant::now();
         set_logical_read_now(started);
-        let deadline =
-            ProviderDeadline::with_clock(started + LOGICAL_READ_OPERATION_BUDGET, logical_read_now);
+        // Only the actor mutation lane below still needs a finite fixture
+        // deadline; the reads themselves are admitted by production code.
+        let deadline = ProviderDeadline::from_budget(Duration::from_secs(120));
         let cancellation = CancellationToken::new();
-        let execution = invocation
-            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
-            .unwrap();
+        let execution = invocation.begin_execution(&cancellation).unwrap();
         assert_eq!(
             sibling_revisions.retained_scan_count(),
             0,
@@ -9257,8 +9166,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(sources.len(), 1);
         assert_eq!(
             sources[0].deadline().remaining(),
-            Some(LOGICAL_READ_OPERATION_BUDGET - Duration::from_secs(8)),
-            "the handoff window must not replenish or cap the logical-read deadline"
+            None,
+            "a logical read has no operation deadline, before or after the handoff window"
         );
         let service =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
@@ -9309,9 +9218,7 @@ struct ActorLogicalReadLease {"#,
                 runtime.capture_response_deadline_for_test(),
             )
             .unwrap();
-            let read_execution = read_invocation
-                .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
-                .unwrap();
+            let read_execution = read_invocation.begin_execution(&cancellation).unwrap();
             let read_result = service
                 .execute(&read_execution, cancellation.clone())
                 .unwrap();
@@ -9390,9 +9297,7 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        let find_execution = find_invocation
-            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
-            .unwrap();
+        let find_execution = find_invocation.begin_execution(&cancellation).unwrap();
         assert_eq!(
             find_execution.layout_sources().unwrap().len(),
             2,
@@ -9443,9 +9348,7 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        let find_execution = find_invocation
-            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
-            .unwrap();
+        let find_execution = find_invocation.begin_execution(&cancellation).unwrap();
         let find_result = service
             .execute(&find_execution, cancellation.clone())
             .expect("second canonical v0.13 find execution");
@@ -9472,9 +9375,7 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
         set_logical_read_now(started + Duration::from_secs(9));
-        let execution = invocation
-            .begin_execution_with_logical_deadline_for_test(&cancellation, deadline)
-            .unwrap();
+        let execution = invocation.begin_execution(&cancellation).unwrap();
         let result = service
             .execute(&execution, cancellation.clone())
             .expect("second canonical v0.13 execution");
@@ -9697,16 +9598,15 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
-    /// An inline execution that outlives the handoff window and checks its
-    /// own operation budget only once it is released.
-    struct BudgetedHandoffService {
-        operation_budget: Duration,
+    /// An inline execution that outlives the handoff window and finishes
+    /// only once it is released.
+    struct ReleasedHandoffService {
         executions: Arc<AtomicUsize>,
         started: mpsc::Sender<()>,
         release: Mutex<mpsc::Receiver<()>>,
     }
 
-    impl CanonicalInvocationService for BudgetedHandoffService {
+    impl CanonicalInvocationService for ReleasedHandoffService {
         fn prepare(
             &self,
             _invocation: &ActorBoundInvocation,
@@ -9720,29 +9620,16 @@ struct ActorLogicalReadLease {"#,
             _cancellation: CancellationToken,
         ) -> Result<DomainResult, InvocationFailure> {
             self.executions.fetch_add(1, Ordering::SeqCst);
-            let operation = ProviderDeadline::from_budget(self.operation_budget);
             self.started.send(()).unwrap();
             self.release.lock().unwrap().recv().unwrap();
-            if operation.is_elapsed() {
-                return Err(InvocationFailure::new(
-                    "deadline_exceeded",
-                    "operation budget elapsed at Task handoff",
-                ));
-            }
             Ok(DomainResult::success("find completed after handoff"))
         }
     }
 
-    /// The operation budget of a logical read outlives the seven-second Task
-    /// handoff: the daemon hands the unfinished attempt off as a Task at its
-    /// cutoff, the same attempt keeps running and completes exactly once.
-    pub(crate) fn assert_operation_budget_survives_handoff_and_completes_once(
-        operation_budget: Duration,
-    ) {
-        assert!(
-            operation_budget > INVOCATION_HANDOFF_WINDOW,
-            "operation budget {operation_budget:?} must outlive the {INVOCATION_HANDOFF_WINDOW:?} Task handoff window"
-        );
+    /// An unfinished attempt outlives the seven-second Task handoff: the
+    /// daemon hands it off as a Task at its cutoff, the same attempt keeps
+    /// running and completes exactly once.
+    pub(crate) fn assert_unfinished_work_survives_handoff_and_completes_once() {
         let workspace = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(workspace.path()).unwrap();
         ensure_platform_xml_workspace(&root.to_string_lossy());
@@ -9750,8 +9637,7 @@ struct ActorLogicalReadLease {"#,
         let executions = Arc::new(AtomicUsize::new(0));
         let (started, started_wait) = mpsc::channel();
         let (release, release_wait) = mpsc::channel();
-        let service: Arc<dyn CanonicalInvocationService> = Arc::new(BudgetedHandoffService {
-            operation_budget,
+        let service: Arc<dyn CanonicalInvocationService> = Arc::new(ReleasedHandoffService {
             executions: Arc::clone(&executions),
             started,
             release: Mutex::new(release_wait),

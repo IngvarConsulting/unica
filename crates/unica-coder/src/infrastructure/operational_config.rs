@@ -252,7 +252,8 @@ pub(crate) mod tests {
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(120)
+            None,
+            "an unconfigured analysis has no deadline"
         );
     }
 
@@ -274,7 +275,8 @@ pub(crate) mod tests {
         );
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(120)
+            None,
+            "an unconfigured analysis has no deadline"
         );
     }
 
@@ -348,7 +350,7 @@ analyze_timeout_seconds = 900
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(35));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(900)
+            Some(Duration::from_secs(900))
         );
     }
 
@@ -385,7 +387,7 @@ analyze_timeout_seconds = 700
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(30));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(700)
+            Some(Duration::from_secs(700))
         );
     }
 
@@ -447,7 +449,7 @@ analyze_timeout_seconds = 3600
         );
         assert_eq!(
             maximum.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(3_600)
+            Some(Duration::from_secs(3_600))
         );
 
         write_config(
@@ -469,7 +471,7 @@ analyze_timeout_seconds = 30
         );
         assert_eq!(
             minimum.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(30)
+            Some(Duration::from_secs(30))
         );
 
         write_config(
@@ -505,7 +507,7 @@ analyze_timeout_seconds = 7200
         );
         assert_eq!(
             above_former_ceilings.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(7_200)
+            Some(Duration::from_secs(7_200))
         );
     }
 
