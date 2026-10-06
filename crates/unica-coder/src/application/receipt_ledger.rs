@@ -5,6 +5,7 @@ use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::domain::invocation::{
     DomainResult, InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId,
 };
+use crate::domain::operation_deadline::OperationDeadline;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -12,7 +13,6 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Instant;
 
 const REQUEST_SCOPE_DOMAIN: &[u8] = b"unica.request-scope.v1\0";
 const RECEIPT_KEY_DOMAIN: &[u8] = b"unica.receipt-key.v1\0";
@@ -460,18 +460,18 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn snapshot_catalog(
         &mut self,
         _authority: ReceiptLedgerCatalogSnapshotAuthority,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
-    fn generation(&mut self, _deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+    fn generation(&mut self, _deadline: OperationDeadline) -> Result<u64, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
 
     fn rotate_generation_for_test(
         &mut self,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<u64, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -481,7 +481,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
         _terminal_epoch_ms: u64,
         _terminal: V5CanonicalTerminal,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -489,7 +489,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn reserve_batch(
         &mut self,
         _requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -497,7 +497,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn bind_reserved_actor_batch(
         &mut self,
         _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -505,7 +505,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn mark_reserved_begun_batch(
         &mut self,
         _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -513,7 +513,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn publish_direct_terminal_batch(
         &mut self,
         _requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -521,7 +521,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn acknowledge_direct_batch(
         &mut self,
         _requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -530,7 +530,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         &mut self,
         key: ReceiptKey,
         original_cutoff: OriginalCutoffDescriptor,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReserveOutcome, ReceiptLedgerError>;
 
     fn bind_reserved_actor(
@@ -538,7 +538,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _key: &ReceiptKey,
         _expected_version: ReceiptVersion,
         _bound_workspace_identity: SafeIdentityHash,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<ReservedReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -547,7 +547,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         &mut self,
         _key: &ReceiptKey,
         _expected_version: ReceiptVersion,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<ReservedReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -559,7 +559,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _created_at_epoch_ms: u64,
         _ttl_ms: u64,
         _poll_interval_ms: u64,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskPromisedUnboundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -569,7 +569,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _key: &ReceiptKey,
         _expected_version: ReceiptVersion,
         _workspace_identity_hash: SafeIdentityHash,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskPromisedActorBoundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -581,7 +581,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _created_at_epoch_ms: u64,
         _ttl_ms: u64,
         _poll_interval_ms: u64,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -593,7 +593,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _terminal_epoch_ms: u64,
         _terminal: V5CanonicalTerminal,
         _certificate: StagedTerminalTransferCertificate,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -606,7 +606,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _key: &ReceiptKey,
         _expected_version: ReceiptVersion,
         _proven_link_capacity: ProvenTaskLinkCapacity,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskReceiptOwnedActorBoundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -618,7 +618,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _key: &ReceiptKey,
         _expected_version: ReceiptVersion,
         _confirmed_task_bound: TaskBoundReceipt,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -630,7 +630,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _key: &ReceiptKey,
         _expected_version: ReceiptVersion,
         _confirmed_terminal_bound: TaskTerminalBoundReceipt,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskTerminalBoundReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -639,7 +639,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         &mut self,
         _key: &ReceiptKey,
         _expected: TaskCancellationReceipt,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -650,7 +650,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _expected: TaskCancellationReceipt,
         _terminal_epoch_ms: u64,
         _terminal: V5CanonicalTerminal,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -659,7 +659,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         &mut self,
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<CancelResolution, ReceiptLedgerError>;
 
     fn publish_direct_terminal(
@@ -668,7 +668,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         expected_version: ReceiptVersion,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<CommittedDirectPublication, ReceiptLedgerError>;
 
     fn acknowledge_direct(
@@ -676,7 +676,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
         _key: &ReceiptKey,
         _terminal_digest: &TerminalDigest,
         _acknowledged_at_epoch_ms: u64,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -684,7 +684,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn reclaim_expired_tombstones(
         &mut self,
         _observed_at_epoch_ms: u64,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<usize, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -692,14 +692,14 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn recover(
         &mut self,
         key: &ReceiptKey,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReceiptState, ReceiptLedgerError>;
 
     fn recover_at(
         &mut self,
         key: &ReceiptKey,
         _observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
         self.recover(key, deadline)
     }
@@ -707,7 +707,7 @@ pub(crate) trait ReceiptLedgerPort: Send + 'static {
     fn resolve_task(
         &mut self,
         _task_id: TaskId,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
