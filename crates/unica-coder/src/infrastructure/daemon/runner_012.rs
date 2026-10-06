@@ -657,10 +657,13 @@ mod tests {
 
     #[test]
     fn target_config_is_projected_without_losing_origin_or_provider_meaning() {
-        let (root, base, local) = projected(
-            "infobases:\n  origin:\n    connection: 'File=base'\nbuild: {partialLoadThreshold: 20}\nproviders:\n  build: designer\n  dump: designer\n  load: designer\n  init: designer\n  infobase: {dump: ibcmd, restore: ibcmd}\nsource-set:\n  - name: main\n    type: configuration\n    path: src\n  - name: sales\n    type: extension\n    path: /abs/sales\ntools: {edt_cli: {path: 1cedtcli}, va: {epf_path: va/va.epf}}\ntests: {va: {params_path: va/params.json, profiles: {smoke: {feature_path: features}}}}\n",
-            None,
+        // Абсолютный путь на любой ОС: `/abs/sales` под Windows относителен.
+        let sales = std::env::temp_dir().join("unica-abs-sales");
+        let sales = sales.display();
+        let config = format!(
+            "infobases:\n  origin:\n    connection: 'File=base'\nbuild: {{partialLoadThreshold: 20}}\nproviders:\n  build: designer\n  dump: designer\n  load: designer\n  init: designer\n  infobase: {{dump: ibcmd, restore: ibcmd}}\nsource-set:\n  - name: main\n    type: configuration\n    path: src\n  - name: sales\n    type: extension\n    path: '{sales}'\ntools: {{edt_cli: {{path: 1cedtcli}}, va: {{epf_path: va/va.epf}}}}\ntests: {{va: {{params_path: va/params.json, profiles: {{smoke: {{feature_path: features}}}}}}}}\n"
         );
+        let (root, base, local) = projected(&config, None);
         assert!(base.get("build").is_none());
         assert_eq!(base["push"]["partialLoadThreshold"], 20);
         let providers = &base["providers"];
@@ -675,7 +678,7 @@ mod tests {
         assert_eq!(base["source-set"][0]["type"], "CONFIGURATION");
         assert_eq!(base["source-set"][1]["type"], "EXTENSION");
         assert_eq!(base["source-set"][0]["path"], text(root.join("src")));
-        assert_eq!(base["source-set"][1]["path"], "/abs/sales");
+        assert_eq!(base["source-set"][1]["path"], sales.to_string());
         assert!(
             base.get("basePath").is_none(),
             "0.12 closed schema rejects basePath"
