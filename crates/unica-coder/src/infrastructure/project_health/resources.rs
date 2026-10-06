@@ -150,7 +150,6 @@ pub(crate) struct ResourceInspectionProgress {
     pub(crate) staged_eol_retained: usize,
     pub(crate) working_eol_retained: usize,
     pub(crate) capacity_limited: bool,
-    pub(crate) continuable_eol_timeout: bool,
 }
 
 #[derive(Default)]
@@ -1184,7 +1183,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     return Err(ProjectHealthInspectionError::Cancelled)
                 }
                 Err(ResourceProtocolParseError::TimedOut) => {
-                    state.progress.continuable_eol_timeout = true;
                     return Ok(retain_prior_facts(
                         timeout_policy(observations, ProjectCheckId::RepositoryIndexEol),
                         facts,
@@ -1340,9 +1338,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 return Err(ProjectHealthInspectionError::Cancelled)
             }
             Err(ResourceProtocolParseError::TimedOut) => {
-                if let Some(state) = continuation.as_deref_mut() {
-                    state.progress.continuable_eol_timeout = true;
-                }
                 let reason = "Git index EOL evaluation exceeded the inspection deadline";
                 mark_check_not_run(
                     &mut observations,
@@ -1529,9 +1524,6 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 reason,
             });
         } else if working_timed_out || (continuation.is_some() && deadline.is_elapsed()) {
-            if let Some(state) = continuation.as_deref_mut() {
-                state.progress.continuable_eol_timeout = true;
-            }
             let reason = "deadline expired during working EOL inspection";
             mark_check_not_run(
                 &mut observations,
