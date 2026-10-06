@@ -3323,7 +3323,7 @@ fn external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_amb
 }
 
 #[test]
-fn retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound() {
+fn retained_external_inventory_is_cancellable() {
     let cancelled_fixture = RealExternalReaderFixture::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&cancelled_fixture.processor).unwrap());
     let revisions = Arc::new(
@@ -3359,12 +3359,19 @@ fn retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound() 
         })
         .unwrap_err();
     assert_eq!(error.code().as_str(), "cancelled");
+}
 
-    let bounded_fixture = RealExternalReaderFixture::new();
-    for index in 0..5 {
+fn large_external_inventory_fixture() -> RealExternalReaderFixture {
+    let fixture = RealExternalReaderFixture::new();
+    add_large_external_descriptors(&fixture, 5);
+    fixture
+}
+
+fn add_large_external_descriptors(fixture: &RealExternalReaderFixture, count: usize) {
+    for index in 0..count {
         let name = format!("Large{index}");
-        write_external_artifact(&bounded_fixture.processor, "ExternalDataProcessor", &name);
-        let path = bounded_fixture.processor.join(format!("{name}.xml"));
+        write_external_artifact(&fixture.processor, "ExternalDataProcessor", &name);
+        let path = fixture.processor.join(format!("{name}.xml"));
         let descriptor = fs::read_to_string(&path).unwrap();
         let padding = format!("<!--{}-->", "x".repeat(7 * 1024 * 1024));
         fs::write(
@@ -3373,24 +3380,95 @@ fn retained_external_inventory_is_cancellable_and_has_an_aggregate_byte_bound() 
         )
         .unwrap();
     }
-    let root = Arc::new(RetainedDirectoryCapability::open(&bounded_fixture.processor).unwrap());
+}
+
+fn external_inventory_reader(fixture: &RealExternalReaderFixture) -> ProviderReadAuthority {
+    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.processor).unwrap());
     let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(
-            &bounded_fixture.context,
-            &bounded_fixture.processor,
-        )
-        .unwrap(),
+        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.processor)
+            .unwrap(),
     );
-    let reader = ProviderReadAuthority::new(
+    ProviderReadAuthority::new(
         "artifact_processor",
-        "actor-external-bounded",
+        "actor-external-complete",
         SourceSetKind::ExternalProcessor,
         root,
         revisions,
-    );
+    )
+}
+
+fn assert_complete_large_external_inventory(payload: &serde_json::Value) {
+    let expected = [
+        "Import",
+        "Large0",
+        "Large1",
+        "Large2",
+        "Large3",
+        "Large4",
+        "Импорт",
+    ]
+    .map(|name| json!({"kind": "ExternalDataProcessor", "name": name}));
+    assert_eq!(payload["registeredObjects"], json!(expected));
+}
+
+#[test]
+fn retained_external_inventory_crosses_former_aggregate_bytes_without_losing_owners() {
+    let fixture = large_external_inventory_fixture();
+    let reader = external_inventory_reader(&fixture);
+    let payload =
+        configuration_payload(&reader).expect("all sequential descriptors remain readable");
+    assert_complete_large_external_inventory(&payload);
+}
+
+#[test]
+fn retained_external_inventory_reads_malformed_tail_after_former_aggregate_bytes() {
+    let fixture = large_external_inventory_fixture();
+    // Retained names are sorted. The five Large*.xml files precede this entry
+    // and contain more than 32 MiB in total.
+    fs::write(fixture.processor.join("ZZBroken.xml"), "<broken>").unwrap();
+    let reader = external_inventory_reader(&fixture);
     let error = configuration_payload(&reader).unwrap_err();
     assert_eq!(error.code().as_str(), "provider_unavailable");
-    assert!(error.to_string().contains("read limit"));
+    assert!(error.to_string().contains("ZZBroken.xml"), "{error}");
+    assert!(!error.to_string().contains("read limit"), "{error}");
+}
+
+#[test]
+fn retained_external_inventory_cancels_inside_a_large_descriptor_without_publishing_prefix() {
+    // This stays below the former aggregate limit, so its RED cannot be
+    // masked by an unrelated size refusal.
+    let fixture = RealExternalReaderFixture::new();
+    add_large_external_descriptors(&fixture, 1);
+    assert!(fs::read_dir(&fixture.processor).unwrap().count() < 32);
+    let reader = external_inventory_reader(&fixture);
+    let mut checkpoints = 0;
+    let error = reader
+        .configuration_payload_with_checkpoint(&mut || {
+            checkpoints += 1;
+            // Enumeration and the preceding small descriptors use fewer calls;
+            // the first 7-MiB descriptor needs more than 100 actual read chunks.
+            if checkpoints == 64 {
+                Err(ViewError::new(
+                    RefusalCode::Cancelled,
+                    "cancel inside retained XML read",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+    assert_eq!(error.code(), RefusalCode::Cancelled, "{error}");
+    assert_eq!(checkpoints, 64);
+    let payload =
+        configuration_payload(&reader).expect("cancel did not publish a partial inventory");
+    assert_eq!(
+        payload["registeredObjects"],
+        json!([
+            {"kind": "ExternalDataProcessor", "name": "Import"},
+            {"kind": "ExternalDataProcessor", "name": "Large0"},
+            {"kind": "ExternalDataProcessor", "name": "Импорт"}
+        ])
+    );
 }
 
 #[test]
