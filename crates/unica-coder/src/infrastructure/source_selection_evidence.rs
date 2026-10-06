@@ -982,11 +982,22 @@ impl RetainedSelectionPass {
         Ok(RetainedDirectoryObservation::Present(ancestor))
     }
 
+    #[cfg(test)]
     pub(in crate::infrastructure) fn observe_membership(
         &mut self,
         relative: &Path,
         directory: &RetainedDirectoryCapability,
         limit: usize,
+        checkpoint: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<Vec<RetainedMembershipEntry>, String> {
+        self.observe_membership_with_limit(relative, directory, Some(limit), checkpoint)
+    }
+
+    pub(in crate::infrastructure) fn observe_membership_with_limit(
+        &mut self,
+        relative: &Path,
+        directory: &RetainedDirectoryCapability,
+        limit: Option<usize>,
         checkpoint: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<Vec<RetainedMembershipEntry>, String> {
         directory.validate_named_identity().map_err(|error| {
@@ -996,7 +1007,7 @@ impl RetainedSelectionPass {
             )
         })?;
         let new_membership = !self.memberships.contains_key(relative);
-        if new_membership {
+        if let Some(limit) = limit.filter(|_| new_membership) {
             // Only injected constraints reserve a caller's enumeration allowance.
             // Unbounded production accounting charges actual observations below.
             let requested_records = 1_usize.saturating_add(limit);
@@ -1022,13 +1033,15 @@ impl RetainedSelectionPass {
         if remaining_members == Some(0) {
             self.usage.ensure_members(1)?;
         }
-        if remaining_members.is_some_and(|remaining| limit > remaining) {
-            self.usage.ensure_members(limit)?;
+        if let Some(limit) = limit {
+            if remaining_members.is_some_and(|remaining| limit > remaining) {
+                self.usage.ensure_members(limit)?;
+            }
         }
         let mut checkpoint_error = None;
         #[cfg(test)]
         record_membership_enumeration_attempt();
-        let names = directory.read_immediate_names_bounded(limit, || match checkpoint() {
+        let names = directory.read_immediate_names_with_limit(limit, || match checkpoint() {
             Ok(()) => Ok(()),
             Err(reason) => {
                 checkpoint_error = Some(reason);
@@ -1043,7 +1056,7 @@ impl RetainedSelectionPass {
         }
         let names = names.map_err(|error| {
             if let Some(total_limit) = self.usage.budgets.enumerated_members {
-                if remaining_members == Some(limit) {
+                if remaining_members == limit && limit.is_some() {
                     return format!(
                         "project source-map actor enumerated-member budget exceeds {total_limit} entries"
                     );

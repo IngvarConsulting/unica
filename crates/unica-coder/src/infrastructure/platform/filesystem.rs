@@ -1211,7 +1211,17 @@ impl RetainedDirectoryCapability {
         maximum_entries: usize,
         checkpoint: impl FnMut() -> io::Result<()>,
     ) -> io::Result<Vec<std::ffi::OsString>> {
-        read_directory_names_bounded(&self.retained.directory, maximum_entries, checkpoint)
+        self.read_immediate_names_with_limit(Some(maximum_entries), checkpoint)
+    }
+
+    /// Enumerates the retained directory with no entry quota when the owner
+    /// supplies None. Identity checks belong to the observation pass.
+    pub(crate) fn read_immediate_names_with_limit(
+        &self,
+        maximum_entries: Option<usize>,
+        checkpoint: impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<std::ffi::OsString>> {
+        read_directory_names_with_limit(&self.retained.directory, maximum_entries, checkpoint)
     }
 
     /// Visits names through the retained handle without accumulating the
@@ -1980,6 +1990,15 @@ pub(crate) fn open_child_for_secure_tree_use(
 pub(crate) fn read_directory_names_bounded(
     directory: &fs::File,
     maximum_entries: usize,
+    checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<std::ffi::OsString>> {
+    read_directory_names_with_limit(directory, Some(maximum_entries), checkpoint)
+}
+
+#[cfg(unix)]
+pub(crate) fn read_directory_names_with_limit(
+    directory: &fs::File,
+    maximum_entries: Option<usize>,
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<std::ffi::OsString>> {
     let mut entries = cap_primitives::fs::read_base_dir(directory)?;
@@ -1990,7 +2009,7 @@ pub(crate) fn read_directory_names_bounded(
             break;
         };
         let name = entry?.file_name();
-        if names.len() >= maximum_entries {
+        if maximum_entries.is_some_and(|limit| names.len() >= limit) {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,
                 "directory exceeds the retained enumeration entry limit",
@@ -3687,19 +3706,28 @@ fn visit_directory_information_buffer<E: From<io::Error>>(
     reason = "the following Windows full-dump tree-inspection task consumes retained enumeration"
 )]
 pub(crate) fn read_directory_names(directory: &fs::File) -> io::Result<Vec<std::ffi::OsString>> {
-    read_directory_names_bounded(directory, usize::MAX, || Ok(()))
+    read_directory_names_with_limit(directory, None, || Ok(()))
 }
 
 #[cfg(windows)]
 pub(crate) fn read_directory_names_bounded(
     directory: &fs::File,
     maximum_entries: usize,
+    checkpoint: impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<std::ffi::OsString>> {
+    read_directory_names_with_limit(directory, Some(maximum_entries), checkpoint)
+}
+
+#[cfg(windows)]
+pub(crate) fn read_directory_names_with_limit(
+    directory: &fs::File,
+    maximum_entries: Option<usize>,
     mut checkpoint: impl FnMut() -> io::Result<()>,
 ) -> io::Result<Vec<std::ffi::OsString>> {
     let mut names = Vec::new();
     visit_directory_names(directory, |name| {
         checkpoint()?;
-        if names.len() >= maximum_entries {
+        if maximum_entries.is_some_and(|limit| names.len() >= limit) {
             return Err(io::Error::new(
                 io::ErrorKind::FileTooLarge,
                 "directory exceeds the retained enumeration entry limit",
