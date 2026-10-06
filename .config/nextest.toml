@@ -114,6 +114,30 @@ kind(test)
     | test(/^infrastructure::workspace_services::(tests)::/)
     | test(/^interfaces::daemon_router::(tests)::/)
     | test(/^interfaces::mcp::(tests)::/)
+) & not (
+(
+binary(daemon_receipt_ledger) & (
+    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
+    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
+    | test(/^deterministic_horizon_load_does_not_saturate$/)
+    | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
+    | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
+    | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
+    | test(/^task_handoff_before_begun_materializes_past_former_link_quota_without_callback$/)
+    | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
+    | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
+    | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
+    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
+)
+) | (
+binary(unica_coder) & (
+    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+)
+)
 )'''
 # <<< размер medium (ворота pr)
 
@@ -123,6 +147,7 @@ kind(test)
 [profile.queue]
 # >>> размер large (ворота queue)
 default-filter = '''not (
+(
 binary(daemon_receipt_ledger) & (
     test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
     | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
@@ -136,12 +161,22 @@ binary(daemon_receipt_ledger) & (
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
     | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
+) | (
+binary(unica_coder) & (
+    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+)
+)
 )'''
 # <<< размер large (ворота queue)
 
 [profile.main]
 # >>> размер large (ворота main)
 default-filter = '''not (
+(
 binary(daemon_receipt_ledger) & (
     test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
     | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
@@ -154,6 +189,15 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
     | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
+)
+) | (
+binary(unica_coder) & (
+    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+)
 )
 )'''
 # <<< размер large (ворота main)
@@ -163,14 +207,15 @@ binary(daemon_receipt_ledger) & (
 [profile.release]
 default-filter = 'all()'
 
-# Ночной ярус: тесты ёмкости и нагрузки контракта ReceiptLedger
-# (`tests/daemon_receipt_ledger.rs`). Ярус объявлен именами, а не структурой:
-# двоичный файл контракта целиком `medium` по `kind(test)`, а эти тесты внутри
-# него идут по 200–520 с каждый и меряют настенное время, поэтому ночью и по
-# одному на машину (`threads-required` ниже). Замер 07.09.2026, локально.
+# Ночной ярус: точные тесты ёмкости и нагрузки ReceiptLedger и карты исходников.
+# Фильтр называет цель Cargo и тест: интеграционная цель квитанций целиком
+# `medium`, а библиотечные проверки карты используют большие реальные каталоги.
+# Нагрузочные проверки квитанций идут по 200–520 с; запускаем ярус по одному
+# тесту на машину (`threads-required` ниже). Замер 07.09.2026, локально.
 [profile.large]
 # >>> размер large (ворота large)
 default-filter = '''
+(
 binary(daemon_receipt_ledger) & (
     test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
     | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
@@ -183,6 +228,15 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
     | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
+)
+) | (
+binary(unica_coder) & (
+    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+)
 )
 '''
 # <<< размер large (ворота large)
@@ -277,6 +331,7 @@ slow-timeout = { period = "300s", terminate-after = 2 }
 # >>> размер large (срок)
 [[profile.default.overrides]]
 filter = '''
+(
 binary(daemon_receipt_ledger) & (
     test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
     | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
@@ -289,6 +344,15 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
     | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
+)
+) | (
+binary(unica_coder) & (
+    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+)
 )
 '''
 slow-timeout = { period = "900s", terminate-after = 2 }

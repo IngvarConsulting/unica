@@ -12,44 +12,35 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 const SELECTION_READ_CHUNK_BYTES: usize = 64 * 1024;
-const MAX_ACTOR_EXACT_RETAINED_BYTES: usize = 32 * 1024 * 1024;
-const MAX_ACTOR_EVIDENCE_RECORDS: usize = 65_536;
-const MAX_ACTOR_ENUMERATED_MEMBERS: usize = 16_384;
-const MAX_ACTOR_UNIQUE_RETAINED_DIRECTORIES: usize = 128;
-const MAX_ACTOR_ROUTE_AND_NAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct SelectionEvidenceBudgets {
-    exact_bytes: usize,
+    exact_bytes: Option<usize>,
     exact_work_bytes: Option<usize>,
-    evidence_records: usize,
-    enumerated_members: usize,
-    unique_directories: usize,
-    route_and_name_bytes: usize,
+    evidence_records: Option<usize>,
+    enumerated_members: Option<usize>,
+    unique_directories: Option<usize>,
+    route_and_name_bytes: Option<usize>,
 }
 
 impl SelectionEvidenceBudgets {
-    fn actor_admission() -> Self {
-        let production = Self {
-            exact_bytes: MAX_ACTOR_EXACT_RETAINED_BYTES,
+    const fn unbounded() -> Self {
+        Self {
+            exact_bytes: None,
             exact_work_bytes: None,
-            evidence_records: MAX_ACTOR_EVIDENCE_RECORDS,
-            enumerated_members: MAX_ACTOR_ENUMERATED_MEMBERS,
-            unique_directories: MAX_ACTOR_UNIQUE_RETAINED_DIRECTORIES,
-            route_and_name_bytes: MAX_ACTOR_ROUTE_AND_NAME_BYTES,
-        };
+            evidence_records: None,
+            enumerated_members: None,
+            unique_directories: None,
+            route_and_name_bytes: None,
+        }
+    }
+
+    fn actor_admission() -> Self {
         #[cfg(test)]
         if let Some(test) = actor_selection_test_budgets() {
-            return Self {
-                exact_bytes: test.exact_bytes,
-                exact_work_bytes: Some(test.exact_work_bytes),
-                evidence_records: test.evidence_records,
-                enumerated_members: test.enumerated_members,
-                unique_directories: test.unique_directories,
-                route_and_name_bytes: test.route_and_name_bytes,
-            };
+            return test;
         }
-        production
+        Self::unbounded()
     }
 }
 
@@ -133,22 +124,22 @@ impl SelectionEvidenceUsage {
         self.enumerated_members += members;
     }
 
-    fn remaining_members(&self) -> usize {
+    fn remaining_members(&self) -> Option<usize> {
         self.budgets
             .enumerated_members
-            .saturating_sub(self.enumerated_members)
+            .map(|limit| limit.saturating_sub(self.enumerated_members))
     }
 
-    fn remaining_records(&self) -> usize {
+    fn remaining_records(&self) -> Option<usize> {
         self.budgets
             .evidence_records
-            .saturating_sub(self.evidence_records)
+            .map(|limit| limit.saturating_sub(self.evidence_records))
     }
 
-    fn remaining_route_and_name_bytes(&self) -> usize {
+    fn remaining_route_and_name_bytes(&self) -> Option<usize> {
         self.budgets
             .route_and_name_bytes
-            .saturating_sub(self.route_and_name_bytes)
+            .map(|limit| limit.saturating_sub(self.route_and_name_bytes))
     }
 
     fn ensure_directory(&self, route_bytes: usize) -> Result<(), String> {
@@ -186,18 +177,27 @@ impl SelectionEvidenceUsage {
 fn ensure_budget(
     current: usize,
     additional: usize,
-    limit: usize,
+    limit: Option<usize>,
     label: &str,
     unit: &str,
 ) -> Result<(), String> {
-    if current
+    let total = current
         .checked_add(additional)
-        .is_none_or(|total| total > limit)
-    {
-        Err(format!("{label} exceeds {limit} {unit}"))
-    } else {
-        Ok(())
+        .ok_or_else(|| format!("{label} count overflowed"))?;
+    if let Some(limit) = limit {
+        if total > limit {
+            return Err(format!("{label} exceeds {limit} {unit}"));
+        }
     }
+    Ok(())
+}
+
+fn checked_route_byte_count(parts: impl IntoIterator<Item = usize>) -> Result<usize, String> {
+    parts.into_iter().try_fold(0_usize, |total, bytes| {
+        total
+            .checked_add(bytes)
+            .ok_or_else(|| "project source-map actor route/name byte count overflowed".to_string())
+    })
 }
 
 fn retained_route_bytes(path: &Path) -> usize {
@@ -209,27 +209,12 @@ fn retained_name_bytes(name: &std::ffi::OsStr) -> usize {
 }
 
 #[cfg(test)]
-#[derive(Clone, Copy)]
-struct ActorSelectionTestBudgets {
-    exact_bytes: usize,
-    exact_work_bytes: usize,
-    evidence_records: usize,
-    enumerated_members: usize,
-    unique_directories: usize,
-    route_and_name_bytes: usize,
-}
+type ActorSelectionTestBudgets = SelectionEvidenceBudgets;
 
 #[cfg(test)]
 impl ActorSelectionTestBudgets {
     const fn generous() -> Self {
-        Self {
-            exact_bytes: usize::MAX,
-            exact_work_bytes: usize::MAX,
-            evidence_records: usize::MAX,
-            enumerated_members: usize::MAX,
-            unique_directories: usize::MAX,
-            route_and_name_bytes: usize::MAX,
-        }
+        Self::unbounded()
     }
 }
 
@@ -679,7 +664,7 @@ impl CompleteProjectSourceSelection {
 }
 
 impl RetainedSelectionPass {
-    pub(in crate::infrastructure) fn remaining_member_budget(&self) -> usize {
+    pub(in crate::infrastructure) fn remaining_member_budget(&self) -> Option<usize> {
         self.usage.remaining_members()
     }
 
@@ -776,9 +761,11 @@ impl RetainedSelectionPass {
         checkpoint()?;
         if !self.paths.contains_key(relative) {
             let parent = relative_prefix(&components, parents.len());
-            let route_bytes = retained_route_bytes(relative)
-                .saturating_add(retained_route_bytes(&parent))
-                .saturating_add(retained_name_bytes(name));
+            let route_bytes = checked_route_byte_count([
+                retained_route_bytes(relative),
+                retained_route_bytes(&parent),
+                retained_name_bytes(name),
+            ])?;
             self.usage.ensure_records(1)?;
             self.usage.ensure_route_bytes(route_bytes)?;
         }
@@ -1007,22 +994,32 @@ impl RetainedSelectionPass {
         })?;
         let new_membership = !self.memberships.contains_key(relative);
         if new_membership {
+            // Only injected constraints reserve a caller's enumeration allowance.
+            // Unbounded production accounting charges actual observations below.
             let requested_records = 1_usize.saturating_add(limit);
-            if requested_records > self.usage.remaining_records() {
+            if self
+                .usage
+                .remaining_records()
+                .is_some_and(|remaining| requested_records > remaining)
+            {
                 self.usage.ensure_records(requested_records)?;
             }
             let minimum_requested_route_bytes =
                 retained_route_bytes(relative).saturating_add(limit);
-            if minimum_requested_route_bytes > self.usage.remaining_route_and_name_bytes() {
+            if self
+                .usage
+                .remaining_route_and_name_bytes()
+                .is_some_and(|remaining| minimum_requested_route_bytes > remaining)
+            {
                 self.usage
                     .ensure_route_bytes(minimum_requested_route_bytes)?;
             }
         }
         let remaining_members = self.usage.remaining_members();
-        if remaining_members == 0 {
+        if remaining_members == Some(0) {
             self.usage.ensure_members(1)?;
         }
-        if limit > remaining_members {
+        if remaining_members.is_some_and(|remaining| limit > remaining) {
             self.usage.ensure_members(limit)?;
         }
         let mut checkpoint_error = None;
@@ -1042,28 +1039,28 @@ impl RetainedSelectionPass {
             return Err(reason);
         }
         let names = names.map_err(|error| {
-            if limit == remaining_members {
-                format!(
-                    "project source-map actor enumerated-member budget exceeds {} entries",
-                    self.usage.budgets.enumerated_members
-                )
-            } else {
-                format!(
-                    "project source-map directory {} cannot be enumerated: {error}",
-                    relative.display()
-                )
+            if let Some(total_limit) = self.usage.budgets.enumerated_members {
+                if remaining_members == Some(limit) {
+                    return format!(
+                        "project source-map actor enumerated-member budget exceeds {total_limit} entries"
+                    );
+                }
             }
+            format!(
+                "project source-map directory {} cannot be enumerated: {error}",
+                relative.display()
+            )
         })?;
         #[cfg(test)]
         record_membership_helper_result_length(names.len());
         self.usage.ensure_members(names.len())?;
-        let membership_records = 1_usize.saturating_add(names.len());
-        let membership_route_bytes = retained_route_bytes(relative).saturating_add(
-            names
-                .iter()
-                .map(|name| retained_name_bytes(name))
-                .sum::<usize>(),
-        );
+        let membership_records = names.len().checked_add(1).ok_or_else(|| {
+            "project source-map actor membership record count overflowed".to_string()
+        })?;
+        let membership_route_bytes = checked_route_byte_count(
+            std::iter::once(retained_route_bytes(relative))
+                .chain(names.iter().map(|name| retained_name_bytes(name))),
+        )?;
         if new_membership {
             self.usage.ensure_records(membership_records)?;
             self.usage.ensure_route_bytes(membership_route_bytes)?;
@@ -1086,11 +1083,15 @@ impl RetainedSelectionPass {
             if !self.directories.contains_key(&child_route) {
                 let child_route_bytes = retained_route_bytes(&child_route);
                 self.usage.ensure_directory(child_route_bytes)?;
-                self.usage
-                    .ensure_records(pending_membership_records.saturating_add(1))?;
-                self.usage.ensure_route_bytes(
-                    pending_membership_route_bytes.saturating_add(child_route_bytes),
+                self.usage.ensure_records(
+                    pending_membership_records.checked_add(1).ok_or_else(|| {
+                        "project source-map actor membership record count overflowed".to_string()
+                    })?,
                 )?;
+                self.usage.ensure_route_bytes(checked_route_byte_count([
+                    pending_membership_route_bytes,
+                    child_route_bytes,
+                ])?)?;
             }
             #[cfg(test)]
             record_membership_child_open_attempt();
@@ -1209,14 +1210,14 @@ impl RetainedSelectionPass {
             Some(_) if existing_matches => Ok(()),
             Some(_) => Err(observation_changed(relative)),
             None => {
-                let route_bytes = retained_route_bytes(relative)
-                    .saturating_add(retained_route_bytes(&ancestor))
-                    .saturating_add(
-                        route
-                            .iter()
-                            .map(|name| retained_name_bytes(name))
-                            .sum::<usize>(),
-                    );
+                let route_bytes = checked_route_byte_count(
+                    [
+                        retained_route_bytes(relative),
+                        retained_route_bytes(&ancestor),
+                    ]
+                    .into_iter()
+                    .chain(route.iter().map(|name| retained_name_bytes(name))),
+                )?;
                 self.usage.ensure_records(1)?;
                 self.usage.ensure_route_bytes(route_bytes)?;
                 let observed = RetainedPathObservation::UnresolvedRoute {
@@ -1284,9 +1285,11 @@ impl RetainedSelectionPass {
                 _ => Err(observation_changed(relative)),
             }
         } else {
-            let route_bytes = retained_route_bytes(relative)
-                .saturating_add(retained_route_bytes(&parent))
-                .saturating_add(retained_name_bytes(&name));
+            let route_bytes = checked_route_byte_count([
+                retained_route_bytes(relative),
+                retained_route_bytes(&parent),
+                retained_name_bytes(&name),
+            ])?;
             self.usage.ensure_records(1)?;
             self.usage.ensure_route_bytes(route_bytes)?;
             if let Some(bytes) = &bytes {
@@ -1326,9 +1329,11 @@ impl RetainedSelectionPass {
             Some(_) if existing_matches => Ok(()),
             Some(_) => Err(observation_changed(relative)),
             None => {
-                let route_bytes = retained_route_bytes(relative)
-                    .saturating_add(retained_route_bytes(&parent))
-                    .saturating_add(retained_name_bytes(&name));
+                let route_bytes = checked_route_byte_count([
+                    retained_route_bytes(relative),
+                    retained_route_bytes(&parent),
+                    retained_name_bytes(&name),
+                ])?;
                 self.usage.ensure_records(1)?;
                 self.usage.ensure_route_bytes(route_bytes)?;
                 self.paths.insert(
@@ -2286,6 +2291,207 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn aggregate_selection_directory_handles_cross_former_128_and_keep_finality() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = String::from("format: DESIGNER\nsource-set:\n");
+        for index in 0..129 {
+            let (name, kind) = if index == 0 {
+                ("main".to_string(), "CONFIGURATION")
+            } else {
+                (format!("extension-{index}"), "EXTENSION")
+            };
+            config.push_str(&format!(
+                "  - name: {name}\n    type: {kind}\n    path: source-{index}\n"
+            ));
+            write(
+                &root
+                    .path()
+                    .join(format!("source-{index}/Configuration.xml")),
+                b"<MetaDataObject><Configuration/></MetaDataObject>",
+            );
+        }
+        write(&root.path().join("v8project.yaml"), &config);
+        let admission = discover_project_source_admission(root.path(), &mut || Ok(()))
+            .expect("129 declared source roots must be admitted");
+        assert_eq!(admission.map.source_sets.len(), 129);
+        assert_eq!(admission.map.effective_source_set.as_deref(), Some("main"));
+        assert!(admission.evidence.directories.len() > 128);
+        let deadline = ProviderDeadline::from_budget(std::time::Duration::from_secs(30));
+        let cancellation = CancellationToken::new();
+        admission
+            .evidence
+            .validate(deadline, &cancellation)
+            .unwrap();
+        write(
+            &root.path().join("v8project.yaml"),
+            format!("{config}\n# changed\n"),
+        );
+        assert_eq!(
+            admission
+                .evidence
+                .validate(deadline, &cancellation)
+                .unwrap_err()
+                .kind(),
+            SourceSelectionEvidenceErrorKind::Changed
+        );
+    }
+
+    #[test]
+    fn aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = String::from(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: main\n",
+        );
+        write(
+            &root.path().join("main/Configuration.xml"),
+            b"<MetaDataObject><Configuration/></MetaDataObject>",
+        );
+        let mut descriptor = b"<MetaDataObject><ExternalDataProcessor/><!--".to_vec();
+        descriptor.resize(7 * 1024 * 1024 - b"--></MetaDataObject>".len(), b' ');
+        descriptor.extend_from_slice(b"--></MetaDataObject>");
+        for index in 0..5 {
+            config.push_str(&format!(
+                "  - name: external-{index}\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external-{index}\n"
+            ));
+            write(
+                &root
+                    .path()
+                    .join(format!("external-{index}/ConfigDumpInfo.xml")),
+                &descriptor,
+            );
+        }
+        write(&root.path().join("v8project.yaml"), config);
+        let admission = discover_project_source_admission(root.path(), &mut || Ok(()))
+            .expect("exact selector inputs may exceed 32 MiB in aggregate");
+        assert_eq!(admission.map.source_sets.len(), 6);
+        let exact_bytes = admission
+            .evidence
+            .paths
+            .values()
+            .filter_map(|input| match input {
+                RetainedPathObservation::RegularFile {
+                    bytes: Some(bytes), ..
+                } => Some(bytes.len()),
+                _ => None,
+            })
+            .sum::<usize>();
+        assert!(exact_bytes > 32 * 1024 * 1024);
+        let deadline = ProviderDeadline::from_budget(std::time::Duration::from_secs(30));
+        let cancellation = CancellationToken::new();
+        admission
+            .evidence
+            .validate(deadline, &cancellation)
+            .unwrap();
+        let changed = root.path().join("external-4/ConfigDumpInfo.xml");
+        write(
+            &changed,
+            b"<MetaDataObject><ExternalDataProcessor/><!-- changed --></MetaDataObject>",
+        );
+        assert_eq!(
+            admission
+                .evidence
+                .validate(deadline, &cancellation)
+                .unwrap_err()
+                .kind(),
+            SourceSelectionEvidenceErrorKind::Changed
+        );
+    }
+
+    #[test]
+    fn aggregate_selection_membership_crosses_former_16384_across_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = String::from("format: DESIGNER\nsource-set:\n");
+        for index in 0..2 {
+            config.push_str(&format!(
+                "  - name: external-{index}\n    type: EXTERNAL_DATA_PROCESSORS\n    path: external-{index}\n"
+            ));
+            for member in 0..9000 {
+                write(
+                    &root
+                        .path()
+                        .join(format!("external-{index}/member-{member:05}.txt")),
+                    b"",
+                );
+            }
+            write(
+                &root
+                    .path()
+                    .join(format!("external-{index}/zzProcessor.xml")),
+                b"<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+            );
+        }
+        write(&root.path().join("v8project.yaml"), config);
+        let admission = discover_project_source_admission(root.path(), &mut || Ok(()))
+            .expect("enumeration work across source sets may exceed 16384 members");
+        assert_eq!(admission.map.source_sets.len(), 2);
+        for index in 0..2 {
+            assert_eq!(
+                admission.evidence.memberships[Path::new(&format!("external-{index}"))].len(),
+                9001
+            );
+            assert!(admission.map.source_sets[index]
+                .format_evidence
+                .iter()
+                .any(|path| path.ends_with("zzProcessor.xml")));
+        }
+        let deadline = ProviderDeadline::from_budget(std::time::Duration::from_secs(30));
+        let cancellation = CancellationToken::new();
+        admission
+            .evidence
+            .validate(deadline, &cancellation)
+            .unwrap();
+        write(&root.path().join("external-1/late-non-xml.txt"), b"");
+        assert_eq!(
+            admission
+                .evidence
+                .validate(deadline, &cancellation)
+                .unwrap_err()
+                .kind(),
+            SourceSelectionEvidenceErrorKind::Changed
+        );
+    }
+
+    fn observe_absent_routes_past_former_cap(count: usize, name_bytes: usize) {
+        let root = tempfile::tempdir().unwrap();
+        let workspace =
+            RetainedDirectoryCapability::open(&root.path().canonicalize().unwrap()).unwrap();
+        let mut pass = RetainedSelectionPass::new(workspace).unwrap();
+        let mut last = PathBuf::new();
+        for index in 0..count {
+            last = PathBuf::from(format!("missing-{index:0width$}", width = name_bytes - 8));
+            match pass.observe_regular_presence(&last, &mut || Ok(())) {
+                Ok(RetainedRegularObservation::Absent) => {}
+                Err(error) => panic!("real absence observation {index} failed: {error}"),
+                _ => panic!("fixture expected an absent path at {index}"),
+            }
+        }
+        assert_eq!(pass.paths.len(), count);
+        let before = pass.observation_counts_for_test();
+        assert!(matches!(
+            pass.observe_regular_presence(&last, &mut || Ok(())),
+            Ok(RetainedRegularObservation::Absent)
+        ));
+        assert_eq!(pass.observation_counts_for_test(), before);
+        write(&root.path().join(&last), b"appeared");
+        assert_eq!(
+            pass.observe_regular_presence(&last, &mut || Ok(()))
+                .err()
+                .unwrap(),
+            observation_changed(&last)
+        );
+    }
+
+    #[test]
+    fn aggregate_selection_records_cross_former_65536_with_real_absences() {
+        observe_absent_routes_past_former_cap(65_537, 16);
+    }
+
+    #[test]
+    fn aggregate_selection_route_names_cross_former_8mib_with_real_absences() {
+        observe_absent_routes_past_former_cap(20_000, 220);
+    }
+
+    #[test]
     fn published_replacement_of_a_retained_source_map_file_passes_the_final_gate() {
         let root = configured_workspace("unica-source-selection-published-replacement");
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets::generous());
@@ -2340,11 +2546,11 @@ pub(crate) mod tests {
                 defaults.unique_directories,
                 defaults.route_and_name_bytes,
             ],
-            [32 * 1024 * 1024, 65_536, 16_384, 128, 8 * 1024 * 1024]
+            [None; 5]
         );
         let root = configured_workspace("unica-source-selection-byte-budget");
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            exact_bytes: 32,
+            exact_bytes: Some(32),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut checkpoint = || Ok(());
@@ -2371,7 +2577,7 @@ pub(crate) mod tests {
         write(&root.path().join("shared/ConfigDumpInfo.xml"), b"12345678");
         let exact_work_limit = config.len() + 8;
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            exact_work_bytes: exact_work_limit,
+            exact_work_bytes: Some(exact_work_limit),
             ..ActorSelectionTestBudgets::generous()
         });
         reset_regular_exact_read_metrics();
@@ -2398,11 +2604,9 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn production_exact_work_can_cross_the_former_byte_ceiling() {
         let mut usage = SelectionEvidenceUsage::actor_admission();
-        usage
-            .charge_exact_work(MAX_ACTOR_EXACT_RETAINED_BYTES)
-            .unwrap();
+        usage.charge_exact_work(32 * 1024 * 1024).unwrap();
         usage.charge_exact_work(1).unwrap();
-        assert_eq!(usage.exact_work_bytes, MAX_ACTOR_EXACT_RETAINED_BYTES + 1);
+        assert_eq!(usage.exact_work_bytes, 32 * 1024 * 1024 + 1);
     }
 
     #[test]
@@ -2412,6 +2616,39 @@ pub(crate) mod tests {
         assert_eq!(
             usage.charge_exact_work(1).unwrap_err(),
             "project source-map actor exact-work byte count overflowed"
+        );
+    }
+
+    #[test]
+    fn unbounded_selection_counters_refuse_overflow_without_mutation() {
+        let mut usage = SelectionEvidenceUsage::actor_admission();
+        usage.exact_retained_bytes = usize::MAX;
+        usage.evidence_records = usize::MAX;
+        usage.enumerated_members = usize::MAX;
+        usage.unique_directories = usize::MAX;
+        usage.route_and_name_bytes = usize::MAX;
+        for result in [
+            usage.ensure_exact_bytes(1),
+            usage.ensure_records(1),
+            usage.ensure_members(1),
+            usage.ensure_directory(0),
+            usage.ensure_route_bytes(1),
+        ] {
+            assert!(result.unwrap_err().ends_with("count overflowed"));
+        }
+        assert_eq!(
+            [
+                usage.exact_retained_bytes,
+                usage.evidence_records,
+                usage.enumerated_members,
+                usage.unique_directories,
+                usage.route_and_name_bytes
+            ],
+            [usize::MAX; 5]
+        );
+        assert_eq!(
+            checked_route_byte_count([usize::MAX, 1]).unwrap_err(),
+            "project source-map actor route/name byte count overflowed"
         );
     }
 
@@ -2454,7 +2691,7 @@ pub(crate) mod tests {
         std::fs::create_dir(root.path().join("first")).unwrap();
         std::fs::create_dir(root.path().join("second")).unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            unique_directories: 2,
+            unique_directories: Some(2),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut checkpoint = || Ok(());
@@ -2558,7 +2795,7 @@ pub(crate) mod tests {
             std::fs::create_dir_all(root.path().join(relative)).unwrap();
         }
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            enumerated_members: 3,
+            enumerated_members: Some(3),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut checkpoint = || Ok(());
@@ -2589,7 +2826,7 @@ pub(crate) mod tests {
             std::fs::create_dir_all(root.path().join(relative)).unwrap();
         }
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            enumerated_members: 4,
+            enumerated_members: Some(4),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut checkpoint = || Ok(());
@@ -2611,7 +2848,7 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            evidence_records: 1,
+            evidence_records: Some(1),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
@@ -2642,7 +2879,7 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            evidence_records: 2,
+            evidence_records: Some(2),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
@@ -2674,7 +2911,7 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            route_and_name_bytes: 1,
+            route_and_name_bytes: Some(1),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
@@ -2705,7 +2942,7 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            unique_directories: 1,
+            unique_directories: Some(1),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
@@ -2737,7 +2974,7 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            enumerated_members: 1,
+            enumerated_members: Some(1),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
@@ -2767,7 +3004,7 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            enumerated_members: 0,
+            enumerated_members: Some(0),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
@@ -2798,9 +3035,9 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            evidence_records: 3,
-            enumerated_members: 1,
-            unique_directories: 2,
+            evidence_records: Some(3),
+            enumerated_members: Some(1),
+            unique_directories: Some(2),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
@@ -2831,10 +3068,10 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            evidence_records: 4,
-            enumerated_members: 1,
-            unique_directories: 2,
-            route_and_name_bytes: 5,
+            evidence_records: Some(4),
+            enumerated_members: Some(1),
+            unique_directories: Some(2),
+            route_and_name_bytes: Some(5),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace.clone()).unwrap();
@@ -2898,7 +3135,7 @@ pub(crate) mod tests {
             RetainedDirectoryCapability::open(&std::fs::canonicalize(root.path()).unwrap())
                 .unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            evidence_records: 1,
+            evidence_records: Some(1),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut pass = RetainedSelectionPass::new(workspace).unwrap();
@@ -2925,7 +3162,7 @@ pub(crate) mod tests {
     pub(crate) fn actor_admission_rejects_total_evidence_record_budget() {
         let root = configured_workspace("unica-source-selection-record-budget");
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            evidence_records: 3,
+            evidence_records: Some(3),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut checkpoint = || Ok(());
@@ -2954,7 +3191,7 @@ pub(crate) mod tests {
         );
         std::fs::create_dir(root.path().join("retained-route-is-long")).unwrap();
         let _budgets = install_actor_selection_test_budgets(ActorSelectionTestBudgets {
-            route_and_name_bytes: 8,
+            route_and_name_bytes: Some(8),
             ..ActorSelectionTestBudgets::generous()
         });
         let mut checkpoint = || Ok(());

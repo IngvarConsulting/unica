@@ -23,6 +23,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -149,10 +150,10 @@ def render(terms: list[str]) -> str:
     return "\n    | ".join(lines)
 
 
-def blocks(terms: list[str]) -> dict[str, str]:
+def blocks(terms: list[str], large: str) -> dict[str, str]:
     body = render(terms)
     return {
-        "pr": f"default-filter = \'\'\'not (\n{body}\n)\'\'\'",
+        "pr": f"default-filter = \'\'\'not (\n{body}\n) & not (\n{large}\n)\'\'\'",
         "deadline": (
             "[[profile.default.overrides]]\n"
             f"filter = \'\'\'\n{body}\n\'\'\'\n"
@@ -163,7 +164,8 @@ def blocks(terms: list[str]) -> dict[str, str]:
 
 def write(root: Path, terms: list[str]) -> None:
     text = NEXTEST_TOML.read_text(encoding="utf-8")
-    for name, body in blocks(terms).items():
+    large = tomllib.loads(text)["profile"]["large"]["default-filter"].strip()
+    for name, body in blocks(terms, large).items():
         begin, end = BLOCKS[name]
         start, stop = text.index(begin), text.index(end) + len(end)
         text = text[:start] + f"{begin}\n{body}\n{end}" + text[stop:]
