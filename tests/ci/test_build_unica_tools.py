@@ -708,14 +708,18 @@ class BuildUnicaToolsTests(unittest.TestCase):
             module.read_upstream_archive(
                 backslash, asset_name="backslash.zip", binary="v8-runner-x/v8-runner.exe"
             )
-        link = root / "link.zip"
-        with zipfile.ZipFile(link, "w") as archive:
-            info = zipfile.ZipInfo("v8-runner-x/v8-runner")
-            info.create_system = 3
-            info.external_attr = (0o120777) << 16
-            archive.writestr(info, b"/bin/sh")
-        with self.assertRaisesRegex(SystemExit, "non-regular"):
-            module.read_upstream_archive(link, asset_name="link.zip", binary="v8-runner-x/v8-runner")
+        # Ссылка отклоняется, создан ли архив под Unix (3) или под macOS (19).
+        for host in (3, 19):
+            link = root / f"link-{host}.zip"
+            with zipfile.ZipFile(link, "w") as archive:
+                info = zipfile.ZipInfo("v8-runner-x/v8-runner")
+                info.create_system = host
+                info.external_attr = (0o120777) << 16
+                archive.writestr(info, b"/bin/sh")
+            with self.subTest(host=host), self.assertRaisesRegex(SystemExit, "non-regular"):
+                module.read_upstream_archive(
+                    link, asset_name=link.name, binary="v8-runner-x/v8-runner"
+                )
         with self.assertRaisesRegex(SystemExit, "neither"):
             module.upstream_archive_media_type("v8-runner.7z")
 

@@ -338,8 +338,9 @@ def read_upstream_archive(path: Path, *, asset_name: str, binary: str) -> list[t
             for info in archive.infolist():
                 if info.is_dir():
                     continue
-                # Режим Unix есть только у записей, созданных под Unix.
-                unix_mode = info.external_attr >> 16 if info.create_system == 3 else 0
+                # Режим Unix есть только у записей, созданных под Unix (3) или
+                # macOS (19): архиватор Darwin пишет тот же режим.
+                unix_mode = info.external_attr >> 16 if info.create_system in (3, 19) else 0
                 if stat.S_IFMT(unix_mode) not in (0, stat.S_IFREG):
                     raise SystemExit(
                         f"upstream archive {asset_name} has non-regular member {info.filename!r}"
