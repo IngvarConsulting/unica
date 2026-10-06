@@ -92,6 +92,26 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.config = tomllib.loads((REPO_ROOT / ".config" / "nextest.toml").read_text(encoding="utf-8"))
         self.run_tests = load_run_tests()
 
+    def test_private_scenario_feature_selection_is_scoped_to_its_library_module(self) -> None:
+        prefix = "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::"
+        expected = (
+            "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--lib",
+            "-E", f"test(/^{prefix}/)",
+        )
+        self.assertEqual(self.run_tests.LEDGER_SCENARIO_LIBRARY, expected)
+        self.assertEqual(self.run_tests.rust_selections("pr"), [("--workspace",)])
+        for profile in ("queue", "main", "release", "all", "large"):
+            with self.subTest(profile=profile):
+                selections = self.run_tests.rust_selections(profile)
+                self.assertEqual(selections[0], ("--workspace",))
+                self.assertEqual(selections[2], expected)
+                self.assertNotIn("--features", selections[0])
+                self.assertNotIn("--workspace", selections[2])
+        source = (REPO_ROOT / "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/tests.rs").read_text()
+        declared = attributed_test_functions(source)
+        self.assertIn("fresh_task_listener_after_restart_survives_its_prepare_barrier_release", declared)
+        self.assertIn("successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life", declared)
+
     def test_every_gate_has_a_nextest_profile_that_admits_its_sizes(self) -> None:
         profiles = self.config["profile"]
 

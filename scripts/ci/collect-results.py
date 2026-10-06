@@ -138,6 +138,11 @@ def fill_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions:
         message = f"раннер не дошёл: {job} · {conclusion}"
         if run.get("run_url"):
             message += f" · {run['run_url']}"
+        labels = allure_results.rust_labels(case["binary"], case["name"], profile)
+        if "size" in case:
+            if case["size"] not in ("small", "medium", "large"):
+                raise ValueError(f"unknown Rust plan size: {case['size']!r}")
+            labels["size"] = case["size"]
         allure_results.write(
             out,
             allure_results.record(
@@ -145,7 +150,7 @@ def fill_gaps(plan_dir: Path, run: dict, seen: set[str], out: Path, conclusions:
                 full_name=full_name,
                 status="skipped",
                 runner=runner,
-                labels=allure_results.rust_labels(case["binary"], case["name"], profile),
+                labels=labels,
                 tags=(profile, "infrastructure"),
                 message=message,
             ),

@@ -7,7 +7,7 @@ use super::super::hooks::{
     V5StoreFaultPoint,
 };
 use super::super::V5ReceiptRuntime;
-use super::{ReceiptScenarioControl, SCENARIO_BULK_OPERATION_TIMEOUT};
+use super::{ReceiptScenarioControl, ScenarioProcessLife, SCENARIO_BULK_OPERATION_TIMEOUT};
 use crate::application::invocation_store_v5::V5StoredInvocationRecord;
 use crate::application::receipt_ledger::{
     AcknowledgedTombstoneReceipt, CommittedDirectPublication, ReceiptKey, ReceiptLedgerError,
@@ -25,6 +25,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::any::Any;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -748,6 +749,7 @@ pub(super) fn acknowledge_direct_for_scenario(
 pub(super) struct ScenarioHooks {
     pub(super) telemetry: Arc<V5ReceiptRuntimeTelemetry>,
     pub(super) control: Option<Arc<ReceiptScenarioControl>>,
+    pub(super) process_life: Option<Arc<ScenarioProcessLife>>,
 }
 
 impl ScenarioHooks {
@@ -755,7 +757,12 @@ impl ScenarioHooks {
         telemetry: Arc<V5ReceiptRuntimeTelemetry>,
         control: Option<Arc<ReceiptScenarioControl>>,
     ) -> Arc<dyn V5RuntimeHooks> {
-        Arc::new(Self { telemetry, control })
+        let process_life = control.as_ref().map(|control| control.process_life());
+        Arc::new(Self {
+            telemetry,
+            control,
+            process_life,
+        })
     }
 
     fn bulk_deadline() -> Instant {
@@ -790,13 +797,24 @@ impl V5RuntimeHooks for ScenarioHooks {
     }
 
     fn restart_requested(&self) {
+        if let Some(life) = &self.process_life {
+            life.request_fail_stop();
+        }
         self.telemetry.record_restart_requested();
     }
 
     fn forced_process_exit(&self, grace: Option<Duration>) {
+        if let Some(life) = &self.process_life {
+            life.request_fail_stop();
+        }
         self.telemetry.record_forced_process_exit();
         if let (Some(grace), Some(control)) = (grace, &self.control) {
-            control.record_process_exit(u64::try_from(grace.as_millis()).unwrap_or(u64::MAX));
+            if let Some(life) = &self.process_life {
+                control.record_process_exit_for(
+                    life,
+                    u64::try_from(grace.as_millis()).unwrap_or(u64::MAX),
+                );
+            }
         }
     }
 
@@ -944,16 +962,16 @@ impl V5RuntimeHooks for ScenarioHooks {
     }
 
     fn pause(&self, point: V5PausePoint, deadline: Instant) -> Result<(), ReceiptLedgerError> {
-        match &self.control {
-            Some(control) => control.pause(point, deadline),
+        match &self.process_life {
+            Some(life) => life.pause(point, deadline),
             None => Ok(()),
         }
     }
 
     fn holds(&self, point: V5PausePoint) -> bool {
-        self.control
+        self.process_life
             .as_ref()
-            .is_some_and(|control| control.is_barrier_installed(point))
+            .is_some_and(|life| life.is_barrier_installed(point))
     }
 
     fn commit_deadline_at(&self, point: V5PausePoint, deadline: Instant) -> Instant {
@@ -965,9 +983,9 @@ impl V5RuntimeHooks for ScenarioHooks {
     }
 
     fn process_exited(&self) -> bool {
-        self.control
+        self.process_life
             .as_ref()
-            .is_some_and(|control| control.process_exited())
+            .is_some_and(|life| life.exited.load(Ordering::Acquire))
     }
 
     fn observing(&self) -> bool {
@@ -983,28 +1001,31 @@ impl V5RuntimeHooks for ScenarioHooks {
         label: &'static str,
         deadline: Instant,
     ) -> Result<(), ReceiptLedgerError> {
-        match &self.control {
-            Some(control) => control.acquire_lifecycle_gate(label, deadline),
-            None => Ok(()),
+        match (&self.control, &self.process_life) {
+            (Some(control), Some(life)) => {
+                control.acquire_lifecycle_gate_for(life, label, deadline)
+            }
+            _ => Ok(()),
         }
     }
 
     fn release_lifecycle_gate(&self, label: &'static str) {
-        if let Some(control) = &self.control {
-            control.release_lifecycle_gate(label);
+        if let (Some(control), Some(life)) = (&self.control, &self.process_life) {
+            control.release_lifecycle_gate_for(life, label);
         }
     }
 
     fn wait_for_gate_cancel(&self, deadline: Instant) -> Result<(), ReceiptLedgerError> {
-        match &self.control {
-            Some(control) => control.wait_for_gate_cancel(deadline),
+        match &self.process_life {
+            Some(life) => life.wait_for_gate_cancel(deadline),
             None => Ok(()),
         }
     }
 
     fn release_pre_actor_pauses(&self) {
-        if let Some(control) = &self.control {
-            control.release_pre_actor_barriers();
+        if let Some(life) = &self.process_life {
+            life.release(V5PausePoint::ValidationEntered);
+            life.release(V5PausePoint::AdmissionEntered);
         }
     }
 

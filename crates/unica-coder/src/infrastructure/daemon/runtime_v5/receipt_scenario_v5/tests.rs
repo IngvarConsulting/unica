@@ -661,3 +661,365 @@ fn pending_submit_releases_actor_store_before_waiting_for_daemon_exit() {
         .finish()
         .expect("actor/store must be released before daemon join");
 }
+
+#[test]
+fn restart_gives_a_fresh_submit_live_process_and_preserves_its_future_barrier() {
+    let request = json!({
+        "clock": "fake",
+        "actions": [
+            {"action": "configure_provider", "execution_class": "direct",
+             "terminal": {"terminal": "success", "payload": "fresh-process-result"},
+             "cooperative_cancel": true, "side_effect_marker": true},
+            {"action": "install_barrier", "point": "before_prepare"},
+            {"action": "submit", "request": "canonical", "response_budget_ms": 6000,
+             "disconnect": "never", "label": "old-submit"},
+            {"action": "wait_for_event", "event": "receipt_begun_committed"},
+            {"action": "crash", "point": "reserved_begun"},
+            // This barrier belongs to the successor, even if old-owner cleanup
+            // releases its own barriers once again during Restart.
+            {"action": "install_barrier", "point": "before_prepare"},
+            {"action": "restart"},
+            {"action": "recover", "key": "exact", "label": "old-recover"},
+            {"action": "submit", "request": {"fresh": 1}, "response_budget_ms": 6000,
+             "disconnect": "never", "label": "new-submit"},
+            {"action": "wait_for_event_count", "event": "receipt_begun_committed", "count": 2},
+            {"action": "checkpoint", "label": "new-held"},
+            {"action": "release_barrier", "point": "before_prepare"},
+            {"action": "checkpoint", "label": "new-completed"}
+        ]
+    });
+    let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
+        .expect("real Restart must admit a fresh process-owned submit");
+    let report: Value = serde_json::from_str(&encoded).expect("decode process-life report");
+    let payload = &report["payload"];
+    let held = &payload["checkpoints"]["new-held"];
+    assert_eq!(
+        held["callbacks"]["prepare"], 0,
+        "future barrier was released by old cleanup"
+    );
+    assert_eq!(held["callbacks"]["execute"], 0);
+    assert_eq!(held["sideEffectMarkers"], 0);
+    let completed = &payload["checkpoints"]["new-completed"];
+    assert_eq!(completed["callbacks"]["prepare"], 1);
+    assert_eq!(completed["callbacks"]["execute"], 1);
+    assert_eq!(completed["sideEffectMarkers"], 1);
+    assert_eq!(
+        payload["responses"]["old-recover"]["error"],
+        "outcome_uncertain"
+    );
+    assert_eq!(payload["responses"]["new-submit"]["kind"], "direct");
+    assert!(payload["responses"]["new-submit"]["error"].is_null());
+    assert_eq!(
+        held["processExitElapsedMs"], 1,
+        "historical exit was cleared"
+    );
+    assert_eq!(completed["processExitElapsedMs"], 1);
+}
+
+#[test]
+fn fresh_task_listener_after_restart_survives_its_prepare_barrier_release() {
+    let request = json!({
+        "clock": "fake",
+        "actions": [
+            {"action": "configure_provider", "execution_class": "direct",
+             "terminal": {"terminal": "success", "payload": "fresh-task-result"},
+             "cooperative_cancel": true, "side_effect_marker": true},
+            {"action": "install_barrier", "point": "before_prepare"},
+            {"action": "submit", "request": "canonical", "response_budget_ms": 6000,
+             "disconnect": "never", "label": "old-submit"},
+            {"action": "wait_for_event", "event": "receipt_begun_committed"},
+            {"action": "crash", "point": "reserved_begun"},
+            {"action": "install_barrier", "point": "before_prepare"},
+            {"action": "restart"},
+            {"action": "configure_provider", "execution_class": "known_long",
+             "terminal": {"terminal": "success", "payload": "fresh-task-result"},
+             "cooperative_cancel": true, "side_effect_marker": true},
+            {"action": "submit", "request": {"fresh": 1}, "response_budget_ms": 6000,
+             "disconnect": "never", "label": "fresh-task"},
+            {"action": "wait_for_event_count", "event": "receipt_begun_committed", "count": 2},
+            {"action": "checkpoint", "label": "fresh-held"},
+            {"action": "release_barrier", "point": "before_prepare"},
+            {"action": "wait_for_event_count", "event": "task_store_terminal_readback", "count": 1},
+            {"action": "checkpoint", "label": "fresh-completed"}
+        ]
+    });
+    let mut observed_task = None;
+    let mut observer = |record: &crate::infrastructure::daemon::protocol_v5::V5EndpointRecord,
+                        keys: &HashMap<String, ReceiptKey>| {
+        let key = keys
+            .get("fresh-task")
+            .ok_or_else(|| "fresh Task key was not submitted".to_owned())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut owner = V5DaemonProcessOwner::connect_before(record.clone(), deadline)
+            .map_err(|error| format!("fresh anchored listener closed before cleanup: {error}"))?;
+        let snapshot = owner
+            .get_task_before(key.reserved_task_id(), deadline)
+            .map_err(|error| format!("read fresh Task through anchored listener: {error:?}"))?;
+        observed_task = Some((key.clone(), snapshot));
+        Ok(())
+    };
+    let encoded = dispatch::run_receipt_scenario_with_completion_observer(
+        &request.to_string(),
+        Some(&mut observer),
+    )
+    .expect("historical crash must not close the fresh Task listener");
+    let report: Value = serde_json::from_str(&encoded).expect("decode fresh Task report");
+    let payload = &report["payload"];
+    assert_eq!(
+        payload["checkpoints"]["fresh-held"]["callbacks"]["execute"],
+        0
+    );
+    assert_eq!(
+        payload["checkpoints"]["fresh-completed"]["callbacks"]["execute"],
+        1
+    );
+    assert_eq!(
+        payload["checkpoints"]["fresh-completed"]["sideEffectMarkers"],
+        1
+    );
+    assert_eq!(payload["responses"]["fresh-task"]["kind"], "task");
+    let (key, task) = observed_task.expect("public TCP observer ran");
+    assert_eq!(task.receipt_key_digest(), &receipt_key_digest(&key));
+    assert_eq!(task.task_id(), key.reserved_task_id());
+    assert_eq!(
+        task.completed_result(),
+        Some(&DomainResult::success("fresh-task-result")),
+        "actual public Task snapshot: {task:?}"
+    );
+    assert!(!task.cancel_requested());
+    assert_eq!(
+        payload["checkpoints"]["fresh-completed"]["processExitElapsedMs"],
+        1
+    );
+}
+
+#[test]
+fn successor_hooks_keep_old_process_dead_and_future_barriers_owned_by_the_new_life() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let old_point = ScenarioBarrierPoint::BeforePrepare;
+    let future_point = ScenarioBarrierPoint::BeforeTaskStoreCreate;
+    control.install(old_point);
+    let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    old.forced_process_exit(Some(Duration::from_millis(1)));
+    control.release_all_barriers();
+    control.install(future_point);
+    control.install(ScenarioBarrierPoint::AdmissionEntered);
+    // Old-owner cleanup must not release a separately installed future barrier.
+    control.release_all_barriers();
+    let before = telemetry.snapshot();
+    control
+        .begin_successor_process()
+        .expect("no old runtime owner");
+    let new = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+
+    assert!(old.process_exited(), "retained old hooks were revived");
+    assert!(
+        !new.process_exited(),
+        "successor inherited the old death bit"
+    );
+    assert!(old.holds(old_point));
+    assert_eq!(
+        old.pause(old_point, Instant::now()),
+        Err(ReceiptLedgerError::StoreUnavailable),
+        "released old barriers are not permission to resume a closed process"
+    );
+    assert!(!old.holds(future_point));
+    assert!(!new.holds(old_point));
+    assert!(new.holds(future_point));
+    let exact_deadline = Instant::now();
+    assert_eq!(
+        old.commit_deadline_at(future_point, exact_deadline),
+        exact_deadline
+    );
+    assert_eq!(
+        new.commit_deadline_at(old_point, exact_deadline),
+        exact_deadline
+    );
+    assert_eq!(
+        new.pause(future_point, exact_deadline),
+        Err(ReceiptLedgerError::DeadlineExceeded)
+    );
+    old.release_pre_actor_pauses();
+    assert_eq!(
+        new.pause(ScenarioBarrierPoint::AdmissionEntered, exact_deadline),
+        Err(ReceiptLedgerError::DeadlineExceeded),
+        "old cleanup released the successor admission barrier"
+    );
+    new.release_pre_actor_pauses();
+    assert_eq!(
+        new.pause(ScenarioBarrierPoint::AdmissionEntered, exact_deadline),
+        Ok(())
+    );
+    assert_eq!(control.process_exit_elapsed_ms(), Some(1));
+    assert_eq!(telemetry.snapshot().events.len(), before.events.len());
+    assert_eq!(
+        telemetry.snapshot().restart_requested,
+        before.restart_requested
+    );
+    // A delayed notification from the retained old hook cannot kill the new life.
+    old.forced_process_exit(Some(Duration::from_millis(2)));
+    assert!(old.process_exited());
+    assert!(!new.process_exited());
+    assert!(!control.process_exited());
+    control.release(future_point);
+    assert_eq!(new.pause(future_point, exact_deadline), Ok(()));
+}
+
+#[test]
+fn successor_gate_permission_does_not_inherit_the_old_process_cancellation_request() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    control.request_gate_cancel();
+    control.record_process_exit(1);
+    control
+        .begin_successor_process()
+        .expect("old process has no runtime owner");
+    let new = ScenarioHooks::install(telemetry, Some(control.clone()));
+    let deadline = Instant::now();
+    assert_eq!(
+        new.wait_for_gate_cancel(deadline),
+        Err(ReceiptLedgerError::DeadlineExceeded),
+        "old cancellation would authorize cancelling a fresh Task"
+    );
+    assert_eq!(
+        old.wait_for_gate_cancel(deadline),
+        Err(ReceiptLedgerError::StoreUnavailable),
+        "historical Cancel is not permission for a closed process"
+    );
+    control.request_gate_cancel();
+    assert_eq!(new.wait_for_gate_cancel(deadline), Ok(()));
+}
+
+#[test]
+fn retained_old_hook_cannot_release_the_successor_lifecycle_gate() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    control.record_process_exit(1);
+    control
+        .begin_successor_process()
+        .expect("old process has no runtime owner");
+    let new = ScenarioHooks::install(telemetry, Some(control));
+    new.acquire_lifecycle_gate("new-owner", Instant::now() + Duration::from_secs(1))
+        .expect("fresh process gate must be available");
+    old.release_lifecycle_gate("old-owner");
+    assert_eq!(
+        new.acquire_lifecycle_gate("new-contender", Instant::now()),
+        Err(ReceiptLedgerError::DeadlineExceeded),
+        "old hook released the fresh owner gate"
+    );
+    new.release_lifecycle_gate("new-owner");
+    new.acquire_lifecycle_gate("new-contender", Instant::now() + Duration::from_secs(1))
+        .expect("fresh owner releases its own gate");
+    new.release_lifecycle_gate("new-contender");
+}
+
+#[test]
+fn successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    old.acquire_lifecycle_gate("old-owner", deadline)
+        .expect("hold old gate");
+    let gate_control = control.clone();
+    let old_life = control.process_life();
+    let gate_waiter = thread::spawn(move || {
+        gate_control.acquire_lifecycle_gate_for(&old_life, "old-waiter", deadline)
+    });
+    control
+        .wait_for_operation_event("old-waiter", "blocked", deadline)
+        .expect("old gate waiter entered its actual blocked loop");
+    let old_cancel = old.clone();
+    let cancel_waiter = thread::spawn(move || old_cancel.wait_for_gate_cancel(deadline));
+    while !control.gate_cancel_waiting() {
+        assert!(
+            Instant::now() < deadline,
+            "old cancel waiter did not enter its wait"
+        );
+        thread::yield_now();
+    }
+    // Actual explicit-exit fixture boundary: no Runtime owner is released early.
+    // External waiters retain only their old process Life, not a Runtime Arc.
+    control.record_process_exit(1);
+    control
+        .begin_successor_process()
+        .expect("no old runtime owner remains");
+    let new = ScenarioHooks::install(telemetry, Some(control));
+    new.acquire_lifecycle_gate("new-owner", deadline)
+        .expect("fresh gate is independent");
+    assert_eq!(
+        gate_waiter.join().expect("old gate waiter must join"),
+        Err(ReceiptLedgerError::StoreUnavailable),
+        "old wait was abandoned until its deadline"
+    );
+    assert_eq!(
+        cancel_waiter.join().expect("old cancel waiter must join"),
+        Err(ReceiptLedgerError::StoreUnavailable),
+        "closing a life must not fabricate Cancel"
+    );
+    assert_eq!(
+        new.acquire_lifecycle_gate("new-contender", Instant::now()),
+        Err(ReceiptLedgerError::DeadlineExceeded),
+        "old teardown released the fresh gate"
+    );
+    assert_eq!(
+        new.wait_for_gate_cancel(Instant::now()),
+        Err(ReceiptLedgerError::DeadlineExceeded),
+        "old teardown invented fresh cancellation"
+    );
+    new.release_lifecycle_gate("new-owner");
+}
+
+#[test]
+fn closing_permissions_does_not_claim_process_exit() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let hooks = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    control.install(ScenarioBarrierPoint::BeforePrepare);
+    control.process_life().close_permissions();
+    assert!(!hooks.process_exited());
+    assert!(!control.process_exited());
+    assert!(!control.current_process_requires_stop());
+    assert_eq!(control.process_exit_elapsed_ms(), None);
+    assert!(!telemetry.snapshot().restart_requested);
+    assert_eq!(
+        hooks.acquire_lifecycle_gate("closed", Instant::now()),
+        Err(ReceiptLedgerError::StoreUnavailable)
+    );
+    assert_eq!(
+        hooks.wait_for_gate_cancel(Instant::now()),
+        Err(ReceiptLedgerError::StoreUnavailable)
+    );
+    assert_eq!(
+        hooks.pause(ScenarioBarrierPoint::BeforePrepare, Instant::now()),
+        Err(ReceiptLedgerError::StoreUnavailable)
+    );
+}
+
+#[test]
+fn fail_stop_request_without_exit_belongs_only_to_its_captured_process_life() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    old.restart_requested();
+    assert!(control.current_process_requires_stop());
+    assert!(!old.process_exited());
+    assert_eq!(control.process_exit_elapsed_ms(), None);
+    control
+        .begin_successor_process()
+        .expect("no old Runtime owner");
+    let fresh = ScenarioHooks::install(telemetry, Some(control.clone()));
+    assert!(!control.current_process_requires_stop());
+    old.forced_process_exit(None);
+    assert!(
+        !control.current_process_requires_stop(),
+        "old request closed fresh life"
+    );
+    fresh.forced_process_exit(None);
+    assert!(control.current_process_requires_stop());
+    assert!(!fresh.process_exited(), "a stop request is not actual exit");
+    assert_eq!(control.process_exit_elapsed_ms(), None);
+}

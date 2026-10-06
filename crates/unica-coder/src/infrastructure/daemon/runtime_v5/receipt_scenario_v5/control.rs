@@ -6,27 +6,15 @@
 use super::*;
 
 pub(super) struct ReceiptScenarioControl {
-    barriers: Mutex<BTreeMap<ScenarioBarrierPoint, ScenarioBarrierState>>,
-    lifecycle_gate_held: Mutex<bool>,
-    changed: Condvar,
-    lifecycle_gate_changed: Condvar,
+    process_life: Mutex<Arc<ScenarioProcessLife>>,
+    next_process_barriers: Mutex<BTreeMap<ScenarioBarrierPoint, ScenarioBarrierState>>,
     operation_changed: Condvar,
     /// Presents a seeded mid-flight fixture to one gated operation: that
     /// operation's runtime skips startup reconciliation, so the fixture it was
     /// given is the state it observes. Never armed on a production path.
     skip_next_startup_reconciliation: AtomicBool,
-    gate_cancel_requested: Mutex<bool>,
-    gate_cancel_changed: Condvar,
-    /// Whether the runtime is currently blocked waiting for a gate cancel:
-    /// the promoted-continuation quiescence wait treats that as a stop, since
-    /// only a later scenario operation releases it.
-    gate_cancel_waiting: AtomicBool,
     drop_ack_response_after_commit: AtomicBool,
     drop_submit_response_after_commit: AtomicBool,
-    /// Whether the fail-stop of the current process life was already cleaned up.
-    /// `restart_requested` is never cleared, so without this latch every later
-    /// quiesce would spend both deadlines again on an already-handled exit.
-    fail_stop_reclaimed: AtomicBool,
     validation_reject: AtomicBool,
     admission_rejection: Mutex<Option<ScenarioWorkspaceAdmissionFailure>>,
     prepare_reject: AtomicBool,
@@ -78,21 +66,247 @@ pub(super) struct ScenarioBarrierState {
     pub(super) released: bool,
 }
 
-impl ReceiptScenarioControl {
-    pub(super) fn new() -> Self {
+/// Test-process authority retained by hooks; shared telemetry is historical.
+pub(super) struct ScenarioProcessLife {
+    lifecycle_gate_held: Mutex<bool>,
+    lifecycle_gate_changed: Condvar,
+    gate_cancel_requested: Mutex<bool>,
+    gate_cancel_changed: Condvar,
+    gate_cancel_waiting: AtomicBool,
+    barriers: Mutex<BTreeMap<ScenarioBarrierPoint, ScenarioBarrierState>>,
+    changed: Condvar,
+    permission_closed: AtomicBool,
+    fail_stop_requested: AtomicBool,
+    pub(super) exited: AtomicBool,
+    fail_stop_reclaimed: AtomicBool,
+}
+
+impl ScenarioProcessLife {
+    pub(super) fn request_fail_stop(&self) {
+        self.fail_stop_requested.store(true, Ordering::Release);
+    }
+
+    fn requires_stop(&self) -> bool {
+        self.fail_stop_requested.load(Ordering::Acquire) || self.exited.load(Ordering::Acquire)
+    }
+
+    /// End scenario permissions without claiming that the Runtime has exited.
+    /// Notify under each waiter's mutex so closure cannot lose a wake-up.
+    pub(super) fn close_permissions(&self) {
+        self.permission_closed.store(true, Ordering::Release);
+        {
+            let mut held = self
+                .lifecycle_gate_held
+                .lock()
+                .expect("scenario lifecycle gate mutex poisoned");
+            *held = false;
+            self.lifecycle_gate_changed.notify_all();
+        }
+        {
+            let _requested = self
+                .gate_cancel_requested
+                .lock()
+                .expect("scenario gate cancel mutex poisoned");
+            self.gate_cancel_changed.notify_all();
+        }
+        self.release_all_barriers();
+    }
+
+    fn ensure_permissions_open(&self) -> Result<(), ReceiptLedgerError> {
+        if self.permission_closed.load(Ordering::Acquire) {
+            Err(ReceiptLedgerError::StoreUnavailable)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn request_gate_cancel(&self) {
+        *self
+            .gate_cancel_requested
+            .lock()
+            .expect("scenario gate cancel mutex poisoned") = true;
+        self.gate_cancel_changed.notify_all();
+    }
+
+    pub(super) fn wait_for_gate_cancel(&self, deadline: Instant) -> Result<(), ReceiptLedgerError> {
+        self.gate_cancel_waiting.store(true, Ordering::Release);
+        let result = self.wait_for_gate_cancel_inner(deadline);
+        self.gate_cancel_waiting.store(false, Ordering::Release);
+        result
+    }
+
+    fn wait_for_gate_cancel_inner(&self, deadline: Instant) -> Result<(), ReceiptLedgerError> {
+        let mut requested = self
+            .gate_cancel_requested
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("scenario gate cancel mutex poisoned"))?;
+        loop {
+            self.ensure_permissions_open()?;
+            if *requested {
+                return Ok(());
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(ReceiptLedgerError::DeadlineExceeded);
+            };
+            let (next, _) = self
+                .gate_cancel_changed
+                .wait_timeout(requested, remaining)
+                .map_err(|_| ReceiptLedgerError::Corrupt("scenario gate cancel mutex poisoned"))?;
+            requested = next;
+        }
+    }
+    fn new(barriers: BTreeMap<ScenarioBarrierPoint, ScenarioBarrierState>) -> Self {
         Self {
-            barriers: Mutex::new(BTreeMap::new()),
             lifecycle_gate_held: Mutex::new(false),
-            changed: Condvar::new(),
             lifecycle_gate_changed: Condvar::new(),
-            operation_changed: Condvar::new(),
-            skip_next_startup_reconciliation: AtomicBool::new(false),
             gate_cancel_requested: Mutex::new(false),
             gate_cancel_changed: Condvar::new(),
             gate_cancel_waiting: AtomicBool::new(false),
+            barriers: Mutex::new(barriers),
+            changed: Condvar::new(),
+            permission_closed: AtomicBool::new(false),
+            fail_stop_requested: AtomicBool::new(false),
+            exited: AtomicBool::new(false),
+            fail_stop_reclaimed: AtomicBool::new(false),
+        }
+    }
+    pub(super) fn any_barrier_awaiting_release(&self) -> bool {
+        self.barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned")
+            .values()
+            .any(|barrier| barrier.reached && !barrier.released)
+    }
+
+    pub(super) fn is_installed(&self) -> bool {
+        self.barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned")
+            .values()
+            .any(|barrier| !barrier.released)
+    }
+
+    pub(super) fn is_barrier_installed(&self, point: ScenarioBarrierPoint) -> bool {
+        self.barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned")
+            .contains_key(&point)
+    }
+
+    pub(super) fn pause(
+        &self,
+        point: ScenarioBarrierPoint,
+        deadline: Instant,
+    ) -> Result<(), ReceiptLedgerError> {
+        let mut barriers = self
+            .barriers
+            .lock()
+            .map_err(|_| ReceiptLedgerError::Corrupt("scenario barrier mutex was poisoned"))?;
+        self.ensure_permissions_open()?;
+        let Some(barrier) = barriers.get_mut(&point) else {
+            return Ok(());
+        };
+        barrier.reached = true;
+        self.changed.notify_all();
+        loop {
+            self.ensure_permissions_open()?;
+            if barriers.get(&point).is_some_and(|barrier| barrier.released) {
+                return Ok(());
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(ReceiptLedgerError::DeadlineExceeded);
+            };
+            let (next, _) = self
+                .changed
+                .wait_timeout(barriers, remaining)
+                .map_err(|_| ReceiptLedgerError::Corrupt("scenario barrier mutex was poisoned"))?;
+            barriers = next;
+        }
+    }
+
+    pub(super) fn wait_until_reached(
+        &self,
+        point: ScenarioBarrierPoint,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut barriers = self
+            .barriers
+            .lock()
+            .map_err(|_| "protocol-v5 receipt scenario barrier mutex was poisoned".to_owned())?;
+        while !barriers.get(&point).is_some_and(|barrier| barrier.reached) {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| format!("protocol-v5 barrier {point:?} was not reached"))?;
+            let (next, timeout) = self
+                .changed
+                .wait_timeout(barriers, remaining)
+                .map_err(|_| {
+                    "protocol-v5 receipt scenario barrier mutex was poisoned".to_owned()
+                })?;
+            barriers = next;
+            if timeout.timed_out() && !barriers.get(&point).is_some_and(|barrier| barrier.reached) {
+                return Err(format!("protocol-v5 barrier {point:?} was not reached"));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn release(&self, point: ScenarioBarrierPoint) {
+        let mut barriers = self
+            .barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned");
+        if let Some(barrier) = barriers.get_mut(&point) {
+            barrier.released = true;
+        }
+        self.changed.notify_all();
+    }
+
+    pub(super) fn release_all_barriers(&self) {
+        let mut barriers = self
+            .barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned");
+        for barrier in barriers.values_mut() {
+            barrier.released = true;
+        }
+        self.changed.notify_all();
+    }
+
+    pub(super) fn has_unreleased_barriers(&self) -> bool {
+        self.barriers
+            .lock()
+            .expect("scenario barrier mutex poisoned")
+            .values()
+            .any(|barrier| !barrier.released)
+    }
+}
+
+impl ReceiptScenarioControl {
+    pub(super) fn process_life(&self) -> Arc<ScenarioProcessLife> {
+        Arc::clone(
+            &self
+                .process_life
+                .lock()
+                .expect("scenario process-life mutex poisoned"),
+        )
+    }
+
+    pub(super) fn record_process_exit_for(&self, life: &ScenarioProcessLife, elapsed_ms: u64) {
+        life.exited.store(true, Ordering::Release);
+        life.close_permissions();
+        self.process_exit_elapsed_ms
+            .store(elapsed_ms, Ordering::Release);
+    }
+
+    pub(super) fn new() -> Self {
+        Self {
+            process_life: Mutex::new(Arc::new(ScenarioProcessLife::new(BTreeMap::new()))),
+            next_process_barriers: Mutex::new(BTreeMap::new()),
+            operation_changed: Condvar::new(),
+            skip_next_startup_reconciliation: AtomicBool::new(false),
             drop_ack_response_after_commit: AtomicBool::new(false),
             drop_submit_response_after_commit: AtomicBool::new(false),
-            fail_stop_reclaimed: AtomicBool::new(false),
             validation_reject: AtomicBool::new(false),
             admission_rejection: Mutex::new(None),
             prepare_reject: AtomicBool::new(false),
@@ -574,7 +788,6 @@ impl ReceiptScenarioControl {
                 "operationLabel": label,
                 "transition": transition,
             }));
-        self.lifecycle_gate_changed.notify_all();
     }
 
     pub(super) fn gate_events(&self) -> Vec<Value> {
@@ -584,33 +797,35 @@ impl ReceiptScenarioControl {
             .clone()
     }
 
-    pub(super) fn acquire_lifecycle_gate(
+    pub(super) fn acquire_lifecycle_gate_for(
         &self,
+        life: &ScenarioProcessLife,
         label: &str,
         deadline: Instant,
     ) -> Result<(), ReceiptLedgerError> {
         self.record_gate_event(label, "waiting");
-        let mut held = self
+        let mut held = life
             .lifecycle_gate_held
             .lock()
             .map_err(|_| ReceiptLedgerError::Corrupt("scenario lifecycle gate mutex poisoned"))?;
         if *held {
             self.record_operation_event(label, "blocked");
         }
-        while *held {
+        loop {
+            life.ensure_permissions_open()?;
+            if !*held {
+                break;
+            }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(ReceiptLedgerError::DeadlineExceeded);
             };
-            let (next, timeout) = self
+            let (next, _) = life
                 .lifecycle_gate_changed
                 .wait_timeout(held, remaining)
                 .map_err(|_| {
                     ReceiptLedgerError::Corrupt("scenario lifecycle gate mutex poisoned")
                 })?;
             held = next;
-            if timeout.timed_out() && *held {
-                return Err(ReceiptLedgerError::DeadlineExceeded);
-            }
         }
         *held = true;
         drop(held);
@@ -618,64 +833,31 @@ impl ReceiptScenarioControl {
         Ok(())
     }
 
-    pub(super) fn release_lifecycle_gate(&self, label: &str) {
-        *self
+    pub(super) fn release_lifecycle_gate_for(&self, life: &ScenarioProcessLife, label: &str) {
+        *life
             .lifecycle_gate_held
             .lock()
             .expect("scenario lifecycle gate mutex poisoned") = false;
         self.record_gate_event(label, "released");
-        self.lifecycle_gate_changed.notify_all();
+        life.lifecycle_gate_changed.notify_all();
     }
 
+    #[cfg(test)]
     pub(super) fn request_gate_cancel(&self) {
-        *self
-            .gate_cancel_requested
-            .lock()
-            .expect("scenario gate cancel mutex poisoned") = true;
-        self.gate_cancel_changed.notify_all();
+        self.process_life().request_gate_cancel();
     }
 
-    pub(super) fn wait_for_gate_cancel(&self, deadline: Instant) -> Result<(), ReceiptLedgerError> {
-        self.gate_cancel_waiting.store(true, Ordering::Release);
-        let result = self.wait_for_gate_cancel_inner(deadline);
-        self.gate_cancel_waiting.store(false, Ordering::Release);
-        result
-    }
-
-    fn wait_for_gate_cancel_inner(&self, deadline: Instant) -> Result<(), ReceiptLedgerError> {
-        let mut requested = self
-            .gate_cancel_requested
-            .lock()
-            .map_err(|_| ReceiptLedgerError::Corrupt("scenario gate cancel mutex poisoned"))?;
-        while !*requested {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                return Err(ReceiptLedgerError::DeadlineExceeded);
-            };
-            let (next, timeout) = self
-                .gate_cancel_changed
-                .wait_timeout(requested, remaining)
-                .map_err(|_| ReceiptLedgerError::Corrupt("scenario gate cancel mutex poisoned"))?;
-            requested = next;
-            if timeout.timed_out() && !*requested {
-                return Err(ReceiptLedgerError::DeadlineExceeded);
-            }
-        }
-        Ok(())
-    }
-
-    /// Whether the runtime is blocked in [`Self::wait_for_gate_cancel`].
+    /// Whether the current life is inside its gate-cancel wait.
     pub(super) fn gate_cancel_waiting(&self) -> bool {
-        self.gate_cancel_waiting.load(Ordering::Acquire)
+        self.process_life()
+            .gate_cancel_waiting
+            .load(Ordering::Acquire)
     }
 
     /// Whether any installed barrier has been reached but not yet released:
     /// the runtime is (or is about to be) paused there.
     pub(super) fn any_barrier_awaiting_release(&self) -> bool {
-        self.barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned")
-            .values()
-            .any(|barrier| barrier.reached && !barrier.released)
+        self.process_life().any_barrier_awaiting_release()
     }
 
     pub(super) fn configure_validation(&self, reject: bool) {
@@ -1309,8 +1491,7 @@ impl ReceiptScenarioControl {
     }
 
     pub(super) fn record_process_exit(&self, elapsed_ms: u64) {
-        self.process_exit_elapsed_ms
-            .store(elapsed_ms, Ordering::Release);
+        self.record_process_exit_for(&self.process_life(), elapsed_ms);
     }
 
     pub(super) fn process_exit_elapsed_ms(&self) -> Option<u64> {
@@ -1321,7 +1502,11 @@ impl ReceiptScenarioControl {
     }
 
     pub(super) fn process_exited(&self) -> bool {
-        self.process_exit_elapsed_ms.load(Ordering::Acquire) != 0
+        self.process_life().exited.load(Ordering::Acquire)
+    }
+
+    pub(super) fn current_process_requires_stop(&self) -> bool {
+        self.process_life().requires_stop()
     }
 
     pub(super) fn arm_crash_after_side_effect(&self) {
@@ -1348,16 +1533,37 @@ impl ReceiptScenarioControl {
     }
 
     pub(super) fn fail_stop_reclaimed(&self) -> bool {
-        self.fail_stop_reclaimed.load(Ordering::Acquire)
+        self.process_life()
+            .fail_stop_reclaimed
+            .load(Ordering::Acquire)
     }
 
     pub(super) fn mark_fail_stop_reclaimed(&self) {
-        self.fail_stop_reclaimed.store(true, Ordering::Release);
+        self.process_life()
+            .fail_stop_reclaimed
+            .store(true, Ordering::Release);
     }
 
     /// A restart begins a new process life: a later fail-stop is cleaned again.
-    pub(super) fn clear_fail_stop_reclaimed(&self) {
-        self.fail_stop_reclaimed.store(false, Ordering::Release);
+    pub(super) fn begin_successor_process(&self) -> Result<(), String> {
+        if self.runtime().is_some() {
+            return Err("scenario successor still has an old runtime owner".to_owned());
+        }
+        let future = std::mem::take(
+            &mut *self
+                .next_process_barriers
+                .lock()
+                .map_err(|_| "future scenario barrier mutex poisoned".to_owned())?,
+        );
+        let mut current = self
+            .process_life
+            .lock()
+            .map_err(|_| "scenario process-life mutex poisoned".to_owned())?;
+        // Old retained hooks keep their own dead generation. Never revive it.
+        current.close_permissions();
+        current.exited.store(true, Ordering::Release);
+        *current = Arc::new(ScenarioProcessLife::new(future));
+        Ok(())
     }
 
     pub(super) fn arm_skip_next_startup_reconciliation(&self) {
@@ -1376,57 +1582,26 @@ impl ReceiptScenarioControl {
     }
 
     pub(super) fn install(&self, point: ScenarioBarrierPoint) {
-        let mut barriers = self
-            .barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned");
-        barriers.insert(point, ScenarioBarrierState::default());
+        let life = self.process_life();
+        if life.exited.load(Ordering::Acquire) {
+            self.next_process_barriers
+                .lock()
+                .expect("future scenario barrier mutex poisoned")
+                .insert(point, ScenarioBarrierState::default());
+        } else {
+            life.barriers
+                .lock()
+                .expect("scenario barrier mutex poisoned")
+                .insert(point, ScenarioBarrierState::default());
+        }
     }
 
     pub(super) fn is_installed(&self) -> bool {
-        self.barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned")
-            .values()
-            .any(|barrier| !barrier.released)
+        self.process_life().is_installed()
     }
 
     pub(super) fn is_barrier_installed(&self, point: ScenarioBarrierPoint) -> bool {
-        self.barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned")
-            .contains_key(&point)
-    }
-
-    pub(super) fn pause(
-        &self,
-        point: ScenarioBarrierPoint,
-        deadline: Instant,
-    ) -> Result<(), ReceiptLedgerError> {
-        let mut barriers = self
-            .barriers
-            .lock()
-            .map_err(|_| ReceiptLedgerError::Corrupt("scenario barrier mutex was poisoned"))?;
-        let Some(barrier) = barriers.get_mut(&point) else {
-            return Ok(());
-        };
-        barrier.reached = true;
-        self.changed.notify_all();
-        while !barriers.get(&point).is_some_and(|barrier| barrier.released) {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                return Err(ReceiptLedgerError::DeadlineExceeded);
-            };
-            let (next, timeout) = self
-                .changed
-                .wait_timeout(barriers, remaining)
-                .map_err(|_| ReceiptLedgerError::Corrupt("scenario barrier mutex was poisoned"))?;
-            barriers = next;
-            if timeout.timed_out() && !barriers.get(&point).is_some_and(|barrier| barrier.released)
-            {
-                return Err(ReceiptLedgerError::DeadlineExceeded);
-            }
-        }
-        Ok(())
+        self.process_life().is_barrier_installed(point)
     }
 
     pub(super) fn wait_until_reached(
@@ -1434,37 +1609,11 @@ impl ReceiptScenarioControl {
         point: ScenarioBarrierPoint,
         deadline: Instant,
     ) -> Result<(), String> {
-        let mut barriers = self
-            .barriers
-            .lock()
-            .map_err(|_| "protocol-v5 receipt scenario barrier mutex was poisoned".to_owned())?;
-        while !barriers.get(&point).is_some_and(|barrier| barrier.reached) {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or_else(|| format!("protocol-v5 barrier {point:?} was not reached"))?;
-            let (next, timeout) = self
-                .changed
-                .wait_timeout(barriers, remaining)
-                .map_err(|_| {
-                    "protocol-v5 receipt scenario barrier mutex was poisoned".to_owned()
-                })?;
-            barriers = next;
-            if timeout.timed_out() && !barriers.get(&point).is_some_and(|barrier| barrier.reached) {
-                return Err(format!("protocol-v5 barrier {point:?} was not reached"));
-            }
-        }
-        Ok(())
+        self.process_life().wait_until_reached(point, deadline)
     }
 
     pub(super) fn release(&self, point: ScenarioBarrierPoint) {
-        let mut barriers = self
-            .barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned");
-        if let Some(barrier) = barriers.get_mut(&point) {
-            barrier.released = true;
-        }
-        self.changed.notify_all();
+        self.process_life().release(point);
     }
 
     pub(super) fn release_pre_actor_barriers(&self) {
@@ -1487,29 +1636,21 @@ impl ReceiptScenarioControl {
     }
 
     pub(super) fn release_all_barriers(&self) {
-        let mut barriers = self
-            .barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned");
-        for barrier in barriers.values_mut() {
-            barrier.released = true;
-        }
-        self.changed.notify_all();
+        self.process_life().release_all_barriers();
     }
 
     pub(super) fn reset_for_scenario(&self) {
-        self.barriers
+        self.process_life().close_permissions();
+        self.process_life().exited.store(true, Ordering::Release);
+        *self
+            .process_life
             .lock()
-            .expect("scenario barrier mutex poisoned")
+            .expect("scenario process-life mutex poisoned") =
+            Arc::new(ScenarioProcessLife::new(BTreeMap::new()));
+        self.next_process_barriers
+            .lock()
+            .expect("future scenario barrier mutex poisoned")
             .clear();
-        *self
-            .lifecycle_gate_held
-            .lock()
-            .expect("scenario lifecycle gate mutex poisoned") = false;
-        *self
-            .gate_cancel_requested
-            .lock()
-            .expect("scenario gate cancel mutex poisoned") = false;
         *self
             .actor_workspace_identity
             .lock()
@@ -1531,15 +1672,10 @@ impl ReceiptScenarioControl {
             .expect("scenario actor authorization mutex poisoned")
             .clear();
         self.process_exit_elapsed_ms.store(0, Ordering::Release);
-        self.fail_stop_reclaimed.store(false, Ordering::Release);
         self.crash_after_side_effect.store(false, Ordering::Release);
     }
 
     pub(super) fn has_unreleased_barriers(&self) -> bool {
-        self.barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned")
-            .values()
-            .any(|barrier| !barrier.released)
+        self.process_life().has_unreleased_barriers()
     }
 }

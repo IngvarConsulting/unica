@@ -2626,10 +2626,10 @@ fn quiesce_promoted_continuation(
             thread::sleep(Duration::from_millis(2));
         }
     }
-    // Clean up one fail-stop once. `restart_requested` is never cleared, so
-    // without the latch every later quiesce would spend both deadlines again on
-    // an exit that was already handled.
-    if telemetry.snapshot().restart_requested && !control.fail_stop_reclaimed() {
+    // Reclaim one fail-stopped process life once. Historical restart telemetry
+    // survives a successor, so it cannot authorize cleanup of the new listener.
+    // The request selects the life; Runtime release below still gates reclaim.
+    if control.current_process_requires_stop() && !control.fail_stop_reclaimed() {
         control.mark_fail_stop_reclaimed();
         // A fail-stopped attempt exits the process on the runtime's own clock;
         // wait for that close so a checkpoint sees the closed listener.
