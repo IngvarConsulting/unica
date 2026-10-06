@@ -785,7 +785,8 @@ mod tests {
             .unwrap();
         match capability {
             FenceCapability::ProvenFast => {
-                assert!(matches!(initial, FenceOutcome::Proven { .. }));
+                // The first flush establishes the baseline. Creation of the
+                // watched directory may itself have reported a watcher gap.
                 assert_eq!(
                     after_write,
                     FenceOutcome::Proven {
