@@ -29,6 +29,21 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
         return Err(crate::infrastructure::daemon::identity::EXECUTABLE_CHANGED.to_string());
     }
     let idle_grace = parsed.idle_grace;
+    // Other builds' daemons leave their state directories behind. Removing
+    // them is best effort and never delays this daemon's readiness.
+    let collection_root = state_root.clone();
+    let own_identity = core_identity.clone();
+    let _ = std::thread::Builder::new().spawn(move || {
+        use crate::infrastructure::daemon::state_collection::{
+            collect_stale_daemon_states, STALE_DAEMON_STATE_IDLE,
+        };
+        let _ = collect_stale_daemon_states(
+            &collection_root,
+            &own_identity,
+            STALE_DAEMON_STATE_IDLE,
+            std::time::SystemTime::now(),
+        );
+    });
     let config = DaemonServerConfig::new(state_root, core_identity, idle_grace);
     crate::infrastructure::daemon::runtime_v5::run_daemon(config)
 }

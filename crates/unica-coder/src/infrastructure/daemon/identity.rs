@@ -4,11 +4,11 @@ use super::protocol_v5::{
 use crate::application::receipt_ledger::CoreIdentityDigest;
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_directory_child, create_owner_only_file_child, file_identity,
-    open_directory_child_nofollow, open_directory_ownership_lock,
-    open_or_create_absolute_directory_path_nofollow, open_regular_child_nofollow,
-    remove_identity_bound_regular_child, replace_identity_bound_regular_child,
-    restrict_stage_to_owner, sync_directory, verify_owner_only_acl, FileIdentity,
-    RetainedDirectoryCapability,
+    open_absolute_directory_path_nofollow, open_directory_child_nofollow,
+    open_directory_ownership_lock, open_or_create_absolute_directory_path_nofollow,
+    open_regular_child_nofollow, remove_identity_bound_regular_child,
+    replace_identity_bound_regular_child, restrict_stage_to_owner, sync_directory,
+    verify_owner_only_acl, FileIdentity, RetainedDirectoryCapability,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -210,17 +210,40 @@ impl DaemonStateDirectory {
     }
 
     pub(crate) fn open(state_root: &Path, core_identity: &CoreIdentity) -> Result<Self, String> {
+        Self::open_with(state_root, core_identity, true)?
+            .ok_or_else(|| "daemon identity directory vanished during admission".to_string())
+    }
+
+    /// Open the state directory of an identity only if it already exists:
+    /// inspecting another build's directory must not recreate it.
+    pub(crate) fn open_existing(
+        state_root: &Path,
+        core_identity: &CoreIdentity,
+    ) -> Result<Option<Self>, String> {
+        Self::open_with(state_root, core_identity, false)
+    }
+
+    fn open_with(
+        state_root: &Path,
+        core_identity: &CoreIdentity,
+        create: bool,
+    ) -> Result<Option<Self>, String> {
         if !state_root.is_absolute() {
             return Err("daemon state root must be absolute".to_string());
         }
-        let parent = open_or_create_absolute_directory_path_nofollow(state_root)
-            .map_err(|error| daemon_io_error("open or create daemon provider state root", error))?;
+        let parent = if create {
+            open_or_create_absolute_directory_path_nofollow(state_root)
+        } else {
+            open_absolute_directory_path_nofollow(state_root)
+        }
+        .map_err(|error| daemon_io_error("open daemon provider state root", error))?;
         let child_name = format!(
             "daemon-p{DAEMON_PROTOCOL_VERSION}-{}",
             core_identity.as_str()
         );
         let directory = match open_directory_child_nofollow(&parent, OsStr::new(&child_name)) {
             Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !create => return Ok(None),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 match create_owner_only_directory_child(&parent, OsStr::new(&child_name)) {
                     Ok(directory) => directory,
@@ -258,13 +281,13 @@ impl DaemonStateDirectory {
         retained_directory
             .validate_named_identity()
             .map_err(|error| daemon_io_error("validate named daemon identity directory", error))?;
-        Ok(Self {
+        Ok(Some(Self {
             #[cfg(test)]
             path,
             directory,
             retained_directory,
             identity,
-        })
+        }))
     }
 
     #[cfg(test)]
@@ -347,6 +370,46 @@ impl DaemonStateDirectory {
                     return Err(daemon_io_error("lock daemon spawn ownership object", error))
                 }
             }
+        }
+    }
+
+    /// One attempt at the spawn lock: `None` while a frontend is starting
+    /// this identity's daemon.
+    pub(crate) fn try_spawn_lock(&self) -> Result<Option<SpawnLock>, String> {
+        self.verify_identity()?;
+        let file = open_directory_ownership_lock(&self.directory, OsStr::new(SPAWN_LOCK_NAME))
+            .map_err(|error| daemon_io_error("open daemon spawn ownership object", error))?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(SpawnLock { file })),
+            Err(error) if lock_is_contended(&error) => Ok(None),
+            Err(error) => Err(daemon_io_error("lock daemon spawn ownership object", error)),
+        }
+    }
+
+    /// One attempt at the receipt authority: `None` while this identity's
+    /// daemon is alive, since it holds the authority for its lifetime.
+    pub(crate) fn try_receipt_authority(&self) -> Result<Option<ReceiptAuthorityLock>, String> {
+        self.verify_identity()?;
+        let authority_directory =
+            self.create_private_retained_subdirectory(RECEIPT_AUTHORITY_DIRECTORY_NAME)?;
+        let authority_file = authority_directory
+            .try_clone_directory()
+            .map_err(|error| daemon_io_error("clone receipt authority directory", error))?;
+        let file =
+            open_directory_ownership_lock(&authority_file, OsStr::new(RECEIPT_AUTHORITY_LOCK_NAME))
+                .map_err(|error| {
+                    daemon_io_error("open receipt authority ownership object", error)
+                })?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(ReceiptAuthorityLock {
+                file,
+                _authority_directory: authority_directory,
+            })),
+            Err(error) if lock_is_contended(&error) => Ok(None),
+            Err(error) => Err(daemon_io_error(
+                "lock receipt authority ownership object",
+                error,
+            )),
         }
     }
 
