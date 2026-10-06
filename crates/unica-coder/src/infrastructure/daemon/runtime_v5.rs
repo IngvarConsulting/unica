@@ -16,7 +16,8 @@ use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
 use crate::application::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
     V5DeleteTerminalOutcome, V5SafeFailureReason, V5StartWorkingOutcome, V5StoredInvocationRecord,
-    V5StoredTask, V5TaskIdentity, V5TaskRetirement, V5TaskStoreError, V5TerminalPublication,
+    V5StoredInvocationSchemaVersion, V5StoredTask, V5TaskIdentity, V5TaskRetirement,
+    V5TaskStoreError, V5TerminalPublication,
 };
 use crate::application::invocation_v5::{
     decide_cancel_reserved_submit, decide_cancel_resolution, CancelInvocationDecision,
@@ -497,6 +498,26 @@ struct V5TaskRetirementAuthorization {
     pending: TaskRetirementPendingReceipt,
 }
 
+enum StagedHandoffStartupPlan {
+    TaskBound {
+        bound: TaskBoundReceipt,
+        provisional: V5StoredInvocationRecord,
+        observed: V5StoredInvocationRecord,
+    },
+    TaskTerminalBound {
+        terminal_link: TaskTerminalBoundReceipt,
+        observed: V5StoredInvocationRecord,
+    },
+}
+
+impl StagedHandoffStartupPlan {
+    fn observed(&self) -> &V5StoredInvocationRecord {
+        match self {
+            Self::TaskBound { observed, .. } | Self::TaskTerminalBound { observed, .. } => observed,
+        }
+    }
+}
+
 struct StartupTaskTerminalizationPlan {
     expected: TaskBoundReceipt,
     record: V5StoredInvocationRecord,
@@ -907,6 +928,140 @@ impl V5TaskProjection {
             record,
             reason: Some(reason),
         })
+    }
+
+    fn staged_handoff_startup_plan(
+        &self,
+        staged: &TaskHandoffActorBoundReceipt,
+        catalog: &[TaskLifecycleLinkCatalogEntry],
+        deadline: Instant,
+    ) -> Result<Option<StagedHandoffStartupPlan>, V5TaskProjectionFailure> {
+        let HandoffTerminalStage::Staged {
+            terminal,
+            terminal_epoch_ms,
+            certificate,
+        } = staged.terminal_stage()
+        else {
+            return Err(Self::startup_fail_stop(
+                "startup handoff has no saved terminal",
+            ));
+        };
+        if !certificate.matches_staged_terminal(
+            staged.key(),
+            staged.key_digest(),
+            staged.link(),
+            *terminal_epoch_ms,
+            terminal,
+        ) {
+            return Err(Self::startup_fail_stop(
+                "startup handoff terminal certificate differs",
+            ));
+        }
+        let matching = catalog
+            .iter()
+            .filter(|entry| lifecycle_entry_task_id(entry) == staged.task().task_id())
+            .collect::<Vec<_>>();
+        let entry = match matching.as_slice() {
+            [] => return Ok(None),
+            [TaskLifecycleLinkCatalogEntry::Reservation(reservation)] => {
+                if reservation.key() != staged.key() || reservation.link() != staged.link() {
+                    return Err(Self::startup_fail_stop(
+                        "staged startup reservation differs from its receipt",
+                    ));
+                }
+                return Ok(None);
+            }
+            [TaskLifecycleLinkCatalogEntry::Record(record)] => record,
+            _ => {
+                return Err(Self::startup_fail_stop(
+                    "staged startup handoff has conflicting lifecycle owners",
+                ))
+            }
+        };
+        let durable_link = match entry {
+            TaskLifecycleLinkRecord::TaskBound(record) => record.link(),
+            TaskLifecycleLinkRecord::TaskTerminalBound(record) => record.link(),
+            TaskLifecycleLinkRecord::TaskRetirementPending(record) => record.link(),
+        };
+        if entry.key() != staged.key() || durable_link != staged.link() {
+            return Err(Self::startup_fail_stop(
+                "staged startup lifecycle link differs from its receipt",
+            ));
+        }
+        let observed = self
+            .task_store
+            .get(
+                staged.task().task_id(),
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(error, staged.key_digest().clone(), true)
+            })?;
+        let (publication, status) = Self::terminal_publication(terminal, *terminal_epoch_ms);
+        match entry {
+            TaskLifecycleLinkRecord::TaskBound(bound) => {
+                if bound.key_digest() != staged.key_digest() || bound.phase() != staged.phase() {
+                    return Err(Self::startup_fail_stop(
+                        "staged startup TaskBound authority differs",
+                    ));
+                }
+                let provisional_task = match staged.phase() {
+                    AttemptPhase::NotBegun => V5StoredTask::Queued,
+                    AttemptPhase::Begun => V5StoredTask::Working,
+                };
+                let provisional =
+                    staged_record_from_durable_projection(staged, bound.task(), provisional_task)?;
+                if provisional.version != bound.task_record_version()
+                    || *terminal_epoch_ms < provisional.updated_at_epoch_ms
+                {
+                    return Err(Self::startup_fail_stop(
+                        "staged startup successor version or epoch differs",
+                    ));
+                }
+                let mut successor = provisional.clone();
+                successor.version = provisional.version.checked_add(1).ok_or_else(|| {
+                    Self::startup_fail_stop("staged startup Task version overflowed")
+                })?;
+                successor.updated_at_epoch_ms = *terminal_epoch_ms;
+                successor.task = publication.into_stored_task();
+                if observed != provisional && observed != successor {
+                    return Err(Self::startup_fail_stop(
+                        "staged startup Task differs from its full durable successor",
+                    ));
+                }
+                Ok(Some(StagedHandoffStartupPlan::TaskBound {
+                    bound: bound.clone(),
+                    provisional,
+                    observed,
+                }))
+            }
+            TaskLifecycleLinkRecord::TaskTerminalBound(terminal_link) => {
+                let expected = staged_record_from_durable_projection(
+                    staged,
+                    terminal_link.task(),
+                    publication.into_stored_task(),
+                )?;
+                if terminal_link.key_digest() != staged.key_digest()
+                    || terminal_link.terminal_status() != status
+                    || terminal_link.terminal_digest() != terminal.digest()
+                    || terminal_link.terminal_epoch_ms() != *terminal_epoch_ms
+                    || expected.updated_at_epoch_ms != *terminal_epoch_ms
+                    || expected != observed
+                    || !task_terminal_bound_matches_record(terminal_link, &expected)?
+                {
+                    return Err(Self::startup_fail_stop(
+                        "staged startup terminal link differs from its full saved winner",
+                    ));
+                }
+                Ok(Some(StagedHandoffStartupPlan::TaskTerminalBound {
+                    terminal_link: terminal_link.clone(),
+                    observed,
+                }))
+            }
+            TaskLifecycleLinkRecord::TaskRetirementPending(_) => Err(Self::startup_fail_stop(
+                "active staged handoff has a retiring lifecycle link",
+            )),
+        }
     }
 
     fn startup_fail_stop(message: &'static str) -> V5TaskProjectionFailure {
@@ -1726,6 +1881,41 @@ fn lifecycle_entry_task_id(
     }
 }
 
+fn staged_record_from_durable_projection(
+    staged: &TaskHandoffActorBoundReceipt,
+    projection: &ReceiptTaskProjection,
+    task: V5StoredTask,
+) -> Result<V5StoredInvocationRecord, V5TaskProjectionFailure> {
+    if projection.task_id() != staged.task().task_id()
+        || projection.invocation_id() != staged.task().invocation_id()
+        || projection.created_at_epoch_ms() != staged.task().created_at_epoch_ms()
+        || projection.ttl_ms() != staged.task().ttl_ms()
+        || projection.poll_interval_ms() != staged.task().poll_interval_ms()
+    {
+        return Err(V5TaskProjection::startup_fail_stop(
+            "staged startup durable task projection differs",
+        ));
+    }
+    // Every field comes from durable receipt/link authority. The current Task
+    // supplies no missing metadata and cannot authorize its own replacement.
+    Ok(V5StoredInvocationRecord {
+        schema_version: V5StoredInvocationSchemaVersion,
+        task_id: projection.task_id(),
+        invocation_id: projection.invocation_id(),
+        receipt_key_digest: staged.key_digest().clone(),
+        tool: staged.key().tool(),
+        normalized_arguments_hash: staged.key().normalized_arguments_hash().clone(),
+        workspace_identity_hash: staged.workspace_identity_hash().clone(),
+        created_at_epoch_ms: projection.created_at_epoch_ms(),
+        updated_at_epoch_ms: projection.updated_at_epoch_ms(),
+        ttl_ms: projection.ttl_ms(),
+        poll_interval_ms: projection.poll_interval_ms(),
+        version: projection.version(),
+        cancel_requested: staged.cancel_requested(),
+        task,
+    })
+}
+
 fn task_bound_matches_record(
     expected: &TaskBoundReceipt,
     record: &V5StoredInvocationRecord,
@@ -2200,6 +2390,40 @@ impl V5ReceiptRuntime {
             let ReceiptState::TaskHandoffActorBound(handoff) = state else {
                 continue;
             };
+            if matches!(
+                handoff.terminal_stage(),
+                HandoffTerminalStage::Staged { .. }
+            ) {
+                if let Some(plan) = self
+                    .task_projection
+                    .staged_handoff_startup_plan(&handoff, lifecycle.entries(), deadline)
+                    .map_err(|failure| {
+                        format!("inspect staged startup handoff proof: {}", failure.error)
+                    })?
+                {
+                    let observed = plan.observed();
+                    let Some(recovery) = self
+                        .task_projection
+                        .recovery
+                        .entry(handoff.task().task_id())
+                    else {
+                        return Err(
+                            "staged startup linked Task is absent from the inspected catalog"
+                                .to_owned(),
+                        );
+                    };
+                    if !recovery.identity().matches_record(observed)
+                        || recovery.version() != observed.version
+                        || recovery.status() != observed.task.status()
+                        || recovery.cancel_requested() != observed.cancel_requested
+                    {
+                        return Err(
+                            "staged startup Task changed after its initial inspection".to_owned()
+                        );
+                    }
+                    continue;
+                }
+            }
             let Some(recovery) = self
                 .task_projection
                 .recovery
@@ -2397,18 +2621,11 @@ impl V5ReceiptRuntime {
                         })?;
                 }
                 ReceiptState::TaskHandoffActorBound(handoff) => {
-                    if let HandoffTerminalStage::Staged {
-                        terminal_epoch_ms,
-                        terminal,
-                        ..
-                    } = handoff.terminal_stage()
-                    {
-                        self.publish_staged_handoff_terminal_reply(
-                            handoff.clone(),
-                            terminal.clone(),
-                            *terminal_epoch_ms,
-                            deadline,
-                        )
+                    if matches!(
+                        handoff.terminal_stage(),
+                        HandoffTerminalStage::Staged { .. }
+                    ) {
+                        self.reconcile_staged_handoff_startup(handoff.clone(), deadline)
                         .map_err(|error| {
                             format!(
                                 "reconcile protocol-v5 staged handoff terminal before listener: {error}"
@@ -4563,6 +4780,78 @@ impl V5ReceiptRuntime {
         }
     }
 
+    fn reconcile_staged_handoff_startup(
+        &self,
+        staged: TaskHandoffActorBoundReceipt,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let catalog = self
+            .task_projection
+            .lifecycle_links
+            .catalog_snapshot(crate::domain::code_intelligence::ProviderDeadline::new(
+                deadline,
+            ))
+            .map_err(|error| {
+                self.project_task_failure(V5TaskProjectionFailure::from_link_store(error))
+            })?;
+        let plan = self
+            .task_projection
+            .staged_handoff_startup_plan(&staged, catalog.entries(), deadline)
+            .map_err(|failure| self.project_task_failure(failure))?;
+        match plan {
+            None => {
+                let HandoffTerminalStage::Staged {
+                    terminal,
+                    terminal_epoch_ms,
+                    ..
+                } = staged.terminal_stage()
+                else {
+                    return Err(ReceiptLedgerError::TaskBoundMismatch);
+                };
+                let terminal = terminal.clone();
+                let terminal_epoch_ms = *terminal_epoch_ms;
+                self.publish_staged_handoff_terminal_reply(
+                    staged,
+                    terminal,
+                    terminal_epoch_ms,
+                    deadline,
+                )
+            }
+            Some(StagedHandoffStartupPlan::TaskBound {
+                bound,
+                provisional,
+                observed,
+            }) => {
+                let (terminal_record, terminal_link) = self
+                    .task_projection
+                    .publish_staged_bound_task_terminal(
+                        &staged,
+                        &bound,
+                        &provisional,
+                        deadline,
+                        self.hooks.as_ref(),
+                    )
+                    .map_err(|failure| self.project_task_failure(failure))?;
+                // An existing successor was confirmed by readback. Do not emit
+                // the hook that describes replacement of a provisional Task.
+                let provisional_write = (observed == provisional).then_some(&provisional);
+                self.complete_staged_handoff_reply(
+                    staged,
+                    provisional_write,
+                    terminal_record,
+                    terminal_link,
+                    deadline,
+                )
+            }
+            Some(StagedHandoffStartupPlan::TaskTerminalBound {
+                terminal_link,
+                observed,
+            }) => {
+                self.complete_staged_handoff_reply(staged, None, observed, terminal_link, deadline)
+            }
+        }
+    }
+
     fn publish_staged_handoff_terminal_reply(
         &self,
         handoff: TaskHandoffActorBoundReceipt,
@@ -4619,6 +4908,24 @@ impl V5ReceiptRuntime {
                 self.hooks.as_ref(),
             )
             .map_err(|failure| self.project_task_failure(failure))?;
+        self.complete_staged_handoff_reply(
+            staged,
+            Some(&task_record),
+            terminal_record,
+            terminal_link,
+            deadline,
+        )
+    }
+
+    fn complete_staged_handoff_reply(
+        &self,
+        staged: TaskHandoffActorBoundReceipt,
+        provisional: Option<&V5StoredInvocationRecord>,
+        terminal_record: V5StoredInvocationRecord,
+        terminal_link: TaskTerminalBoundReceipt,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let epoch_ms = terminal_link.terminal_epoch_ms();
         self.hooks.event(
             V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
             epoch_ms,
@@ -4633,12 +4940,14 @@ impl V5ReceiptRuntime {
             terminal_link,
             deadline,
         )?;
-        self.hooks.staged_terminal_publication(
-            &staged,
-            &task_record,
-            &terminal_record,
-            &terminal_link,
-        )?;
+        if let Some(provisional) = provisional {
+            self.hooks.staged_terminal_publication(
+                &staged,
+                provisional,
+                &terminal_record,
+                &terminal_link,
+            )?;
+        }
         self.hooks.event(
             V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
             epoch_ms,
