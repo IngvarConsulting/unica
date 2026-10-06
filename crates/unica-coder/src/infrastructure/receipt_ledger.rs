@@ -13,8 +13,7 @@ use crate::application::receipt_ledger::{
     TaskPromisedUnboundReceipt, TaskReceiptOwnedActorBoundReceipt, TaskTerminalBoundReceipt,
     TaskTerminalReceiptBackedReceipt, TerminalDigest, V5CanonicalTerminal,
     ACKNOWLEDGED_TOMBSTONE_TTL_MS, DIRECT_TERMINAL_RETENTION_MS, LEGACY_CANCEL_RESERVATION_TTL_MS,
-    MAX_ACKNOWLEDGED_TOMBSTONES, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES,
-    MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES, MAX_RECEIPT_ENTITLEMENT_BYTES,
+    MAX_ACKNOWLEDGED_TOMBSTONE_BYTES, MAX_RECEIPT_ENTITLEMENT_BYTES,
     MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
 };
 use crate::application::receipt_ledger::{
@@ -36,6 +35,7 @@ use crate::infrastructure::platform::filesystem::{
     RetainedDirectoryCapability, RetainedRegularFileCapability,
 };
 use fs2::FileExt;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -88,7 +88,48 @@ struct DecodedReceiptBatchV1 {
 struct ReceiptBatchBacking {
     name: String,
     identity: FileIdentity,
-    encoded: Arc<Vec<u8>>,
+    encoded_len: usize,
+    encoded_digest: [u8; 32],
+}
+
+impl ReceiptBatchBacking {
+    fn from_encoded(name: String, identity: FileIdentity, encoded: &[u8]) -> Self {
+        Self {
+            name,
+            identity,
+            encoded_len: encoded.len(),
+            encoded_digest: Sha256::digest(encoded).into(),
+        }
+    }
+
+    fn verifies_encoded(&self, encoded: &[u8]) -> bool {
+        encoded.len() == self.encoded_len
+            && <[u8; 32]>::from(Sha256::digest(encoded)) == self.encoded_digest
+    }
+}
+
+fn receipt_batch_fingerprint(retained: &mut File) -> Result<(usize, [u8; 32]), ReceiptLedgerError> {
+    // Retain the existing single-frame codec boundary while aggregate catalog
+    // bytes are streamed. A changed file cannot extend this read beyond that frame.
+    let mut frame = Read::by_ref(retained).take(MAX_RECEIPT_BATCH_BYTES + 1);
+    let mut buffer = [0_u8; 8_192];
+    let mut digest = Sha256::new();
+    let mut encoded_len = 0_usize;
+    loop {
+        let read = match frame.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(storage_error("read retained receipt batch", error)),
+        };
+        encoded_len = encoded_len
+            .checked_add(read)
+            .ok_or(ReceiptLedgerError::Corrupt(
+                "receipt batch length overflowed",
+            ))?;
+        digest.update(&buffer[..read]);
+    }
+    Ok((encoded_len, digest.finalize().into()))
 }
 
 // A row-directory sync fault armed by the runtime hooks (process-wide, the
@@ -1000,7 +1041,7 @@ struct GenerationState {
     file: File,
 }
 
-type RecoveryStagingEntry = (OsString, FileIdentity, File);
+type RecoveryStagingEntry = (OsString, FileIdentity);
 
 struct RecoveredCatalog {
     catalog: ReceiptCatalog,
@@ -2205,7 +2246,9 @@ impl ReceiptLedgerStore {
             rows.push(ReceiptBatchRow { record, encoded });
         }
         if let Some(backing) = catalog.tombstone_compaction_backing.clone() {
-            let mut compacted = decode_receipt_batch(backing.encoded.as_slice())?
+            let batch =
+                latch_catalog_result(&mut catalog, self.read_verified_receipt_batch(&backing))?;
+            let mut compacted = batch
                 .rows
                 .into_iter()
                 .map(|row| row.record)
@@ -4660,12 +4703,7 @@ impl ReceiptLedgerStore {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
         latch_catalog_result(&mut catalog, self.verify_named_authority())?;
-        if catalog
-            .tombstone_count()
-            .checked_add(keys.len())
-            .filter(|count| *count <= MAX_ACKNOWLEDGED_TOMBSTONES)
-            .is_none()
-        {
+        if catalog.tombstone_count().checked_add(keys.len()).is_none() {
             return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
         }
         let mut generation =
@@ -4713,9 +4751,9 @@ impl ReceiptLedgerStore {
         }
 
         validate_catalog_insert_batch(&catalog, &entries)?;
-        // The fixture uses the production batch envelope and bounded segment
-        // size. It therefore measures recovery and retention of the actual
-        // durable shape without issuing 28,864 unrelated directory fsyncs.
+        // The fixture uses production batch envelopes with continuation between
+        // segments. This measures real durable recovery and retention without
+        // one directory fsync per seeded row.
         for (row_chunk, entry_chunk) in rows
             .chunks(MAX_RECEIPT_BATCH_ENVELOPE_ROWS)
             .zip(entries.chunks(MAX_RECEIPT_BATCH_ENVELOPE_ROWS))
@@ -5165,14 +5203,6 @@ impl ReceiptLedgerStore {
             record: record.clone(),
             encoded_bytes,
         };
-        // ACK owns only the minimum capacity work needed for this one
-        // transition. Bulk expiry remains a bounded maintenance command.
-        self.reclaim_expired_tombstones_for_ack_capacity_under_writer_lock(
-            &mut catalog,
-            &replacement,
-            acknowledged_at_epoch_ms,
-            deadline,
-        )?;
         if let Err(error) = validate_catalog_replace(&catalog, &persisted, &replacement) {
             return self.reject_before_mutation(&mut catalog, deadline, error);
         }
@@ -5397,39 +5427,6 @@ impl ReceiptLedgerStore {
             }
         }
         Ok(total_expired)
-    }
-
-    fn reclaim_expired_tombstones_for_ack_capacity_under_writer_lock(
-        &self,
-        catalog: &mut ReceiptCatalog,
-        replacement: &CatalogEntry,
-        observed_at_epoch_ms: u64,
-        deadline: OperationDeadline,
-    ) -> Result<(), ReceiptLedgerError> {
-        if ack_tombstone_has_capacity(catalog, replacement) {
-            return Ok(());
-        }
-
-        let mut expired = catalog
-            .records
-            .iter()
-            .filter(|(digest, _)| digest != &&replacement.record.key_digest)
-            .filter(|(_, entry)| entry_is_expired_tombstone(entry, observed_at_epoch_ms))
-            .map(|(digest, _)| digest.clone())
-            .collect::<Vec<_>>();
-        expired.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
-        for digest in expired {
-            self.reclaim_expired_tombstone_under_writer_lock(
-                catalog,
-                &digest,
-                observed_at_epoch_ms,
-                deadline,
-            )?;
-            if ack_tombstone_has_capacity(catalog, replacement) {
-                return Ok(());
-            }
-        }
-        Err(ReceiptLedgerError::TombstoneCapacityExceeded)
     }
 
     fn reclaim_expired_tombstone_under_writer_lock(
@@ -6041,7 +6038,8 @@ impl ReceiptLedgerStore {
                 let identity = file_identity(&temporary).map_err(|error| {
                     storage_error("identify abandoned receipt staging file", error)
                 })?;
-                temporary_entries.push((name, identity, temporary));
+                drop(temporary);
+                temporary_entries.push((name, identity));
                 continue;
             }
             if parse_receipt_batch_name(name_text)?.is_some() {
@@ -6065,11 +6063,8 @@ impl ReceiptLedgerStore {
                             StoredActiveLifecycleV1::AcknowledgedTombstone { .. }
                         )
                     });
-                let backing = ReceiptBatchBacking {
-                    name: name_text.to_owned(),
-                    identity,
-                    encoded: Arc::new(encoded),
-                };
+                let backing =
+                    ReceiptBatchBacking::from_encoded(name_text.to_owned(), identity, &encoded);
                 for row in batch.rows {
                     let entry = CatalogEntry {
                         record: row.record,
@@ -6213,7 +6208,8 @@ impl ReceiptLedgerStore {
                         "receipt recovery contains more than one expiry deletion witness",
                     ));
                 }
-                expired_deletions.push((name, identity, retained));
+                drop(retained);
+                expired_deletions.push((name, identity));
                 continue;
             }
             if entry.is_acknowledgement_commit() {
@@ -6260,7 +6256,7 @@ impl ReceiptLedgerStore {
     ) -> Result<(), ReceiptLedgerError> {
         check_optional_deadline(deadline)?;
         let mut cleanup_started = false;
-        for (name, identity, temporary) in temporary_entries {
+        for (name, identity) in temporary_entries {
             if let Err(error) = check_optional_deadline(deadline) {
                 if cleanup_started {
                     sync_recovery_cleanup_directory(&self.active_file).map_err(|sync_error| {
@@ -6270,17 +6266,12 @@ impl ReceiptLedgerStore {
                 return Err(error);
             }
             cleanup_started = true;
-            let removal =
-                remove_identity_bound_regular_child(&self.active_file, &name, identity, &temporary);
-            drop(temporary);
+            let removal = self.remove_verified_recovery_staging(&self.active_file, &name, identity);
             if let Err(error) = removal {
                 sync_recovery_cleanup_directory(&self.active_file).map_err(|sync_error| {
                     storage_error("sync failed abandoned receipt cleanup", sync_error)
                 })?;
-                return Err(storage_error(
-                    "remove abandoned receipt staging file",
-                    error,
-                ));
+                return Err(error);
             }
             #[cfg(test)]
             run_after_active_entry_remove_hook_for_test();
@@ -6343,7 +6334,8 @@ impl ReceiptLedgerStore {
             })?;
             let identity = file_identity(&file)
                 .map_err(|error| storage_error("identify abandoned generation staging", error))?;
-            staging.push((name, identity, file));
+            drop(file);
+            staging.push((name, identity));
             check_optional_deadline(deadline)?;
         }
         verify_receipts_authority(receipts, receipts_file)?;
@@ -6353,12 +6345,12 @@ impl ReceiptLedgerStore {
 
     fn remove_generation_staging(
         &self,
-        staging: Vec<(OsString, FileIdentity, File)>,
+        staging: Vec<RecoveryStagingEntry>,
         deadline: Option<Instant>,
     ) -> Result<(), ReceiptLedgerError> {
         check_optional_deadline(deadline)?;
         let mut cleanup_started = false;
-        for (name, identity, file) in staging {
+        for (name, identity) in staging {
             if let Err(error) = check_optional_deadline(deadline) {
                 if cleanup_started {
                     sync_recovery_cleanup_directory(&self.receipts_file).map_err(|sync_error| {
@@ -6369,13 +6361,12 @@ impl ReceiptLedgerStore {
             }
             cleanup_started = true;
             let removal =
-                remove_identity_bound_regular_child(&self.receipts_file, &name, identity, &file);
-            drop(file);
+                self.remove_verified_recovery_staging(&self.receipts_file, &name, identity);
             if let Err(error) = removal {
                 sync_recovery_cleanup_directory(&self.receipts_file).map_err(|sync_error| {
                     storage_error("sync failed generation staging cleanup", sync_error)
                 })?;
-                return Err(storage_error("remove abandoned generation staging", error));
+                return Err(error);
             }
             if let Err(error) = check_optional_deadline(deadline) {
                 sync_recovery_cleanup_directory(&self.receipts_file).map_err(|sync_error| {
@@ -6400,11 +6391,11 @@ impl ReceiptLedgerStore {
         read_active_record_from(&self.active_file, receipt_key_digest)
     }
 
-    fn verify_receipt_batch_backing(
+    fn open_retained_receipt_batch(
         &self,
         backing: &ReceiptBatchBacking,
-    ) -> Result<(), ReceiptLedgerError> {
-        let mut file = open_regular_child_nofollow(&self.active_file, OsStr::new(&backing.name))
+    ) -> Result<File, ReceiptLedgerError> {
+        let file = open_regular_child_nofollow(&self.active_file, OsStr::new(&backing.name))
             .map_err(|error| storage_error("open retained receipt batch", error))?;
         verify_owner_only_acl(&file)
             .map_err(|error| storage_error("verify retained receipt batch ownership", error))?;
@@ -6416,17 +6407,63 @@ impl ReceiptLedgerStore {
                 "receipt batch identity changed after publication",
             ));
         }
-        let mut encoded = Vec::new();
-        Read::by_ref(&mut file)
-            .take(MAX_RECEIPT_BATCH_BYTES + 1)
-            .read_to_end(&mut encoded)
-            .map_err(|error| storage_error("read retained receipt batch", error))?;
-        if encoded != *backing.encoded {
+        Ok(file)
+    }
+
+    fn verify_receipt_batch_backing(
+        &self,
+        backing: &ReceiptBatchBacking,
+    ) -> Result<(), ReceiptLedgerError> {
+        let mut file = self.open_retained_receipt_batch(backing)?;
+        if receipt_batch_fingerprint(&mut file)? != (backing.encoded_len, backing.encoded_digest) {
             return Err(ReceiptLedgerError::Corrupt(
                 "receipt batch bytes changed after publication",
             ));
         }
         Ok(())
+    }
+
+    fn read_verified_receipt_batch(
+        &self,
+        backing: &ReceiptBatchBacking,
+    ) -> Result<DecodedReceiptBatchV1, ReceiptLedgerError> {
+        let mut file = self.open_retained_receipt_batch(backing)?;
+        let mut encoded = Vec::new();
+        Read::by_ref(&mut file)
+            .take(MAX_RECEIPT_BATCH_BYTES + 1)
+            .read_to_end(&mut encoded)
+            .map_err(|error| storage_error("read retained receipt batch", error))?;
+        if !backing.verifies_encoded(&encoded) {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt batch bytes changed after publication",
+            ));
+        }
+        // Integrity and strict decoding use the same frame from one retained handle.
+        decode_receipt_batch(&encoded)
+    }
+
+    fn remove_verified_recovery_staging(
+        &self,
+        directory: &File,
+        name: &OsStr,
+        expected_identity: FileIdentity,
+    ) -> Result<(), ReceiptLedgerError> {
+        self.verify_named_authority()?;
+        let retained = open_regular_child_nofollow(directory, name)
+            .map_err(|error| storage_error("reopen validated receipt recovery entry", error))?;
+        verify_owner_only_acl(&retained)
+            .map_err(|error| storage_error("verify receipt recovery entry ownership", error))?;
+        if file_identity(&retained)
+            .map_err(|error| storage_error("identify receipt recovery entry", error))?
+            != expected_identity
+        {
+            return Err(ReceiptLedgerError::Corrupt(
+                "receipt recovery entry changed identity before cleanup",
+            ));
+        }
+        self.verify_named_authority()?;
+        remove_identity_bound_regular_child(directory, name, expected_identity, &retained)
+            .map_err(|error| storage_error("remove validated receipt recovery entry", error))
     }
 
     fn materialize_batch_backed_record(
@@ -6438,7 +6475,6 @@ impl ReceiptLedgerStore {
         let Some(backing) = catalog.batch_backing.get(receipt_key_digest).cloned() else {
             return Ok(());
         };
-        self.verify_receipt_batch_backing(&backing)?;
         let entry =
             catalog
                 .records
@@ -6447,7 +6483,7 @@ impl ReceiptLedgerStore {
                 .ok_or(ReceiptLedgerError::Corrupt(
                     "batch backing has no catalogued receipt row",
                 ))?;
-        let batch = decode_receipt_batch(backing.encoded.as_slice())?;
+        let batch = self.read_verified_receipt_batch(&backing)?;
         let row = batch
             .rows
             .into_iter()
@@ -6595,11 +6631,7 @@ impl ReceiptLedgerStore {
                 receipt_key_digest: first_digest,
             });
         }
-        let backing = ReceiptBatchBacking {
-            name: final_name,
-            identity,
-            encoded: Arc::new(encoded),
-        };
+        let backing = ReceiptBatchBacking::from_encoded(final_name, identity, &encoded);
         commit(catalog);
         for row in rows {
             catalog
@@ -6678,12 +6710,9 @@ impl ReceiptLedgerStore {
                     "superseded receipt batch identity changed before retirement",
                 ));
             }
-            let mut encoded = Vec::new();
-            Read::by_ref(&mut retained)
-                .take(MAX_RECEIPT_BATCH_BYTES + 1)
-                .read_to_end(&mut encoded)
-                .map_err(|error| storage_error("read superseded receipt batch", error))?;
-            if encoded != *backing.encoded {
+            if receipt_batch_fingerprint(&mut retained)?
+                != (backing.encoded_len, backing.encoded_digest)
+            {
                 return Err(ReceiptLedgerError::Corrupt(
                     "superseded receipt batch bytes changed before retirement",
                 ));

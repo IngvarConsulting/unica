@@ -365,14 +365,12 @@ impl ReceiptLedgerCatalogSnapshotAuthority {
         let tombstone_count = u64::try_from(tombstones.len()).map_err(|_| {
             ReceiptLedgerError::Corrupt("receipt tombstone count does not fit telemetry")
         })?;
-        if tombstones.len() > MAX_ACKNOWLEDGED_TOMBSTONES
-            || tombstones
-                .iter()
-                .any(|receipt| receipt.encoded_bytes() > MAX_ACKNOWLEDGED_TOMBSTONE_BYTES)
+        if tombstones
+            .iter()
+            .any(|receipt| receipt.encoded_bytes() > MAX_ACKNOWLEDGED_TOMBSTONE_BYTES)
             || tombstones.iter().try_fold(0_u64, |bytes, receipt| {
                 bytes.checked_add(receipt.encoded_bytes())
             }) != Some(tombstone_bytes)
-            || tombstone_bytes > MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES
         {
             return Err(ReceiptLedgerError::Corrupt(
                 "receipt catalog telemetry contradicts its tombstone pool",
@@ -869,10 +867,7 @@ pub(crate) const DIRECT_TERMINAL_RETENTION_MS: u64 = 3_600_000;
 // Used only to validate historical V1 cancellation records and deletion witnesses.
 pub(crate) const LEGACY_CANCEL_RESERVATION_TTL_MS: u64 = 7_125;
 pub(crate) const ACKNOWLEDGED_TOMBSTONE_TTL_MS: u64 = 900_000;
-pub(crate) const MAX_ACKNOWLEDGED_TOMBSTONES: usize = 28_864;
 pub(crate) const MAX_ACKNOWLEDGED_TOMBSTONE_BYTES: u64 = 512;
-pub(crate) const MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES: u64 =
-    MAX_ACKNOWLEDGED_TOMBSTONE_BYTES * MAX_ACKNOWLEDGED_TOMBSTONES as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]

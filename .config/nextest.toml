@@ -124,7 +124,9 @@ kind(test)
 # >>> размер large (ворота queue)
 default-filter = '''not (
 binary(daemon_receipt_ledger) & (
-    test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
+    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
+    | test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
     | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
@@ -141,7 +143,9 @@ binary(daemon_receipt_ledger) & (
 # >>> размер large (ворота main)
 default-filter = '''not (
 binary(daemon_receipt_ledger) & (
-    test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
+    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
+    | test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
     | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
@@ -168,7 +172,9 @@ default-filter = 'all()'
 # >>> размер large (ворота large)
 default-filter = '''
 binary(daemon_receipt_ledger) & (
-    test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
+    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
+    | test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
     | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
@@ -272,7 +278,9 @@ slow-timeout = { period = "300s", terminate-after = 2 }
 [[profile.default.overrides]]
 filter = '''
 binary(daemon_receipt_ledger) & (
-    test(/^deterministic_horizon_load_does_not_saturate$/)
+    test(/^acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly$/)
+    | test(/^acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay$/)
+    | test(/^deterministic_horizon_load_does_not_saturate$/)
     | test(/^retained_receipt_and_task_catalogs_are_independent_after_restart$/)
     | test(/^retained_receipt_backed_terminals_do_not_starve_target_direct_load$/)
     | test(/^staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner$/)
