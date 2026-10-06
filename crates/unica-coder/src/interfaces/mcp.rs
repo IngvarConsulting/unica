@@ -410,7 +410,7 @@ impl UnicaServer {
 struct SurfaceToolCall<'a> {
     name: &'a str,
     arguments: &'a Map<String, Value>,
-    metadata: &'a Map<String, Value>,
+    host: &'a unica_bootstrap::HostRequest,
 }
 
 fn execute_surface_tool(
@@ -425,7 +425,7 @@ fn execute_surface_tool(
     let SurfaceToolCall {
         name,
         arguments,
-        metadata,
+        host,
     } = call;
     match router {
         SurfaceToolRouter::LegacyV12(handler) => {
@@ -451,7 +451,7 @@ fn execute_surface_tool(
             let tool = V5ToolIdentity::from_wire_name(name).ok_or_else(|| {
                 ErrorData::invalid_params("tool is not in the canonical v0.13 profile", None)
             })?;
-            match (router.call)(tool, arguments, metadata, deadline, cancellation)? {
+            match (router.call)(tool, arguments, host, deadline, cancellation)? {
                 CanonicalCallOutcome::Direct(result) => Ok(SurfaceToolOutcome::Direct(result)),
                 CanonicalCallOutcome::Task(snapshot) if client_supports_tasks => {
                     Ok(SurfaceToolOutcome::Task(snapshot))
@@ -899,6 +899,23 @@ impl ServerHandler for UnicaServer {
     ) -> Result<CallToolResponse, ErrorData> {
         let received_at = Instant::now();
         let client_supports_tasks = native_task_capability(&context);
+        // The SDK may place wire metadata in the request or the context.
+        // Keep it separate from model-selected tool arguments.
+        let mut metadata = context.meta.0 .0.clone();
+        if let Some(request_meta) = request.meta.as_ref() {
+            metadata.extend(request_meta.0 .0.clone());
+        }
+        // Asked before the call is admitted: until then the call owns no
+        // daemon work, so a transport closing during this exchange cannot
+        // strand accepted work.
+        let roots = if matches!(self.router, SurfaceToolRouter::CanonicalV13(_))
+            && V5ToolIdentity::from_wire_name(&request.name).is_some()
+        {
+            client_roots(&context, &metadata).await
+        } else {
+            unica_bootstrap::ClientRoots::NotDeclared
+        };
+        let host = unica_bootstrap::HostRequest { metadata, roots };
         let admission = self
             .in_flight
             .admit()
@@ -937,12 +954,6 @@ impl ServerHandler for UnicaServer {
             .and_then(RequestMetaObject::get_progress_token)
             .or_else(|| context.meta.get_progress_token());
         let arguments = request.arguments.unwrap_or_default();
-        // The SDK may place wire metadata in the request or the context.
-        // Keep it separate from model-selected tool arguments.
-        let mut metadata = context.meta.0 .0.clone();
-        if let Some(request_meta) = request.meta {
-            metadata.extend(request_meta.0 .0);
-        }
         let progress_forwarding = if let Some(progress_token) = progress_token {
             let (sender, mut receiver) =
                 tokio::sync::mpsc::unbounded_channel::<Option<ProgressEvent>>();
@@ -987,7 +998,7 @@ impl ServerHandler for UnicaServer {
                 SurfaceToolCall {
                     name: &handler_name,
                     arguments: &arguments,
-                    metadata: &metadata,
+                    host: &host,
                 },
                 cancellation,
                 progress,
@@ -1092,6 +1103,39 @@ impl ServerHandler for UnicaServer {
             .map_err(project_task_exchange_error)?;
         ensure_task_identity(task_id, &snapshot)?;
         Ok(())
+    }
+}
+
+/// Bound on one `roots/list` exchange. A host answers from memory; the
+/// remainder of the handoff window belongs to the daemon call.
+const CLIENT_ROOTS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Roots of a client that declared them, asked for this call only.
+///
+/// Only a session established by a legacy-era initialize is asked: from
+/// 2026-07-28 roots travel as an embedded input request, which this server
+/// does not issue. The facade decides whether request metadata already
+/// carries the workspace.
+#[allow(deprecated)] // SEP-2577 retires roots only in the modern era.
+async fn client_roots(
+    context: &RequestContext<RoleServer>,
+    metadata: &Map<String, Value>,
+) -> unica_bootstrap::ClientRoots {
+    use unica_bootstrap::ClientRoots;
+    let declared = context
+        .peer
+        .peer_info()
+        .is_some_and(|info| info.capabilities.roots.is_some());
+    if !declared || modern_peer(context) || !unica_bootstrap::request_needs_client_roots(metadata) {
+        return ClientRoots::NotDeclared;
+    }
+    let listed = tokio::time::timeout(CLIENT_ROOTS_TIMEOUT, context.peer.list_roots()).await;
+    match listed {
+        Ok(Ok(result)) => {
+            ClientRoots::Listed(result.roots.into_iter().map(|root| root.uri).collect())
+        }
+        Ok(Err(error)) => ClientRoots::Unavailable(error.to_string()),
+        Err(_) => ClientRoots::Unavailable("roots/list timed out".to_owned()),
     }
 }
 
@@ -1590,7 +1634,7 @@ mod tests {
             SurfaceToolCall {
                 name: "unica.check",
                 arguments: &Map::new(),
-                metadata: &Map::new(),
+                host: &unica_bootstrap::HostRequest::default(),
             },
             CancellationToken::new(),
             Arc::new(NoopProgressSink),
@@ -1620,7 +1664,7 @@ mod tests {
             SurfaceToolCall {
                 name: "unica.check",
                 arguments: &Map::new(),
-                metadata: &Map::new(),
+                host: &unica_bootstrap::HostRequest::default(),
             },
             CancellationToken::new(),
             Arc::new(NoopProgressSink),
@@ -3367,7 +3411,7 @@ mod tests {
             SurfaceToolCall {
                 name: tool_name,
                 arguments: &arguments,
-                metadata: &Map::new(),
+                host: &unica_bootstrap::HostRequest::default(),
             },
             CancellationToken::new(),
             Arc::new(NoopProgressSink),

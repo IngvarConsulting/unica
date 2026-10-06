@@ -16,6 +16,49 @@ pub struct HostWorkspaceContext {
     require_existing_directory: bool,
 }
 
+/// Roots the MCP client reported for this request (`roots/list`).
+///
+/// A client that declares the `roots` capability answers with its current
+/// project on every request, so this channel follows a session whose
+/// directory changed after the frontend started. Launch environment cannot.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum ClientRoots {
+    /// The client did not declare roots, or the request did not need them.
+    #[default]
+    NotDeclared,
+    /// Root URIs in the order the client listed them.
+    Listed(Vec<String>),
+    /// The client declared roots but the exchange failed: an error answer,
+    /// a timeout or a closed transport. Nothing was supplied, so the launch
+    /// context still applies.
+    Unavailable(String),
+}
+
+/// Host context of one tool call: wire metadata and the client's roots.
+#[derive(Clone, Debug, Default)]
+pub struct HostRequest {
+    pub metadata: Map<String, Value>,
+    pub roots: ClientRoots,
+}
+
+impl HostRequest {
+    pub fn from_metadata(metadata: Map<String, Value>) -> Self {
+        Self {
+            metadata,
+            roots: ClientRoots::NotDeclared,
+        }
+    }
+}
+
+/// Whether a call with this metadata still needs the client's roots: a
+/// per-call host channel outranks roots, so they are not asked for then.
+pub fn request_needs_client_roots(metadata: &Map<String, Value>) -> bool {
+    !KNOWN
+        .iter()
+        .filter_map(|host| host.workspace_metadata)
+        .any(|channel| metadata.contains_key(channel.capability))
+}
+
 /// Capture once at frontend startup; errors are deferred until a request needs
 /// the launch context, since the host may supply a valid context per request.
 pub fn capture_host_workspace_context() -> HostWorkspaceContext {
@@ -54,6 +97,14 @@ impl HostWorkspaceContext {
     /// Resolve only this request's workspace. A malformed supplied context is
     /// an error, never permission to fall back to another project's directory.
     pub fn resolve(&self, metadata: &Map<String, Value>) -> Result<String, String> {
+        self.resolve_request(&HostRequest::from_metadata(metadata.clone()))
+    }
+
+    /// Precedence: per-call host metadata, then the first client root, then
+    /// the launch context. The first root is the session's project in the
+    /// order Claude Code lists it; the MCP specification does not order roots.
+    pub fn resolve_request(&self, request: &HostRequest) -> Result<String, String> {
+        let metadata = &request.metadata;
         let mut request_directory: Option<PathBuf> = None;
         for channel in KNOWN.iter().filter_map(|host| host.workspace_metadata) {
             if let Some(context) = metadata.get(channel.capability) {
@@ -81,6 +132,11 @@ impl HostWorkspaceContext {
         }
         if let Some(directory) = request_directory {
             return absolute_directory(&directory);
+        }
+        if let ClientRoots::Listed(roots) = &request.roots {
+            if let Some(root) = roots.first() {
+                return existing_directory(&parse_root_uri(root)?);
+            }
         }
         let directory = self.launch_directory.as_ref().map_err(Clone::clone)?;
         if self.require_existing_directory {
@@ -155,6 +211,31 @@ fn parse_request_directory(value: &str) -> Result<PathBuf, String> {
     }
     uri.to_file_path()
         .map_err(|_| "Host workspace file URI is not a native absolute path".to_owned())
+}
+
+/// MCP roots are `file://` URIs; a bare path is not a root. On Windows a
+/// project on a share (`\\server\share`, `\\wsl.localhost\…`) is spelled
+/// with the server as the URI host, so a host is accepted there.
+fn parse_root_uri(value: &str) -> Result<PathBuf, String> {
+    if !value.starts_with("file://") {
+        return Err("Client root must be a local file URI".to_owned());
+    }
+    if crate::platform::file_uri_host_names_share() {
+        validate_path_text(value)?;
+        let uri = url::Url::parse(value)
+            .map_err(|_| "Client root must be a local file URI".to_owned())?;
+        if uri.query().is_some()
+            || uri.fragment().is_some()
+            || !uri.username().is_empty()
+            || uri.password().is_some()
+        {
+            return Err("Client root must be a file URI without query or fragment".to_owned());
+        }
+        return uri
+            .to_file_path()
+            .map_err(|_| "Client root file URI is not a native absolute path".to_owned());
+    }
+    parse_request_directory(value)
 }
 
 fn absolute_directory(path: &Path) -> Result<String, String> {
@@ -273,6 +354,116 @@ mod tests {
                 fixture.0.to_str().unwrap()
             );
         }
+    }
+
+    fn with_roots(metadata: Map<String, Value>, roots: ClientRoots) -> HostRequest {
+        HostRequest { metadata, roots }
+    }
+
+    fn root_uri(path: &Path) -> String {
+        url::Url::from_directory_path(path).unwrap().to_string()
+    }
+
+    /// Окружение запуска фиксируется один раз, а roots клиент строит заново
+    /// на каждый запрос: сессия, сменившая каталог, видна только через них.
+    #[test]
+    fn first_client_root_outranks_stale_launch_environment_but_not_request_metadata() {
+        let fixture = Fixture::new();
+        let other = fixture.0.join("второй");
+        std::fs::create_dir_all(&other).unwrap();
+        let context = capture_with(
+            &env(&[("CLAUDE_PROJECT_DIR", fixture.0.clone().into())]),
+            Err("no cwd".into()),
+        );
+        let listed = ClientRoots::Listed(vec![root_uri(&fixture.project()), root_uri(&other)]);
+
+        let selected = context
+            .resolve_request(&with_roots(Map::new(), listed.clone()))
+            .unwrap();
+        assert!(same_directory(Path::new(&selected), &fixture.project()));
+
+        let selected = context
+            .resolve_request(&with_roots(
+                metadata(serde_json::json!({"sandboxCwd": other})),
+                listed,
+            ))
+            .unwrap();
+        assert!(same_directory(Path::new(&selected), &other));
+
+        // Пустой список и сорванный обмен ничего не передают: остаётся запуск.
+        for roots in [
+            ClientRoots::Listed(Vec::new()),
+            ClientRoots::Unavailable("timed out".into()),
+            ClientRoots::NotDeclared,
+        ] {
+            assert_eq!(
+                context
+                    .resolve_request(&with_roots(Map::new(), roots))
+                    .unwrap(),
+                fixture.0.to_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn a_supplied_root_satisfies_required_context_and_a_malformed_one_never_falls_back() {
+        let fixture = Fixture::new();
+        let required = capture_with(
+            &env(&[("UNICA_HOST_CONTEXT_REQUIRED", "1".into())]),
+            Ok(fixture.0.clone()),
+        );
+        assert!(required.resolve(&Map::new()).is_err());
+        let selected = required
+            .resolve_request(&with_roots(
+                Map::new(),
+                ClientRoots::Listed(vec![root_uri(&fixture.project())]),
+            ))
+            .unwrap();
+        assert!(same_directory(Path::new(&selected), &fixture.project()));
+
+        let launch = HostWorkspaceContext::from_directory(fixture.0.clone());
+        for root in [
+            fixture.project().to_str().unwrap().to_owned(),
+            "https://example.com/project".into(),
+            "file://other-host/tmp".into(),
+            root_uri(&fixture.0.join("not-created")),
+            format!("{}?query", root_uri(&fixture.project())),
+        ] {
+            assert!(
+                launch
+                    .resolve_request(&with_roots(
+                        Map::new(),
+                        ClientRoots::Listed(vec![root.clone()])
+                    ))
+                    .is_err(),
+                "{root}"
+            );
+        }
+    }
+
+    /// Проект на сетевом ресурсе Windows приходит root-ом с сервером в
+    /// роли хоста URI; на других ОС такой URI локальной папки не называет.
+    #[test]
+    fn a_root_with_a_host_names_a_share_only_where_the_platform_has_shares() {
+        let parsed = parse_root_uri("file://server/share/%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82");
+        assert_eq!(
+            parsed.is_ok(),
+            crate::platform::file_uri_host_names_share(),
+            "{parsed:?}"
+        );
+        if let Ok(path) = parsed {
+            let text = path.to_str().unwrap();
+            assert!(text.starts_with(r"\\server\share"), "{text}");
+            assert!(text.ends_with("проект"), "{text}");
+        }
+    }
+
+    #[test]
+    fn only_a_call_without_host_metadata_asks_for_client_roots() {
+        assert!(request_needs_client_roots(&Map::new()));
+        assert!(!request_needs_client_roots(&metadata(
+            serde_json::json!({"sandboxCwd": "/tmp"})
+        )));
     }
 
     #[test]
