@@ -3,6 +3,8 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "platform/daemon_teardown.rs"]
+mod daemon_teardown;
 #[path = "platform/v13_search_unreadable.rs"]
 mod unreadable;
 
@@ -10,6 +12,7 @@ const RESPONSE_DEADLINE: Duration = Duration::from_secs(15);
 
 struct McpProcess {
     child: Child,
+    state: std::path::PathBuf,
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
 }
@@ -36,6 +39,7 @@ impl McpProcess {
         let stdout = BufReader::new(child.stdout.take().expect("MCP stdout"));
         Self {
             child,
+            state,
             stdin: Some(stdin),
             stdout,
         }
@@ -92,6 +96,7 @@ impl Drop for McpProcess {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        daemon_teardown::stop_daemons_under(&self.state);
     }
 }
 

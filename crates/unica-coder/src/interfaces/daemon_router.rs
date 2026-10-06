@@ -216,11 +216,9 @@ fn build_router(
                 .map_err(|_| V5TaskExchangeError::Transport)?;
             cancellation
                 .bind_control(Arc::new(move || {
-                    match interrupt.shutdown(std::net::Shutdown::Both) {
-                        Ok(()) => Ok(()),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => Ok(()),
-                        Err(error) => Err(ControlFailure::BeforeSend(error.to_string())),
-                    }
+                    interrupt
+                        .interrupt()
+                        .map_err(|error| ControlFailure::BeforeSend(error.to_string()))
                 }))
                 .map_err(|_| V5TaskExchangeError::Transport)?;
             let bounded_wait_ms = bounded_wait_ms(wait_ms, cutoff, Instant::now());

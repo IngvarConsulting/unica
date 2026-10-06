@@ -318,6 +318,47 @@ class GateProfileTests(unittest.TestCase):
         library_entry = next(entry for entry in entries if entry["fullName"].endswith(module.SCENARIO_TEST_PREFIX + "case"))
         self.assertIn({"name": "size", "value": "medium"}, library_entry["labels"])
 
+    def test_surviving_products_are_listed_before_each_feature_rebuild_only(self) -> None:
+        """Отчёт идёт перед пересборкой с признаком, а не перед workspace-вызовом."""
+        module = load_module()
+        out = Path(tempfile.mkdtemp(prefix="run-tests-"))
+        events = []
+
+        def run_commands(planned):
+            command = planned[0]
+            events.append("--lib" if "--lib" in command else "--test" if "--test" in command else "--workspace")
+            return 0
+
+        code = module.execute(
+            "large", "rust", out, "windows-latest", run_commands=run_commands,
+            junit=out / "junit.xml", before_feature_build=lambda: events.append("report"),
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(events, ["--workspace", "report", "--test", "report", "--lib"])
+
+    def test_surviving_product_report_is_windows_only_and_never_fails_the_run(self) -> None:
+        module = load_module()
+        self.assertIsNone(module.surviving_product_report("posix"))
+        report = module.surviving_product_report("nt")
+        self.assertIs(report, module.report_surviving_product_processes)
+
+        calls = []
+        module.report_surviving_product_processes(
+            run_query=lambda command, **options: calls.append((command, options)),
+        )
+        command, options = calls[0]
+        self.assertEqual(command[0], "powershell")
+        self.assertIn("Win32_Process", command[-1])
+        self.assertIn("Name='unica.exe'", command[-1])
+        self.assertIn("CommandLine", command[-1])
+        self.assertFalse(options["check"])
+
+        def missing_shell(command, **options):
+            raise FileNotFoundError("powershell")
+
+        module.report_surviving_product_processes(run_query=missing_shell)
+
     def test_every_gate_runs_every_python_suite_while_all_suites_are_small(self) -> None:
         """Отбора пока нет: все наборы `small`, и любые ворота гоняют оба набора."""
         module = load_module()
