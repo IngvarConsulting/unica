@@ -5741,6 +5741,53 @@ fn terminal_bound_task_projection_observation(
     })
 }
 
+fn retained_staged_terminal_epochs(
+    control: &ReceiptScenarioControl,
+    actor: Option<&ReceiptLedgerActor>,
+    key: &ReceiptKey,
+) -> String {
+    let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;
+    let Some(runtime) = control.runtime() else {
+        return "staged terminal runtime unavailable".into();
+    };
+    let Ok(record) = runtime.task_projection.task_store.get(
+        key.reserved_task_id(),
+        crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+    ) else {
+        return "stored terminal read unavailable".into();
+    };
+    let stored_epoch = match record.task {
+        V5StoredTask::Completed {
+            terminal_epoch_ms, ..
+        }
+        | V5StoredTask::Failed {
+            terminal_epoch_ms, ..
+        }
+        | V5StoredTask::Cancelled {
+            terminal_epoch_ms, ..
+        } => terminal_epoch_ms,
+        V5StoredTask::Queued => return "stored Task is queued".into(),
+        V5StoredTask::Working => return "stored Task is working".into(),
+    };
+    let Some(actor) = actor else {
+        return format!("stored terminal epoch {stored_epoch}, receipt actor unavailable");
+    };
+    match actor.recover(key.clone(), deadline) {
+        Ok(ReceiptState::TaskHandoffActorBound(handoff)) => match handoff.terminal_stage() {
+            HandoffTerminalStage::Staged {
+                terminal_epoch_ms, ..
+            } => format!(
+                "stored terminal epoch {stored_epoch}, staged receipt epoch {terminal_epoch_ms}"
+            ),
+            _ => format!("stored terminal epoch {stored_epoch}, handoff is unstaged"),
+        },
+        Err(ReceiptLedgerError::ReceiptNotFound) => {
+            format!("stored terminal epoch {stored_epoch}, staged receipt absent")
+        }
+        _ => format!("stored terminal epoch {stored_epoch}, staged receipt read unavailable"),
+    }
+}
+
 fn controlled_task_projection_observation(
     control: &ReceiptScenarioControl,
     state_root: &Path,

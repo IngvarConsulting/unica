@@ -554,6 +554,38 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     });
                 operations.insert(label, operation);
             }
+            ReceiptScenarioAction::StagePendingHandoffTerminal => {
+                if !control.is_barrier_installed(ScenarioBarrierPoint::BeforeTaskStoreCreate) {
+                    return Err("stage second-owner terminal requires a Task store barrier".into());
+                }
+                control.wait_until_reached(
+                    ScenarioBarrierPoint::BeforeTaskStoreCreate,
+                    Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                )?;
+                let pending = pending_submit.as_ref().ok_or_else(|| {
+                    "stage second-owner terminal requires a pending submit".to_owned()
+                })?;
+                if !control.has_precomputed_terminal() {
+                    return Err("stage second-owner terminal requires a precomputed fixture".into());
+                }
+                let receipt = pending
+                    .actor
+                    .recover(
+                        exact_key.clone(),
+                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
+                    )
+                    .map_err(|error| format!("read second-owner handoff: {error}"))?;
+                let ReceiptState::TaskHandoffActorBound(handoff) = receipt else {
+                    return Err("stage second-owner terminal requires a committed handoff".into());
+                };
+                stage_terminal_as_second_owner(
+                    &pending.actor,
+                    handoff,
+                    clock.now_epoch_millis(),
+                    &control,
+                    &telemetry,
+                )?;
+            }
             ReceiptScenarioAction::SpawnStageBoundHandoffTerminal { terminal, label } => {
                 control.arm_skip_next_startup_reconciliation();
                 if operations.contains_key(&label) {
@@ -1909,9 +1941,17 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             if telemetry.snapshot().task_store_create_attempts
                                 != expected_create_attempts
                             {
+                                let epochs = retained_staged_terminal_epochs(
+                                    &control,
+                                    pending_submit
+                                        .as_ref()
+                                        .map(|pending| &pending.actor)
+                                        .or(live_actor.as_ref()),
+                                    &exact_key,
+                                );
                                 return Err(
                                     format!(
-                                        "live protocol-v5 checkpoint {label} crossed an unobserved TaskStore mutation: expected {expected_create_attempts}, observed {}",
+                                        "live protocol-v5 checkpoint {label} crossed an unobserved TaskStore mutation: expected {expected_create_attempts}, observed {}; {epochs}",
                                         telemetry.snapshot().task_store_create_attempts
                                     ),
                                 );
