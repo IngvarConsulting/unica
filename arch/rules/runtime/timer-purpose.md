@@ -7,6 +7,23 @@ check:
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_actor_returns_late_real_store_commit_and_reopens
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_row_commit_survives_delayed_sync_and_exact_reopen
   - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_keeps_visible_io_failure_commit_uncertain
+  - crates/unica-coder/src/domain/code_intelligence.rs::provider_absence_is_distinct_from_expired_and_contracts_with_finite_deadlines
+  - crates/unica-coder/src/domain/code_intelligence.rs::provider_finite_extreme_budgets_preserve_remaining_without_instant_overflow
+  - crates/unica-coder/src/domain/code_intelligence.rs::provider_relative_equality_compares_the_same_endpoint_with_different_starts
+  - crates/unica-coder/src/infrastructure/deadline_lock.rs::no_deadline_waits_on_occupied_lane_then_acquires_after_release
+  - crates/unica-coder/src/infrastructure/deadline_lock.rs::no_deadline_occupied_lane_still_observes_explicit_cancellation
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::git_grep_without_deadline_passes_absence_to_the_process_runner
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_search_without_deadline_refuses_before_legacy_service_dispatch
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_graph_without_deadline_refuses_before_legacy_service_dispatch
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_search_without_deadline_refuses_before_legacy_service_dispatch
+  - crates/unica-coder/src/infrastructure/rlm_navigation.rs::no_deadline_navigation_refuses_before_readiness_or_legacy_service_dispatch
+  - crates/unica-coder/src/infrastructure/diagnostics.rs::no_deadline_diagnostics_refuses_before_legacy_backend_dispatch
+  - crates/unica-coder/src/infrastructure/diagnostics.rs::no_deadline_diagnostics_explicit_cancel_wins_before_unsupported_bridge
+  - crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs::no_deadline_fsevents_flush_observes_write_and_preserves_explicit_cancel
+  - crates/unica-coder/src/infrastructure/bsl_outline.rs::no_deadline_outline_reads_source_but_preserves_scope_and_explicit_cancel
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::no_deadline_task_commit_preserves_exact_terminal_cas_and_reopens
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::no_deadline_task_visible_io_failure_is_still_commit_uncertain
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 

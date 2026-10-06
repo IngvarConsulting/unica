@@ -450,7 +450,7 @@ impl RetainedNamespaceGuard {
                 "namespace input check cancelled",
             ));
         }
-        if self.deadline.remaining().is_zero() {
+        if self.deadline.is_elapsed() {
             return Err(ApplyStagingError::new(
                 ApplyStagingErrorKind::Deadline,
                 "namespace input check deadline elapsed",
@@ -1326,7 +1326,7 @@ impl ApplyStagedState {
                 ApplyStagingErrorKind::Cancelled,
                 format!("{phase} cancelled"),
             ))
-        } else if self.deadline.remaining().is_zero() {
+        } else if self.deadline.is_elapsed() {
             Err(ApplyStagingError::new(
                 ApplyStagingErrorKind::Deadline,
                 format!("{phase} deadline exceeded"),

@@ -335,7 +335,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 "logical read was cancelled",
             ));
         }
-        if self.deadline.remaining().is_zero() {
+        if self.deadline.is_elapsed() {
             return Err(ViewError::new(
                 RefusalCode::DeadlineExceeded,
                 "logical read operation deadline elapsed",

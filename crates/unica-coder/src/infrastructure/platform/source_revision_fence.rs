@@ -219,6 +219,7 @@ mod macos {
     use std::ptr::NonNull;
     use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
     use std::sync::{Condvar, Mutex};
+    use std::time::Duration;
 
     const TRUSTED: u8 = 0;
     const WATCHER_GAP: u8 = 1;
@@ -372,7 +373,7 @@ mod macos {
             if cancellation.is_cancelled() {
                 return Err(FenceError::Cancelled);
             }
-            if deadline.remaining().is_zero() {
+            if deadline.is_elapsed() {
                 return Err(FenceError::Deadline);
             }
             if self.capability != FenceCapability::ProvenFast {
@@ -429,17 +430,16 @@ mod macos {
                     if cancellation.is_cancelled() {
                         return Err(FenceError::Cancelled);
                     }
-                    let remaining = deadline.remaining();
-                    if remaining.is_zero() {
+                    if deadline.is_elapsed() {
                         return Err(FenceError::Deadline);
                     }
                     let (guard, wait) = self
                         .state
                         .marker_changed
-                        .wait_timeout(marker_state, remaining)
+                        .wait_timeout(marker_state, deadline.wait_slice(Duration::from_millis(20)))
                         .unwrap_or_else(|error| error.into_inner());
                     marker_state = guard;
-                    if wait.timed_out() && marker_state.event_id == 0 {
+                    if wait.timed_out() && marker_state.event_id == 0 && deadline.is_elapsed() {
                         return Err(FenceError::Deadline);
                     }
                 }
@@ -455,7 +455,7 @@ mod macos {
             if cancellation.is_cancelled() {
                 return Err(FenceError::Cancelled);
             }
-            if deadline.remaining().is_zero() {
+            if deadline.is_elapsed() {
                 return Err(FenceError::Deadline);
             }
             let trust_loss = self.state.trust_loss.swap(TRUSTED, Ordering::AcqRel);
@@ -765,6 +765,35 @@ mod tests {
 
         assert_eq!(fence.capability(), FenceCapability::Unsupported);
         assert!(!missing_root.exists());
+    }
+
+    #[test]
+    fn no_deadline_fsevents_flush_observes_write_and_preserves_explicit_cancel() {
+        let root = tempdir().unwrap();
+        let module = root.path().join("Module.bsl");
+        fs::write(&module, "Procedure A()\nEndProcedure\n").unwrap();
+        let cache = tempdir().unwrap();
+        let fence =
+            platform_fence(root.path(), &cache.path().join("revision-fence-cache")).unwrap();
+        assert_eq!(fence.capability(), FenceCapability::ProvenFast);
+        fence
+            .flush(ProviderDeadline::no_deadline(), &CancellationToken::new())
+            .unwrap();
+        fs::write(&module, "Procedure B()\nEndProcedure\n").unwrap();
+        assert_eq!(
+            fence
+                .flush(ProviderDeadline::no_deadline(), &CancellationToken::new())
+                .unwrap(),
+            FenceOutcome::Proven {
+                changed_paths: vec![PathBuf::from("Module.bsl")]
+            }
+        );
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(matches!(
+            fence.flush(ProviderDeadline::no_deadline(), &cancellation),
+            Err(FenceError::Cancelled)
+        ));
     }
 
     #[test]

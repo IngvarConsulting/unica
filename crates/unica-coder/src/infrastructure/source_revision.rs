@@ -1006,7 +1006,7 @@ impl SourceRevisionService {
                 machine.begin_reconcile();
             }
             for relative_path in changed_paths {
-                if cancellation.is_cancelled() || deadline.remaining().is_zero() {
+                if cancellation.is_cancelled() || deadline.is_elapsed() {
                     self.machine
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
@@ -1213,7 +1213,7 @@ impl SourceRevisionService {
                 trust_loss_epoch
             };
             let manifest = (self.scanner)(&self.source_root, &|| {
-                cancellation.is_cancelled() || deadline.remaining().is_zero()
+                cancellation.is_cancelled() || deadline.is_elapsed()
             })
             .inspect_err(|_| {
                 self.machine
@@ -1485,7 +1485,7 @@ fn scan_retained_directory(
                     RetainedRevisionErrorKind::Cancelled,
                     "retained source revision reconcile cancelled",
                 )
-            } else if context.deadline.remaining().is_zero() {
+            } else if context.deadline.is_elapsed() {
                 RetainedRevisionError::new(
                     RetainedRevisionErrorKind::Deadline,
                     "retained source revision deadline exceeded",
@@ -1663,7 +1663,7 @@ fn scan_retained_directory(
                     RetainedRevisionErrorKind::Cancelled,
                     "retained source revision reconcile cancelled",
                 )
-            } else if context.deadline.remaining().is_zero() {
+            } else if context.deadline.is_elapsed() {
                 RetainedRevisionError::new(
                     RetainedRevisionErrorKind::Deadline,
                     "retained source revision deadline exceeded",
@@ -1823,7 +1823,7 @@ fn retained_revision_checkpoint(
             RetainedRevisionErrorKind::Cancelled,
             "retained source revision reconcile cancelled",
         ))
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(RetainedRevisionError::new(
             RetainedRevisionErrorKind::Deadline,
             "retained source revision deadline exceeded",
@@ -2196,7 +2196,7 @@ pub(crate) mod tests {
                     if checkpoints.fetch_add(1, Ordering::AcqRel) == 4 {
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }
-                    deadline.remaining().is_zero()
+                    deadline.is_elapsed()
                 });
             if result.is_ok() {
                 failures.push("deadline did not checkpoint during ambient content".to_string());
@@ -2863,7 +2863,7 @@ pub(crate) mod tests {
                     .unwrap_err()
             };
             assert_eq!(fence.calls.load(Ordering::Acquire), fail_at + 1);
-            assert!(deadline.remaining().is_zero());
+            assert!(deadline.is_elapsed());
             assert_eq!(failure.kind(), expected, "flush {fail_at}: {failure}");
         }
     }

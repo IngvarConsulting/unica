@@ -103,7 +103,9 @@ impl<'a> RlmNavigationAdapter<'a> {
                 format!("{operation_name} cancelled before provider work"),
             )));
         }
-        let readiness_timeout = deadline.remaining();
+        let readiness_timeout = deadline
+            .finite_remaining()
+            .map_err(|error| error.to_string())?;
         if readiness_timeout.is_zero() {
             return Err(format!(
                 "{operation_name} provider deadline exceeded before readiness check"
@@ -144,7 +146,9 @@ impl<'a> RlmNavigationAdapter<'a> {
                 )))
             }
         };
-        let timeout = deadline.remaining();
+        let timeout = deadline
+            .finite_remaining()
+            .map_err(|error| error.to_string())?;
         if timeout.is_zero() {
             return Err(format!("{operation_name} provider deadline exceeded"));
         }
@@ -881,6 +885,24 @@ mod tests {
             assert!(!outcome.ok);
             assert!(outcome.summary.contains("cancelled"));
         }
+    }
+
+    #[test]
+    fn no_deadline_navigation_refuses_before_readiness_or_legacy_service_dispatch() {
+        let client = DeadlineRecordingClient {
+            timeouts: Mutex::new(Vec::new()),
+        };
+        let result = RlmNavigationAdapter::with_client(&client).invoke_resolved_cancellable(
+            &definition_request(),
+            &unready_index_context(),
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            crate::domain::code_intelligence::ProviderDeadlineError::Unsupported.to_string()
+        );
+        assert!(client.timeouts.lock().unwrap().is_empty());
     }
 
     #[test]

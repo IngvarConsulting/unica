@@ -416,7 +416,7 @@ impl FindIndex {
                     "name search was cancelled",
                 ));
             }
-            if deadline.remaining().is_zero() {
+            if deadline.is_elapsed() {
                 return Err(FindError::new(
                     RefusalCode::DeadlineExceeded,
                     "name search deadline elapsed",

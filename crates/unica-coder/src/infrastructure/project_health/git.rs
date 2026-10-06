@@ -157,7 +157,7 @@ impl<'a> SourceRootOwners<'a> {
         let index = SourceRootOwnerIndex::new_with_checkpoint(repository_root, roots, &mut || {
             if cancellation.is_cancelled() {
                 Err(GeneratedPathInspectionError::Cancelled)
-            } else if deadline.remaining().is_zero() {
+            } else if deadline.is_elapsed() {
                 Err(GeneratedPathInspectionError::TimedOut)
             } else {
                 Ok(())
@@ -184,7 +184,7 @@ impl<'a> SourceRootOwners<'a> {
                 if cancellation.is_cancelled() {
                     return Err(GeneratedPathInspectionError::Cancelled);
                 }
-                if deadline.remaining().is_zero() {
+                if deadline.is_elapsed() {
                     return Err(GeneratedPathInspectionError::TimedOut);
                 }
                 Ok(())
@@ -1118,7 +1118,7 @@ impl<'a> GitRepositoryInspector<'a> {
                     if cancellation.is_cancelled() {
                         return Err(ProjectHealthInspectionError::Cancelled);
                     }
-                    if deadline.remaining().is_zero() {
+                    if deadline.is_elapsed() {
                         return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
                     }
                 }
@@ -1225,7 +1225,7 @@ impl<'a> GitRepositoryInspector<'a> {
                             if cancellation.is_cancelled() {
                                 return Err(ProjectHealthInspectionError::Cancelled);
                             }
-                            if deadline.remaining().is_zero() {
+                            if deadline.is_elapsed() {
                                 return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
                             }
                         }
@@ -1297,7 +1297,7 @@ impl<'a> GitRepositoryInspector<'a> {
                             if cancellation.is_cancelled() {
                                 return Err(ProjectHealthInspectionError::Cancelled);
                             }
-                            if deadline.remaining().is_zero() {
+                            if deadline.is_elapsed() {
                                 return Ok(Err(ConfigDumpInfoIndexInspectionError::TimedOut));
                             }
                         }
@@ -1331,7 +1331,7 @@ impl<'a> GitRepositoryInspector<'a> {
         if cancellation.is_cancelled() {
             return Err("cancelled: project health Git inspection".into());
         }
-        if deadline.remaining().is_zero() {
+        if deadline.is_elapsed() {
             return Ok(timeout_output());
         }
         let result = self
@@ -1523,7 +1523,7 @@ pub(crate) fn classify_staged_config_dump_info(
             inconclusive_paths.push(entry.repo_path.clone());
             continue;
         };
-        if deadline.remaining().is_zero() {
+        if deadline.is_elapsed() {
             return Err(ConfigDumpInfoIndexInspectionError::TimedOut);
         }
         let classification = if let Some(cached) = blob_cache.get(oid) {
@@ -1641,7 +1641,7 @@ fn process_command_vec(
             super::PROJECT_HEALTH_STDOUT_CAPTURE_LIMIT,
             crate::infrastructure::platform::STDERR_CAPTURE_LIMIT,
         )),
-        timeout: Some(deadline.remaining()),
+        timeout: deadline.remaining(),
         cancellation: cancellation.clone(),
     }
 }
@@ -1873,7 +1873,7 @@ pub(super) fn parse_git_index_entries_controlled(
     parse_git_index_entries_with_checkpoint(stdout, &mut || {
         if cancellation.is_cancelled() {
             Err(IndexParseError::Cancelled)
-        } else if deadline.remaining().is_zero() {
+        } else if deadline.is_elapsed() {
             Err(IndexParseError::TimedOut)
         } else {
             Ok(())
@@ -2153,7 +2153,7 @@ fn ignore_inspection_checkpoint(
 ) -> Result<(), IgnoreInspectionError> {
     if cancellation.is_cancelled() {
         Err(IgnoreInspectionError::Cancelled)
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(IgnoreInspectionError::TimedOut)
     } else {
         Ok(())
@@ -2254,7 +2254,7 @@ fn materialize_staged_ignore_files(
         if cancellation.is_cancelled() {
             return Err(StagedIgnoreMaterializationError::Cancelled);
         }
-        if deadline.remaining().is_zero() {
+        if deadline.is_elapsed() {
             return Err(StagedIgnoreMaterializationError::Incomplete(
                 "staged .gitignore blob inspection timed out".into(),
             ));
@@ -2387,7 +2387,7 @@ fn read_staged_ignore_blobs(
         if cancellation.is_cancelled() {
             return Err(StagedIgnoreMaterializationError::Cancelled);
         }
-        if deadline.remaining().is_zero() {
+        if deadline.is_elapsed() {
             return Err(StagedIgnoreMaterializationError::Incomplete(
                 "staged .gitignore blob inspection timed out".into(),
             ));
@@ -2434,7 +2434,7 @@ fn run_staged_ignore_batch(
     if cancellation.is_cancelled() {
         return Err(StagedIgnoreMaterializationError::Cancelled);
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Err(StagedIgnoreMaterializationError::Incomplete(
             "staged .gitignore blob inspection timed out".into(),
         ));
@@ -2490,7 +2490,7 @@ fn materialize_exact_git_directories(
         if cancellation.is_cancelled() {
             return Err(StagedIgnoreMaterializationError::Cancelled);
         }
-        if deadline.remaining().is_zero() {
+        if deadline.is_elapsed() {
             return Err(StagedIgnoreMaterializationError::Incomplete(
                 "staged Git ignore path identity inspection timed out".into(),
             ));
@@ -2653,7 +2653,7 @@ fn tracked_generated_facts(
             if cancellation.is_cancelled() {
                 return Err(GeneratedPathInspectionError::Cancelled);
             }
-            if deadline.remaining().is_zero() {
+            if deadline.is_elapsed() {
                 return Err(GeneratedPathInspectionError::TimedOut);
             }
         }
@@ -2701,7 +2701,7 @@ fn tracked_generated_facts(
                             if cancellation.is_cancelled() {
                                 return Err(GeneratedPathInspectionError::Cancelled);
                             }
-                            if deadline.remaining().is_zero() {
+                            if deadline.is_elapsed() {
                                 return Err(GeneratedPathInspectionError::TimedOut);
                             }
                         }

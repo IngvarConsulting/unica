@@ -1657,7 +1657,7 @@ impl TaskLifecycleLinkStoreV5 {
                 Ok(writer) => return Ok(writer),
                 Err(TryLockError::Poisoned(poisoned)) => return Ok(poisoned.into_inner()),
                 Err(TryLockError::WouldBlock) => {
-                    std::thread::sleep(deadline.remaining().min(STORE_WRITER_WAIT_SLICE));
+                    std::thread::sleep(deadline.wait_slice(STORE_WRITER_WAIT_SLICE));
                 }
             }
         }
@@ -2223,7 +2223,7 @@ fn application_corruption(_: ReceiptLedgerError) -> TaskLifecycleLinkStoreError 
 }
 
 fn check_deadline(deadline: ProviderDeadline) -> Result<(), TaskLifecycleLinkStoreError> {
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         Err(TaskLifecycleLinkStoreError::DeadlineExceeded)
     } else {
         Ok(())
@@ -2524,6 +2524,73 @@ mod tests {
                 .read_by_task_id(key.reserved_task_id(), deadline())
                 .expect("exact reopened link"),
             TaskLifecycleLinkRecord::TaskBound(bound)
+        );
+    }
+
+    #[test]
+    fn no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let deadline = ProviderDeadline::no_deadline();
+        let (key, link, task) = fixture(INVOCATION_A, TASK_A, "workspace-a");
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline).unwrap();
+        let reservation = store
+            .reserve_task_link(key.clone(), link, deadline)
+            .unwrap();
+        let queued = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                1_000,
+                AttemptPhase::NotBegun,
+                deadline,
+            )
+            .unwrap();
+        let working = store
+            .mark_task_bound_begun(&queued, 2, 1_100, deadline)
+            .unwrap();
+        let terminal_task = ReceiptTaskProjection::new(
+            key.reserved_task_id(),
+            key.invocation_id(),
+            1_000,
+            2_000,
+            3_600_000,
+            100,
+            3,
+        )
+        .unwrap();
+        let terminal = store
+            .publish_task_terminal_bound(
+                &working,
+                terminal_task,
+                3,
+                ClosedTerminalStatus::Completed,
+                terminal_digest(),
+                2_000,
+                deadline,
+            )
+            .unwrap();
+        assert!(matches!(
+            store.mark_task_bound_begun(&queued, 2, 1_100, deadline),
+            Err(TaskLifecycleLinkStoreError::VersionMismatch {
+                expected: 2,
+                actual: 4
+            })
+        ));
+        assert_eq!(
+            store
+                .read_by_task_id(key.reserved_task_id(), deadline)
+                .unwrap(),
+            TaskLifecycleLinkRecord::TaskTerminalBound(terminal.clone())
+        );
+        drop(store);
+        let reopened = TaskLifecycleLinkStoreV5::open(&root_path, deadline).unwrap();
+        assert_eq!(
+            reopened
+                .read_by_task_id(key.reserved_task_id(), deadline)
+                .unwrap(),
+            TaskLifecycleLinkRecord::TaskTerminalBound(terminal)
         );
     }
 

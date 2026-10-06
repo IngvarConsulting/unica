@@ -5625,7 +5625,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(authority.deadline_for_test(), deadline);
         assert_eq!(
             authority.deadline_for_test().remaining(),
-            Duration::from_secs(19),
+            Some(Duration::from_secs(19)),
             "the authority builder replenished the captured operation deadline"
         );
     }
@@ -9227,7 +9227,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(sources.len(), 1);
         assert_eq!(
             sources[0].deadline().remaining(),
-            LOGICAL_READ_OPERATION_BUDGET - Duration::from_secs(8),
+            Some(LOGICAL_READ_OPERATION_BUDGET - Duration::from_secs(8)),
             "the handoff window must not replenish or cap the logical-read deadline"
         );
         let service =
@@ -9693,7 +9693,7 @@ struct ActorLogicalReadLease {"#,
             let operation = ProviderDeadline::from_budget(self.operation_budget);
             self.started.send(()).unwrap();
             self.release.lock().unwrap().recv().unwrap();
-            if operation.remaining().is_zero() {
+            if operation.is_elapsed() {
                 return Err(InvocationFailure::new(
                     "deadline_exceeded",
                     "operation budget elapsed at Task handoff",

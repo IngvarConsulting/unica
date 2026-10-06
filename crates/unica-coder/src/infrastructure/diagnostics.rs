@@ -417,7 +417,18 @@ impl<'a> BslAnalyzerDiagnosticProvider<'a> {
         if cancellation.is_cancelled() {
             return Err("cancelled: diagnostics provider stopped before request".to_string());
         }
-        let timeout = deadline.remaining();
+        let timeout = match deadline.finite_remaining() {
+            Ok(timeout) => timeout,
+            Err(error) => {
+                return Ok(provider_failed_with_status(
+                    DiagnosticProviderStatus::Unsupported,
+                    None,
+                    "provider_deadline_unsupported",
+                    error.to_string(),
+                    false,
+                ))
+            }
+        };
         if timeout.is_zero() {
             return Ok(provider_failed(
                 None,
@@ -1023,6 +1034,50 @@ mod bsl_diagnostics_provider_tests {
                 .pop_front()
                 .expect("fake reply")
         }
+    }
+
+    #[test]
+    fn no_deadline_diagnostics_refuses_before_legacy_backend_dispatch() {
+        let fixture = ProviderFixture::new();
+        let backend = FakeBackend::new(Vec::new());
+        for action in [
+            DiagnosticAction::Analyze,
+            DiagnosticAction::Findings,
+            DiagnosticAction::Status,
+            DiagnosticAction::Catalog,
+        ] {
+            let outcome = BslAnalyzerDiagnosticProvider::with_backend(&backend).execute(
+                &fixture.request(action),
+                &fixture.context,
+                ProviderDeadline::no_deadline(),
+                &CancellationToken::new(),
+            );
+            assert_eq!(outcome.status, DiagnosticProviderStatus::Unsupported);
+            let error = outcome.error.unwrap();
+            assert_eq!(error.code, "provider_deadline_unsupported");
+            assert_eq!(
+                error.message,
+                crate::domain::code_intelligence::ProviderDeadlineError::Unsupported.to_string()
+            );
+        }
+        assert!(backend.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn no_deadline_diagnostics_explicit_cancel_wins_before_unsupported_bridge() {
+        let fixture = ProviderFixture::new();
+        let backend = FakeBackend::new(Vec::new());
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let outcome = BslAnalyzerDiagnosticProvider::with_backend(&backend).execute(
+            &fixture.request(DiagnosticAction::Analyze),
+            &fixture.context,
+            ProviderDeadline::no_deadline(),
+            &cancellation,
+        );
+        assert_eq!(outcome.status, DiagnosticProviderStatus::Failed);
+        assert_eq!(outcome.error.unwrap().code, "cancelled");
+        assert!(backend.calls.lock().unwrap().is_empty());
     }
 
     fn empty_analyze() -> BslDiagnosticBackendReply {

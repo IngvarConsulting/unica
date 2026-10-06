@@ -2202,7 +2202,7 @@ fn selection_checkpoint(
             kind: SourceSelectionEvidenceErrorKind::Cancelled,
             message: "project source-map validation cancelled".to_string(),
         })
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(SourceSelectionEvidenceError {
             kind: SourceSelectionEvidenceErrorKind::Deadline,
             message: "project source-map validation deadline exceeded".to_string(),
