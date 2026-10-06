@@ -8082,7 +8082,7 @@
   {
    "id": "S313",
    "area": "Расширения конфигурации",
-   "task": "Заимствовать общий модуль в расширение и проверить расширение",
+   "task": "Заимствовать отчёт и общий модуль в расширение и проверить расширение",
    "workspace": "tests/fixtures/acceptance/workspace-format",
    "wire": [
     {
@@ -8094,6 +8094,12 @@
         "op": "object.borrow",
         "args": {
          "from": "nosupport:CommonModule.GoogleПереводчик"
+        }
+       },
+       {
+        "op": "object.borrow",
+        "args": {
+         "from": "nosupport:Report.АнализВерсийОбъектов"
         }
        }
       ]
@@ -8129,7 +8135,7 @@
   {
    "id": "S314",
    "area": "Расширения конфигурации",
-   "task": "Создать и удалить собственный общий модуль расширения",
+   "task": "Создать собственный общий модуль расширения, вставить в него код и удалить модуль",
    "workspace": "tests/fixtures/acceptance/workspace-format",
    "wire": [
     {
@@ -8144,6 +8150,32 @@
           "kind": "CommonModule",
           "name": "ПР_Временный"
          }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonModule.ПР_Временный",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "Процедура ПриёмочнаяВставка() Экспорт\nКонецПроцедуры"
         }
        }
       ]
@@ -8276,9 +8308,7 @@
       "role": "semantic"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "provider"
      ]
     }
    ]
@@ -8295,9 +8325,7 @@
       "role": "symbol"
      },
      "expect": [
-      "ok",
-      "provider",
-      "task"
+      "provider"
      ]
     }
    ]
@@ -8342,7 +8370,6 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "ext:CommonModule.GoogleПереводчик.Body",
          "text": "Процедура ПриёмочнаяВставка() Экспорт\nКонецПроцедуры"
         }
        }
@@ -8351,7 +8378,7 @@
      "expect": [
       "gap"
      ],
-     "gap": "У заимствованного модуля ещё нет файла BSL, а первая запись модуля через `apply` не материализует его: превью отвечает `provider_unavailable` «staged source evidence is unavailable» (#955, #1245)."
+     "gap": "Заимствование регистрирует общий модуль без каталога модуля, а первая запись модуля через `apply` его не создаёт: планировщик требует существующий каталог (`MissingParent`), и превью отвечает `provider_unavailable` «staged source evidence is unavailable» (#955, #1245)."
     }
    ]
   }
