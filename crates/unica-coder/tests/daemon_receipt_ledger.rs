@@ -13061,6 +13061,147 @@ fn prepared_handoff_preserves_staged_epoch_across_clock_jumps() {
     );
 }
 
+fn assert_promised_staged_transfer(epoch_jump: u64) {
+    let report = execute(Scenario::fake(vec![
+        Action::ConfigureProvider {
+            execution_class: ExecutionClass::KnownLong,
+            terminal: TerminalFixture::NearLimitWithMaximumMetadata {
+                canonical_result_bytes: 16 * 1_024,
+            },
+            cooperative_cancel: true,
+            side_effect_marker: true,
+        },
+        Action::InstallBarrier {
+            point: BarrierPoint::BeforeTaskStoreCreate,
+        },
+        Action::InstallBarrier {
+            point: BarrierPoint::AdmissionEntered,
+        },
+        submit("submit"),
+        Action::WaitForEvent {
+            event: EventKind::AdmissionEntered,
+        },
+        Action::AdvanceMonotonic { millis: CUTOFF_MS },
+        checkpoint_action("promised"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::AdmissionEntered,
+        },
+        Action::WaitForEvent {
+            event: EventKind::BoundHandoffCommitted,
+        },
+        checkpoint_action("before-stage"),
+        Action::AdvanceEpoch { millis: epoch_jump },
+        Action::StagePendingHandoffTerminal,
+        checkpoint_action("staged"),
+        Action::AdvanceEpoch { millis: epoch_jump },
+        Action::ReleaseBarrier {
+            point: BarrierPoint::BeforeTaskStoreCreate,
+        },
+        checkpoint_action("materialized"),
+        Action::ReadTask {
+            api: TaskApi::NativeGet,
+            label: "task".into(),
+        },
+        Action::Restart,
+        Action::Recover {
+            key: KeyCase::Exact,
+            label: "recovered-after-restart".into(),
+        },
+        Action::ReadTask {
+            api: TaskApi::NativeGet,
+            label: "task-after-restart".into(),
+        },
+        checkpoint_action("reopened"),
+    ]));
+    assert_eq!(
+        only_receipt(checkpoint(&report, "promised")).state,
+        SeedReceiptState::TaskPromisedUnbound
+    );
+    let before = checkpoint(&report, "before-stage");
+    assert_eq!(
+        only_receipt(before).state,
+        SeedReceiptState::TaskHandoffActorBoundNotBegun
+    );
+    assert_eq!(before.callbacks.prepare, 0);
+    let staged = checkpoint(&report, "staged");
+    let receipt = only_receipt(staged);
+    let winner = receipt.staged_terminal.as_ref().unwrap();
+    assert_eq!(terminal_epoch_ms(winner), before.epoch_ms + epoch_jump);
+    assert_eq!(terminal_epoch_ms(winner), staged.epoch_ms);
+    assert!(completed_result(winner).ok);
+    assert!(staged.tasks.is_empty());
+    assert_eq!(staged.task_link_reserved_count, 1);
+    assert_eq!(before.callbacks.execute, 0);
+    // The existing second-owner fixture records one execution in the shared telemetry.
+    assert_eq!(staged.callbacks.execute, 1);
+    let materialized = checkpoint(&report, "materialized");
+    let publication = assert_publication_matches_snapshot(
+        &report,
+        materialized,
+        &receipt.key,
+        winner,
+        TerminalPublicationOwner::StagedHandoffTask,
+    );
+    let TerminalCommitPreflightObservation::StagedHandoffTask { task: commit, .. } =
+        &publication.commit
+    else {
+        panic!("staged transfer must expose its committed Task record");
+    };
+    let stored = decode_v5_stored_record(&commit.task_record);
+    for label in ["materialized", "reopened"] {
+        let snapshot = checkpoint(&report, label);
+        assert!(
+            snapshot.receipts.is_empty(),
+            "staged ownership must transfer exactly"
+        );
+        assert_eq!(snapshot.task_link_reserved_count, 0);
+        let task = only_task(snapshot);
+        assert_eq!(task.projection_source, ProjectionSource::TaskStore);
+        assert_eq!(task.status, TaskStatus::Completed);
+        assert_eq!(task.terminal.as_ref(), Some(winner));
+        assert_eq!(task.updated_epoch_ms, terminal_epoch_ms(winner));
+        assert_eq!(
+            task.expires_epoch_ms,
+            terminal_epoch_ms(winner) + DIRECT_TASK_TTL_MS
+        );
+        assert_terminal_bound_link(only_task_link(snapshot), task, winner);
+        assert_v5_stored_record_matches_task(&stored, task);
+        assert_eq!(snapshot.callbacks.execute, 1);
+        assert_eq!(
+            snapshot.callbacks.total_domain(),
+            staged.callbacks.total_domain()
+        );
+        assert_eq!(snapshot.side_effect_markers, 0);
+        assert!(!snapshot.restart_requested);
+    }
+    let answer = response(&report, "recovered-after-restart");
+    assert_eq!(answer.kind, ResponseKind::Task);
+    assert!(answer.error.is_none());
+    assert_eq!(
+        answer.task.as_ref().unwrap().terminal.as_ref(),
+        Some(winner)
+    );
+    assert_eq!(
+        task_read(&report, "task"),
+        task_read(&report, "task-after-restart")
+    );
+    assert_eq!(count_event(&report, EventKind::TaskStoreCreated), 1);
+    assert_eq!(
+        count_event(&report, EventKind::TaskTerminalBoundCommitted),
+        1
+    );
+}
+
+#[test]
+fn promised_queued_staged_transfer_preserves_exact_winner_at_same_epoch() {
+    assert_promised_staged_transfer(0);
+}
+
+#[test]
+fn promised_queued_staged_transfer_preserves_exact_winner_across_clock_jumps() {
+    assert_promised_staged_transfer(1_000);
+}
+
 #[test]
 fn oversized_result_and_uncertain_store_commit_fail_closed() {
     let near_limit = execute(Scenario::fake(vec![

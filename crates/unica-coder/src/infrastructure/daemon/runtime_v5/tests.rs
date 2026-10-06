@@ -1737,6 +1737,194 @@ fn startup_materializes_handoff_without_replaying_begun_work() {
     }
 }
 
+fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: ReceiptTerminalOutcome) {
+    let root = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let service = Arc::new(SourceAdmissionProbe::default());
+    let clock = Arc::new(ManualEpochClock::new(1_000));
+    let config = DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50))
+        .with_v5_epoch_clock_for_test(clock.clone())
+        .with_invocation_service(service.clone());
+    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
+    let key = ReceiptKey::new(
+        InvocationId::new(),
+        TaskId::new(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(&serde_json::Map::new()),
+            request_scope_hash("staged-transfer-workspace").unwrap(),
+        ),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reserved = runtime
+        .receipt_ledger
+        .reserve(
+            key.clone(),
+            OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+            deadline,
+        )
+        .unwrap()
+        .into_reservation()
+        .unwrap();
+    let bound = runtime
+        .receipt_ledger
+        .bind_reserved_actor(
+            key.clone(),
+            reserved.record_version(),
+            SafeIdentityHash::from_sha256(Sha256::digest(b"staged-transfer-workspace").into()),
+            deadline,
+        )
+        .unwrap();
+    let version = match phase {
+        AttemptPhase::NotBegun => bound.record_version(),
+        AttemptPhase::Begun => runtime
+            .receipt_ledger
+            .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
+            .unwrap()
+            .record_version(),
+    };
+    let handoff = runtime
+        .receipt_ledger
+        .begin_bound_task_handoff(
+            key.clone(),
+            version,
+            1_009,
+            3_600_000,
+            V5_TASK_POLL_INTERVAL_MS,
+            deadline,
+        )
+        .unwrap();
+    let handoff = if matches!(outcome, ReceiptTerminalOutcome::Cancelled) {
+        let cancelled = runtime
+            .receipt_ledger
+            .request_task_cancel(
+                key.clone(),
+                TaskCancellationReceipt::HandoffActorBound(handoff),
+                deadline,
+            )
+            .unwrap();
+        let TaskCancellationReceipt::HandoffActorBound(handoff) = cancelled else {
+            panic!("cancellation must retain the same actor-bound handoff");
+        };
+        handoff
+    } else {
+        handoff
+    };
+    let terminal = canonical_v5_terminal(&outcome).unwrap();
+    let certificate = canonical_staged_transfer_certificate(
+        handoff.key(),
+        handoff.key_digest(),
+        handoff.link(),
+        1_100,
+        &terminal,
+    )
+    .unwrap();
+    let staged = runtime
+        .receipt_ledger
+        .stage_bound_task_handoff_terminal(
+            key.clone(),
+            handoff.record_version(),
+            1_100,
+            terminal.clone(),
+            certificate,
+            deadline,
+        )
+        .unwrap();
+    clock.set(if matches!(outcome, ReceiptTerminalOutcome::Cancelled) {
+        1_100
+    } else {
+        2_000
+    });
+    let publication =
+        runtime.publish_staged_handoff_terminal_reply(staged, terminal.clone(), 1_100, deadline);
+    let stored = runtime
+        .task_projection
+        .task_store
+        .get(
+            key.reserved_task_id(),
+            crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+        )
+        .unwrap();
+    assert!(
+        publication.is_ok(),
+        "saved {phase:?} {outcome:?} transfer failed: {:?}; actual TaskStore state {:?}",
+        publication.err(),
+        stored.task
+    );
+    assert_eq!(stored.updated_at_epoch_ms, 1_100);
+    assert_eq!(stored.task.terminal_digest(), Some(terminal.digest()));
+    assert!(matches!(
+        runtime.receipt_ledger.recover(key.clone(), deadline),
+        Err(ReceiptLedgerError::ReceiptNotFound)
+    ));
+    let snapshot = runtime
+        .resolve_task(key.reserved_task_id(), deadline)
+        .unwrap();
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+    drop(runtime);
+    clock.set(3_000);
+    let reopened = V5ReceiptRuntime::open(&state, &config).unwrap();
+    assert_eq!(
+        reopened
+            .resolve_task(key.reserved_task_id(), deadline)
+            .unwrap(),
+        snapshot
+    );
+    assert_eq!(
+        reopened
+            .task_projection
+            .task_store
+            .get(
+                key.reserved_task_id(),
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .unwrap(),
+        stored
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn queued_staged_completed_transfer_preserves_exact_winner_and_reopens() {
+    assert_staged_handoff_terminal_transfer(
+        AttemptPhase::NotBegun,
+        ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("saved winner")),
+        },
+    );
+}
+
+#[test]
+fn queued_staged_failed_transfer_preserves_exact_winner_and_reopens() {
+    assert_staged_handoff_terminal_transfer(
+        AttemptPhase::NotBegun,
+        ReceiptTerminalOutcome::Failed {
+            reason: V5SafeFailureReason::InvocationFailed,
+        },
+    );
+}
+
+#[test]
+fn begun_staged_completed_transfer_preserves_exact_winner_and_reopens() {
+    assert_staged_handoff_terminal_transfer(
+        AttemptPhase::Begun,
+        ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("saved winner")),
+        },
+    );
+}
+
+#[test]
+fn queued_staged_cancelled_transfer_preserves_exact_winner_and_reopens() {
+    assert_staged_handoff_terminal_transfer(
+        AttemptPhase::NotBegun,
+        ReceiptTerminalOutcome::Cancelled,
+    );
+}
+
 fn materialize_startup_task_bound(
     runtime: &V5ReceiptRuntime,
     identity: &CoreIdentity,

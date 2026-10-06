@@ -766,41 +766,36 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
         deadline: ProviderDeadline,
     ) -> Result<V5StoredInvocationRecord, V5TaskStoreError> {
         let mut writer = self.lock_writer(deadline)?;
-        let mut record = self.read_record(expected.task_id, deadline)?;
-        if record.task.is_terminal()
-            && expected
-                .version
-                .checked_add(1)
-                .is_some_and(|version| version == record.version)
-            && publication.matches_task(&record.task)
-        {
-            return Ok(record);
-        }
-        if record != *expected
-            || !matches!(expected.task, V5StoredTask::Queued | V5StoredTask::Working)
-        {
-            return Err(V5TaskStoreError::Mismatch {
-                task_id: expected.task_id,
-                reason: V5TaskMismatch::State,
-            });
-        }
+        let observed = self.read_record(expected.task_id, deadline)?;
         let terminal_epoch_ms = publication.terminal_epoch_ms();
-        if terminal_epoch_ms < record.updated_at_epoch_ms {
+        if !matches!(expected.task, V5StoredTask::Queued | V5StoredTask::Working)
+            || terminal_epoch_ms < expected.updated_at_epoch_ms
+        {
             return Err(V5TaskStoreError::Mismatch {
                 task_id: expected.task_id,
                 reason: V5TaskMismatch::State,
             });
         }
-        record.task = publication.into_stored_task();
-        record.version = Self::next_version(&record)?;
-        record.updated_at_epoch_ms = terminal_epoch_ms;
+        let mut successor = expected.clone();
+        successor.task = publication.into_stored_task();
+        successor.version = Self::next_version(expected)?;
+        successor.updated_at_epoch_ms = terminal_epoch_ms;
+        if observed == successor {
+            return Ok(observed);
+        }
+        if observed != *expected {
+            return Err(V5TaskStoreError::Mismatch {
+                task_id: expected.task_id,
+                reason: V5TaskMismatch::State,
+            });
+        }
         self.publish_record(
             &mut writer,
-            &record,
+            &successor,
             V5CommitOperation::PublishTerminal,
             deadline,
         )?;
-        Ok(record)
+        Ok(successor)
     }
 
     fn terminalize_recovered_exact(
@@ -1806,6 +1801,169 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn assert_staged_retry_refuses_changed_successor(field: &str) {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(6_000)),
+            deadline(),
+        )
+        .unwrap();
+        let expected = store
+            .create_exact(
+                new_record(
+                    task_id("25252525-2525-4525-8525-252525252525"),
+                    invocation_id("26262626-2626-4626-8626-262626262626"),
+                    0x1a,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let publication = V5TerminalPublication::Completed {
+            terminal_epoch_ms: 6_100,
+            terminal_digest: terminal_digest(0xba),
+            result: Box::new(DomainResult::success("staged winner")),
+        };
+        let exact = store
+            .publish_staged_terminal_against_exact_provisional(
+                &expected,
+                publication.clone(),
+                deadline(),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .publish_staged_terminal_against_exact_provisional(
+                    &expected,
+                    publication.clone(),
+                    deadline(),
+                )
+                .unwrap(),
+            exact
+        );
+        let mut changed = exact;
+        match field {
+            "foreign identity" => {
+                changed.invocation_id = invocation_id("27272727-2727-4727-8727-272727272727")
+            }
+            "receipt identity" => changed.receipt_key_digest = receipt_digest(0x55),
+            "tool" => changed.tool = V5ToolIdentity::Apply,
+            "created" => changed.created_at_epoch_ms += 1,
+            "updated" => changed.updated_at_epoch_ms += 1,
+            "ttl" => changed.ttl_ms += 1,
+            "poll" => changed.poll_interval_ms += 1,
+            "cancel" => changed.cancel_requested = true,
+            "workspace" => {
+                changed.workspace_identity_hash = SafeIdentityHash::from_sha256([0x33; 32])
+            }
+            "arguments" => {
+                changed.normalized_arguments_hash = NormalizedArgumentsHash::from_sha256([0x44; 32])
+            }
+            _ => panic!("unknown successor fixture field"),
+        }
+        let path = root_path.join(format!("{}.json", expected.task_id));
+        let bytes = serde_json::to_vec(&changed).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(store.get(expected.task_id, deadline()).unwrap(), changed);
+        let retry = store.publish_staged_terminal_against_exact_provisional(
+            &expected,
+            publication,
+            deadline(),
+        );
+        assert!(
+            matches!(retry, Err(V5TaskStoreError::Mismatch { .. })),
+            "staged retry accepted changed {field}: {retry:?}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes, "refusal rewrote {field}");
+        assert_eq!(store.get(expected.task_id, deadline()).unwrap(), changed);
+    }
+
+    #[test]
+    fn staged_terminal_retry_refuses_foreign_successor_without_rewriting_bytes() {
+        for field in ["foreign identity", "receipt identity"] {
+            assert_staged_retry_refuses_changed_successor(field);
+        }
+    }
+
+    #[test]
+    fn staged_terminal_cas_reconciles_uncertain_commit_by_exact_successor() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(6_000)),
+            deadline(),
+        )
+        .unwrap();
+        let expected = store
+            .create_exact(
+                new_record(
+                    task_id("25252525-2525-4525-8525-252525252525"),
+                    invocation_id("26262626-2626-4626-8626-262626262626"),
+                    0x1a,
+                ),
+                deadline(),
+            )
+            .unwrap();
+        let publication = V5TerminalPublication::Failed {
+            terminal_epoch_ms: 6_100,
+            terminal_digest: terminal_digest(0xba),
+            reason: V5SafeFailureReason::InvocationFailed,
+        };
+        store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+        assert!(matches!(
+            store.publish_staged_terminal_against_exact_provisional(
+                &expected,
+                publication.clone(),
+                deadline(),
+            ),
+            Err(V5TaskStoreError::CommitUncertain {
+                operation: V5CommitOperation::PublishTerminal,
+                ..
+            })
+        ));
+        let visible = store.get(expected.task_id, deadline()).unwrap();
+        let mut exact_successor = expected.clone();
+        exact_successor.task = publication.clone().into_stored_task();
+        exact_successor.version += 1;
+        exact_successor.updated_at_epoch_ms = 6_100;
+        assert_eq!(visible, exact_successor);
+        let path = root_path.join(format!("{}.json", expected.task_id));
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(
+            store
+                .publish_staged_terminal_against_exact_provisional(
+                    &expected,
+                    publication,
+                    deadline(),
+                )
+                .unwrap(),
+            visible
+        );
+        assert_eq!(
+            fs::read(path).unwrap(),
+            bytes,
+            "exact readback must not create another version"
+        );
+    }
+
+    #[test]
+    fn staged_terminal_retry_refuses_changed_successor_metadata_without_rewriting_bytes() {
+        for field in [
+            "tool",
+            "created",
+            "updated",
+            "ttl",
+            "poll",
+            "cancel",
+            "workspace",
+            "arguments",
+        ] {
+            assert_staged_retry_refuses_changed_successor(field);
+        }
     }
 
     #[test]
