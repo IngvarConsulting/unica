@@ -1071,6 +1071,68 @@ mod tests {
     }
 
     #[test]
+    fn owned_v5_frames_preserve_real_tcp_prefixes_across_a_socket_poll() {
+        use crate::domain::operation_deadline::OperationDeadline;
+        use crate::infrastructure::daemon::protocol_v5::{
+            read_bounded_v5_probe_response_frame_before, read_bounded_v5_request_frame_before,
+        };
+
+        for response in [false, true] {
+            for complete in [false, true] {
+                let (mut owner, mut peer) = connected_owner();
+                let wire = if response {
+                    b"{\"kind\":\"pong\"}".to_vec()
+                } else {
+                    serde_json::to_vec(&V5ClientRequest::GetTask {
+                        task_id: TaskId::new(),
+                    })
+                    .unwrap()
+                };
+                let split = 1;
+                peer.write_all(&wire[..split]).unwrap();
+                // Establish the first real TCP fragment without consuming it.
+                // The peer withholds the suffix until a socket poll has returned.
+                assert_eq!(owner.reader.fill_buf().unwrap(), &wire[..split]);
+                let deadline: OperationDeadline = OperationDeadline::NoDeadline;
+                let mut fills = 0;
+                let checkpoint = |reader: &mut BufReader<TcpStream>| {
+                    fills += 1;
+                    assert!(!deadline.is_elapsed_at(Instant::now()));
+                    match fills {
+                        1 | 2 => reader
+                            .get_ref()
+                            .set_read_timeout(Some(Duration::from_millis(1))),
+                        3 => {
+                            if complete {
+                                let mut suffix = wire[split..].to_vec();
+                                suffix.push(b'\n');
+                                peer.write_all(&suffix)?;
+                            } else {
+                                peer.shutdown(Shutdown::Write)?;
+                            }
+                            reader.get_ref().set_read_timeout(None)
+                        }
+                        _ => reader.get_ref().set_read_timeout(None),
+                    }
+                };
+                let result = if response {
+                    read_bounded_v5_probe_response_frame_before(&mut owner.reader, checkpoint)
+                } else {
+                    read_bounded_v5_request_frame_before(&mut owner.reader, checkpoint)
+                };
+                assert!(fills >= 3, "the real socket poll lost the original frame");
+                if complete {
+                    assert_eq!(result.unwrap(), wire);
+                } else {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+                    assert_eq!(error.to_string(), "v5 JSON line is missing its terminator");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn malformed_v5_response_permanently_poisons_owner_session() {
         let (mut owner, mut peer) = connected_owner();
         let peer_thread = thread::spawn(move || {
