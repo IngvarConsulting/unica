@@ -232,6 +232,9 @@ enum Action {
     FillTaskLinks,
     FillTaskLinksLeavingOneReservationSlot,
     FillTombstones,
+    SeedTombstoneCatalog {
+        count: u32,
+    },
     SpawnTaskStoreCreateAndBindUnderGate {
         label: String,
     },
@@ -12778,6 +12781,69 @@ fn explicit_retention_reuses_the_live_receipt_owner() {
 
     assert_eq!(response(&report, "live-owner").kind, ResponseKind::Direct);
     assert_eq!(checkpoint(&report, "after-reclaim").receipt_live_count, 1);
+}
+
+#[test]
+fn restart_releases_a_retained_receipt_actor_without_a_live_listener() {
+    let report = execute(Scenario::fake(vec![
+        Action::SeedTombstoneCatalog { count: 1 },
+        Action::ConfigureProvider {
+            execution_class: ExecutionClass::Direct,
+            terminal: success_payload(),
+            cooperative_cancel: true,
+            side_effect_marker: true,
+        },
+        submit("terminal"),
+        checkpoint_action("before-restart"),
+        Action::Restart,
+        checkpoint_action("after-restart"),
+        Action::PublishListener,
+        Action::Recover {
+            key: KeyCase::Exact,
+            label: "recovered".to_string(),
+        },
+        Action::Submit {
+            request: RequestCase::SameIdentity,
+            response_budget_ms: CUTOFF_MS,
+            disconnect: DisconnectPoint::Never,
+            label: "duplicate".to_string(),
+        },
+        checkpoint_action("after-recovery"),
+    ]));
+    assert_eq!(response(&report, "terminal").kind, ResponseKind::Direct);
+    let before = checkpoint(&report, "before-restart");
+    assert_eq!(before.callbacks.execute, 1);
+    assert_eq!(before.side_effect_markers, 1);
+    let after = checkpoint(&report, "after-restart");
+    assert!(
+        !after.restart_requested,
+        "restart must reopen the writer after releasing its retained actor"
+    );
+    assert_eq!(after.listener, ListenerState::NotPublished);
+    assert_eq!(after.callbacks.execute, 1);
+    assert_eq!(after.side_effect_markers, 1);
+    assert_eq!(after.receipt_live_count, 1);
+    assert_eq!(after.tombstone_count, 1);
+    assert_eq!(only_receipt(after), only_receipt(before));
+    assert_eq!(
+        response(&report, "recovered").kind,
+        ResponseKind::RecoveredDirect
+    );
+    assert_eq!(response(&report, "duplicate").kind, ResponseKind::Direct);
+    for label in ["recovered", "duplicate"] {
+        assert_exact_response_identity(response(&report, label), only_receipt(before));
+        assert_eq!(
+            response_terminal(response(&report, label)),
+            terminal_of_receipt(only_receipt(before))
+        );
+    }
+    let recovered = checkpoint(&report, "after-recovery");
+    assert_eq!(recovered.listener, ListenerState::Listening);
+    assert_eq!(recovered.callbacks.execute, 1);
+    assert_eq!(recovered.side_effect_markers, 1);
+    assert_eq!(recovered.receipt_live_count, 1);
+    assert_eq!(recovered.tombstone_count, 1);
+    assert_eq!(only_receipt(recovered), only_receipt(before));
 }
 
 #[test]

@@ -1770,9 +1770,9 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                             Some(None),
                         )?);
                 }
+                live_actor = None;
+                live_task_projection = None;
                 if let Some(daemon) = live_daemon.take() {
-                    live_actor = None;
-                    live_task_projection = None;
                     daemon.stop_and_join(
                         "protocol-v5 receipt scenario live daemon panicked before restart",
                     )?;
@@ -2235,13 +2235,20 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 }
                 bulk_task_projection = Some(projection);
             }
-            ReceiptScenarioAction::FillTombstones => {
+            ReceiptScenarioAction::FillTombstones
+            | ReceiptScenarioAction::SeedTombstoneCatalog { .. } => {
+                let count = match action {
+                    ReceiptScenarioAction::FillTombstones => 28_864,
+                    ReceiptScenarioAction::SeedTombstoneCatalog { count } => count,
+                    _ => unreachable!("tombstone fixture action was matched above"),
+                };
                 let (actor, catalog) = fill_tombstone_pool(
                     state.path(),
                     &identity,
                     &clock,
                     &arguments,
                     &workspace_hint,
+                    count,
                 )?;
                 bulk_receipt_snapshot = Some(snapshot_with_actor_and_bulk_catalog(
                     &actor,
