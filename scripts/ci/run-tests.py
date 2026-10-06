@@ -93,6 +93,38 @@ LEDGER_SCENARIO_LIBRARY = (
 )
 
 
+# Вызов с признаком пересобирает `target/debug/unica` с другим набором
+# признаков. Windows не даёт заменить файл, пока его исполняет живой процесс,
+# а демоны тестов предыдущего вызова живут дольше теста, если держат
+# обещанное состояние. Перед такой пересборкой на Windows печатаем выжившие
+# `unica.exe` с командной строкой: она называет корень состояния демона,
+# а по нему виден тест-источник. Процессы не завершаются и не ожидаются:
+# утечку чинят в тесте, а здесь остаётся только свидетельство.
+SURVIVING_PRODUCT_QUERY = (
+    "powershell", "-NoProfile", "-NonInteractive", "-Command",
+    "Get-CimInstance Win32_Process -Filter \"Name='unica.exe'\""
+    " | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List",
+)
+
+
+def rebuilds_product_with_features(selection: tuple[str, ...]) -> bool:
+    return "--features" in selection
+
+
+def report_surviving_product_processes(run_query=subprocess.run) -> None:
+    """Напечатать живые `unica.exe`; сбой самого запроса прогон не валит."""
+    print("+ " + " ".join(SURVIVING_PRODUCT_QUERY), flush=True)
+    try:
+        run_query(list(SURVIVING_PRODUCT_QUERY), cwd=REPO_ROOT, check=False)
+    except OSError as error:
+        print(f"выжившие unica.exe не перечислены: {error}", flush=True)
+
+
+def surviving_product_report(os_name: str = os.name):
+    """Отчёт о выживших процессах нужен только там, где они держат файл."""
+    return report_surviving_product_processes if os_name == "nt" else None
+
+
 def rust_selections(profile: str) -> list[tuple[str, ...]]:
     """Что отбирает каждый вызов nextest: весь workspace и, если ворота
     принимают `medium` или `large`, контракт и private scenario-модуль ReceiptLedger."""
@@ -357,6 +389,7 @@ def execute(
     sha: str | None = None,
     suite: str | None = None,
     only_size: str | None = None,
+    before_feature_build=None,
 ) -> int:
     """Прогнать экосистемы и оставить результаты.
 
@@ -365,6 +398,8 @@ def execute(
     успел написать JUnit. Результаты Rust пишутся, только если JUnit есть.
     """
     run_commands = run if run_commands is None else run_commands
+    if before_feature_build is None and run_commands is run:
+        before_feature_build = surviving_product_report()
     junit = nextest_junit(profile) if junit is None else junit
     if results is not None:
         allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem, line=line, sha=sha)
@@ -379,6 +414,8 @@ def execute(
         for selection, command in zip(rust_selections(profile), rust_commands(profile), strict=True):
             if junit.is_file():
                 junit.unlink()
+            if before_feature_build is not None and rebuilds_product_with_features(selection):
+                before_feature_build()
             rust_code = run_commands([command])
             if results is not None and junit.is_file():
                 print(f"результаты Rust: {emit_rust(results, profile, runner, junit, selection=selection)} записей")

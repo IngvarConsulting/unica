@@ -4,6 +4,8 @@ use serde_json::{json, Value};
 mod cfe_structure;
 #[path = "support/code_module_state.rs"]
 mod code_module_state;
+#[path = "platform/daemon_teardown.rs"]
+mod daemon_teardown;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -14,6 +16,7 @@ const RESPONSE_DEADLINE: Duration = Duration::from_secs(15);
 
 struct McpProcess {
     child: Child,
+    state: std::path::PathBuf,
     stdin: Option<ChildStdin>,
     stdout: Receiver<String>,
     stdout_reader: Option<JoinHandle<()>>,
@@ -35,7 +38,7 @@ impl McpProcess {
         let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
             .arg("mcp")
             .current_dir(workspace)
-            .env("UNICA_PROVIDER_STATE_DIR", state)
+            .env("UNICA_PROVIDER_STATE_DIR", &state)
             // Демон переживает MCP: без назначенной паузы он остаётся на
             // четверть часа, и к концу прогона их набирается столько же,
             // сколько было тестов.
@@ -51,6 +54,7 @@ impl McpProcess {
         let stdout_reader = std::thread::spawn(move || read_stdout_lines(stdout, line_sender));
         Self {
             child,
+            state,
             stdin: Some(stdin),
             stdout: line_receiver,
             stdout_reader: Some(stdout_reader),
@@ -116,6 +120,7 @@ impl Drop for McpProcess {
             let _ = self.child.wait();
         }
         self.join_stdout_reader();
+        daemon_teardown::stop_daemons_under(&self.state);
     }
 }
 
