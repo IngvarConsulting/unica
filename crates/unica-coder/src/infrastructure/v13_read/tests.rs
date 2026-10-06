@@ -2427,6 +2427,221 @@ fn the_command_interface_shows_every_order_it_holds() {
     assert_eq!(missing.diagnostics[0]["code"], "not_found");
 }
 
+fn subsystem_descriptor(name: &str, content: &[&str], children: &[&str]) -> String {
+    let content = content
+        .iter()
+        .map(|item| format!(r#"<xr:Item xsi:type="xr:MDObjectRef">{item}</xr:Item>"#))
+        .collect::<String>();
+    let children = children
+        .iter()
+        .map(|child| format!("<Subsystem>{child}</Subsystem>"))
+        .collect::<String>();
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+  <Subsystem><Properties><Name>{name}</Name><Synonym/><IncludeInCommandInterface>true</IncludeInCommandInterface><UseOneCommand>false</UseOneCommand><Content>{content}</Content></Properties><ChildObjects>{children}</ChildObjects></Subsystem>
+</MetaDataObject>"#
+    )
+}
+
+fn view_items(result: &crate::domain::invocation::DomainResult) -> Vec<serde_json::Value> {
+    assert!(result.ok, "{:?}", refusal_codes(result));
+    result.data.as_ref().unwrap()["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn view_branch_count(result: &crate::domain::invocation::DomainResult, at: &str) -> Option<u64> {
+    assert!(result.ok, "{:?}", refusal_codes(result));
+    result.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|branch| branch["at"] == at)
+        .and_then(|branch| branch["count"].as_u64())
+}
+
+/// Состав подсистемы и её дочерние подсистемы — то, ради чего подсистему
+/// читают. Состав — ссылки на чужие объекты, поэтому он живёт в ветви
+/// `Relation`; дочерняя подсистема — потомок с собственным адресом, и
+/// читается по нему на любой глубине регистрации.
+#[test]
+fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture.source.join("Subsystems/Sales.xml"),
+        &subsystem_descriptor("Sales", &["Catalog.Items", "Document.Order"], &["Orders"]),
+    );
+    // Ссылка по идентификатору — так платформа пишет указатель на
+    // исчезнувший объект. Она не роняет чтение и не прячется: её называет
+    // слот `limits`, а счёт ветви равен тому, что покажет страница.
+    write(
+        &fixture
+            .source
+            .join("Subsystems/Sales/Subsystems/Orders.xml"),
+        &subsystem_descriptor(
+            "Orders",
+            &["Document.Order", "0:78b4152e-0000-0000-0000-000000000000"],
+            &["Returns"],
+        ),
+    );
+    write(
+        &fixture
+            .source
+            .join("Subsystems/Sales/Subsystems/Orders/Subsystems/Returns.xml"),
+        &subsystem_descriptor("Returns", &["Catalog.Items"], &[]),
+    );
+    write(
+        &fixture
+            .source
+            .join("Subsystems/Sales/Subsystems/Orders/Ext/CommandInterface.xml"),
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<SubsystemsOrder>
+		<Subsystem>Subsystem.Sales.Subsystem.Orders.Subsystem.Returns</Subsystem>
+	</SubsystemsOrder>
+</CommandInterface>
+"#,
+    );
+    // Файл на диске, который родитель не регистрирует, подсистемой не является.
+    write(
+        &fixture.source.join("Subsystems/Sales/Subsystems/Ghost.xml"),
+        &subsystem_descriptor("Ghost", &[], &[]),
+    );
+    let service = fixture.view_service();
+
+    let root = service.view(ViewRequest::new("main:Subsystem.Sales").unwrap());
+    assert_eq!(
+        view_branch_count(&root, "main:Subsystem.Sales.Relation"),
+        Some(2)
+    );
+    assert_eq!(
+        view_branch_count(&root, "main:Subsystem.Sales.Subsystem"),
+        Some(1)
+    );
+    assert_eq!(
+        view_items(&service.view(ViewRequest::new("main:Subsystem.Sales.Relation").unwrap())),
+        vec![
+            json!({"relation": "content", "at": "main:Catalog.Items", "kind": "Catalog"}),
+            json!({"relation": "content", "at": "main:Document.Order", "kind": "Document"}),
+        ]
+    );
+    let children =
+        view_items(&service.view(ViewRequest::new("main:Subsystem.Sales.Subsystem").unwrap()));
+    assert_eq!(children.len(), 1, "{children:?}");
+    assert_eq!(children[0]["at"], "main:Subsystem.Sales.Subsystem.Orders");
+    assert_eq!(children[0]["kind"], "Subsystem");
+
+    let nested_at = "main:Subsystem.Sales.Subsystem.Orders";
+    let nested = service.view(ViewRequest::new(nested_at).unwrap());
+    assert!(nested.ok, "{:?}", refusal_codes(&nested));
+    let data = nested.data.as_ref().unwrap();
+    assert_eq!(data["at"], nested_at);
+    assert_eq!(data["kind"], "Subsystem");
+    assert_eq!(data["title"], "Orders");
+    assert_eq!(
+        view_branch_count(&nested, &format!("{nested_at}.Relation")),
+        Some(1)
+    );
+    assert_eq!(
+        view_branch_count(&nested, &format!("{nested_at}.Subsystem")),
+        Some(1)
+    );
+    assert_eq!(
+        view_branch_count(&nested, &format!("{nested_at}.Interface")),
+        Some(1)
+    );
+    let content = service.view(ViewRequest::new(&format!("{nested_at}.Relation")).unwrap());
+    assert_eq!(
+        view_items(&content),
+        vec![json!({"relation": "content", "at": "main:Document.Order", "kind": "Document"})]
+    );
+    let limits = content.data.as_ref().unwrap()["limits"].to_string();
+    assert!(
+        limits.contains("0:78b4152e-0000-0000-0000-000000000000"),
+        "{limits}"
+    );
+
+    // Интерфейс вложенной подсистемы читается из её собственного файла, а
+    // не из файла корня.
+    let order = view_items(
+        &service.view(ViewRequest::new(&format!("{nested_at}.Interface.Subsystem")).unwrap()),
+    );
+    assert_eq!(
+        order,
+        vec![json!({"order": 1, "at": "main:Subsystem.Sales.Subsystem.Orders.Subsystem.Returns"})]
+    );
+    let deepest = service.view(ViewRequest::new(order[0]["at"].as_str().unwrap()).unwrap());
+    assert!(deepest.ok, "{:?}", refusal_codes(&deepest));
+    assert_eq!(deepest.data.as_ref().unwrap()["title"], "Returns");
+
+    // Родитель, прочитанный после потомка, не получает его нагрузку из кэша.
+    let again = service.view(ViewRequest::new("main:Subsystem.Sales").unwrap());
+    assert_eq!(
+        again.data.as_ref().unwrap()["title"],
+        root.data.as_ref().unwrap()["title"]
+    );
+    assert_eq!(
+        view_branch_count(&again, "main:Subsystem.Sales.Relation"),
+        Some(2)
+    );
+
+    // Страница состава режется общим курсором.
+    let first = service.view(
+        ViewRequest::new("main:Subsystem.Sales.Relation")
+            .unwrap()
+            .with_limit(1)
+            .unwrap(),
+    );
+    assert_eq!(view_items(&first).len(), 1);
+    assert!(first.cursor.is_some(), "{first:?}");
+
+    for missing in [
+        "main:Subsystem.Sales.Subsystem.Ghost",
+        "main:Subsystem.Sales.Subsystem.Нет",
+        "main:Subsystem.Sales.Relation.Catalog",
+    ] {
+        let result = service.view(ViewRequest::new(missing).unwrap());
+        assert!(!result.ok, "{missing}: {result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "not_found", "{missing}");
+    }
+}
+
+/// Спуск идёт по регистрации, и каждый дескриптор цепочки должен называть
+/// ту подсистему, по имени которой к нему пришли. Файл с чужим именем на её
+/// месте не становится ни ею, ни дорогой к её детям.
+#[test]
+fn a_nested_subsystem_read_rejects_a_descriptor_that_names_another_subsystem() {
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture.source.join("Subsystems/Sales.xml"),
+        &subsystem_descriptor("Sales", &[], &["Orders"]),
+    );
+    write(
+        &fixture
+            .source
+            .join("Subsystems/Sales/Subsystems/Orders.xml"),
+        &subsystem_descriptor("Impostor", &[], &["Returns"]),
+    );
+    write(
+        &fixture
+            .source
+            .join("Subsystems/Sales/Subsystems/Orders/Subsystems/Returns.xml"),
+        &subsystem_descriptor("Returns", &[], &[]),
+    );
+    let service = fixture.view_service();
+
+    for at in [
+        "main:Subsystem.Sales.Subsystem.Orders",
+        "main:Subsystem.Sales.Subsystem.Orders.Subsystem.Returns",
+    ] {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(!result.ok, "{at}: {result:?}");
+        assert_ne!(result.diagnostics[0]["code"], "not_found", "{at}");
+    }
+}
+
 #[test]
 fn template_area_cell_content_is_a_branch_read_only_when_its_address_is_asked() {
     let fixture = RealReaderFixture::new();

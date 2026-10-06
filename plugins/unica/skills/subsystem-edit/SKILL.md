@@ -54,7 +54,9 @@ allowed-tools:
 ## Порядок
 
 1. Найди подсистему: `unica.search {corpus: "names", kind: "Subsystem"}`.
-2. Прочти её: `unica.view {at}` — состав и дочерние лежат в ветвях.
+2. Прочти её: `unica.view {at}`. Состав лежит в ветви `Relation`
+   (`relation: "content"`), дочерние — в ветви `Subsystem`; вложенная
+   подсистема читается по адресу `<набор>:Subsystem.<Родитель>.Subsystem.<Имя>`.
 3. Предпросмотр: `unica.apply` с `at` и `ops`; ответ несёт план и `data.executionToken`.
 4. Применение: вызов только с `executionToken` из `data.executionToken` успешного плана.
 5. Проверка: `unica.check {at}`.

@@ -1,6 +1,7 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::platform_profile::{ModuleCapability, PlatformProfile};
 use crate::domain::source_target::MetadataAddress;
+use crate::domain::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
 use crate::infrastructure::native_operations::common::typed_role_reader_target;
 use crate::infrastructure::native_operations::dcs::typed_dcs_reader_target;
 use crate::infrastructure::native_operations::form::typed_form_reader_target;
@@ -33,6 +34,11 @@ pub(crate) struct LogicalTreeRoute {
     at: QualifiedAddress,
     reader: LogicalReader,
     reader_metadata_path: Option<MetadataAddress>,
+    /// Имена вложенных подсистем под корневой целью: `B`, `C` для
+    /// `Subsystem.A.Subsystem.B.Subsystem.C`. Грамматика `MetadataAddress`
+    /// вложенных подсистем не выражает, поэтому цель остаётся корнем, а
+    /// спуск по регистрации несёт маршрут.
+    nested_subsystems: Vec<String>,
     module: Option<ModuleCapability>,
     diagnostic_file: Option<PathBuf>,
 }
@@ -52,6 +58,10 @@ impl LogicalTreeRoute {
 
     pub(crate) fn reader_metadata_path(&self) -> Option<&MetadataAddress> {
         self.reader_metadata_path.as_ref()
+    }
+
+    pub(crate) fn nested_subsystems(&self) -> &[String] {
+        &self.nested_subsystems
     }
 
     pub(crate) fn diagnostic_file(&self) -> Option<&std::path::Path> {
@@ -99,6 +109,18 @@ pub(crate) fn route_logical_address(
     {
         let target = typed_reader_metadata_target(address, &["Subsystem"])
             .ok_or_else(|| not_found(address))?;
+        let nested_subsystems = segments[1..]
+            .iter()
+            .map_while(|segment| {
+                (segment.kind() == NodeKind::Subsystem)
+                    .then(|| segment.name())
+                    .flatten()
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        if nested_subsystems.len() >= SUBSYSTEM_ADDRESS_MAX_DEPTH {
+            return Err(not_found(address));
+        }
         let reader = if segments
             .iter()
             .any(|segment| segment.kind() == NodeKind::Interface)
@@ -107,7 +129,9 @@ pub(crate) fn route_logical_address(
         } else {
             LogicalReader::Subsystem
         };
-        return Ok(route(address, reader, Some(target), None));
+        let mut route = route(address, reader, Some(target), None);
+        route.nested_subsystems = nested_subsystems;
+        return Ok(route);
     }
     if segments
         .first()
@@ -172,6 +196,7 @@ fn route(
         at: address.clone(),
         reader,
         reader_metadata_path,
+        nested_subsystems: Vec::new(),
         module,
         diagnostic_file: None,
     }
