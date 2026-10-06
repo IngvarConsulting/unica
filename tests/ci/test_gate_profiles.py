@@ -2,20 +2,82 @@
 
 Отбор объявлен профилями: `pr` пропускает только `small`, очередь и `main` —
 всё, кроме `large`, релиз гоняет всё, `large` — названные тесты ёмкости и
-нагрузки контракта ReceiptLedger, а на Windows — весь набор. Меняется этот
+нагрузки ReceiptLedger и карты исходников, а на Windows — весь набор. Меняется этот
 страж осознанно, вместе с выражениями профилей.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import re
 import tomllib
 import unittest
 from pathlib import Path
 
+from tree_sitter import Language, Parser
+import tree_sitter_rust
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATES = ("pr", "queue", "main", "release")
+
+
+def large_groups(expression: str) -> dict[str, list[str]]:
+    """Only exact named tests of the two declared targets enter the large tier."""
+    group = r"\(\s*binary\({target}\)\s*&\s*\((?P<{label}>.*?)\)\s*\)"
+    pattern = (
+        group.format(target="daemon_receipt_ledger", label="ledger")
+        + r"\s*\|\s*"
+        + group.format(target="unica_coder", label="selection")
+    )
+    matched = re.fullmatch(pattern, expression.strip(), re.S)
+    if matched is None:
+        raise ValueError("large must name only the declared ledger and library targets")
+    result = {}
+    for target, label in [("daemon_receipt_ledger", "ledger"), ("unica_coder", "selection")]:
+        terms = matched[label].strip().split("|")
+        names = []
+        for term in terms:
+            parsed = re.fullmatch(r"\s*test\(/\^([\w:]+)\$/\)\s*", term)
+            if parsed is None:
+                raise ValueError("large members must be exact anchored test names")
+            name = parsed[1]
+            if target == "unica_coder":
+                prefix = "infrastructure::source_selection_evidence::tests::"
+                if not name.startswith(prefix) or "::" in name[len(prefix):]:
+                    raise ValueError("large library tests must belong to source selection evidence")
+            elif "::" in name:
+                raise ValueError("large ledger tests must belong to the contract root")
+            names.append(name)
+        if names != sorted(set(names)):
+            raise ValueError("large members must be unique and sorted within each target")
+        result[target] = names
+    return result
+
+
+def attributed_test_functions(source: str) -> set[str]:
+    """Read test attributes and module ownership from Rust syntax, not comments."""
+    encoded = source.encode()
+    tree = Parser(Language(tree_sitter_rust.language())).parse(encoded)
+    found = set()
+    stack = [(tree.root_node, ())]
+    while stack:
+        parent, modules = stack.pop()
+        attributes = []
+        for child in parent.named_children:
+            if child.type == "attribute_item":
+                attributes.append(re.sub(r"\s+", "", encoded[child.start_byte:child.end_byte].decode()))
+                continue
+            if child.type == "mod_item":
+                body = child.child_by_field_name("body")
+                if body is not None:
+                    name = child.child_by_field_name("name").text.decode()
+                    stack.append((body, (*modules, name)))
+            elif child.type == "function_item" and "#[test]" in attributes:
+                name = child.child_by_field_name("name").text.decode()
+                found.add("::".join((*modules, name)))
+            attributes = []
+    return found
 
 
 def load_run_tests():
@@ -47,9 +109,9 @@ class GateProfileCompositionTests(unittest.TestCase):
                     # Очередь и `main` — всё, кроме ночного яруса, тем же выражением.
                     self.assertEqual(profiles[gate]["default-filter"].strip(), f"not (\n{large}\n)")
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
-        # Ночной ярус на ubuntu и macOS — только названные тесты одной цели;
+        # Ночной ярус на ubuntu и macOS — только названные тесты двух целей;
         # тот же список стоит и у срока `large`.
-        self.assertTrue(large.startswith("binary(daemon_receipt_ledger) & (\n    test(/^"))
+        large_groups(large)
         deadline = next(o for o in profiles["default"]["overrides"] if o.get("threads-required"))
         self.assertEqual(deadline["filter"].strip(), large)
         self.assertEqual(deadline["slow-timeout"], {"period": "900s", "terminate-after": 2})
@@ -67,23 +129,53 @@ class GateProfileCompositionTests(unittest.TestCase):
         for command in self.run_tests.rust_commands("large"):
             self.assertIn("--no-tests=pass", command)
 
-    def test_large_tier_names_only_tests_that_exist_in_the_ledger_contract(self) -> None:
+    def test_large_tier_names_only_attributed_tests_of_the_declared_targets(self) -> None:
         """Ярус объявлен именами: переименованный тест выпал бы из ночи молча."""
-        import re
-
         large = self.config["profile"]["large"]["default-filter"]
-        # Регулярное выражение nextest читается буквально, перенос строки в
-        # нём — символ имени; поэтому ярус — по одному `test(/^имя$/)` на строку.
-        names = re.findall(r"test\(/\^(\w+)\$/\)", large)
-        self.assertEqual(len(names), large.count("test("))
-        source = (REPO_ROOT / "crates" / "unica-coder" / "tests" / "daemon_receipt_ledger.rs").read_text(encoding="utf-8")
+        groups = large_groups(large)
+        self.assertEqual(sum(map(len, groups.values())), large.count("test("))
+        sources = {
+            "daemon_receipt_ledger": ("tests/daemon_receipt_ledger.rs", ""),
+            "unica_coder": ("src/infrastructure/source_selection_evidence.rs", "infrastructure::source_selection_evidence::"),
+        }
+        for target, names in groups.items():
+            path, prefix = sources[target]
+            source = (REPO_ROOT / "crates" / "unica-coder" / path).read_text(encoding="utf-8")
+            declared = {prefix + name for name in attributed_test_functions(source)}
+            for name in names:
+                with self.subTest(target=target, test=name):
+                    self.assertIn(name, declared, "large member must have a test attribute in its declared module")
 
-        self.assertEqual(names, sorted(names))
-        for name in names:
-            with self.subTest(test=name.strip()):
-                self.assertIsNotNone(
-                    re.search(rf"^fn {name.strip()}\(\)", source, re.M), "тест яруса large не найден в контракте"
-                )
+    def test_large_filter_rejects_broad_wrong_target_and_duplicate_members(self) -> None:
+        expression = self.config["profile"]["large"]["default-filter"].strip()
+        name = large_groups(expression)["unica_coder"][0]
+        exact = f"test(/^{name}$/)"
+        for replacement in [
+            f"test(/^{name}/)",
+            "test(/^infrastructure::source_selection_evidence::tests::/)",
+            "test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)",
+            exact + " | " + exact,
+        ]:
+            with self.subTest(replacement=replacement):
+                with self.assertRaises(ValueError):
+                    large_groups(expression.replace(exact, replacement, 1))
+
+    def test_large_source_binding_rejects_helpers_comments_and_wrong_modules(self) -> None:
+        found = attributed_test_functions('''
+            mod tests {
+                fn helper() {}
+                // #[test] fn comment() {}
+                #[test] fn capacity() {}
+            }
+            mod other { #[test] fn capacity() {} }
+        ''')
+        self.assertEqual(found, {"tests::capacity", "other::capacity"})
+        self.assertNotIn("tests::helper", found)
+        self.assertNotIn("tests::comment", found)
+        self.assertNotIn("tests::missing", found)
+        self.assertNotIn("tests::capacity", attributed_test_functions(
+            "mod other { #[test] fn capacity() {} }"
+        ))
 
     def test_python_matrix_names_every_suite_of_the_seam_and_lanes_only_admitted_sizes(self) -> None:
         """Матрица ворот: каждый набор шва, полосатый — по допущенным размерам, не больше."""

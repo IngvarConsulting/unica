@@ -2051,7 +2051,9 @@ fn actor_format_evidence(
             .expect("actor format discovery has retained evidence state");
         // Non-marker entries consume actor work too, so the remaining format
         // evidence allowance can exceed the remaining enumeration capacity.
-        let limit = limit.min(pass.remaining_member_budget());
+        let limit = pass
+            .remaining_member_budget()
+            .map_or(limit, |remaining| limit.min(remaining));
         let entries =
             pass.observe_membership(&configured_path, &source_directory, limit, checkpoint)?;
         for entry in entries {

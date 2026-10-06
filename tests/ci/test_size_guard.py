@@ -145,10 +145,11 @@ class SizeGuardTests(unittest.TestCase):
         self.deadline = next(o for o in self.config["profile"]["default"]["overrides"] if "slow-timeout" in o)
         self.medium = self.deadline["filter"].strip()
 
-    def test_pr_gate_and_medium_deadline_share_one_expression(self) -> None:
+    def test_pr_gate_excludes_the_shared_medium_and_large_expressions(self) -> None:
         pr = self.config["profile"]["pr"]["default-filter"].strip()
 
-        self.assertEqual(pr, f"not (\n{self.medium}\n)")
+        large = self.config["profile"]["large"]["default-filter"].strip()
+        self.assertEqual(pr, f"not (\n{self.medium}\n) & not (\n{large}\n)")
         self.assertEqual(self.deadline["slow-timeout"], {"period": "300s", "terminate-after": 2})
         self.assertTrue(self.medium.startswith("kind(test)"))
 
