@@ -2,7 +2,6 @@
 id: INV.SOURCE.INTERFACE-ORDER-MEMBERSHIP
 check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_interface_order_permutes_stored_composition_and_refuses_any_other_without_writing
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_command_order_of_one_group_keeps_other_groups_and_sections
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_interface_order_plan_is_refused_after_the_composition_changes
   - crates/unica-coder/src/infrastructure/native_operations/interface.rs::order_membership_accepts_a_permutation_or_a_first_order_only
 ---
@@ -14,6 +13,5 @@ check:
 порядок A, B, C, список B, A отклоняется без записи: пропуск C не означает
 удаление его настройки. Повтор элемента или подмена состава также отклоняются.
 
-Для команд сравнение относится к выбранной группе. Порядок других групп
-и остальные секции интерфейса перестановка не меняет. Первоначальное задание
+Для команд сравнение относится к выбранной группе. Первоначальное задание
 порядка, когда его ещё нет, — отдельный случай; это правило его не запрещает.

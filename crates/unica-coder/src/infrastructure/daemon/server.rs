@@ -1451,6 +1451,12 @@ pub(crate) mod actor_capacity_tests {
                 .replace("КонтрольРаботыПользователей", "Продажи")
                 .as_bytes(),
         );
+        // У корневой `Продажи` есть свой интерфейс: маршрут по последнему
+        // имени нашёл бы его вместо отказа.
+        write(
+            "Subsystems/Продажи/Ext/CommandInterface.xml",
+            control_interface_document().as_bytes(),
+        );
         write(
             ROOT_INTERFACE,
             "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<SubsystemsOrder>\r\n\t\t<Subsystem>Subsystem.Администрирование</Subsystem>\r\n\t\t<Subsystem>Subsystem.КонтрольРаботыПользователей</Subsystem>\r\n\t\t<Subsystem>Subsystem.Продажи</Subsystem>\r\n\t</SubsystemsOrder>\r\n</CommandInterface>".as_bytes(),
@@ -1753,6 +1759,110 @@ pub(crate) mod actor_capacity_tests {
         );
     }
 
+    /// Каждая из пяти операций меняет только свою секцию и названные в запросе
+    /// элементы: для видимости и размещения файл после правки совпадает
+    /// с исходным байт в байт, кроме значения одной команды, для порядков —
+    /// всё вне своей секции. Ролевое значение видимости переживает правку
+    /// общего.
+    #[test]
+    fn canonical_each_interface_operation_changes_only_its_own_section_and_items() {
+        let workspace = interface_order_workspace();
+        let source = workspace.path().join("src");
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let publish = |arguments: serde_json::Value| {
+            let preview = interface_apply_call(&runtime, workspace.path(), arguments);
+            assert!(preview.ok, "{preview:?}");
+            let applied = interface_apply_call(
+                &runtime,
+                workspace.path(),
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
+            assert!(applied.ok, "{applied:?}");
+        };
+        let read = |relative: &str| std::fs::read_to_string(source.join(relative)).unwrap();
+        // Значение одного дочернего элемента одной команды в одной секции.
+        let with_child = |text: &str, section: &str, command: &str, from: &str, to: &str| {
+            let open = text.find(&format!("<{section}>")).unwrap();
+            let start = open + text[open..].find(&format!("name=\"{command}\"")).unwrap();
+            let end = start + text[start..].find("</Command>").unwrap();
+            let block = text[start..end].replacen(from, to, 1);
+            assert_ne!(block, text[start..end], "{command}: {from} is in the block");
+            format!("{}{block}{}", &text[..start], &text[end..])
+        };
+        let administration_at = "main:Subsystem.Администрирование.Interface";
+        let command = "Catalog.Пользователи.StandardCommand.OpenList";
+
+        let original = read(ADMINISTRATION_INTERFACE);
+        publish(serde_json::json!({
+            "at": administration_at,
+            "ops": [{"op": "commandVisibility.set", "args": {"at": administration_at, "items": [{"command": command, "visible": true}]}}]
+        }));
+        assert_eq!(
+            read(ADMINISTRATION_INTERFACE),
+            with_child(
+                &original,
+                "CommandsVisibility",
+                command,
+                "<xr:Common>false</xr:Common>",
+                "<xr:Common>true</xr:Common>"
+            )
+        );
+
+        let original = read(ADMINISTRATION_INTERFACE);
+        publish(serde_json::json!({
+            "at": administration_at,
+            "ops": [{"op": "commandPlacement.set", "args": {"at": administration_at, "items": [{"command": command, "group": "NavigationPanelOrdinary"}]}}]
+        }));
+        assert_eq!(
+            read(ADMINISTRATION_INTERFACE),
+            with_child(
+                &original,
+                "CommandsPlacement",
+                command,
+                "<CommandGroup>NavigationPanelImportant</CommandGroup>",
+                "<CommandGroup>NavigationPanelOrdinary</CommandGroup>"
+            )
+        );
+
+        let original = read(ADMINISTRATION_INTERFACE);
+        let mut groups = section_values(&original, "GroupsOrder");
+        groups.reverse();
+        publish(interface_op(
+            "groupOrder.set",
+            administration_at,
+            serde_json::json!({"groups": groups}),
+        ));
+        let edited = read(ADMINISTRATION_INTERFACE);
+        assert_eq!(section_values(&edited, "GroupsOrder"), groups);
+        assert_eq!(
+            without_section(&edited, "GroupsOrder"),
+            without_section(&original, "GroupsOrder")
+        );
+
+        // Корень: рядом с порядком подсистем лежит видимость с ролевым значением.
+        let root = control_interface_document().replace(
+            "\t</CommandsOrder>\r\n",
+            "\t</CommandsOrder>\r\n\t<SubsystemsOrder>\r\n\t\t<Subsystem>Subsystem.Администрирование</Subsystem>\r\n\t\t<Subsystem>Subsystem.Продажи</Subsystem>\r\n\t</SubsystemsOrder>\r\n",
+        );
+        std::fs::write(source.join(ROOT_INTERFACE), &root).unwrap();
+        publish(interface_op(
+            "subsystemOrder.set",
+            "main:Configuration",
+            serde_json::json!({"subsystems": ["Subsystem.Продажи", "Subsystem.Администрирование"]}),
+        ));
+        let edited = read(ROOT_INTERFACE);
+        assert_eq!(
+            section_values(&edited, "SubsystemsOrder"),
+            ["Subsystem.Продажи", "Subsystem.Администрирование"]
+        );
+        assert_eq!(
+            without_section(&edited, "SubsystemsOrder"),
+            without_section(&root, "SubsystemsOrder")
+        );
+        assert!(edited.contains("<xr:Value name=\"Role.ПолныеПрава\">false</xr:Value>"));
+    }
+
     /// Адрес интерфейса несёт всю цепочку владельцев: правка вложенной
     /// подсистемы не уходит в одноимённую корневую. Неподдержанная цель и
     /// чужой маршрут отказывают, а не выбирают другой интерфейс.
@@ -1813,14 +1923,15 @@ pub(crate) mod actor_capacity_tests {
 
         let before = crate::test_support::tree_snapshot(workspace.path());
         // Вложенной подсистемы с таким именем нет — одноимённая корневая
-        // `Продажи` целью не становится.
+        // `Продажи` с годным для этой перестановки интерфейсом целью не
+        // становится.
         let missing = interface_apply_call(
             &runtime,
             workspace.path(),
             interface_op(
                 "groupOrder.set",
                 "main:Subsystem.Администрирование.Subsystem.Продажи.Interface",
-                serde_json::json!({"groups": ["NavigationPanelOrdinary"]}),
+                serde_json::json!({"groups": ["NavigationPanelSeeAlso", "NavigationPanelOrdinary", "NavigationPanelImportant"]}),
             ),
         );
         assert_refused_without_trace(&missing, "not_found", "command interface");
