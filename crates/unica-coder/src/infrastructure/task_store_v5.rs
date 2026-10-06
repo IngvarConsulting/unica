@@ -7,19 +7,20 @@ use crate::application::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
     V5CommitOperation, V5DeleteTerminalOutcome, V5StartWorkingOutcome, V5StoredInvocationRecord,
     V5StoredTask, V5TaskIdentity, V5TaskMismatch, V5TaskRecoveryEntry, V5TaskRetirement,
-    V5TaskStatus, V5TaskStoreError, V5TerminalPublication, MAX_V5_TASK_RECORDS,
+    V5TaskStatus, V5TaskStoreError, V5TerminalPublication,
 };
 use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::TaskId;
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_file_child, file_identity, open_directory_ownership_lock,
-    open_regular_child_nofollow, read_directory_names_bounded, remove_identity_bound_regular_child,
+    open_regular_child_nofollow, remove_identity_bound_regular_child,
     rename_identity_bound_regular_child_no_replace, replace_identity_bound_regular_child,
-    restrict_stage_to_owner, sync_directory, verify_owner_only_acl, RetainedDirectoryCapability,
+    restrict_stage_to_owner, sync_directory, verify_owner_only_acl, FileIdentity,
+    RetainedDirectoryCapability,
 };
 use fs2::FileExt;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -31,18 +32,15 @@ use uuid::Uuid;
 
 const STORE_LOCK_FILE: &str = ".task-store-v5.lock";
 const STORE_WRITER_WAIT_SLICE: Duration = Duration::from_millis(10);
-const MAX_INSPECTION_EXTRA_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, Copy)]
 struct StoreLimits {
-    max_records: usize,
     max_record_bytes: usize,
 }
 
 impl StoreLimits {
     const fn production() -> Self {
         Self {
-            max_records: MAX_V5_TASK_RECORDS,
             max_record_bytes: MAX_TASK_RECORD_BYTES,
         }
     }
@@ -50,7 +48,7 @@ impl StoreLimits {
 
 #[derive(Default)]
 struct StoreCatalog {
-    records: HashMap<TaskId, V5StoredInvocationRecord>,
+    records: HashSet<TaskId>,
 }
 
 /// A commit fault a test injects exactly once; production never arms one.
@@ -80,10 +78,10 @@ impl FileInvocationStoreV5 {
         deadline: ProviderDeadline,
     ) -> Result<(), V5TaskStoreError> {
         let mut writer = self.lock_writer(deadline)?;
-        if !writer.records.is_empty() || records.len() > self.limits.max_records {
-            return Err(V5TaskStoreError::Capacity {
-                max_records: self.limits.max_records,
-            });
+        if !writer.records.is_empty() {
+            return Err(V5TaskStoreError::Corrupt(
+                "bulk fixture requires an empty catalog",
+            ));
         }
         self.verify_root_authority()?;
         let mut prepared = Vec::with_capacity(records.len());
@@ -96,7 +94,7 @@ impl FileInvocationStoreV5 {
                     max_bytes: self.limits.max_record_bytes,
                 });
             }
-            if writer.records.contains_key(&record.task_id)
+            if writer.records.contains(&record.task_id)
                 || prepared.iter().any(
                     |(prepared_record, _): &(V5StoredInvocationRecord, Vec<u8>)| {
                         prepared_record.task_id == record.task_id
@@ -125,7 +123,7 @@ impl FileInvocationStoreV5 {
         sync_directory(&self.root_file)
             .map_err(|error| storage_error("sync bulk Task fixture directory", error))?;
         for (record, _) in prepared {
-            writer.records.insert(record.task_id, record);
+            writer.records.insert(record.task_id);
         }
         Ok(())
     }
@@ -137,15 +135,10 @@ impl FileInvocationStoreV5 {
         deadline: ProviderDeadline,
     ) -> Result<(), V5TaskStoreError> {
         let mut writer = self.lock_writer(deadline)?;
-        if writer.records.contains_key(&record.task_id) {
+        if writer.records.contains(&record.task_id) {
             return Err(V5TaskStoreError::Mismatch {
                 task_id: record.task_id,
                 reason: V5TaskMismatch::ExistingRecord,
-            });
-        }
-        if writer.records.len() >= self.limits.max_records {
-            return Err(V5TaskStoreError::Capacity {
-                max_records: self.limits.max_records,
             });
         }
         if record.version == 0
@@ -232,106 +225,89 @@ impl FileInvocationStoreV5 {
         Ok((store, catalog))
     }
 
-    #[cfg(test)]
-    fn open_with_limits_for_test(
-        root: impl AsRef<Path>,
-        clock: Arc<dyn EpochMillisClock>,
-        max_records: usize,
-        deadline: ProviderDeadline,
-    ) -> Result<(Self, TaskStoreRecoveryCatalog), V5TaskStoreError> {
-        let root = RetainedDirectoryCapability::open(root.as_ref())
-            .map_err(|error| storage_error("retain protocol-v5 task root", error))?;
-        Self::open_retained_directory_inspect_only_with_limits(
-            root,
-            clock,
-            deadline,
-            StoreLimits {
-                max_records,
-                max_record_bytes: MAX_TASK_RECORD_BYTES,
-            },
-        )
-    }
-
     fn inspect_only(
         &self,
         deadline: ProviderDeadline,
     ) -> Result<TaskStoreRecoveryCatalog, V5TaskStoreError> {
         let mut writer = self.lock_writer(deadline)?;
         self.verify_root_authority()?;
-        let maximum_entries = self
-            .limits
-            .max_records
-            .saturating_add(MAX_INSPECTION_EXTRA_ENTRIES)
-            .saturating_add(1);
-        let entries = read_directory_names_bounded(&self.root_file, maximum_entries, || {
-            checkpoint_io(deadline)
-        })
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::TimedOut {
-                V5TaskStoreError::DeadlineExceeded
-            } else if error.kind() == io::ErrorKind::FileTooLarge {
-                V5TaskStoreError::Capacity {
-                    max_records: self.limits.max_records,
-                }
-            } else {
-                storage_error("enumerate protocol-v5 task root", error)
-            }
-        })?;
-
         let mut recovery_entries = Vec::new();
         let mut abandoned_staging = Vec::new();
-        for entry_name in entries {
-            check_deadline(deadline)?;
-            let file_name = entry_name.to_str().ok_or(V5TaskStoreError::Corrupt(
-                "task root entry name is not UTF-8",
-            ))?;
-            if file_name == STORE_LOCK_FILE {
-                continue;
-            }
-            if file_name.starts_with('.') && file_name.ends_with(".tmp") {
-                let staged =
-                    open_regular_child_nofollow(&self.root_file, &entry_name).map_err(|_| {
-                        V5TaskStoreError::Corrupt("task staging entry is not a regular file")
+        self.root
+            .visit_immediate_names(|entry_name| -> Result<(), V5TaskStoreError> {
+                check_deadline(deadline)?;
+                let file_name = entry_name.to_str().ok_or(V5TaskStoreError::Corrupt(
+                    "task root entry name is not UTF-8",
+                ))?;
+                if file_name == STORE_LOCK_FILE {
+                    return Ok(());
+                }
+                if file_name.starts_with('.') && file_name.ends_with(".tmp") {
+                    let staged = open_regular_child_nofollow(&self.root_file, &entry_name)
+                        .map_err(|_| {
+                            V5TaskStoreError::Corrupt("task staging entry is not a regular file")
+                        })?;
+                    verify_owner_only_acl(&staged).map_err(|error| {
+                        storage_error("verify protocol-v5 task staging ownership", error)
                     })?;
-                verify_owner_only_acl(&staged).map_err(|error| {
-                    storage_error("verify protocol-v5 task staging ownership", error)
-                })?;
-                let identity = file_identity(&staged).map_err(|error| {
-                    storage_error("identify protocol-v5 task staging entry", error)
-                })?;
-                abandoned_staging.push((entry_name, identity, staged));
-                continue;
-            }
-            let encoded_task_id =
-                file_name
-                    .strip_suffix(".json")
-                    .ok_or(V5TaskStoreError::Corrupt(
-                        "task root entry has an unsupported name",
-                    ))?;
-            let task_id = encoded_task_id
-                .parse::<TaskId>()
-                .map_err(|_| V5TaskStoreError::Corrupt("task file name is not a TaskId"))?;
-            if writer.records.len() >= self.limits.max_records {
-                return Err(V5TaskStoreError::Capacity {
-                    max_records: self.limits.max_records,
-                });
-            }
-            let record =
-                Self::read_committed_from(&self.root_file, task_id, self.limits.max_record_bytes)?;
-            recovery_entries.push(V5TaskRecoveryEntry::from_record(&record));
-            writer.records.insert(task_id, record);
-        }
-        for (name, identity, staged) in abandoned_staging {
-            check_deadline(deadline)?;
-            remove_identity_bound_regular_child(&self.root_file, &name, identity, &staged)
-                .map_err(|error| {
-                    storage_error("remove abandoned protocol-v5 task staging entry", error)
-                })?;
+                    let identity = file_identity(&staged).map_err(|error| {
+                        storage_error("identify protocol-v5 task staging entry", error)
+                    })?;
+                    abandoned_staging.push((entry_name, identity));
+                    return Ok(());
+                }
+                let encoded_task_id =
+                    file_name
+                        .strip_suffix(".json")
+                        .ok_or(V5TaskStoreError::Corrupt(
+                            "task root entry has an unsupported name",
+                        ))?;
+                let task_id = encoded_task_id
+                    .parse::<TaskId>()
+                    .map_err(|_| V5TaskStoreError::Corrupt("task file name is not a TaskId"))?;
+                let record = Self::read_committed_from(
+                    &self.root_file,
+                    task_id,
+                    self.limits.max_record_bytes,
+                )?;
+                recovery_entries.push(V5TaskRecoveryEntry::from_record(&record));
+                writer.records.insert(task_id);
+                Ok(())
+            })?;
+        for (name, identity) in abandoned_staging {
+            self.remove_verified_staging(&name, identity, deadline)?;
         }
         sync_directory(&self.root_file)
             .map_err(|error| storage_error("sync protocol-v5 task staging cleanup", error))?;
         self.verify_root_authority()?;
         Ok(TaskStoreRecoveryCatalog::new(recovery_entries))
+    }
+
+    fn remove_verified_staging(
+        &self,
+        name: &OsStr,
+        identity: FileIdentity,
+        deadline: ProviderDeadline,
+    ) -> Result<(), V5TaskStoreError> {
+        check_deadline(deadline)?;
+        let staged = open_regular_child_nofollow(&self.root_file, name)
+            .map_err(|error| storage_error("reopen abandoned protocol-v5 staging", error))?;
+        verify_owner_only_acl(&staged).map_err(|error| {
+            storage_error("verify abandoned protocol-v5 staging ownership", error)
+        })?;
+        if file_identity(&staged)
+            .map_err(|error| storage_error("identify reopened staging", error))?
+            != identity
+        {
+            return Err(V5TaskStoreError::Corrupt(
+                "abandoned task staging identity changed",
+            ));
+        }
+        self.verify_root_authority()?;
+        remove_identity_bound_regular_child(&self.root_file, name, identity, &staged).map_err(
+            |error| storage_error("remove abandoned protocol-v5 task staging entry", error),
+        )?;
+        Ok(())
     }
 
     fn lock_writer(
@@ -504,7 +480,7 @@ impl FileInvocationStoreV5 {
             return Err(storage_error("publish protocol-v5 task record", error));
         }
 
-        catalog.records.insert(record.task_id, record.clone());
+        catalog.records.insert(record.task_id);
         if self.take_publication_failure()? == Some(PublicationFailure::AfterRenameBeforeSync) {
             return Err(V5TaskStoreError::CommitUncertain {
                 task_id: record.task_id,
@@ -634,7 +610,7 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
     ) -> Result<V5StoredInvocationRecord, V5TaskStoreError> {
         let mut writer = self.lock_writer(deadline)?;
         let task_id = new_record.task_id();
-        if writer.records.contains_key(&task_id) {
+        if writer.records.contains(&task_id) {
             let existing = self.read_record(task_id, deadline)?;
             if new_record.matches_record(&existing) {
                 return Ok(existing);
@@ -642,11 +618,6 @@ impl InvocationStoreV5 for FileInvocationStoreV5 {
             return Err(V5TaskStoreError::Mismatch {
                 task_id,
                 reason: V5TaskMismatch::ExistingRecord,
-            });
-        }
-        if writer.records.len() >= self.limits.max_records {
-            return Err(V5TaskStoreError::Capacity {
-                max_records: self.limits.max_records,
             });
         }
         let record = new_record.into_stored(self.clock.now_epoch_millis());
@@ -1108,15 +1079,6 @@ fn check_deadline(deadline: ProviderDeadline) -> Result<(), V5TaskStoreError> {
     }
 }
 
-fn checkpoint_io(deadline: ProviderDeadline) -> io::Result<()> {
-    check_deadline(deadline).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::TimedOut,
-            "protocol-v5 task inspection deadline expired",
-        )
-    })
-}
-
 fn lock_is_contended(error: &io::Error) -> bool {
     let expected = fs2::lock_contended_error();
     error.kind() == io::ErrorKind::WouldBlock
@@ -1124,6 +1086,12 @@ fn lock_is_contended(error: &io::Error) -> bool {
             .raw_os_error()
             .zip(expected.raw_os_error())
             .is_some_and(|(actual, expected)| actual == expected)
+}
+
+impl From<io::Error> for V5TaskStoreError {
+    fn from(error: io::Error) -> Self {
+        storage_error("enumerate protocol-v5 task root", error)
+    }
 }
 
 fn storage_error(operation: &'static str, error: io::Error) -> V5TaskStoreError {
@@ -1143,7 +1111,6 @@ mod tests {
         V5DeleteTerminalOutcome, V5StartWorkingOutcome, V5StoredInvocationRecord,
         V5StoredInvocationSchemaVersion, V5StoredTask, V5TaskIdentity, V5TaskMismatch,
         V5TaskRetirement, V5TaskStatus, V5TaskStoreError, V5TerminalPublication,
-        MAX_V5_TASK_RECORDS,
     };
     use crate::application::receipt_ledger::{ReceiptKeyDigest, TerminalDigest, V5ToolIdentity};
     use crate::domain::code_intelligence::ProviderDeadline;
@@ -1258,6 +1225,194 @@ mod tests {
         std::io::Write::write_all(&mut file, &bytes).expect("write fixture record");
         file.sync_all().expect("sync fixture record");
         bytes
+    }
+
+    #[test]
+    fn production_catalog_creates_past_4096_and_reopens_exactly() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let directory = open_directory_nofollow(&root_path).expect("fixture directory");
+        for index in 0..4096_u128 {
+            let task = task_id(
+                &uuid::Uuid::from_u128(0x33333333_3333_4333_8333_000000000000 + index).to_string(),
+            );
+            let invocation = invocation_id(
+                &uuid::Uuid::from_u128(0x11111111_1111_4111_8111_000000000000 + index).to_string(),
+            );
+            let record = stored_record(task, invocation, 7, 1, false, V5StoredTask::Queued);
+            let mut file =
+                create_owner_only_file_child(&directory, OsStr::new(&format!("{task}.json")))
+                    .expect("seed record");
+            std::io::Write::write_all(&mut file, &serde_json::to_vec(&record).unwrap())
+                .expect("seed bytes");
+        }
+        crate::infrastructure::platform::filesystem::sync_directory(&directory).unwrap();
+        let budget = || ProviderDeadline::from_budget(Duration::from_secs(60));
+        let clock = Arc::new(ManualEpochClock::at(9_000));
+        let (store, catalog) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock.clone(), budget())
+                .expect("inspect 4096");
+        assert_eq!(catalog.entries().len(), 4096);
+        let new = new_record(TaskId::new(), InvocationId::new(), 8);
+        let created = store
+            .create_exact(new.clone(), budget())
+            .expect("create 4097th without a quota");
+        assert_eq!(store.create_exact(new, budget()).unwrap(), created);
+        let foreign = new_record(created.task_id, InvocationId::new(), 9);
+        assert!(matches!(
+            store.create_exact(foreign, budget()),
+            Err(V5TaskStoreError::Mismatch { .. })
+        ));
+        drop(store);
+        let (reopened, catalog) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock, budget())
+                .expect("reopen 4097");
+        assert_eq!(catalog.entries().len(), 4097);
+        assert_eq!(reopened.get(created.task_id, budget()).unwrap(), created);
+    }
+
+    #[test]
+    fn inspection_cleans_staging_past_former_directory_bound() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let root_path = physical_root(&root);
+        let directory = open_directory_nofollow(&root_path).unwrap();
+        for index in 0..4200 {
+            let file = create_owner_only_file_child(
+                &directory,
+                OsStr::new(&format!(".orphan-{index}.tmp")),
+            )
+            .unwrap();
+            restrict_stage_to_owner(&file).unwrap();
+        }
+        let (_store, catalog) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(9_000)),
+            ProviderDeadline::from_budget(Duration::from_secs(60)),
+        )
+        .expect("inspect all staging without retaining thousands of handles");
+        assert!(catalog.entries().is_empty());
+        for entry in std::fs::read_dir(root_path).unwrap() {
+            assert_eq!(entry.unwrap().file_name(), super::STORE_LOCK_FILE);
+        }
+    }
+
+    #[test]
+    fn failed_inspection_preserves_staging_and_unsupported_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let directory = open_directory_nofollow(&root_path).unwrap();
+        for name in [".abandoned.tmp", "foreign.txt"] {
+            let mut file = create_owner_only_file_child(&directory, OsStr::new(name)).unwrap();
+            std::io::Write::write_all(&mut file, b"retained").unwrap();
+        }
+        assert!(matches!(
+            FileInvocationStoreV5::open_inspect_only(
+                &root_path,
+                Arc::new(ManualEpochClock::at(9_000)),
+                deadline()
+            ),
+            Err(V5TaskStoreError::Corrupt(_))
+        ));
+        assert_eq!(
+            fs::read(root_path.join(".abandoned.tmp")).unwrap(),
+            b"retained"
+        );
+        assert_eq!(
+            fs::read(root_path.join("foreign.txt")).unwrap(),
+            b"retained"
+        );
+    }
+
+    #[test]
+    fn corrupt_committed_task_preserves_orphan_before_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let directory = open_directory_nofollow(&root_path).unwrap();
+        for name in [
+            ".abandoned.tmp",
+            "11111111-1111-4111-8111-111111111111.json",
+        ] {
+            let mut file = create_owner_only_file_child(&directory, OsStr::new(name)).unwrap();
+            std::io::Write::write_all(&mut file, b"{malformed").unwrap();
+        }
+        assert!(matches!(
+            FileInvocationStoreV5::open_inspect_only(
+                &root_path,
+                Arc::new(ManualEpochClock::at(9_000)),
+                deadline()
+            ),
+            Err(V5TaskStoreError::Corrupt(_))
+        ));
+        assert_eq!(
+            fs::read(root_path.join("11111111-1111-4111-8111-111111111111.json")).unwrap(),
+            b"{malformed"
+        );
+        assert_eq!(
+            fs::read(root_path.join(".abandoned.tmp")).unwrap(),
+            b"{malformed"
+        );
+    }
+
+    #[test]
+    fn second_pass_refuses_replaced_task_staging_without_deleting_either_file() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(9_000)),
+            deadline(),
+        )
+        .unwrap();
+        let name = OsStr::new(".abandoned.tmp");
+        let mut original = create_owner_only_file_child(&store.root_file, name).unwrap();
+        std::io::Write::write_all(&mut original, b"original").unwrap();
+        let identity = super::file_identity(&original).unwrap();
+        drop(original);
+        fs::rename(root_path.join(name), root_path.join(".saved.tmp")).unwrap();
+        let mut replacement = create_owner_only_file_child(&store.root_file, name).unwrap();
+        std::io::Write::write_all(&mut replacement, b"replacement").unwrap();
+        drop(replacement);
+        assert!(store
+            .remove_verified_staging(name, identity, deadline())
+            .is_err());
+        assert_eq!(fs::read(root_path.join(name)).unwrap(), b"replacement");
+        assert_eq!(fs::read(root_path.join(".saved.tmp")).unwrap(), b"original");
+    }
+
+    #[test]
+    fn second_pass_refuses_task_staging_symlink_and_preserves_external_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(9_000)),
+            deadline(),
+        )
+        .unwrap();
+        let name = OsStr::new(".abandoned.tmp");
+        let original = create_owner_only_file_child(&store.root_file, name).unwrap();
+        let identity = super::file_identity(&original).unwrap();
+        drop(original);
+        fs::remove_file(root_path.join(name)).unwrap();
+        let outside = root.path().join("outside");
+        fs::write(&outside, b"external").unwrap();
+        let Some(created) =
+            crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
+                &outside,
+                root_path.join(name),
+            )
+        else {
+            return;
+        };
+        created.expect("create a file symlink on the supported test host");
+        assert!(store
+            .remove_verified_staging(name, identity, deadline())
+            .is_err());
+        assert_eq!(fs::read(outside).unwrap(), b"external");
+        assert!(fs::symlink_metadata(root_path.join(name))
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]
@@ -1476,7 +1631,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_never_lazily_expires_terminal_records_and_not_found_is_typed() {
+    fn terminal_records_remain_until_exact_retirement_and_not_found_is_typed() {
         let root = tempfile::tempdir().expect("temporary v5 root");
         let root_path = physical_root(&root);
         let retained_id = task_id("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
@@ -1492,31 +1647,29 @@ mod tests {
             },
         );
         write_record(&root_path, &retained);
-        let (store, _) = FileInvocationStoreV5::open_with_limits_for_test(
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
             &root_path,
             Arc::new(ManualEpochClock::at(99_000)),
-            1,
             deadline(),
         )
         .unwrap();
 
         assert_eq!(store.get(retained_id, deadline()).unwrap(), retained);
-        assert!(matches!(
-            store.create_exact(
+        store
+            .create_exact(
                 new_record(
                     task_id("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"),
                     invocation_id("ffffffff-ffff-4fff-8fff-ffffffffffff"),
                     0x08,
                 ),
                 deadline(),
-            ),
-            Err(V5TaskStoreError::Capacity { max_records: 1 })
-        ));
+            )
+            .expect("new task does not evict an expired terminal record");
+        assert_eq!(store.get(retained_id, deadline()).unwrap(), retained);
         assert!(matches!(
             store.get(task_id("12121212-1212-4212-8212-121212121212"), deadline()),
             Err(V5TaskStoreError::NotFound { .. })
         ));
-        assert_eq!(MAX_V5_TASK_RECORDS, 4_096);
     }
 
     #[test]

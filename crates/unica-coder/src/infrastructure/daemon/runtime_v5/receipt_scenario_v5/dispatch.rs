@@ -2235,7 +2235,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 control
                     .record_operation_event(&label, if refused { "refused" } else { "completed" });
             }
-            ReceiptScenarioAction::AttemptTaskStoreBindUnderGate { label } => {
+            ReceiptScenarioAction::MaterializeTaskHandoff { label } => {
                 control.arm_skip_next_startup_reconciliation();
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config = scenario_server_config_with_clock(
@@ -2274,9 +2274,8 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     live_task_projection = None;
                     continue;
                 }
-                let (response, capacity) = runtime.attempt_task_store_bind_under_gate_for_test(
+                let response = runtime.materialize_task_handoff_for_test(
                     &exact_key,
-                    &label,
                     Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                 )?;
                 control.record_operation_event(&label, "spawned");
@@ -2288,8 +2287,28 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                         handle: thread::spawn(|| Ok(())),
                     },
                 );
-                report.responses.insert(label, response);
-                report.task_publication_capacity.push(capacity);
+                if let Some(projection) = bulk_task_projection.as_mut() {
+                    merge_exact_runtime_task_projection(
+                        projection,
+                        &runtime,
+                        &exact_key,
+                        state.path(),
+                        &identity,
+                    )?;
+                }
+                // Release the writer before the observer reopens the committed stores.
+                drop(runtime);
+                report.responses.insert(
+                    label,
+                    response_observation_with_exact_task(
+                        &response,
+                        None,
+                        &exact_key,
+                        state.path(),
+                        &identity,
+                        None,
+                    )?,
+                );
             }
             ReceiptScenarioAction::InjectTaskStoreCapacityInvariantViolationOnce => {
                 inject_task_store_capacity_invariant_once = true;

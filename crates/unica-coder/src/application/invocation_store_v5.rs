@@ -8,7 +8,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 pub(crate) const V5_INVOCATION_RECORD_SCHEMA_VERSION: u32 = 1;
-pub(crate) const MAX_V5_TASK_RECORDS: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

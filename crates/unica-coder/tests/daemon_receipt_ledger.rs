@@ -31,8 +31,7 @@ const TOMBSTONE_TTL_MS: u64 = 900_000;
 const MAX_RESPONSE_LINE_BYTES: u64 = 8_454_144;
 const FORMER_LIVE_RECEIPT_LIMIT: u64 = 64;
 const FORMER_LIVE_RECEIPT_BYTES_LIMIT: u64 = 541_065_216;
-const TASK_LINK_LIMIT: u64 = 4_096;
-const TASK_LINK_BYTES_LIMIT: u64 = 4_194_304;
+const FORMER_TASK_LINK_LIMIT: u64 = 4_096;
 const TOMBSTONE_LIMIT: u64 = 28_864;
 const TOMBSTONE_BYTES_LIMIT: u64 = 14_778_368;
 const MAX_CANONICAL_RESULT_BYTES: u64 = 8 * 1_024 * 1_024;
@@ -235,7 +234,7 @@ enum Action {
     SpawnTaskStoreCreateAndBindUnderGate {
         label: String,
     },
-    AttemptTaskStoreBindUnderGate {
+    MaterializeTaskHandoff {
         label: String,
     },
     AttemptUnstagedTaskBindAgainstStagedTerminal {
@@ -3843,13 +3842,10 @@ fn assert_snapshot_accounting(snapshot: &Snapshot) {
         })
         .sum();
     assert_eq!(snapshot.task_link_bytes, task_link_bytes);
-    assert!(snapshot.task_link_reserved_count <= TASK_LINK_LIMIT);
     assert_eq!(
         snapshot.task_link_reserved_bytes,
         snapshot.task_link_reserved_count * 1_024
     );
-    assert!(snapshot.task_link_count + snapshot.task_link_reserved_count <= TASK_LINK_LIMIT);
-    assert!(task_link_bytes + snapshot.task_link_reserved_bytes <= TASK_LINK_BYTES_LIMIT);
     assert!(
         snapshot.tasks.len() as u64 <= snapshot.task_link_count + snapshot.task_link_reserved_count,
         "TaskStore records cannot outnumber materialized lifecycle links plus live reservations"
@@ -5533,11 +5529,6 @@ fn observed_task_store_capacity_invariant_violation<'a>(
         observed.task_store_record_count_before
             <= observed.materialized_lifecycle_link_count_before
                 + observed.live_link_reservation_count_before
-    );
-    assert!(
-        observed.materialized_lifecycle_link_count_before
-            + observed.live_link_reservation_count_before
-            <= TASK_LINK_LIMIT
     );
     observed
 }
@@ -11944,100 +11935,54 @@ fn direct_unacked_expiry_deletes_payload_and_releases_exact_quota() {
 }
 
 #[test]
-fn link_capacity_before_begun_terminalizes_receipt_backed_without_callback() {
-    let report = execute(Scenario::fake(vec![
-        Action::FillTaskLinks,
-        Action::PublishListener,
-        checkpoint_action("promised-baseline"),
-        Action::SeedReceipt {
-            state: SeedReceiptState::TaskPromisedActorBound,
-            cancel_requested: false,
-            staged_terminal: None,
-        },
-        Action::AttemptTaskStoreBindUnderGate {
-            label: "promised-capacity".to_string(),
-        },
-        Action::JoinOperation {
-            label: "promised-capacity".to_string(),
-        },
-        checkpoint_action("promised"),
-        Action::Reset,
-        Action::FillTaskLinks,
-        Action::PublishListener,
-        checkpoint_action("handoff-baseline"),
-        Action::SeedReceipt {
-            state: SeedReceiptState::TaskHandoffActorBoundNotBegun,
-            cancel_requested: false,
-            staged_terminal: None,
-        },
-        Action::AttemptTaskStoreBindUnderGate {
-            label: "handoff-capacity".to_string(),
-        },
-        Action::JoinOperation {
-            label: "handoff-capacity".to_string(),
-        },
-        checkpoint_action("handoff"),
-    ]));
-
-    for (label, baseline) in [
-        ("promised", "promised-baseline"),
-        ("handoff", "handoff-baseline"),
+fn task_handoff_before_begun_materializes_past_former_link_quota_without_callback() {
+    for state in [
+        SeedReceiptState::TaskPromisedActorBound,
+        SeedReceiptState::TaskHandoffActorBoundNotBegun,
     ] {
-        let snapshot = checkpoint(&report, label);
-        assert_eq!(
-            only_receipt(snapshot).state,
-            SeedReceiptState::TaskTerminalReceiptBacked
-        );
-        assert_failed_terminal(
-            terminal_of_receipt(only_receipt(snapshot)),
-            V5SafeFailureReason::TaskCapacity,
-        );
-        assert_eq!(snapshot.tasks.len() as u64, TASK_LINK_LIMIT);
-        assert_eq!(
-            checkpoint(&report, baseline).task_link_count,
-            TASK_LINK_LIMIT
-        );
-        assert_eq!(
-            checkpoint(&report, baseline).tasks.len() as u64,
-            TASK_LINK_LIMIT
-        );
-        assert_eq!(snapshot.tasks, checkpoint(&report, baseline).tasks);
-        assert_eq!(
-            snapshot.task_links,
-            checkpoint(&report, baseline).task_links
-        );
-        assert_eq!(snapshot.callbacks.prepare, 0);
-        assert_eq!(snapshot.callbacks.execute, 0);
-        assert_eq!(snapshot.listener, ListenerState::Listening);
-        assert_eq!(snapshot.task_store_create_attempts, 0);
-        assert_eq!(snapshot.task_link_reserved_count, 0);
-        assert_eq!(
-            response(&report, &format!("{label}-capacity")).error,
-            Some(ErrorCode::TaskCapacity)
-        );
-        let capacity = observed_task_publication_capacity(&report, &format!("{label}-capacity"));
-        assert_eq!(capacity.receipt_key, only_receipt(snapshot).key);
-        assert_eq!(
-            capacity.terminal.as_ref(),
-            only_receipt(snapshot).terminal.as_ref()
-        );
-        assert!(capacity.staged_transfer_certificate_sha256.is_none());
-        assert_publication_matches_snapshot(
-            &report,
-            snapshot,
-            &only_receipt(snapshot).key,
-            terminal_of_receipt(only_receipt(snapshot)),
-            TerminalPublicationOwner::ReceiptBackedTask,
-        );
+        let report = execute(Scenario::fake(vec![
+            Action::FillTaskLinks,
+            Action::PublishListener,
+            checkpoint_action("baseline"),
+            Action::SeedReceipt {
+                state,
+                cancel_requested: false,
+                staged_terminal: None,
+            },
+            Action::MaterializeTaskHandoff {
+                label: "materialized".into(),
+            },
+            Action::JoinOperation {
+                label: "materialized".into(),
+            },
+            checkpoint_action("materialized"),
+        ]));
+        let baseline = checkpoint(&report, "baseline");
+        let materialized = checkpoint(&report, "materialized");
+        assert_exact_linked_task_pool(materialized, FORMER_TASK_LINK_LIMIT + 1);
+        for task in &baseline.tasks {
+            assert!(materialized.tasks.contains(task));
+        }
+        for link in &baseline.task_links {
+            assert!(materialized.task_links.contains(link));
+        }
+        let answer = response(&report, "materialized");
+        assert_eq!(answer.kind, ResponseKind::Task);
+        assert!(answer.error.is_none());
+        let task = materialized
+            .tasks
+            .iter()
+            .find(|task| &task.receipt_key == response_key(answer))
+            .unwrap();
+        assert_eq!(task.status, TaskStatus::Queued);
+        assert!(task.terminal.is_none());
+        assert_eq!(materialized.receipt_live_count, 0);
+        assert_eq!(materialized.callbacks.total_domain(), 0);
+        assert_eq!(materialized.listener, ListenerState::Listening);
+        assert_eq!(materialized.task_store_create_attempts, 1);
+        assert_eq!(count_event(&report, EventKind::TaskLinkCapacityRejected), 0);
+        assert!(report.task_publication_capacity.is_empty());
     }
-    assert_eq!(count_event(&report, EventKind::ListenerPublished), 2);
-    assert_eq!(count_event(&report, EventKind::TaskLinkCapacityRejected), 2);
-    assert_eq!(count_event(&report, EventKind::TaskLinkCapacityReserved), 0);
-    assert_eq!(count_event(&report, EventKind::TaskStoreCreateAttempted), 0);
-    assert_eq!(
-        count_event(&report, EventKind::TaskLinkReservationReleased),
-        0
-    );
 }
 
 #[test]
@@ -12112,7 +12057,7 @@ fn task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops()
         },
         checkpoint_action("staged"),
         Action::InjectTaskStoreCapacityInvariantViolationOnce,
-        Action::AttemptTaskStoreBindUnderGate {
+        Action::MaterializeTaskHandoff {
             label: "post-reserve-capacity-invariant".to_string(),
         },
         Action::JoinOperation {
@@ -12130,8 +12075,8 @@ fn task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops()
     ]));
 
     let baseline = checkpoint(&report, "baseline");
-    assert_eq!(baseline.tasks.len() as u64, TASK_LINK_LIMIT - 1);
-    assert_eq!(baseline.task_link_count, TASK_LINK_LIMIT - 1);
+    assert_eq!(baseline.tasks.len() as u64, FORMER_TASK_LINK_LIMIT - 1);
+    assert_eq!(baseline.task_link_count, FORMER_TASK_LINK_LIMIT - 1);
     assert_eq!(baseline.task_link_reserved_count, 0);
     let staged = checkpoint(&report, "staged");
     let staged_receipt = only_receipt(staged);
@@ -12186,11 +12131,11 @@ fn task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops()
     );
     assert_eq!(
         violation.task_store_record_count_before,
-        TASK_LINK_LIMIT - 1
+        FORMER_TASK_LINK_LIMIT - 1
     );
     assert_eq!(
         violation.materialized_lifecycle_link_count_before,
-        TASK_LINK_LIMIT - 1
+        FORMER_TASK_LINK_LIMIT - 1
     );
     assert_eq!(violation.live_link_reservation_count_before, 1);
 
@@ -12200,8 +12145,8 @@ fn task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops()
         .receipts
         .iter()
         .all(|receipt| receipt.key != retained.key));
-    assert_eq!(reopened.tasks.len() as u64, TASK_LINK_LIMIT);
-    assert_eq!(reopened.task_link_count, TASK_LINK_LIMIT);
+    assert_eq!(reopened.tasks.len() as u64, FORMER_TASK_LINK_LIMIT);
+    assert_eq!(reopened.task_link_count, FORMER_TASK_LINK_LIMIT);
     assert_eq!(reopened.task_link_reserved_count, 0);
     assert_eq!(reopened.listener, ListenerState::Listening);
     assert!(!reopened.restart_requested);
@@ -12233,10 +12178,10 @@ fn task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops()
 }
 
 #[test]
-fn link_capacity_preserves_staged_terminal_winner() {
+fn staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner() {
     let report = execute(Scenario::fake(vec![
         Action::FillTaskLinks,
-        checkpoint_action("link-capacity-baseline"),
+        checkpoint_action("baseline"),
         Action::SeedReceipt {
             state: SeedReceiptState::TaskHandoffActorBoundBegun,
             cancel_requested: false,
@@ -12244,131 +12189,70 @@ fn link_capacity_preserves_staged_terminal_winner() {
         },
         Action::SpawnStageBoundHandoffTerminal {
             terminal: success_payload(),
-            label: "link-capacity-stage".to_string(),
+            label: "stage".into(),
         },
         Action::WaitForOperation {
-            label: "link-capacity-stage".to_string(),
+            label: "stage".into(),
             state: OperationState::Completed,
         },
         Action::JoinOperation {
-            label: "link-capacity-stage".to_string(),
+            label: "stage".into(),
         },
-        checkpoint_action("link-capacity-staged"),
-        Action::AttemptTaskStoreBindUnderGate {
-            label: "staged-link-capacity".to_string(),
+        checkpoint_action("staged"),
+        Action::AdvanceEpoch { millis: 1_000 },
+        Action::MaterializeTaskHandoff {
+            label: "materialized".into(),
         },
         Action::JoinOperation {
-            label: "staged-link-capacity".to_string(),
+            label: "materialized".into(),
         },
-        checkpoint_action("link-capacity-terminal"),
+        checkpoint_action("materialized"),
         Action::Restart,
         Action::Recover {
             key: KeyCase::Exact,
-            label: "link-capacity-recovered".to_string(),
+            label: "recovered".into(),
         },
-        checkpoint_action("link-capacity-reopened"),
+        checkpoint_action("reopened"),
     ]));
-
-    let link_baseline = checkpoint(&report, "link-capacity-baseline");
-    assert_eq!(link_baseline.task_link_count, TASK_LINK_LIMIT);
-    assert_eq!(link_baseline.tasks.len() as u64, TASK_LINK_LIMIT);
-    let link_staged = checkpoint(&report, "link-capacity-staged");
-    let link_staged_receipt = only_receipt(link_staged);
-    let link_winner = link_staged_receipt
-        .staged_terminal
-        .as_ref()
-        .expect("staged winner must commit before link admission is attempted");
-    assert!(completed_result(link_winner).ok);
-    let link_terminal = checkpoint(&report, "link-capacity-terminal");
-    let link_terminal_receipt = only_receipt(link_terminal);
-    assert_eq!(
-        link_terminal_receipt.state,
-        SeedReceiptState::TaskTerminalReceiptBacked
-    );
-    assert_eq!(terminal_of_receipt(link_terminal_receipt), link_winner);
-    assert!(link_terminal_receipt.staged_terminal.is_none());
-    assert_eq!(link_terminal.task_links, link_baseline.task_links);
-    assert_eq!(link_terminal.tasks, link_baseline.tasks);
-    assert_eq!(link_terminal.task_link_reserved_count, 0);
-    assert_eq!(
-        link_terminal.task_store_create_attempts, link_baseline.task_store_create_attempts,
-        "proven LinkCapacity must precede every TaskStore create"
-    );
-    assert_eq!(
-        response_terminal(response(&report, "staged-link-capacity")),
-        link_winner
-    );
-    assert!(response(&report, "staged-link-capacity").error.is_none());
-    let link_capacity = observed_task_publication_capacity(&report, "staged-link-capacity");
-    assert_eq!(link_capacity.receipt_key, link_terminal_receipt.key);
-    assert_eq!(link_capacity.terminal.as_ref(), Some(link_winner));
-    assert!(matches!(
-        link_capacity.evidence,
-        TaskPublicationCapacityEvidence::LinkCapacity { .. }
-    ));
-    let link_preparation = report
-        .staged_terminal_preparations
-        .iter()
-        .find(|preparation| preparation.receipt_key == link_terminal_receipt.key)
-        .expect("LinkCapacity fallback must consume the exact staged certificate");
-    assert_eq!(link_preparation.terminal, *link_winner);
-    assert_eq!(
-        link_capacity.staged_transfer_certificate_sha256.as_deref(),
-        Some(
-            link_preparation
-                .transfer_size_certificate
-                .certificate
-                .sha256
-                .as_str()
-        )
-    );
-    let link_capacity_certificate = link_preparation
-        .transfer_size_certificate
-        .capacity_fallback_cases
-        .first()
-        .expect("certificate must cover the sole LinkCapacity receipt-backed winner");
-    assert!(matches!(
-        link_capacity_certificate,
-        StagedCapacityFallbackSizeCaseObservation::LinkCapacity { .. }
-    ));
-    let (link_record_bound, link_frame_bound) = link_capacity_certificate.artifacts();
-    let link_publication = terminal_publication_for(
-        &report,
-        &link_terminal_receipt.key,
-        terminal_of_receipt(link_terminal_receipt),
-    );
-    let link_receipt_piece = link_publication
-        .commit
-        .receipt()
-        .expect("LinkCapacity staged winner stays receipt-owned");
-    assert!(link_receipt_piece.receipt_record.encoded_bytes <= link_record_bound.encoded_bytes);
-    assert!(link_publication
-        .response_frames
-        .iter()
-        .all(|frame| frame.response_jsonl.encoded_bytes <= link_frame_bound.encoded_bytes));
-    assert_publication_matches_snapshot(
-        &report,
-        link_terminal,
-        &link_terminal_receipt.key,
-        terminal_of_receipt(link_terminal_receipt),
-        TerminalPublicationOwner::ReceiptBackedTask,
-    );
-    let link_reopened = checkpoint(&report, "link-capacity-reopened");
-    assert_eq!(link_reopened.receipts, link_terminal.receipts);
-    assert_eq!(link_reopened.tasks, link_terminal.tasks);
-    assert_eq!(link_reopened.task_links, link_terminal.task_links);
-    assert_eq!(
-        link_reopened.receipt_actual_bytes,
-        link_terminal.receipt_actual_bytes
-    );
-    assert_eq!(
-        link_reopened.receipt_reserved_bytes,
-        link_terminal.receipt_reserved_bytes
-    );
-    assert_eq!(
-        response_terminal(response(&report, "link-capacity-recovered")),
-        terminal_of_receipt(link_terminal_receipt)
-    );
+    let baseline = checkpoint(&report, "baseline");
+    let staged = only_receipt(checkpoint(&report, "staged"));
+    let winner = staged.staged_terminal.as_ref().unwrap();
+    assert!(completed_result(winner).ok);
+    for label in ["materialized", "reopened"] {
+        let snapshot = checkpoint(&report, label);
+        assert_exact_linked_task_pool(snapshot, FORMER_TASK_LINK_LIMIT + 1);
+        for task in &baseline.tasks {
+            assert!(snapshot.tasks.contains(task));
+        }
+        for link in &baseline.task_links {
+            assert!(snapshot.task_links.contains(link));
+        }
+        assert_eq!(snapshot.receipt_live_count, 0);
+        assert_eq!(snapshot.callbacks.total_domain(), 0);
+        let task = snapshot
+            .tasks
+            .iter()
+            .find(|task| task.receipt_key == staged.key)
+            .unwrap();
+        let link = snapshot
+            .task_links
+            .iter()
+            .find(|link| link.key == staged.key)
+            .unwrap();
+        assert_eq!(task.terminal.as_ref(), Some(winner));
+        assert_terminal_bound_link(link, task, winner);
+        assert_publication_matches_snapshot(
+            &report,
+            snapshot,
+            &staged.key,
+            winner,
+            TerminalPublicationOwner::StagedHandoffTask,
+        );
+    }
+    assert_eq!(response_terminal(response(&report, "materialized")), winner);
+    assert_eq!(response_terminal(response(&report, "recovered")), winner);
+    assert!(report.task_publication_capacity.is_empty());
+    assert_eq!(count_event(&report, EventKind::TaskLinkCapacityRejected), 0);
 }
 
 #[test]
@@ -12413,160 +12297,116 @@ fn receipt_owned_begun_crash_terminalizes_outcome_uncertain_without_task_store()
 }
 
 #[test]
-fn task_store_4097_boundary_preserves_existing_tasks_and_listener_availability() {
-    let pre_report = execute(Scenario::fake(vec![
-        Action::FillTaskLinks,
-        Action::PublishListener,
-        checkpoint_action("pre-baseline"),
+fn historical_receipt_owned_capacity_state_can_complete_and_reopen_without_task_store() {
+    let report = execute(Scenario::fake(vec![
         Action::SeedReceipt {
-            state: SeedReceiptState::TaskPromisedActorBound,
+            state: SeedReceiptState::TaskReceiptOwnedActorBound,
             cancel_requested: false,
             staged_terminal: None,
         },
-        Action::AttemptTaskStoreBindUnderGate {
-            label: "pre-capacity-4097".to_string(),
-        },
-        Action::JoinOperation {
-            label: "pre-capacity-4097".to_string(),
-        },
-        checkpoint_action("pre-begun-4097"),
-    ]));
-    let begun_report = execute(Scenario::fake(vec![
-        Action::FillTaskLinks,
-        Action::PublishListener,
-        checkpoint_action("begun-baseline"),
-        Action::SeedReceipt {
-            state: SeedReceiptState::TaskHandoffActorBoundBegun,
-            cancel_requested: false,
-            staged_terminal: None,
-        },
-        Action::AttemptTaskStoreBindUnderGate {
-            label: "begun-capacity-4097".to_string(),
-        },
-        Action::JoinOperation {
-            label: "begun-capacity-4097".to_string(),
-        },
-        checkpoint_action("begun-4097-latched"),
+        checkpoint_action("legacy"),
         Action::ContinueReceiptOwnedAttempt {
             terminal: success_payload(),
-            label: "begun-receipt-owned-continuation".to_string(),
+            label: "completed".into(),
         },
-        checkpoint_action("begun-4097-terminal"),
+        checkpoint_action("completed"),
+        Action::Restart,
+        Action::Recover {
+            key: KeyCase::Exact,
+            label: "recovered".into(),
+        },
+        checkpoint_action("reopened"),
     ]));
-
-    let pre_baseline = checkpoint(&pre_report, "pre-baseline");
-    let pre = checkpoint(&pre_report, "pre-begun-4097");
-    assert_eq!(pre.tasks.len() as u64, TASK_LINK_LIMIT);
-    assert_eq!(pre.task_link_count, TASK_LINK_LIMIT);
-    assert_eq!(pre_baseline.task_link_count, TASK_LINK_LIMIT);
-    assert_eq!(pre.task_link_bytes, pre_baseline.task_link_bytes);
-    assert!(pre.task_link_bytes <= TASK_LINK_BYTES_LIMIT);
-    assert_eq!(pre.task_links.len() as u64, TASK_LINK_LIMIT);
-    assert_eq!(pre.task_links, pre_baseline.task_links);
-    assert_eq!(pre.tasks, pre_baseline.tasks);
-    for link in &pre.task_links {
-        let task = pre
-            .tasks
-            .iter()
-            .find(|task| task.receipt_key == link.key)
-            .expect("each full-pool lifecycle link must retain its exact TaskStore record");
-        assert_eq!(task.task_id, link.task_id);
-        assert_eq!(task.invocation_id, link.invocation_id);
-        assert_eq!(
-            task.workspace_identity_hash.as_deref(),
-            Some(link.workspace_identity_hash.as_str())
-        );
-    }
-    assert_failed_terminal(
-        terminal_of_receipt(only_receipt(pre)),
-        V5SafeFailureReason::TaskCapacity,
-    );
     assert_eq!(
-        response(&pre_report, "pre-capacity-4097").error,
-        Some(ErrorCode::TaskCapacity)
-    );
-    assert_eq!(pre.callbacks.total_domain(), 0);
-    assert_eq!(pre.listener, ListenerState::Listening);
-    assert_eq!(pre.task_store_create_attempts, 0);
-    assert_eq!(
-        count_event(&pre_report, EventKind::TaskLinkCapacityRejected),
-        1
-    );
-    assert_eq!(
-        count_event(&pre_report, EventKind::TaskStoreCreateAttempted),
-        0
-    );
-    let pre_capacity = observed_task_publication_capacity(&pre_report, "pre-capacity-4097");
-    assert!(matches!(
-        pre_capacity.evidence,
-        TaskPublicationCapacityEvidence::LinkCapacity { .. }
-    ));
-    assert_eq!(
-        pre_capacity.terminal.as_ref(),
-        only_receipt(pre).terminal.as_ref()
-    );
-    assert!(pre_capacity.staged_transfer_certificate_sha256.is_none());
-
-    let begun_baseline = checkpoint(&begun_report, "begun-baseline");
-    let begun = checkpoint(&begun_report, "begun-4097-latched");
-    assert_eq!(
-        only_receipt(begun).state,
+        only_receipt(checkpoint(&report, "legacy")).state,
         SeedReceiptState::TaskReceiptOwnedActorBound
     );
-    assert_eq!(begun.task_store_create_attempts, 0);
-    assert_eq!(begun.task_link_count, TASK_LINK_LIMIT);
-    assert_eq!(begun_baseline.task_link_count, TASK_LINK_LIMIT);
-    assert_eq!(begun.task_link_bytes, begun_baseline.task_link_bytes);
-    assert!(begun.task_link_bytes <= TASK_LINK_BYTES_LIMIT);
-    assert_eq!(begun.task_links.len() as u64, TASK_LINK_LIMIT);
-    assert_eq!(begun.task_links, begun_baseline.task_links);
-    assert_eq!(begun.tasks, begun_baseline.tasks);
-    assert_eq!(
-        count_event(&begun_report, EventKind::TaskLinkCapacityRejected),
-        1
-    );
-    assert_eq!(
-        count_event(&begun_report, EventKind::TaskStoreCreateAttempted),
-        0
-    );
-    assert_eq!(begun.listener, ListenerState::Listening);
-    assert_eq!(
-        response(&begun_report, "begun-capacity-4097").error,
-        Some(ErrorCode::TaskCapacity)
-    );
-    let begun_capacity = observed_task_publication_capacity(&begun_report, "begun-capacity-4097");
-    assert!(matches!(
-        begun_capacity.evidence,
-        TaskPublicationCapacityEvidence::LinkCapacity { .. }
-    ));
-    assert!(begun_capacity.terminal.is_none());
-    assert!(begun_capacity.staged_transfer_certificate_sha256.is_none());
-    let begun_terminal = checkpoint(&begun_report, "begun-4097-terminal");
-    let begun_terminal_receipt = only_receipt(begun_terminal);
-    assert_eq!(
-        begun_terminal_receipt.state,
-        SeedReceiptState::TaskTerminalReceiptBacked
-    );
-    assert!(completed_result(terminal_of_receipt(begun_terminal_receipt)).ok);
-    assert_eq!(
-        begun_terminal.task_store_create_attempts, begun_baseline.task_store_create_attempts,
-        "receipt-owned continuation must never retry TaskStore create"
-    );
-    assert_eq!(begun_terminal.task_links, begun_baseline.task_links);
-    assert_eq!(begun_terminal.tasks, begun_baseline.tasks);
-    assert_publication_matches_snapshot(
-        &begun_report,
-        begun_terminal,
-        &begun_terminal_receipt.key,
-        terminal_of_receipt(begun_terminal_receipt),
-        TerminalPublicationOwner::ReceiptBackedTask,
-    );
-    assert_eq!(count_event(&pre_report, EventKind::ListenerPublished), 1);
-    assert_eq!(count_event(&begun_report, EventKind::ListenerPublished), 1);
+    let completed = checkpoint(&report, "completed");
+    let receipt = only_receipt(completed);
+    assert_eq!(receipt.state, SeedReceiptState::TaskTerminalReceiptBacked);
+    let winner = terminal_of_receipt(receipt);
+    assert!(completed_result(winner).ok);
+    for label in ["completed", "reopened"] {
+        let snapshot = checkpoint(&report, label);
+        assert!(snapshot.tasks.is_empty());
+        assert!(snapshot.task_links.is_empty());
+        assert_eq!(snapshot.task_store_create_attempts, 0);
+        assert_eq!(terminal_of_receipt(only_receipt(snapshot)), winner);
+        assert_eq!(snapshot.callbacks.total_domain(), 0);
+    }
+    assert_eq!(response_terminal(response(&report, "recovered")), winner);
 }
 
 #[test]
-fn receipt_pools_and_task_store_limits_are_independent_after_restart() {
+fn task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery() {
+    for (state, failure) in [
+        (
+            SeedReceiptState::TaskPromisedActorBound,
+            V5SafeFailureReason::Interrupted,
+        ),
+        (
+            SeedReceiptState::TaskHandoffActorBoundBegun,
+            V5SafeFailureReason::OutcomeUncertain,
+        ),
+    ] {
+        let report = execute(Scenario::fake(vec![
+            Action::FillTaskLinks,
+            Action::PublishListener,
+            checkpoint_action("baseline"),
+            Action::SeedReceipt {
+                state,
+                cancel_requested: false,
+                staged_terminal: None,
+            },
+            Action::MaterializeTaskHandoff {
+                label: "materialized".into(),
+            },
+            Action::JoinOperation {
+                label: "materialized".into(),
+            },
+            checkpoint_action("materialized"),
+            Action::Restart,
+            Action::PublishListener,
+            Action::Recover {
+                key: KeyCase::Exact,
+                label: "recovered".into(),
+            },
+            checkpoint_action("reopened"),
+        ]));
+        let baseline = checkpoint(&report, "baseline");
+        let answer = response(&report, "materialized");
+        assert_eq!(answer.kind, ResponseKind::Task);
+        assert!(answer.error.is_none());
+        for label in ["materialized", "reopened"] {
+            let snapshot = checkpoint(&report, label);
+            assert_exact_linked_task_pool(snapshot, FORMER_TASK_LINK_LIMIT + 1);
+            for task in &baseline.tasks {
+                assert!(snapshot.tasks.contains(task));
+            }
+            for link in &baseline.task_links {
+                assert!(snapshot.task_links.contains(link));
+            }
+            assert_eq!(snapshot.receipt_live_count, 0);
+            assert_eq!(snapshot.callbacks.total_domain(), 0);
+            assert_eq!(snapshot.listener, ListenerState::Listening);
+        }
+        let recovered = checkpoint(&report, "reopened")
+            .tasks
+            .iter()
+            .find(|task| &task.receipt_key == response_key(answer))
+            .unwrap();
+        assert_failed_terminal(recovered.terminal.as_ref().unwrap(), failure);
+        assert_eq!(
+            response_terminal(response(&report, "recovered")),
+            recovered.terminal.as_ref().unwrap()
+        );
+        assert!(report.task_publication_capacity.is_empty());
+        assert_eq!(count_event(&report, EventKind::TaskLinkCapacityRejected), 0);
+    }
+}
+
+#[test]
+fn retained_receipt_and_task_catalogs_are_independent_after_restart() {
     let report = execute(Scenario::fake(vec![
         Action::FillReceiptPool {
             state: SeedReceiptState::CancelReserved,
@@ -12612,8 +12452,7 @@ fn receipt_pools_and_task_store_limits_are_independent_after_restart() {
             receipt_quota_bytes(snapshot),
             62 * MAX_RESPONSE_LINE_BYTES + cancel_bytes
         );
-        assert_exact_linked_task_pool(snapshot, TASK_LINK_LIMIT);
-        assert!(snapshot.task_link_bytes <= TASK_LINK_BYTES_LIMIT);
+        assert_exact_linked_task_pool(snapshot, FORMER_TASK_LINK_LIMIT);
         assert_eq!(snapshot.tombstone_count, TOMBSTONE_LIMIT);
         assert!(snapshot.tombstone_bytes <= TOMBSTONE_BYTES_LIMIT);
     }
@@ -12670,12 +12509,12 @@ fn receipt_pools_and_task_store_limits_are_independent_after_restart() {
     );
     let converted = checkpoint(&report, "after-conversion");
     assert_eq!(converted.receipt_live_count, FORMER_LIVE_RECEIPT_LIMIT);
-    assert_eq!(converted.task_link_count, TASK_LINK_LIMIT);
+    assert_eq!(converted.task_link_count, FORMER_TASK_LINK_LIMIT);
     assert_eq!(converted.tombstone_count, TOMBSTONE_LIMIT);
     assert_eq!(converted.task_links, after_restart.task_links);
     assert_eq!(converted.tombstones, after_restart.tombstones);
     assert_eq!(converted.tasks, after_restart.tasks);
-    assert_exact_linked_task_pool(converted, TASK_LINK_LIMIT);
+    assert_exact_linked_task_pool(converted, FORMER_TASK_LINK_LIMIT);
     assert_eq!(converted.callbacks.total_domain(), 0);
     let remaining_cancels: Vec<_> = converted
         .receipts
@@ -12846,26 +12685,26 @@ fn deterministic_horizon_load_does_not_saturate() {
     assert_eq!(model.task_store_create_attempts, 0);
     assert_eq!(model.listener, ListenerState::Listening);
     let before_load = checkpoint(&report, "before-horizon-load");
-    assert_exact_linked_task_pool(before_load, TASK_LINK_LIMIT);
+    assert_exact_linked_task_pool(before_load, FORMER_TASK_LINK_LIMIT);
     let after_load = checkpoint(&report, "after-horizon-load");
     assert_retained_receipt_backed_set(after_load, 32);
     assert_tombstones_match_active_ack_window(after_load, model);
-    assert_exact_linked_task_pool(after_load, TASK_LINK_LIMIT);
+    assert_exact_linked_task_pool(after_load, FORMER_TASK_LINK_LIMIT);
     assert_eq!(after_load.task_link_bytes, before_load.task_link_bytes);
     assert_eq!(after_load.task_links, before_load.task_links);
     assert_eq!(after_load.tasks, before_load.tasks);
     let before_expiry = checkpoint(&report, "one-ms-before-tombstone-expiry");
     assert_eq!(before_expiry.receipt_live_count, 32);
-    assert_eq!(before_expiry.task_link_count, TASK_LINK_LIMIT);
+    assert_eq!(before_expiry.task_link_count, FORMER_TASK_LINK_LIMIT);
     assert_tombstones_match_active_ack_window(before_expiry, model);
     assert!(before_expiry.store_generation > after_load.store_generation);
     let at_expiry = checkpoint(&report, "at-tombstone-expiry");
     assert_tombstones_match_active_ack_window(at_expiry, model);
     assert_eq!(at_expiry.receipt_live_count, 32);
-    assert_eq!(at_expiry.task_link_count, TASK_LINK_LIMIT);
+    assert_eq!(at_expiry.task_link_count, FORMER_TASK_LINK_LIMIT);
     assert!(at_expiry.store_generation > before_expiry.store_generation);
     let reopened = checkpoint(&report, "horizon-reopened");
-    assert_exact_linked_task_pool(reopened, TASK_LINK_LIMIT);
+    assert_exact_linked_task_pool(reopened, FORMER_TASK_LINK_LIMIT);
     assert_eq!(reopened.receipt_live_count, at_expiry.receipt_live_count);
     assert_eq!(
         reopened.receipt_actual_bytes,
