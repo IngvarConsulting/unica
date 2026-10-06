@@ -111,6 +111,8 @@ def step_wire(step: dict) -> str:
         parts.append("валидаторы " + ", ".join(f"`{name}`" for name in step["validators"]))
     if args.get("dryRun"):
         parts.append("(превью)")
+    if step.get("form"):
+        parts.append("(как форма клиента)")
     return " ".join(parts)
 
 

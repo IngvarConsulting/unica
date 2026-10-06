@@ -636,12 +636,12 @@ impl V5CanonicalInvocationRuntime {
         mut request: InvocationRequest,
         response_deadline: InvocationResponseDeadline,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
+        request.normalize_omitted_options();
         if let Err(summary) = validate_hidden_v13_request(&request) {
             return Err(V5CanonicalPrepareError::Rejected(Box::new(
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
         }
-        request.normalize_check_options();
         match super::v13_workspace_bootstrap::prepare(
             &request,
             response_deadline.clone(),
@@ -6103,7 +6103,8 @@ struct ActorLogicalReadLease {"#,
                     "right": "main:Catalog.Items",
                     "cursor": "opaque"
                 }),
-                "unsupported_cursor",
+                // The schema publishes no diff cursor (#1218): an unknown argument.
+                "bad_value",
             ),
             (
                 ToolIdentity::Diff,
@@ -6148,6 +6149,233 @@ struct ActorLogicalReadLease {"#,
                 tool.catalog_name()
             );
         }
+    }
+
+    /// A daemon over a workspace with two catalogs of different structure and
+    /// a module that matches the search needle twice.
+    fn empty_cursor_and_diff_fixture() -> (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        V5CanonicalInvocationRuntime,
+        String,
+    ) {
+        let state_root = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        std::fs::create_dir_all(source.join("Catalogs/Items/Ext")).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Items</Catalog><Catalog>Other</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name><Synonym/><Comment>first</Comment></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Other.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="cccccccc-cccc-4ccc-8ccc-cccccccccccc"><Properties><Name>Other</Name><Synonym/><Comment>second</Comment></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Ext/ObjectModule.bsl"),
+            "Процедура Проверка()\n    PagedNeedle = 1;\n    PagedNeedle = 2;\nКонецПроцедуры\n",
+        )
+        .unwrap();
+        let config = DaemonServerConfig::new(
+            std::fs::canonicalize(state_root.path()).unwrap(),
+            CoreIdentity::production(),
+            Duration::from_millis(50),
+        );
+        let runtime =
+            V5CanonicalInvocationRuntime::new(config.invocation_service, Arc::new(TokioClock));
+        let workspace_hint = std::fs::canonicalize(workspace.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        (state_root, workspace, runtime, workspace_hint)
+    }
+
+    /// #1216: a form client sends an untouched optional string as `""`. For
+    /// every tool that publishes `cursor`, the empty string asks for the
+    /// first page exactly like an omitted cursor, and a first page that has
+    /// more still issues a real continuation.
+    #[test]
+    fn empty_cursor_reads_the_first_page_of_every_tool_that_publishes_one() {
+        struct PlatformDocsStandIn;
+
+        impl crate::domain::documentation::DocumentationProvider for PlatformDocsStandIn {
+            fn id(&self) -> crate::domain::documentation::DocumentationProviderId {
+                crate::domain::documentation::DocumentationProviderId::new("platform-test")
+            }
+
+            fn corpora(&self) -> Vec<crate::domain::documentation::DocumentationCorpus> {
+                vec![crate::domain::documentation::DocumentationCorpus {
+                    id: "platform-test".to_string(),
+                    source_kind: crate::domain::documentation::SourceKind::PlatformHelp,
+                    authority: crate::domain::documentation::Authority::Vendor,
+                }]
+            }
+
+            fn needs_network(&self) -> bool {
+                false
+            }
+
+            fn search(
+                &self,
+                request: &crate::domain::documentation::DocumentationSearchRequest,
+                _: &crate::domain::documentation::DocumentationContext,
+            ) -> Vec<crate::domain::documentation::DocumentationSection> {
+                vec![crate::domain::documentation::DocumentationSection::empty(
+                    self.id(),
+                    "platform-test",
+                    crate::domain::documentation::SourceKind::PlatformHelp,
+                    crate::domain::documentation::Authority::Vendor,
+                    &request.language,
+                )]
+            }
+        }
+
+        let _docs =
+            crate::infrastructure::application_ports::install_documentation_registry_stand_in(
+                Arc::new(PlatformDocsStandIn),
+            );
+        let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
+        let call = |tool, arguments| {
+            let request =
+                InvocationRequest::new(tool, arguments, workspace_hint.as_str(), 7_000).unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        let cases = [
+            (ToolIdentity::View, serde_json::json!({}), false),
+            (
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Catalog.Items.Module.Object.Body", "limit": 1}),
+                true,
+            ),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({"query": "PagedNeedle", "limit": 1}),
+                true,
+            ),
+            (ToolIdentity::Check, serde_json::json!({}), false),
+            (
+                ToolIdentity::Check,
+                serde_json::json!({"at": "main:Catalog.Items"}),
+                false,
+            ),
+            (
+                ToolIdentity::Docs,
+                serde_json::json!({"query": "Items", "source": "platform-help"}),
+                false,
+            ),
+        ];
+        // A tool that starts publishing `cursor` must join the cases above.
+        let mut covered = cases
+            .iter()
+            .map(|(tool, _, _)| tool.catalog_name())
+            .collect::<Vec<_>>();
+        covered.sort_unstable();
+        covered.dedup();
+        let mut expected = crate::application::v13::tool_catalog::catalog_for(
+            crate::application::tool_contracts::SurfaceRelease::V13,
+        )
+        .unwrap()
+        .tools
+        .into_iter()
+        .filter(|contract| contract.input_schema["properties"].get("cursor").is_some())
+        .map(|contract| contract.name)
+        .collect::<Vec<_>>();
+        expected.sort_unstable();
+        assert_eq!(covered, expected, "tools that publish cursor");
+        for (tool, arguments, continues) in cases {
+            let omitted = call(tool, arguments.clone());
+            let mut with_empty = arguments.clone();
+            with_empty
+                .as_object_mut()
+                .unwrap()
+                .insert("cursor".into(), serde_json::json!(""));
+            let empty = call(tool, with_empty);
+            let name = tool.catalog_name();
+            assert!(omitted.ok, "{name} {arguments}: {omitted:?}");
+            assert!(empty.ok, "{name} {arguments} with cursor \"\": {empty:?}");
+            assert_eq!(empty.data, omitted.data, "{name} {arguments}");
+            assert_eq!(empty.page, omitted.page, "{name} {arguments}");
+            assert_eq!(
+                empty.cursor.is_some(),
+                continues,
+                "{name} {arguments}: first page continuation"
+            );
+        }
+        // Diff publishes no cursor, so even an empty one stays unknown.
+        let diff = call(
+            ToolIdentity::Diff,
+            serde_json::json!({
+                "left": "main:Catalog.Items",
+                "right": "main:Catalog.Other",
+                "cursor": ""
+            }),
+        );
+        assert!(!diff.ok);
+        assert_eq!(diff.diagnostics[0]["code"], "bad_value", "{diff:?}");
+    }
+
+    /// #1218: diff has no continuation. A truncated answer names the cut and
+    /// how to narrow the question, and issues no cursor; a cursor argument is
+    /// an unknown argument rather than an unimplemented feature.
+    #[test]
+    fn diff_truncation_names_the_cut_and_offers_no_continuation() {
+        let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
+        let call = |arguments| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Diff,
+                arguments,
+                workspace_hint.as_str(),
+                7_000,
+            )
+            .unwrap();
+            direct_v5(&runtime, request).unwrap()
+        };
+        let pair = serde_json::json!({
+            "left": "main:Catalog.Items",
+            "right": "main:Catalog.Other"
+        });
+        let whole = call(pair.clone());
+        assert!(whole.ok, "{whole:?}");
+        let data = whole.data.as_ref().unwrap();
+        assert_eq!(data["truncated"], false);
+        let all = data["changes"].as_array().unwrap();
+        assert!(all.len() > 1, "fixture must differ in more than one place");
+        assert_eq!(whole.summary, "logical nodes compared");
+
+        let mut limited = pair.clone();
+        limited["limit"] = serde_json::json!(1);
+        let cut = call(limited);
+        assert!(cut.ok, "{cut:?}");
+        let data = cut.data.as_ref().unwrap();
+        assert_eq!(data["truncated"], true);
+        assert_eq!(data["equal"], false);
+        assert_eq!(data["changes"], serde_json::json!([all[0].clone()]));
+        assert!(cut.cursor.is_none(), "no continuation exists: {cut:?}");
+        assert!(cut.page.is_none(), "{cut:?}");
+        assert_ne!(cut.summary, whole.summary, "truncation must be named");
+        assert!(
+            !cut.summary.contains("cursor"),
+            "a truncated diff must not promise a cursor: {}",
+            cut.summary
+        );
+
+        let mut continued = pair;
+        continued["cursor"] = serde_json::json!("opaque");
+        let refused = call(continued);
+        assert!(!refused.ok);
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
     }
 
     /// INV.WIRE.V13-REFUSAL-CHANNEL: every canonical refusal answers through

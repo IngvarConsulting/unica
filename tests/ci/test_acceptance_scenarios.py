@@ -18,7 +18,9 @@ class of answer the surface gives today:
   gap         a documented non-passable spot with its reason
 
 A wire is passable when every step answers its frozen class; a raw error, an
-unknown tool, or an undocumented bad_value fails the run.  Environment-shaped
+unknown tool, or an undocumented bad_value fails the run.  A step marked
+`form: true` is sent the way a form client sends it: every published schema
+default fills an argument the step leaves out.  Environment-shaped
 steps (docs search, platform runs, task follow-ups) freeze the set of classes
 the environment legitimately selects from.
 """
@@ -180,6 +182,16 @@ def derive_source_sets(source: Path, workspace: Path) -> None:
     copy("src-nosupport", lambda path, text: text, drop_bin=True)
     copy("src-unversioned", unversioned)
 
+def form_arguments(schema, arguments):
+    """What a form client such as MCP Inspector sends: every published
+    top-level `default` fills an argument the step leaves out (#1210)."""
+    filled = dict(arguments)
+    for name, property_schema in (schema.get("properties") or {}).items():
+        if name not in filled and "default" in property_schema:
+            filled[name] = property_schema["default"]
+    return filled
+
+
 def scenario_publishes(scenario) -> bool:
     """True when a step can change the workspace: an apply that is not a preview."""
     return any(
@@ -296,6 +308,23 @@ class AcceptanceServer:
         )
         return self.receive(request_id)
 
+    def input_schema(self, tool: str):
+        """The published inputSchema of one tool, read from tools/list."""
+        if not hasattr(self, "_schemas"):
+            self.label = "tools/list"
+            request_id = self.request_id()
+            self.send({"jsonrpc": "2.0", "id": request_id, "method": "tools/list"})
+            response = self.receive(request_id) or {}
+            self._schemas = {
+                entry["name"]: entry.get("inputSchema") or {}
+                for entry in (response.get("result") or {}).get("tools") or []
+            }
+        if tool not in self._schemas:
+            # A missing schema would turn a form step into a plain call
+            # that proves nothing about published defaults.
+            raise ValueError(f"tools/list did not publish {tool}")
+        return self._schemas[tool]
+
     def close(self) -> None:
         try:
             self.process.stdin.close()
@@ -343,8 +372,8 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         scenarios = self.corpus["scenarios"]
         self.assertEqual(len(scenarios), 319)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 381,
-            "a wire step went missing: the corpus freezes 381 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 383,
+            "a wire step went missing: the corpus freezes 383 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
         self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 320)])
@@ -372,6 +401,8 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
                     expected = step["expect"]
                     self.assertTrue(expected, "every step freezes an expectation")
                     self.assertTrue(set(expected) <= EXPECT_CLASSES, expected)
+                    if "form" in step:
+                        self.assertIs(step["form"], True, "a form step is marked `form: true`")
                     if "gap" in expected:
                         self.assertTrue(
                             step.get("gap"),
@@ -528,6 +559,10 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                         label = f"{scenario['id']} step {index} {step['tool']}"
                         arguments = substitute(step["args"], context)
                         try:
+                            if step.get("form"):
+                                arguments = form_arguments(
+                                    server.input_schema(step["tool"]), arguments
+                                )
                             response = server.call(step["tool"], arguments, label)
                         except (TimeoutError, OSError, ValueError) as error:
                             # The session is gone: record the step with the

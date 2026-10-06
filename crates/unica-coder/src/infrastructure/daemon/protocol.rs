@@ -62,14 +62,29 @@ impl InvocationRequest {
         &self.arguments
     }
 
-    /// Check's nullable options have the same meaning as omitted options.
-    /// Normalize before root routing and cursor identity are established.
-    pub(super) fn normalize_check_options(&mut self) {
-        if self.tool == ToolIdentity::Check {
-            self.arguments.retain(|name, value| {
-                !matches!(name.as_str(), "at" | "limit" | "cursor") || !value.is_null()
-            });
-        }
+    /// Removes spellings that mean an omitted argument, before validation,
+    /// root routing and cursor identity are established. Check keeps its
+    /// earlier contract that `null` options equal omitted ones. An empty
+    /// `cursor` is the untouched field of a form client and means the first
+    /// page (#1216); this holds only for tools whose schema publishes
+    /// `cursor`, elsewhere the argument stays unknown.
+    pub(super) fn normalize_omitted_options(&mut self) {
+        let publishes_cursor = crate::application::v13::tool_catalog::catalog_for(
+            crate::application::tool_contracts::SurfaceRelease::V13,
+        )
+        .and_then(|catalog| {
+            catalog
+                .tools
+                .into_iter()
+                .find(|contract| contract.name == self.tool.catalog_name())
+        })
+        .is_some_and(|contract| contract.input_schema["properties"].get("cursor").is_some());
+        let check = self.tool == ToolIdentity::Check;
+        self.arguments.retain(|name, value| match name.as_str() {
+            "cursor" if publishes_cursor && value.as_str() == Some("") => false,
+            "at" | "limit" | "cursor" if check => !value.is_null(),
+            _ => true,
+        });
     }
 
     /// The host channel that chose the workspace hint, when the wire carried it.

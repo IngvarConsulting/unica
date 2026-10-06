@@ -643,6 +643,14 @@
      "expect": [
       "ok"
      ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {},
+     "form": true,
+     "expect": [
+      "ok"
+     ]
     }
    ],
    "id": "S036"
@@ -7657,6 +7665,14 @@
     {
      "tool": "unica.view",
      "args": {},
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {},
+     "form": true,
      "expect": [
       "ok"
      ]

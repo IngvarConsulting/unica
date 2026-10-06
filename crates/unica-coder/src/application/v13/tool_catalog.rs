@@ -270,8 +270,10 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                         json!({
                             "at": logical_address(),
                             "filter": data_object("Optional projection such as sections; valid only with at."),
-                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20,
-                                "description": "Maximum child items per addressed view page; a preferred 64 KiB page size may stop earlier, but an indivisible item remains whole."},
+                            // No schema `default` (#1210): form clients send it, and
+                            // limit without at is refused.
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 50,
+                                "description": "Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole."},
                             "cursor": cursor("Continuation cursor from an earlier addressed view."),
                         }),
                         json!([]),
@@ -335,9 +337,12 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. If an incomplete workspace EOL inspection offers another check, call unica.check with an empty object again to resume its bounded checkpoint; each call uses a fresh deadline. Capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.",
                     input_schema: schema(
                         json!({
-                            "at": {"type": ["string", "null"], "description": "Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit or use null to check workspace source-set admission."},
-                            "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 50, "default": 20, "description": "Maximum diagnostics in one node-check page (maximum 50). Omit or use null for the default of 20."},
-                            "cursor": {"type": ["string", "null"], "description": "Continuation cursor from an earlier check of the same node. Omit or use null for the first page; an empty string is invalid."},
+                            // One type per field and no schema `default` (#1210, #1211):
+                            // some clients refuse type arrays, form clients send defaults.
+                            // An explicit null is still accepted as an omitted field.
+                            "at": logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit to check workspace source-set admission; null is treated as omitted."),
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum diagnostics in one node-check page, from 1 to 50; valid only with at. Omit for 20; null is treated as omitted."},
+                            "cursor": cursor("Continuation cursor from an earlier check of the same node; valid only with at. Omit, or pass an empty string or null, for the first page."),
                         }),
                         json!([]),
                     ),
@@ -350,8 +355,9 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                             "left": logical_address_with("Qualified logical address of the left node."),
                             "right": logical_address_with("Qualified logical address of the right node."),
                             "filter": data_object("Optional projection applied before comparison."),
-                            "limit": limit("Maximum differences to return."),
-                            "cursor": cursor("Continuation cursor from an earlier diff."),
+                            // No `cursor` until continuation is wired (#1217): a truncated
+                            // answer says so and asks for a narrower comparison instead.
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Maximum differences to return, from 1 to 1000; omit for 100. A truncated answer has no continuation: compare smaller nodes or raise limit."},
                         }),
                         json!(["left", "right"]),
                     ),
@@ -448,10 +454,6 @@ fn logical_subtree_address() -> Value {
 
 fn data_object(description: &'static str) -> Value {
     json!({"type": "object", "description": description})
-}
-
-fn limit(description: &'static str) -> Value {
-    json!({"type": "integer", "description": description, "minimum": 1})
 }
 
 fn cursor(description: &'static str) -> Value {
@@ -782,16 +784,14 @@ mod tests {
             .unwrap();
         assert_eq!(check.input_schema["properties"]["limit"]["maximum"], 50);
         for (field, kind) in [("at", "string"), ("limit", "integer"), ("cursor", "string")] {
-            assert_eq!(
-                check.input_schema["properties"][field]["type"],
-                json!([kind, "null"])
-            );
+            assert_eq!(check.input_schema["properties"][field]["type"], kind);
         }
+        // Diff continuation is not wired (#1217); the schema must not offer it.
         assert_schema(
             &catalog.tools,
             "diff",
             json!(["left", "right"]),
-            &["left", "right", "filter", "limit", "cursor"],
+            &["left", "right", "filter", "limit"],
         );
         assert_schema(
             &catalog.tools,
@@ -816,7 +816,6 @@ mod tests {
             ("search", "scope"),
             ("diff", "left"),
             ("diff", "right"),
-            ("diff", "cursor"),
             ("run", "op"),
             ("docs", "query"),
             ("docs", "source"),
@@ -842,8 +841,20 @@ mod tests {
             assert_eq!(limit["type"], "integer");
             assert_eq!(limit["minimum"], 1);
         }
-        assert_eq!(input_field(&catalog.tools, "view", "limit")["default"], 20);
+        // A form client sends a schema default, and view or check refuse limit
+        // without at (#1210): their limit keeps its default in prose only.
+        for tool in ["view", "check"] {
+            let limit = input_field(&catalog.tools, tool, "limit");
+            assert!(
+                limit.get("default").is_none(),
+                "unica.{tool}.limit must not publish a default: {limit}"
+            );
+        }
         assert_eq!(input_field(&catalog.tools, "view", "limit")["maximum"], 50);
+        assert_eq!(
+            input_field(&catalog.tools, "diff", "limit")["maximum"],
+            1000
+        );
         assert_eq!(input_field(&catalog.tools, "docs", "limit")["default"], 20);
         assert_eq!(input_field(&catalog.tools, "docs", "limit")["maximum"], 50);
         assert_eq!(

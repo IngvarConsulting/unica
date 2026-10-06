@@ -183,6 +183,13 @@ fn canonical_check_null_options_preserve_root_node_and_cursor_contracts() {
     assert!(diagnostics.len() > 1, "fixture must exercise pagination");
     let first = call(json!({"at":"main:Configuration","limit":1,"cursor":null}));
     assert_eq!(first["ok"], true, "{first:#}");
+    // An empty cursor is the untouched field of a form client: first page.
+    let empty = call(json!({"at":"main:Configuration","limit":1,"cursor":""}));
+    assert_eq!(empty["ok"], true, "{empty:#}");
+    assert_eq!(empty["data"], first["data"]);
+    let root_empty = call(json!({"cursor":""}));
+    assert_eq!(root_empty["ok"], true, "{root_empty:#}");
+    assert_eq!(root_empty["data"], root_omitted["data"]);
     let cursor = first["cursor"].as_str().expect("next page cursor");
     let next_args = json!({"at":"main:Configuration","limit":1,"cursor":cursor});
     let second = call(next_args.clone());
@@ -195,7 +202,6 @@ fn canonical_check_null_options_preserve_root_node_and_cursor_contracts() {
         assert_eq!(page["data"]["status"], "failed");
     }
     for arguments in [
-        json!({"at":"main:Configuration","cursor":""}),
         json!({"at":"main:Configuration","cursor":"damaged"}),
         json!({"at":"main:Configuration","limit":2,"cursor":cursor}),
     ] {

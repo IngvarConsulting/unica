@@ -1623,6 +1623,136 @@ mod tests {
         );
     }
 
+    /// Visits every schema node of a published tool with its JSON pointer.
+    /// Keys of `properties` and similar maps are names, not keywords: an
+    /// argument called `type` or `default` is not mistaken for one.
+    fn visit_schema_nodes<'a>(
+        value: &'a Value,
+        pointer: &str,
+        visit: &mut dyn FnMut(&str, &'a serde_json::Map<String, Value>),
+    ) {
+        const NAMED_SCHEMA_MAPS: &[&str] = &[
+            "properties",
+            "patternProperties",
+            "dependentSchemas",
+            "definitions",
+            "$defs",
+        ];
+        match value {
+            Value::Object(object) => {
+                visit(pointer, object);
+                for (key, child) in object {
+                    let child_pointer = format!("{pointer}/{key}");
+                    match (NAMED_SCHEMA_MAPS.contains(&key.as_str()), child) {
+                        (true, Value::Object(named)) => {
+                            for (name, schema) in named {
+                                visit_schema_nodes(
+                                    schema,
+                                    &format!("{child_pointer}/{name}"),
+                                    visit,
+                                );
+                            }
+                        }
+                        _ => visit_schema_nodes(child, &child_pointer, visit),
+                    }
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    visit_schema_nodes(item, &format!("{pointer}/{index}"), visit);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn published_tool_values(profile: V13TaskProfile) -> Vec<(String, Value)> {
+        v13_tool_definitions(profile)
+            .iter()
+            .map(|tool| {
+                (
+                    tool.name.to_string(),
+                    serde_json::to_value(tool).expect("published tool serializes"),
+                )
+            })
+            .collect()
+    }
+
+    /// #1211: clients that translate tool schemas into a single-`type` dialect
+    /// refuse or mishandle `"type": [...]`; no published schema may use it.
+    #[test]
+    fn published_tool_schemas_declare_one_type_per_node() {
+        for profile in [V13TaskProfile::Native, V13TaskProfile::Compatibility] {
+            for (name, tool) in published_tool_values(profile) {
+                let mut arrays = Vec::new();
+                visit_schema_nodes(&tool, "", &mut |pointer, node| {
+                    if node.get("type").is_some_and(Value::is_array) {
+                        arrays.push(pointer.to_string());
+                    }
+                });
+                assert!(
+                    arrays.is_empty(),
+                    "{name} publishes type arrays at {arrays:?}"
+                );
+            }
+        }
+        // The walker itself must see a type array where one is.
+        let mut found = false;
+        visit_schema_nodes(
+            &json!({"properties": {"type": {"type": ["string", "null"]}}}),
+            "",
+            &mut |_, node| found |= node.get("type").is_some_and(Value::is_array),
+        );
+        assert!(found);
+    }
+
+    /// #1210: a form client fills every schema `default` into the call. A tool
+    /// that answers `{}` must therefore publish none: `unica.view {limit: 20}`
+    /// is refused because limit requires at. A tool with required arguments
+    /// gets a default only when it is valid next to those arguments alone;
+    /// each such default is named here with that justification.
+    #[test]
+    fn published_defaults_never_turn_a_form_call_invalid() {
+        // search: `query` alone plus corpus `text`, regex `false` and limit 20
+        // is the documented literal text search. docs: `query` plus limit 20.
+        // task.result: `taskId` plus the 7000 ms wait.
+        const JUSTIFIED: &[(&str, &str)] = &[
+            ("unica.search", "/inputSchema/properties/corpus"),
+            ("unica.search", "/inputSchema/properties/regex"),
+            ("unica.search", "/inputSchema/properties/limit"),
+            ("unica.docs", "/inputSchema/properties/limit"),
+            ("unica.task.result", "/inputSchema/properties/waitMs"),
+        ];
+        for (name, tool) in [V13TaskProfile::Native, V13TaskProfile::Compatibility]
+            .into_iter()
+            .flat_map(published_tool_values)
+        {
+            let required = tool["inputSchema"]["required"]
+                .as_array()
+                .is_some_and(|required| !required.is_empty());
+            let mut defaults = Vec::new();
+            visit_schema_nodes(
+                &tool["inputSchema"],
+                "/inputSchema",
+                &mut |pointer, node| {
+                    if node.contains_key("default") {
+                        defaults.push(pointer.to_string());
+                    }
+                },
+            );
+            for pointer in defaults {
+                assert!(
+                    required,
+                    "{name} answers an empty call yet publishes a default at {pointer}"
+                );
+                assert!(
+                    JUSTIFIED.contains(&(name.as_str(), pointer.as_str())),
+                    "{name} publishes an unreviewed default at {pointer}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn surface_release_structurally_gates_v12_legacy_dispatch_from_v13_daemon_dispatch() {
         use std::sync::atomic::AtomicUsize;
