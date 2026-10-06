@@ -2396,9 +2396,9 @@ fn fill_tombstone_pool(
     clock: &ScenarioEpochClock,
     arguments: &Map<String, Value>,
     workspace_hint: &str,
+    count: u32,
 ) -> Result<(ReceiptLedgerActor, BulkReceiptCatalogObservation), String> {
-    const TOMBSTONE_POOL_LIMIT: usize = 28_864;
-    let keys = (0..TOMBSTONE_POOL_LIMIT)
+    let keys = (0..count)
         .map(|_| fresh_key_for_workspace(identity, arguments, workspace_hint))
         .collect::<Result<Vec<_>, _>>()?;
     let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {

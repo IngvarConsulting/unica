@@ -169,6 +169,9 @@ pub(super) enum ReceiptScenarioAction {
     FillTaskLinks,
     FillTaskLinksLeavingOneReservationSlot,
     FillTombstones,
+    SeedTombstoneCatalog {
+        count: u32,
+    },
     InjectTaskStoreCapacityInvariantViolationOnce,
     MaterializeTaskHandoff {
         label: String,
