@@ -114,7 +114,7 @@ pub(super) enum CanonicalCallOutcome {
 pub(super) type CanonicalCallHandler = dyn Fn(
         V5ToolIdentity,
         &Map<String, Value>,
-        &Map<String, Value>,
+        &unica_bootstrap::HostRequest,
         FrontendInvocationDeadline,
         CanonicalCancellation,
     ) -> Result<CanonicalCallOutcome, ErrorData>
@@ -172,10 +172,10 @@ fn build_router(
     let client = Arc::new(client);
     let call_client = Arc::clone(&client);
     let call: Arc<CanonicalCallHandler> =
-        Arc::new(move |tool, arguments, metadata, deadline, cancellation| {
+        Arc::new(move |tool, arguments, host, deadline, cancellation| {
             // Resolve once per invocation. Never publish this choice back into
             // shared frontend state: another call may belong to another tree.
-            let workspace_hint = match workspace.resolve(metadata) {
+            let workspace_hint = match workspace.resolve_request(host) {
                 Ok(directory) => directory,
                 Err(message) => {
                     let refusal = crate::domain::invocation::DomainResult::canonical_rejection(
@@ -973,7 +973,7 @@ mod tests {
         (router.call)(
             V5ToolIdentity::View,
             &arguments(),
-            &Map::new(),
+            &unica_bootstrap::HostRequest::default(),
             deadline(host_remaining),
             CancellationToken::new().into(),
         )
@@ -1488,7 +1488,7 @@ mod tests {
         let foreign = (router.call)(
             V5ToolIdentity::Docs,
             &Map::new(),
-            &Map::new(),
+            &unica_bootstrap::HostRequest::default(),
             deadline(None),
             CancellationToken::new().into(),
         )

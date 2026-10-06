@@ -17,8 +17,9 @@ pub use download::{DownloadObserver, Downloader, HttpDownloader, SilentDownload}
 pub use error::{BootstrapError, Failure, Result};
 pub use host::{
     capture_host_workspace_context, host_tool_deadline, host_workspace_capabilities,
-    host_workspace_environment_keys, provider_state_root, runtime_cache_root,
-    verify_installed_plugin_metadata, verify_installed_skill_package, HostWorkspaceContext,
+    host_workspace_environment_keys, provider_state_root, request_needs_client_roots,
+    runtime_cache_root, verify_installed_plugin_metadata, verify_installed_skill_package,
+    ClientRoots, HostRequest, HostWorkspaceContext,
 };
 pub use manifest::{
     Artifact, ArtifactRole, DeliveryForm, ReleaseIdentity, RuntimeAsset, RuntimeFile,
