@@ -969,6 +969,7 @@ pub(crate) fn plan_metadata_batch(
             MetadataPlanKind::Create { kind, name } => {
                 stage_object_create(
                     &mut staged,
+                    authority.source_kind(),
                     authority.workspace_context(),
                     authority.source_set_name(),
                     authority.source_root(),
@@ -1285,6 +1286,7 @@ pub(super) fn owner_registration_image(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn stage_object_create(
     staged: &mut ApplyStagedState,
+    source_kind: SourceSetKind,
     context: &crate::domain::workspace::WorkspaceContext,
     source_set_name: &str,
     root: &std::path::Path,
@@ -1302,6 +1304,9 @@ pub(super) fn stage_object_create(
         source_set_name,
     )
     .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
+    // The new descriptor's synonym is written in the source set's default
+    // language, read from the staged image like every other edit (#909).
+    let language = staged_text_language(staged, source_kind, op_index)?;
     let post_image = PlatformMetadataTemplateCatalog
         .minimal_object(
             &source,
@@ -1313,6 +1318,7 @@ pub(super) fn stage_object_create(
             },
             source_set_name,
             context,
+            &language,
         )
         .map_err(|failure| meta_failure_to_plan_error(failure, op_index))?;
     let owner_relative = staged_relative(root, &source.owner_path, op_index)?;
@@ -2499,12 +2505,21 @@ mod tests {
         /// A `main` configuration source set made of `files` (relative
         /// path, text); `descriptor` is `Documents/Order.xml`.
         fn with_files(files: &[(&str, &str)]) -> Self {
+            Self::with_kind_and_files(SourceSetKind::Configuration, files)
+        }
+
+        fn with_kind_and_files(kind: SourceSetKind, files: &[(&str, &str)]) -> Self {
             let root = tempfile::tempdir().unwrap();
             let source = root.path().join("src");
             std::fs::create_dir_all(&source).unwrap();
+            let project_kind = match kind {
+                SourceSetKind::Configuration => "CONFIGURATION",
+                SourceSetKind::Extension => "EXTENSION",
+                other => panic!("unsupported fixture kind {other:?}"),
+            };
             std::fs::write(
                 root.path().join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                format!("format: DESIGNER\nsource-set:\n  - name: main\n    type: {project_kind}\n    path: src\n"),
             )
             .unwrap();
             for (relative, text) in files {
@@ -2526,7 +2541,7 @@ mod tests {
                 [WorkspaceSourceSetInput::new(
                     "main",
                     &source,
-                    SourceSetKind::Configuration,
+                    kind,
                     SourceFormat::PlatformXml,
                     SourceProfile::platform_xml_8_3_27_format_2_20(),
                 )],
@@ -3178,6 +3193,116 @@ mod tests {
                 relative.display()
             );
         }
+    }
+
+    const ENGLISH_ONLY_CONFIGURATION_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name><DefaultLanguage>Language.English</DefaultLanguage></Properties><ChildObjects><Language>English</Language><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#;
+
+    #[test]
+    fn object_create_writes_the_configuration_default_language() {
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", ENGLISH_ONLY_CONFIGURATION_XML),
+            ("Languages/English.xml", &language_xml("English", "en")),
+            ("Documents/Order.xml", ORDER_XML),
+        ]);
+        let kinds = [
+            ("Catalog", "Catalogs", "Products"),
+            ("Document", "Documents", "Invoice"),
+            ("Enum", "Enums", "Statuses"),
+            ("InformationRegister", "InformationRegisters", "Prices"),
+            ("CommonModule", "CommonModules", "Helpers"),
+            ("Report", "Reports", "Sales"),
+        ];
+        let operations = kinds
+            .iter()
+            .map(|(kind, _, name)| {
+                (
+                    "object.create",
+                    json!({"at": "main:Configuration", "values": {"kind": kind, "name": name}}),
+                )
+            })
+            .collect::<Vec<_>>();
+        let staged = plan_all(&fixture, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let texts = staged_texts(&staged);
+        for (kind, directory, name) in kinds {
+            let relative = format!("{directory}/{name}.xml");
+            let text = texts
+                .get(Path::new(&relative))
+                .unwrap_or_else(|| panic!("{kind}: {relative} is not staged"));
+            assert_eq!(
+                ml_values(text, name, "Synonym"),
+                vec![("en".to_string(), name.to_string())],
+                "{kind}"
+            );
+        }
+        for (relative, text) in &texts {
+            assert!(
+                !text.contains("<v8:lang>ru</v8:lang>"),
+                "{} invents a ru value\n{text}",
+                relative.display()
+            );
+        }
+
+        let refused = MetadataFixture::with_files(&[
+            (
+                "Configuration.xml",
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Main</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+            ),
+            ("Documents/Order.xml", ORDER_XML),
+        ]);
+        let error = plan_all(
+            &refused,
+            &[(
+                "object.create",
+                json!({"at": "main:Configuration", "values": {"kind": "Catalog", "name": "Products"}}),
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+        assert_eq!(error.path(), Some("ops[0].args.at"));
+    }
+
+    #[test]
+    fn an_extension_writes_new_values_in_its_own_default_language() {
+        // The extension's own Configuration.xml and adopted language decide;
+        // nothing is read from the configuration it extends.
+        let configuration = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="99999999-9999-4999-8999-999999999999"><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>Ext</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><NamePrefix>Ext_</NamePrefix><DefaultLanguage>Language.English</DefaultLanguage></Properties><ChildObjects><Language>English</Language><Document>Order</Document></ChildObjects></Configuration></MetaDataObject>"#;
+        let language = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><InternalInfo/><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>English</Name><Comment/><ExtendedConfigurationObject>44444444-4444-4444-8444-444444444444</ExtendedConfigurationObject><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#;
+        let fixture = MetadataFixture::with_kind_and_files(
+            SourceSetKind::Extension,
+            &[
+                ("Configuration.xml", configuration),
+                ("Languages/English.xml", language),
+                ("Documents/Order.xml", ORDER_XML),
+            ],
+        );
+        let staged = plan_all(
+            &fixture,
+            &[
+                (
+                    "object.create",
+                    json!({"at": "main:Configuration", "values": {"kind": "Catalog", "name": "Ext_Products"}}),
+                ),
+                (
+                    "attribute.add",
+                    json!({"at": "main:Document.Order", "items": [{"name": "Total"}]}),
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let texts = staged_texts(&staged);
+        assert_eq!(
+            ml_values(
+                &texts[Path::new("Catalogs/Ext_Products.xml")],
+                "Ext_Products",
+                "Synonym"
+            ),
+            vec![("en".to_string(), "Ext_products".to_string())]
+        );
+        assert_eq!(
+            ml_values(&texts[Path::new("Documents/Order.xml")], "Total", "Synonym"),
+            vec![("en".to_string(), "Total".to_string())]
+        );
     }
 
     #[test]

@@ -158,6 +158,7 @@ fn business_process_template_names_its_mandatory_task() {
         event_source: None,
         event_handler: None,
         dependencies: Vec::new(),
+        language: "ru".to_string(),
     };
     let (xml, _) =
         minimal_metadata_xml(MetadataKind::BusinessProcess, "Evidence", "2.20", &context).unwrap();
@@ -180,6 +181,7 @@ fn document_journal_template_registers_its_mandatory_document() {
         event_source: None,
         event_handler: None,
         dependencies: Vec::new(),
+        language: "ru".to_string(),
     };
     let (xml, _) =
         minimal_metadata_xml(MetadataKind::DocumentJournal, "Evidence", "2.20", &context).unwrap();

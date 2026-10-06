@@ -24,6 +24,9 @@ use roxmltree::Document;
 use std::path::{Component, Path, PathBuf};
 
 pub(crate) trait MetadataTemplateCatalog {
+    /// `language` is the `LanguageCode` the new object's multilingual values
+    /// are written in: the default language of the source set.
+    #[allow(clippy::too_many_arguments)]
     fn minimal_object(
         &self,
         source: &ResolvedSourceSet,
@@ -32,6 +35,7 @@ pub(crate) trait MetadataTemplateCatalog {
         overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
+        language: &str,
     ) -> Result<MetadataPostImage, MetaFailure>;
 }
 
@@ -82,6 +86,8 @@ pub(super) struct MinimalTemplateContext {
     pub(super) event_source: Option<String>,
     pub(super) event_handler: Option<String>,
     pub(super) dependencies: Vec<MetadataTemplateFile>,
+    /// `LanguageCode` of the source set's default language.
+    pub(super) language: String,
 }
 
 impl MinimalTemplateContext {
@@ -92,8 +98,10 @@ impl MinimalTemplateContext {
         overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
+        language: &str,
     ) -> Result<Self, MetaFailure> {
         let mut context = Self {
+            language: language.to_string(),
             chart_of_accounts: None,
             task: None,
             registered_documents: Vec::new(),
@@ -480,6 +488,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
         overrides: MetadataTemplateOperationOverrides,
         source_set: &str,
         workspace: &WorkspaceContext,
+        language: &str,
     ) -> Result<MetadataPostImage, MetaFailure> {
         if !is_1c_identifier(name) {
             return Err(MetaDiagnostic::error(
@@ -503,7 +512,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
             )
         })?;
         let context = MinimalTemplateContext::from_source(
-            source, kind, name, overrides, source_set, workspace,
+            source, kind, name, overrides, source_set, workspace, language,
         )?;
         let (xml, _) = minimal_metadata_xml(kind, name, &source.format_version, &context)
             .map_err(|message| template_failure(&metadata_path, message))?;
@@ -636,6 +645,7 @@ pub(super) struct MetaTemplateDefinition {
     method_name: Option<String>,
     sources: Vec<String>,
     handler: Option<String>,
+    language: String,
 }
 
 fn emit_meta_catalog_xml(
@@ -681,6 +691,7 @@ pub(super) fn minimal_metadata_xml(
         method_name: context.method_name.clone(),
         sources: context.event_source.clone().into_iter().collect(),
         handler: context.event_handler.clone(),
+        language: context.language.clone(),
     };
     if kind == crate::domain::metadata::MetadataKind::Catalog {
         return emit_meta_catalog_xml(&defn, obj_name, format_version);
@@ -811,6 +822,7 @@ pub(crate) fn minimal_metadata_xml_for_tests(
             event_source: None,
             event_handler: None,
             dependencies: Vec::new(),
+            language: "ru".to_string(),
         },
     )
 }
@@ -1157,20 +1169,15 @@ pub(super) fn emit_meta_catalog_properties(
     }
 }
 
-/// Language of the synonym in a new object descriptor. Creating an object
-/// (`object.create`) does not read the configuration language profile yet;
-/// the elements added to an existing descriptor do.
-const OBJECT_TEMPLATE_LANGUAGE: &str = "ru";
-
 pub(super) fn emit_meta_base_properties(
     lines: &mut Vec<String>,
     indent: &str,
-    _defn: &MetaTemplateDefinition,
+    defn: &MetaTemplateDefinition,
     obj_name: &str,
     synonym: &str,
 ) {
     lines.push(format!("{indent}<Name>{}</Name>", escape_xml(obj_name)));
-    emit_meta_mltext(lines, indent, "Synonym", OBJECT_TEMPLATE_LANGUAGE, synonym);
+    emit_meta_mltext(lines, indent, "Synonym", &defn.language, synonym);
     lines.push(format!("{indent}<Comment/>"));
 }
 
@@ -3135,6 +3142,7 @@ mod typed_template_tests {
             event_source: Some("CatalogRef.MetaAddSource".to_string()),
             event_handler: Some("CommonModule.MetaAddHandlers.Handle".to_string()),
             dependencies: Vec::new(),
+            language: "ru".to_string(),
         }
     }
 

@@ -781,9 +781,12 @@ impl<'a> TypedOperationDependencyScope<'a> {
 }
 
 /// Language of new multilingual values in external processors and reports.
-/// Their dump has no `Languages` of its own: they take the languages of the
-/// configuration they are opened in, and the external templates are created
-/// with `ru`, so new values follow that.
+///
+/// An external processor or report has no `Configuration.xml` and no
+/// `Languages` of its own: at run time it takes the languages of whatever
+/// configuration opens it, so its dump carries no default language to read.
+/// Unica's external templates are created with `ru`, and new values in them
+/// keep that explicit fallback instead of guessing a profile.
 pub(crate) const EXTERNAL_SOURCE_TEXT_LANGUAGE: &str = "ru";
 
 /// Whether applying `operations` writes a multilingual value: a synonym set
@@ -824,6 +827,17 @@ pub(super) fn typed_operations_text_language(
     if !typed_operations_write_multilingual_text(operations) {
         return Ok(String::new());
     }
+    source_set_text_language(owner_image, read)
+}
+
+/// The `LanguageCode` every new multilingual value of a source set is
+/// written in, read from its root descriptor `owner_image` and, through
+/// `read`, its `Languages/<Name>.xml`. External processors and reports get
+/// [`EXTERNAL_SOURCE_TEXT_LANGUAGE`].
+pub(crate) fn source_set_text_language(
+    owner_image: &[u8],
+    read: impl FnOnce(&Path) -> Result<Option<Vec<u8>>, String>,
+) -> Result<String, MetaDiagnostic> {
     let external = super::xml_model::parse_metadata_image(owner_image)
         .ok()
         .and_then(|(_, document)| {

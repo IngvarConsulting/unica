@@ -7927,7 +7927,13 @@ struct ActorLogicalReadLease {"#,
         };
         std::fs::write(
             source.join("Configuration.xml"),
-            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name>{extension_properties}</Properties><ChildObjects><Catalog>Items</Catalog><CommonModule>Handlers</CommonModule></ChildObjects></Configuration></MetaDataObject>"#),
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name>{extension_properties}<DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Catalog>Items</Catalog><CommonModule>Handlers</CommonModule></ChildObjects></Configuration></MetaDataObject>"#),
+        )
+        .unwrap();
+        std::fs::create_dir_all(source.join("Languages")).unwrap();
+        std::fs::write(
+            source.join("Languages/Русский.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Русский</Name><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
         )
         .unwrap();
         std::fs::create_dir_all(source.join("CommonModules/Handlers/Ext")).unwrap();
@@ -8496,8 +8502,14 @@ struct ActorLogicalReadLease {"#,
         ).unwrap();
         std::fs::write(
             source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language></ChildObjects></Configuration></MetaDataObject>"#,
         ).unwrap();
+        std::fs::create_dir_all(source.join("Languages")).unwrap();
+        std::fs::write(
+            source.join("Languages/Русский.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Русский</Name><Comment/><LanguageCode>ru</LanguageCode></Properties></Language></MetaDataObject>"#,
+        )
+        .unwrap();
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
