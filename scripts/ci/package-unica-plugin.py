@@ -22,7 +22,7 @@ V8_RUNNER_REPOSITORY = "https://github.com/IngvarConsulting/v8-runner-rust"
 
 # Формы доставки: архив распаковывается, одиночный файл ложится под своим
 # именем. Форму объявляет издатель типом содержимого.
-DELIVERY_MEDIA_TYPES = ("application/gzip", "application/octet-stream")
+DELIVERY_MEDIA_TYPES = ("application/gzip", "application/zip", "application/octet-stream")
 DISPLAY_NAME = "Unica"
 # One plugin directory serves all hosts. Each reads its own manifest and the
 # shared `.mcp.json`, so the bootstrap matrix ships only once. ZCode expands

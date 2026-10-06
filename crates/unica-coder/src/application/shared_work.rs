@@ -51,6 +51,7 @@ fn closed_nonempty(value: &str) -> bool {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DeliveryFormIdentity {
     Archive,
+    ZipArchive,
     File,
 }
 

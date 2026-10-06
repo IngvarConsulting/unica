@@ -77,6 +77,97 @@ pub fn extract_verified_tar_gz(
     verify_runtime_files(destination, expected_files, Some(&extracted))
 }
 
+/// Распаковать `zip` издателя под тем же контролем, что и `tar.gz`.
+///
+/// Каталоги пропускаются, ссылки и зашифрованные записи отклоняются, повтор
+/// пути — тоже. Состав сверяется с манифестом целиком: лишний или пропавший
+/// файл не даёт установке стать готовой.
+pub fn extract_verified_zip(
+    archive_path: &Path,
+    destination: &Path,
+    expected_files: &[RuntimeFile],
+) -> Result<()> {
+    fs::create_dir_all(destination)?;
+    let mut archive = zip::ZipArchive::new(File::open(archive_path)?)
+        .map_err(|error| BootstrapError::new(format!("failed to read runtime archive: {error}")))?;
+    // Читатель сводит записи с одним именем в одну, и повтор пропал бы молча.
+    // Число записей, объявленное самим архивом, его выдаёт.
+    if declared_zip_entries(archive_path)? != archive.len() {
+        return Err(BootstrapError::new(
+            "duplicate runtime archive file: the archive declares more entries than it names",
+        ));
+    }
+    let mut extracted = BTreeSet::new();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            BootstrapError::new(format!("failed to read runtime archive entry: {error}"))
+        })?;
+        let name = entry.name().to_string();
+        validate_archive_path(Path::new(&name))?;
+        if entry.is_dir() {
+            continue;
+        }
+        if entry.is_symlink() || entry.encrypted() || !entry.is_file() {
+            return Err(BootstrapError::new(format!(
+                "unsupported runtime archive entry type for {name}"
+            )));
+        }
+        if !extracted.insert(name.clone()) {
+            return Err(BootstrapError::new(format!(
+                "duplicate runtime archive file: {name}"
+            )));
+        }
+        let target = destination.join(&name);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+            .map_err(|error| {
+                BootstrapError::new(format!(
+                    "failed to extract runtime archive file {name}: {error}"
+                ))
+            })?;
+        std::io::copy(&mut entry, &mut output).map_err(|error| {
+            BootstrapError::new(format!(
+                "failed to extract runtime archive file {name}: {error}"
+            ))
+        })?;
+    }
+
+    verify_runtime_files(destination, expected_files, Some(&extracted))
+}
+
+/// Сколько записей объявляет запись конца центрального каталога.
+///
+/// Архив zip64 отклоняется: поставки движков малы, а проверить его счёт
+/// этой записью нельзя.
+fn declared_zip_entries(archive_path: &Path) -> Result<usize> {
+    const SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
+    const RECORD: usize = 22;
+    let bytes = fs::read(archive_path)?;
+    let malformed =
+        || BootstrapError::new("failed to read runtime archive: no end of central directory");
+    if bytes.len() < RECORD {
+        return Err(malformed());
+    }
+    // Запись стоит в конце и может нести комментарий до 65535 байт.
+    let earliest = bytes.len().saturating_sub(RECORD + usize::from(u16::MAX));
+    let start = (earliest..=bytes.len() - RECORD)
+        .rev()
+        .find(|&offset| bytes[offset..offset + 4] == SIGNATURE)
+        .ok_or_else(malformed)?;
+    let total = u16::from_le_bytes([bytes[start + 10], bytes[start + 11]]);
+    if total == u16::MAX {
+        return Err(BootstrapError::new(
+            "unsupported runtime archive: zip64 archives are not delivered",
+        ));
+    }
+    Ok(usize::from(total))
+}
+
 pub fn verify_runtime_files(
     root: &Path,
     expected_files: &[RuntimeFile],

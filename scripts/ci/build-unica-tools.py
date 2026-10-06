@@ -8,12 +8,16 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.request
+import zipfile
 from collections import defaultdict
 from collections.abc import Callable
 from pathlib import Path
@@ -278,6 +282,145 @@ def materialize_archive_group(
     return built_paths, runtime_files, download_seconds
 
 
+# Архив издателя приезжает к пользователю как есть, поэтому его тип содержимого
+# выводится из имени ассета, а не задаётся упаковщиком.
+UPSTREAM_ARCHIVE_MEDIA_TYPES = {
+    ".tar.gz": "application/gzip",
+    ".zip": "application/zip",
+}
+
+
+def upstream_archive_media_type(asset_name: str) -> str:
+    for suffix, media_type in UPSTREAM_ARCHIVE_MEDIA_TYPES.items():
+        if asset_name.endswith(suffix):
+            return media_type
+    raise SystemExit(f"upstream archive {asset_name} is neither .tar.gz nor .zip")
+
+
+def safe_archive_member(name: str, *, archive: str) -> str:
+    """Путь файла архива, пригодный для поставки на любой платформе."""
+    parts = name.split("/")
+    if (
+        not name
+        or "\\" in name
+        or name.startswith("/")
+        or any(part in ("", ".", "..") for part in parts)
+        or re.match(r"^[A-Za-z]:", name)
+    ):
+        raise SystemExit(f"upstream archive {archive} has unsafe member path: {name!r}")
+    return name
+
+
+def read_upstream_archive(path: Path, *, asset_name: str, binary: str) -> list[tuple[str, bytes, bool]]:
+    """Прочитать архив издателя: только обычные файлы с безопасными путями.
+
+    Каталоги пропускаются, ссылки, устройства, шифрование и повтор пути
+    отклоняются. Признак исполняемости берётся из режима файла; в `zip` без
+    режима Unix исполняемым считается только объявленный бинарь.
+    """
+    members: list[tuple[str, bytes, bool]] = []
+    if upstream_archive_media_type(asset_name) == "application/gzip":
+        with tarfile.open(path, mode="r:gz") as archive:
+            for info in archive.getmembers():
+                if info.isdir():
+                    continue
+                if not info.isreg():
+                    raise SystemExit(
+                        f"upstream archive {asset_name} has non-regular member {info.name!r}"
+                    )
+                name = safe_archive_member(info.name, archive=asset_name)
+                stream = archive.extractfile(info)
+                if stream is None:
+                    raise SystemExit(f"upstream archive {asset_name} member {name!r} is unreadable")
+                members.append((name, stream.read(), bool(info.mode & 0o111)))
+    else:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                # Режим Unix есть только у записей, созданных под Unix.
+                unix_mode = info.external_attr >> 16 if info.create_system == 3 else 0
+                if stat.S_IFMT(unix_mode) not in (0, stat.S_IFREG):
+                    raise SystemExit(
+                        f"upstream archive {asset_name} has non-regular member {info.filename!r}"
+                    )
+                if info.flag_bits & 0x1:
+                    raise SystemExit(
+                        f"upstream archive {asset_name} member {info.filename!r} is encrypted"
+                    )
+                name = safe_archive_member(info.filename, archive=asset_name)
+                executable = bool(unix_mode & 0o111)
+                members.append((name, archive.read(info), executable))
+    names = [name for name, _, _ in members]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise SystemExit(f"upstream archive {asset_name} repeats members {duplicates}")
+    if binary not in names:
+        raise SystemExit(f"upstream archive {asset_name} has no binary {binary}")
+    return [
+        (name, payload, executable or name == binary)
+        for name, payload, executable in members
+    ]
+
+
+def materialize_upstream_archive(
+    tool: dict,
+    *,
+    target: str,
+    downloads_dir: Path,
+    target_bin_dir: Path,
+    reserved_paths: dict[str, str],
+) -> tuple[Path, list[dict], float]:
+    """Описать архив издателя целиком и разложить его в локальной сборке.
+
+    Пользователь получает тот же архив по адресу издателя, а bootstrap сверяет
+    каждый его файл. Поэтому описание перечисляет все файлы архива, а не только
+    бинарь: иначе распаковка отказала бы на «лишних» README и лицензии.
+    """
+    asset = tool["assets"].get(target)
+    if not asset:
+        raise SystemExit(f"{tool['name']} has no asset for target {target}")
+    binary = asset.get("archiveBinary")
+    if not isinstance(binary, str) or not binary:
+        raise SystemExit(f"{tool['name']} {target} archive is missing archiveBinary selector")
+    identity = archive_identity(tool, asset, target=target)
+    downloaded = downloads_dir / f"{identity[4][:16]}-{identity[3]}"
+    started_at = time.monotonic()
+    download(release_asset_url(tool, asset), downloaded)
+    download_seconds = time.monotonic() - started_at
+    verify_asset_checksum(downloaded, asset, tool_name=tool["name"], target=target)
+    verify_asset_size(downloaded, asset, tool_name=tool["name"], target=target)
+    members = read_upstream_archive(downloaded, asset_name=asset["assetName"], binary=binary)
+
+    runtime_files: list[dict] = []
+    built_binary: Path | None = None
+    for name, payload, executable in members:
+        relative = f"bin/{target}/{name}"
+        owner = reserved_paths.get(relative)
+        if owner is not None:
+            raise SystemExit(
+                f"runtime destination collision at {relative}: {owner} and {tool['name']}"
+            )
+        reserved_paths[relative] = tool["name"]
+        destination = target_bin_dir.joinpath(*name.split("/"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        set_file_mode(destination, executable=executable)
+        runtime_files.append(
+            runtime_file_entry(
+                destination,
+                relative_path=relative,
+                delivered_path=name,
+                executable=executable,
+                artifact=artifact_name(tool),
+            )
+        )
+        if name == binary:
+            built_binary = destination
+    assert built_binary is not None
+    return built_binary, runtime_files, download_seconds
+
+
 def assert_host(target: str, targets: dict) -> None:
     cfg = targets[target]
     system = platform.system()
@@ -390,6 +533,8 @@ def delivered_binary_path(tool: dict, *, target: str, exe: str) -> str:
         return delivered_archive_path(tool["assets"][target]["archiveBinary"])
     if strategy == "direct-release-asset":
         return f"{tool['binaryName']}{exe}"
+    if strategy == "upstream-archive-release-asset":
+        return tool["assets"][target]["archiveBinary"]
     if strategy == "cargo-workspace":
         return f"bin/{target}/{tool['binaryName']}{exe}"
     raise SystemExit(f"unsupported assetStrategy for {tool['name']}: {strategy}")
@@ -476,6 +621,7 @@ def build_locked_bundle(
     built_paths: dict[str, Path] = {}
     cargo_tools: list[dict] = []
     direct_tools: list[dict] = []
+    upstream_tools: list[dict] = []
     archive_groups: dict[ArchiveIdentity, list[dict]] = defaultdict(list)
     archive_release_identities: dict[tuple[str, str, str], tuple[str, str, int]] = {}
     reserved_paths: dict[str, str] = {}
@@ -495,6 +641,8 @@ def build_locked_bundle(
 
         if strategy == "direct-release-asset":
             direct_tools.append(tool)
+        elif strategy == "upstream-archive-release-asset":
+            upstream_tools.append(tool)
         elif strategy == "archive-release-asset":
             asset = tool["assets"].get(args.target)
             if not asset:
@@ -544,6 +692,28 @@ def build_locked_bundle(
                 artifact=artifact_name(tool),
             )
         )
+
+    for tool in upstream_tools:
+        asset = tool["assets"].get(args.target)
+        if not asset:
+            raise SystemExit(f"{tool['name']} has no asset for target {args.target}")
+        register_artifact_asset(
+            artifact_assets,
+            artifact_name(tool),
+            artifact_asset_entry(
+                tool, asset, media_type=upstream_archive_media_type(asset["assetName"])
+            ),
+        )
+        binary, upstream_files, upstream_seconds = materialize_upstream_archive(
+            tool,
+            target=args.target,
+            downloads_dir=downloads_dir,
+            target_bin_dir=target_bin_dir,
+            reserved_paths=reserved_paths,
+        )
+        built_paths[tool["name"]] = binary
+        runtime_files.extend(upstream_files)
+        archive_download_seconds += upstream_seconds
 
     for identity in sorted(archive_groups):
         group = archive_groups[identity]
@@ -602,7 +772,7 @@ def build_locked_bundle(
             commit=tool["sourceCommit"],
             license_id=tool["license"],
             binary=built_paths[tool["name"]],
-            relative_binary=f"bin/{args.target}/{built_paths[tool['name']].name}",
+            relative_binary=built_paths[tool["name"]].relative_to(output_dir).as_posix(),
             delivered_binary=delivered_binary_path(tool, target=args.target, exe=exe),
             artifact=artifact_name(tool),
         )

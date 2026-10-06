@@ -5,6 +5,7 @@ check:
   - crates/unica-bootstrap/tests/runtime_install.rs::ready_marker_waits_for_the_complete_runtime_file_closure
   - crates/unica-bootstrap/tests/runtime_install.rs::install_closure_rejects_unsafe_or_drifted_archives_without_ready
   - crates/unica-bootstrap/tests/runtime_install.rs::traversal_archive_is_rejected_before_publication
+  - crates/unica-bootstrap/tests/runtime_install.rs::a_publisher_zip_is_refused_when_unsafe_or_drifted
 ---
 
 # Установка становится готовой после проверки всех файлов
