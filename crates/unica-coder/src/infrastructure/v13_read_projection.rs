@@ -2,7 +2,7 @@ use crate::application::v13::view::ViewError;
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::module_projection::EventProjection;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::logical_tree::{LogicalReader, LogicalTreeRoute};
 use serde_json::{json, Map, Value};
 
@@ -801,6 +801,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "overridesCount",
             "overridesComplete",
             "overrides",
+            // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
+            "unreadable",
         ],
         LogicalReader::Form => &[
             "name",
@@ -1066,7 +1068,8 @@ fn project_metadata(
                 title,
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_limits(unreadable_limits(payload)),
         ));
     }
     let first = &suffix[0];
@@ -1086,6 +1089,19 @@ fn project_metadata(
             ),
             metadata_relations(address, payload),
         )));
+    }
+    // Непрочитанная коллекция приходит `null`; без этой проверки она читалась
+    // бы как пустая.
+    if metadata_collection(payload, first.kind()).is_none_or(Value::is_null) {
+        if let Some(unread) = unreadable_collection(payload, first.kind()) {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                format!(
+                    "metadata {} collection is unreadable: {unread}",
+                    first.kind().as_str()
+                ),
+            ));
+        }
     }
     let collection = metadata_collection(payload, first.kind()).ok_or_else(|| {
         ViewError::new(
@@ -1172,6 +1188,48 @@ fn project_metadata(
         }
     }
     Ok(NodeViewData::Node(metadata_item_node(address, kind, item)))
+}
+
+/// Поля, которые читатель не смог спроецировать, — строками для `limits`.
+fn unreadable_limits(payload: &Value) -> Vec<String> {
+    unreadable_entries(payload)
+        .map(|(field, message)| format!("{field} не прочитано: {message}"))
+        .collect()
+}
+
+/// Причина, по которой коллекция из пофактовой части вида осталась без данных.
+///
+/// Без неё `URLTemplate` сервиса, чей шаблон читатель не разобрал, отвечал бы
+/// «нет такой коллекции», и агент счёл бы сервис пустым.
+fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
+    let prefix = match kind {
+        NodeKind::UrlTemplate => "details.urlTemplates",
+        NodeKind::Operation => "details.operations",
+        _ => return None,
+    };
+    let reasons = unreadable_entries(payload)
+        .filter(|(field, _)| {
+            field
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+        })
+        .map(|(field, message)| format!("{field}: {message}"))
+        .collect::<Vec<_>>();
+    (!reasons.is_empty()).then(|| reasons.join("; "))
+}
+
+fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
+    payload
+        .get("unreadable")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some((
+                entry.get("field")?.as_str()?,
+                entry.get("message")?.as_str()?,
+            ))
+        })
 }
 
 fn metadata_branch_kinds() -> &'static [NodeKind] {

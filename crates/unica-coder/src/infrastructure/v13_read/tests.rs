@@ -991,6 +991,96 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     assert!(rendered.contains("string"), "{rendered}");
 }
 
+/// Сервис в том виде, в каком его выгружает Конфигуратор 8.3.27: у шаблона
+/// и метода есть `Synonym` и `<Comment/>` (#634).
+fn install_configurator_http_service(fixture: &RealReaderFixture, edit: impl Fn(&str) -> String) {
+    let xml = fixture_text("platform_8_3_27/meta_info/edge/http-service-configurator.xml")
+        .replace("<Name>ПроверкаСвязи</Name>", "<Name>ExternalAPI</Name>");
+    write(
+        &fixture.source.join("HTTPServices/ExternalAPI.xml"),
+        &edit(&xml),
+    );
+}
+
+#[test]
+fn configurator_http_service_view_lists_its_templates_and_methods() {
+    let fixture = RealReaderFixture::new();
+    install_configurator_http_service(&fixture, str::to_string);
+    let service = fixture.view_service();
+
+    let http = service.view(ViewRequest::new("main:HTTPService.ExternalAPI").unwrap());
+    assert!(http.ok, "{:?}", refusal_codes(&http));
+    let node = http.data.as_ref().unwrap();
+    assert!(
+        node["branches"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"at": "main:HTTPService.ExternalAPI.URLTemplate", "count": 2})),
+        "{node:#}"
+    );
+    assert!(node.get("limits").is_none(), "{node:#}");
+
+    let templates =
+        service.view(ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate").unwrap());
+    assert!(templates.ok, "{:?}", refusal_codes(&templates));
+    let names = templates.data.as_ref().unwrap()["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["at"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "main:HTTPService.ExternalAPI.URLTemplate.Пинг",
+            "main:HTTPService.ExternalAPI.URLTemplate.ПринятьДанные",
+        ]
+    );
+
+    let method = service.view(
+        ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate.ПринятьДанные.Method.POST")
+            .unwrap(),
+    );
+    assert!(method.ok, "{:?}", refusal_codes(&method));
+    let method = method.data.as_ref().unwrap();
+    assert_eq!(method["props"]["httpMethod"], json!("POST"));
+    assert_eq!(method["props"]["handler"], json!("ПринятьДанныеPOST"));
+}
+
+/// Непрочитанный шаблон не выдаётся за пустой сервис: узел называет поле
+/// в `limits`, а ветвь шаблонов отказывает с причиной вместо «нет такой».
+#[test]
+fn an_unreadable_http_template_is_named_rather_than_reported_absent() {
+    let fixture = RealReaderFixture::new();
+    install_configurator_http_service(&fixture, |xml| {
+        xml.replacen("<Name>Пинг</Name>", "<Name>bad name</Name>", 1)
+    });
+    let service = fixture.view_service();
+
+    let http = service.view(ViewRequest::new("main:HTTPService.ExternalAPI").unwrap());
+    assert!(http.ok, "{:?}", refusal_codes(&http));
+    let node = http.data.as_ref().unwrap();
+    let limits = node["limits"]
+        .as_array()
+        .expect("the unread field is named");
+    assert!(
+        limits.iter().any(|limit| limit
+            .as_str()
+            .is_some_and(|limit| limit.starts_with("details.urlTemplates[0].name"))),
+        "{node:#}"
+    );
+
+    let templates =
+        service.view(ViewRequest::new("main:HTTPService.ExternalAPI.URLTemplate").unwrap());
+    assert!(!templates.ok, "{:#?}", templates.data);
+    assert_eq!(refusal_codes(&templates), ["provider_unavailable"]);
+    let message = templates.diagnostics[0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("details.urlTemplates[0].name"),
+        "{message}"
+    );
+}
+
 #[test]
 fn declared_service_kinds_finally_get_their_subject() {
     let fixture = RealReaderFixture::new();
