@@ -99,11 +99,14 @@ mod xml_model;
 
 pub(crate) use edit::{
     meta_edit_object_identity, prepare_typed_edit, resolve_typed_edit_object,
-    resolve_typed_metadata_object,
+    resolve_typed_metadata_object, typed_operations_write_multilingual_text,
+    EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
+pub(crate) use xml_model::{meta_default_text_language, meta_mltext_property_replacement};
 pub(crate) fn apply_typed_operations_to_image_with_seed(
     xml_text: &mut String,
     operations: &[crate::domain::metadata::MetaEditOperation],
+    lang: &str,
     seed: &[u8],
 ) -> Result<(), crate::application::metadata::MetaFailure> {
     use sha2::{Digest, Sha256};
@@ -122,7 +125,7 @@ pub(crate) fn apply_typed_operations_to_image_with_seed(
         bytes[8] = (bytes[8] & 0x3f) | 0x80;
         uuid::Uuid::from_bytes(bytes).to_string()
     };
-    edit::apply_typed_operations_with_uuid(xml_text, operations, &mut next_uuid).map(|_| ())
+    edit::apply_typed_operations_with_uuid(xml_text, operations, lang, &mut next_uuid).map(|_| ())
 }
 pub(crate) use info::{parse_typed_meta_local_info, read_typed_meta_info};
 #[cfg(test)]

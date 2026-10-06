@@ -1157,6 +1157,11 @@ pub(super) fn emit_meta_catalog_properties(
     }
 }
 
+/// Language of the synonym in a new object descriptor. Creating an object
+/// (`object.create`) does not read the configuration language profile yet;
+/// the elements added to an existing descriptor do.
+const OBJECT_TEMPLATE_LANGUAGE: &str = "ru";
+
 pub(super) fn emit_meta_base_properties(
     lines: &mut Vec<String>,
     indent: &str,
@@ -1165,7 +1170,7 @@ pub(super) fn emit_meta_base_properties(
     synonym: &str,
 ) {
     lines.push(format!("{indent}<Name>{}</Name>", escape_xml(obj_name)));
-    emit_meta_mltext(lines, indent, "Synonym", synonym);
+    emit_meta_mltext(lines, indent, "Synonym", OBJECT_TEMPLATE_LANGUAGE, synonym);
     lines.push(format!("{indent}<Comment/>"));
 }
 
@@ -2516,6 +2521,7 @@ pub(super) fn emit_meta_enum_value<F>(
     lines: &mut Vec<String>,
     indent: &str,
     value: &MetadataEnumValueTemplate,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -2526,7 +2532,13 @@ pub(super) fn emit_meta_enum_value<F>(
         "{indent}\t\t<Name>{}</Name>",
         escape_xml(&value.name)
     ));
-    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &value.synonym);
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        lang,
+        &value.synonym,
+    );
     if value.comment.is_empty() {
         lines.push(format!("{indent}\t\t<Comment/>"));
     } else {
@@ -2545,6 +2557,7 @@ pub(super) fn emit_meta_register_field<F>(
     field_tag: &str,
     attr: &MetadataAttributeTemplate,
     register_type: &str,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -2555,7 +2568,13 @@ pub(super) fn emit_meta_register_field<F>(
         "{indent}\t\t<Name>{}</Name>",
         escape_xml(&attr.name)
     ));
-    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &attr.synonym);
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        lang,
+        &attr.synonym,
+    );
     lines.push(format!("{indent}\t\t<Comment/>"));
     let type_indent = format!("{indent}\t\t");
     lines.push(format!("{type_indent}<Type>"));
@@ -2868,6 +2887,7 @@ pub(super) fn emit_meta_attribute<F>(
     indent: &str,
     attr: &MetadataAttributeTemplate,
     context: &str,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -2878,7 +2898,13 @@ pub(super) fn emit_meta_attribute<F>(
         "{indent}\t\t<Name>{}</Name>",
         escape_xml(&attr.name)
     ));
-    emit_meta_mltext(lines, &format!("{indent}\t\t"), "Synonym", &attr.synonym);
+    emit_meta_mltext(
+        lines,
+        &format!("{indent}\t\t"),
+        "Synonym",
+        lang,
+        &attr.synonym,
+    );
     lines.push(format!("{indent}\t\t<Comment/>"));
     lines.push(format!("{indent}\t\t<Type>"));
     lines.push(format!("{indent}\t\t\t<v8:Type>xs:string</v8:Type>"));
@@ -2975,6 +3001,7 @@ pub(super) fn emit_meta_tabular_section<F>(
     section: &MetadataTabularSectionTemplate,
     object_type: &str,
     object_name: &str,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -3019,6 +3046,7 @@ pub(super) fn emit_meta_tabular_section<F>(
         lines,
         &format!("{indent}\t\t"),
         "Synonym",
+        lang,
         &split_meta_camel_case(&section.name),
     );
     lines.push(format!("{indent}\t\t<Comment/>"));
@@ -3043,6 +3071,7 @@ pub(super) fn emit_meta_tabular_section<F>(
             &format!("{indent}\t\t"),
             column,
             meta_tabular_attribute_context(object_type),
+            lang,
             next_uuid,
         );
     }

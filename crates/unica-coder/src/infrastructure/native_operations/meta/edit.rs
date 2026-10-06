@@ -59,7 +59,8 @@ use super::xml_model::{
     canonical_meta_event_sources, emit_meta_event_subscription_source, emit_meta_mltext,
     emit_meta_typed_fill_value, emit_meta_typed_value_type, event_source_generated_prefix,
     meta_event_subscription_source_node, meta_info_child, meta_info_child_text, meta_info_children,
-    meta_info_inner_text, parse_defined_type_event_sources, parse_meta_event_subscription_source,
+    meta_info_inner_text, meta_mltext_property_replacement, meta_mltext_with_language_value,
+    parse_defined_type_event_sources, parse_meta_event_subscription_source,
 };
 
 #[derive(Debug, Default)]
@@ -163,6 +164,7 @@ pub(super) fn emit_meta_simple_child<F>(
     indent: &str,
     tag: &str,
     name: &str,
+    lang: &str,
     next_uuid: &mut F,
 ) where
     F: FnMut() -> String,
@@ -174,6 +176,7 @@ pub(super) fn emit_meta_simple_child<F>(
         lines,
         &format!("{indent}\t\t"),
         "Synonym",
+        lang,
         &split_meta_camel_case(name),
     );
     lines.push(format!("{indent}\t\t<Comment/>"));
@@ -238,6 +241,27 @@ pub(super) fn meta_edit_replace_or_insert_property(
     };
     properties.insert_str(close_pos, &format!("{replacement}\n{child_indent}"));
     Ok(())
+}
+
+/// Sets the `lang` value of the multilingual `tag` inside a `<Properties>`
+/// text, keeping its other languages byte for byte; a missing property is
+/// inserted with the single `lang` item.
+pub(super) fn meta_edit_set_mltext_property(
+    properties: &mut String,
+    tag: &str,
+    child_indent: &str,
+    lang: &str,
+    value: &str,
+) -> Result<(), String> {
+    if let Some(range) = meta_edit_xml_element_range(properties, tag)? {
+        let replacement =
+            meta_mltext_with_language_value(&properties[range.clone()], child_indent, lang, value)?;
+        properties.replace_range(range, &replacement);
+        return Ok(());
+    }
+    let mut lines = Vec::new();
+    emit_meta_mltext(&mut lines, child_indent, tag, lang, value);
+    meta_edit_replace_or_insert_property(properties, tag, &lines.join("\n"), child_indent)
 }
 
 pub(super) fn meta_edit_xml_element_range(
@@ -756,6 +780,77 @@ impl<'a> TypedOperationDependencyScope<'a> {
     }
 }
 
+/// Language of new multilingual values in external processors and reports.
+/// Their dump has no `Languages` of its own: they take the languages of the
+/// configuration they are opened in, and the external templates are created
+/// with `ru`, so new values follow that.
+pub(crate) const EXTERNAL_SOURCE_TEXT_LANGUAGE: &str = "ru";
+
+/// Whether applying `operations` writes a multilingual value: a synonym set
+/// through properties or an element update, or any new element, whose
+/// template always carries a synonym.
+pub(crate) fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]) -> bool {
+    operations.iter().any(|operation| match operation {
+        MetaEditOperation::SetProperties { values } => values
+            .entries()
+            .iter()
+            .any(|(key, _)| *key == MetaPropertyKey::Synonym),
+        MetaEditOperation::Add { .. } => true,
+        MetaEditOperation::Update { elements, .. } => {
+            elements.iter().any(|element| element.synonym.is_some())
+        }
+        MetaEditOperation::Remove { .. }
+        | MetaEditOperation::EditRelations { .. }
+        | MetaEditOperation::AddHelp { .. }
+        | MetaEditOperation::AddPredefinedItems { .. }
+        | MetaEditOperation::UpdatePredefinedItems { .. }
+        | MetaEditOperation::RemovePredefinedItems { .. } => false,
+    })
+}
+
+/// The `LanguageCode` new multilingual values of `operations` are written in.
+///
+/// `owner_image` is the source set's root descriptor: `Configuration.xml` of
+/// a configuration or an extension, or the root of an external processor or
+/// report; `read` returns another file of that source set by its relative
+/// path. A configuration that does not name a readable default language is
+/// refused only when the operations do write a multilingual value; otherwise
+/// the language is not used and comes back empty.
+pub(super) fn typed_operations_text_language(
+    operations: &[MetaEditOperation],
+    owner_image: &[u8],
+    read: impl FnOnce(&Path) -> Result<Option<Vec<u8>>, String>,
+) -> Result<String, MetaDiagnostic> {
+    if !typed_operations_write_multilingual_text(operations) {
+        return Ok(String::new());
+    }
+    let external = super::xml_model::parse_metadata_image(owner_image)
+        .ok()
+        .and_then(|(_, document)| {
+            document
+                .root_element()
+                .children()
+                .find(roxmltree::Node::is_element)
+                .map(|node| {
+                    matches!(
+                        node.tag_name().name(),
+                        "ExternalDataProcessor" | "ExternalReport"
+                    )
+                })
+        })
+        .unwrap_or(false);
+    if external {
+        return Ok(EXTERNAL_SOURCE_TEXT_LANGUAGE.to_string());
+    }
+    super::xml_model::meta_default_text_language(owner_image, read).map_err(|message| {
+        typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            format!("the configuration default language is unavailable: {message}"),
+            None,
+        )
+    })
+}
+
 /// Build the complete descriptor and child-resource plan privately. No
 /// transaction mutation is registered until this function returns success.
 pub(super) fn build_typed_operation_post_image(
@@ -806,7 +901,20 @@ pub(super) fn build_typed_operation_post_image(
     };
     let mut xml = snapshot.text().to_string();
     let normalized_preimage = xml.clone();
-    let applied = apply_typed_operations(&mut xml, operations).map_err(|mut failure| {
+    let lang = typed_operations_text_language(
+        operations,
+        dependency_scope.owner_registration_preimage,
+        |relative| {
+            let path = dependency_scope.owner_source_root.join(relative);
+            match fs::read(&path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(format!("failed to read {}: {error}", path.display())),
+            }
+        },
+    )
+    .map_err(|diagnostic| MetaFailure::from(diagnostic.with_metadata_path(target.clone())))?;
+    let applied = apply_typed_operations(&mut xml, operations, &lang).map_err(|mut failure| {
         for diagnostic in &mut failure.diagnostics {
             diagnostic.metadata_path = Some(target.clone());
         }
@@ -3378,17 +3486,22 @@ fn validate_typed_relation_target(
 /// Apply a closed sequence to one private working image. The caller observes
 /// either the complete post-image or the exact preimage; partial operation
 /// results never escape this function.
+///
+/// `lang` is the `LanguageCode` new multilingual values are written in: the
+/// default language of the configuration that owns the descriptor.
 pub(crate) fn apply_typed_operations(
     xml_text: &mut String,
     operations: &[MetaEditOperation],
+    lang: &str,
 ) -> Result<MetaEditCounts, MetaFailure> {
     let mut next_uuid = fresh_metadata_uuid;
-    apply_typed_operations_with_uuid(xml_text, operations, &mut next_uuid)
+    apply_typed_operations_with_uuid(xml_text, operations, lang, &mut next_uuid)
 }
 
 pub(crate) fn apply_typed_operations_with_uuid<F>(
     xml_text: &mut String,
     operations: &[MetaEditOperation],
+    lang: &str,
     next_uuid: &mut F,
 ) -> Result<MetaEditCounts, MetaFailure>
 where
@@ -3424,7 +3537,7 @@ where
             other => other,
         };
         if let Err(diagnostic) =
-            apply_typed_operation(&mut working, operation, &mut counts, next_uuid)
+            apply_typed_operation(&mut working, operation, &mut counts, lang, next_uuid)
         {
             let mut diagnostic = diagnostic.with_operation_index(operation_index);
             if let Some(field) = diagnostic.field.as_mut() {
@@ -3802,6 +3915,7 @@ fn apply_typed_operation<F>(
     xml_text: &mut String,
     operation: &MetaEditOperation,
     counts: &mut MetaEditCounts,
+    lang: &str,
     next_uuid: &mut F,
 ) -> Result<(), MetaDiagnostic>
 where
@@ -3841,7 +3955,7 @@ where
             counts.added += 1;
         }
         MetaEditOperation::SetProperties { values } => {
-            apply_typed_properties(xml_text, values)?;
+            apply_typed_properties(xml_text, values, lang)?;
             counts.modified += values.entries().len();
         }
         MetaEditOperation::Add {
@@ -3861,6 +3975,7 @@ where
                     *collection,
                     scope.as_ref().map(|scope| scope.tabular_section.as_str()),
                     element,
+                    lang,
                     next_uuid,
                 )
                 .map_err(|diagnostic| qualify_element_diagnostic(diagnostic, index))?;
@@ -3882,6 +3997,7 @@ where
                     *collection,
                     scope.as_ref().map(|scope| scope.tabular_section.as_str()),
                     element,
+                    lang,
                 )
                 .map_err(|diagnostic| qualify_element_diagnostic(diagnostic, index))?;
                 counts.modified += 1;
@@ -3980,6 +4096,7 @@ fn typed_diagnostic(
 fn apply_typed_properties(
     xml_text: &mut String,
     changes: &crate::domain::metadata::MetaPropertyChanges,
+    lang: &str,
 ) -> Result<(), MetaDiagnostic> {
     let parsed_body = xml_text.trim_start_matches('\u{feff}');
     let prefix_len = xml_text.len() - parsed_body.len();
@@ -4072,9 +4189,7 @@ fn apply_typed_properties(
                 ))
             }
             (MetaPropertyKey::Synonym, MetaPropertyValue::String(value)) => {
-                let mut lines = Vec::new();
-                emit_meta_mltext(&mut lines, &indent, tag, value);
-                lines.join("\n")
+                meta_mltext_property_replacement(parsed_body, property, &indent, lang, value)
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}<{tag}/>")
@@ -4123,6 +4238,7 @@ fn collection_tag(collection: MetaCollection) -> &'static str {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_typed_element<F>(
     xml_text: &mut String,
     object_kind: &str,
@@ -4130,6 +4246,7 @@ fn add_typed_element<F>(
     collection: MetaCollection,
     scope: Option<&str>,
     element: &MetaElementDefinition,
+    lang: &str,
     next_uuid: &mut F,
 ) -> Result<(), MetaDiagnostic>
 where
@@ -4151,6 +4268,7 @@ where
         collection,
         scope.is_some(),
         element,
+        lang,
         next_uuid,
     )?;
     if matches!(
@@ -4281,6 +4399,7 @@ fn render_typed_element<F>(
     collection: MetaCollection,
     in_tabular_section: bool,
     element: &MetaElementDefinition,
+    lang: &str,
     next_uuid: &mut F,
 ) -> Result<Vec<String>, MetaDiagnostic>
 where
@@ -4303,6 +4422,7 @@ where
             "\t\t\t\t\t",
             &attr(),
             meta_tabular_attribute_context(object_kind),
+            lang,
             next_uuid,
         ),
         MetaCollection::Attributes => emit_meta_attribute(
@@ -4310,6 +4430,7 @@ where
             "\t\t\t",
             &attr(),
             meta_attribute_context(object_kind),
+            lang,
             next_uuid,
         ),
         MetaCollection::TabularSections => {
@@ -4334,11 +4455,12 @@ where
                 },
                 object_kind,
                 object_name,
+                lang,
                 next_uuid,
             );
             let mut rendered = lines.join("\n");
-            apply_typed_element_fields(&mut rendered, element);
-            apply_typed_nested_attribute_fields(&mut rendered, &ordered_attributes)?;
+            apply_typed_element_fields(&mut rendered, element, lang);
+            apply_typed_nested_attribute_fields(&mut rendered, &ordered_attributes, lang)?;
             return Ok(rendered.lines().map(ToOwned::to_owned).collect());
         }
         MetaCollection::Dimensions | MetaCollection::Resources => emit_meta_register_field(
@@ -4347,6 +4469,7 @@ where
             collection_tag(collection),
             &attr(),
             object_kind,
+            lang,
             next_uuid,
         ),
         MetaCollection::EnumValues => emit_meta_enum_value(
@@ -4360,6 +4483,7 @@ where
                     .unwrap_or_else(|| split_meta_camel_case(&element.name)),
                 comment: element.comment.clone().unwrap_or_default(),
             },
+            lang,
             next_uuid,
         ),
         MetaCollection::Columns
@@ -4370,6 +4494,7 @@ where
             "\t\t\t",
             collection_tag(collection),
             &element.name,
+            lang,
             next_uuid,
         ),
         MetaCollection::PredefinedItems => {
@@ -4398,7 +4523,7 @@ where
                 ),
             );
     }
-    apply_typed_element_fields(&mut rendered, element);
+    apply_typed_element_fields(&mut rendered, element, lang);
     Ok(rendered.lines().map(ToOwned::to_owned).collect())
 }
 
@@ -4441,6 +4566,7 @@ fn order_typed_nested_attributes(
 fn apply_typed_nested_attribute_fields(
     xml: &mut String,
     attributes: &[MetaElementDefinition],
+    lang: &str,
 ) -> Result<(), MetaDiagnostic> {
     const WRAPPER: &str = "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">";
     for attribute in attributes {
@@ -4469,23 +4595,20 @@ fn apply_typed_nested_attribute_fields(
             })?;
         drop(document);
         let mut attribute_xml = xml[range.clone()].to_string();
-        apply_typed_element_fields(&mut attribute_xml, attribute);
+        apply_typed_element_fields(&mut attribute_xml, attribute, lang);
         xml.replace_range(range, &attribute_xml);
     }
     Ok(())
 }
 
-fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition) {
+fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinition, lang: &str) {
     let Some(range) = typed_properties_text_range(xml) else {
         return;
     };
     let mut text = xml[range.clone()].to_string();
     let indent = meta_edit_property_child_indent(&text);
     if let Some(synonym) = &element.synonym {
-        let mut lines = Vec::new();
-        emit_meta_mltext(&mut lines, &indent, "Synonym", synonym);
-        let _ =
-            meta_edit_replace_or_insert_property(&mut text, "Synonym", &lines.join("\n"), &indent);
+        let _ = meta_edit_set_mltext_property(&mut text, "Synonym", &indent, lang, synonym);
     }
     if let Some(comment) = &element.comment {
         let replacement = if comment.is_empty() {
@@ -4592,6 +4715,7 @@ fn update_typed_element(
     collection: MetaCollection,
     scope: Option<&str>,
     update: &MetaElementUpdate,
+    lang: &str,
 ) -> Result<(), MetaDiagnostic> {
     let tag = collection_tag(collection);
     let range = find_typed_element_range(xml_text, tag, scope, &update.name)?;
@@ -4648,21 +4772,14 @@ fn update_typed_element(
         })?;
     }
     if let Some(synonym) = &update.synonym {
-        let mut lines = Vec::new();
-        emit_meta_mltext(&mut lines, &indent, "Synonym", synonym);
-        meta_edit_replace_or_insert_property(
-            &mut properties_text,
-            "Synonym",
-            &lines.join("\n"),
-            &indent,
-        )
-        .map_err(|_| {
-            typed_diagnostic(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "metadata synonym could not be updated",
-                Some("synonym"),
-            )
-        })?;
+        meta_edit_set_mltext_property(&mut properties_text, "Synonym", &indent, lang, synonym)
+            .map_err(|_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "metadata synonym could not be updated",
+                    Some("synonym"),
+                )
+            })?;
     }
     if let Some(comment) = &update.comment {
         let replacement = if comment.is_empty() {
@@ -5321,6 +5438,15 @@ pub(crate) mod tests {
         MetadataType, MetadataTypeVariant, NumberSign, RelationEditMode, StringLengthMode,
     };
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+
+    /// The engine in the `ru` default language the descriptor fixtures here
+    /// are written in; the language profile itself is tested separately.
+    fn apply_typed_operations(
+        xml_text: &mut String,
+        operations: &[MetaEditOperation],
+    ) -> Result<MetaEditCounts, MetaFailure> {
+        super::apply_typed_operations(xml_text, operations, "ru")
+    }
 
     fn object_xml(kind: &str, name: &str, properties: &str) -> String {
         format!(
@@ -6627,6 +6753,7 @@ pub(crate) mod tests {
             MetaCollection::Dimensions,
             false,
             &element,
+            "ru",
             &mut next_uuid,
         )
         .unwrap()
@@ -6646,6 +6773,7 @@ pub(crate) mod tests {
             MetaCollection::Resources,
             false,
             &element,
+            "ru",
             &mut next_uuid,
         )
         .unwrap()

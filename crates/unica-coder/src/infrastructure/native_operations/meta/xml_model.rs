@@ -1018,20 +1018,247 @@ pub(super) fn meta_info_normalize_cfg_prefix(raw: &str) -> String {
     }
 }
 
-pub(super) fn emit_meta_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
+/// A new multilingual property holding `text` in the language `lang`.
+///
+/// `lang` is the `LanguageCode` of the configuration's default language; see
+/// [`meta_default_text_language`].
+pub(crate) fn emit_meta_mltext(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    lang: &str,
+    text: &str,
+) {
     if text.is_empty() {
         lines.push(format!("{indent}<{tag}/>"));
         return;
     }
     lines.push(format!("{indent}<{tag}>"));
     lines.push(format!("{indent}\t<v8:item>"));
-    lines.push(format!("{indent}\t\t<v8:lang>ru</v8:lang>"));
+    lines.push(format!(
+        "{indent}\t\t<v8:lang>{}</v8:lang>",
+        escape_xml(lang)
+    ));
     lines.push(format!(
         "{indent}\t\t<v8:content>{}</v8:content>",
         escape_xml(text)
     ));
     lines.push(format!("{indent}\t</v8:item>"));
     lines.push(format!("{indent}</{tag}>"));
+}
+
+/// Sets the `lang` value of an existing multilingual property.
+///
+/// `existing` is the property element exactly as it appears in the source
+/// (`<Tag/>` or `<Tag>…</Tag>`, in the descriptor's default namespace and
+/// with `v8:` for the data core), `indent` is the indent of its line. The
+/// result follows [`meta_mltext_property_replacement`] and starts at `<Tag`.
+pub(crate) fn meta_mltext_with_language_value(
+    existing: &str,
+    indent: &str,
+    lang: &str,
+    text: &str,
+) -> Result<String, String> {
+    const WRAPPER_OPEN: &str =
+        "<w xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">";
+    let wrapped = format!("{WRAPPER_OPEN}{existing}</w>");
+    let document = roxmltree::Document::parse(&wrapped)
+        .map_err(|error| format!("multilingual property is not valid XML: {error}"))?;
+    let property = document
+        .root_element()
+        .children()
+        .find(roxmltree::Node::is_element)
+        .ok_or_else(|| "multilingual property is missing".to_string())?;
+    Ok(meta_mltext_property_replacement(
+        &wrapped, property, indent, lang, text,
+    ))
+}
+
+/// The replacement of a multilingual `property` of `source` (for its
+/// `range()`) that sets the `lang` value to `text`.
+///
+/// Only the `v8:content` of the `lang` item changes; the other `v8:item`s
+/// keep their bytes. A missing `lang` item is appended after the last one.
+/// An empty `text` removes the `lang` item, and a property left without items
+/// becomes empty. Element names keep the prefixes the source uses.
+pub(crate) fn meta_mltext_property_replacement(
+    source: &str,
+    property: roxmltree::Node<'_, '_>,
+    indent: &str,
+    lang: &str,
+    text: &str,
+) -> String {
+    fn core_child<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+        name: &str,
+    ) -> Option<roxmltree::Node<'a, 'input>> {
+        node.children().find(|child| {
+            child.is_element()
+                && child.tag_name().namespace() == Some(DATA_CORE_NS)
+                && child.tag_name().name() == name
+        })
+    }
+    // The qualified name an element is spelled with in the source.
+    fn qualified_name<'s>(source: &'s str, node: roxmltree::Node<'_, '_>) -> &'s str {
+        let open = &source[node.range().start + 1..];
+        let end = open
+            .find(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+            .unwrap_or(open.len());
+        &open[..end]
+    }
+    let range = property.range();
+    let existing = &source[range.clone()];
+    let local = |inner: std::ops::Range<usize>| inner.start - range.start..inner.end - range.start;
+    let qname = qualified_name(source, property);
+    let escaped = escape_xml(text);
+    let lang_text = escape_xml(lang);
+    let items = property
+        .children()
+        .filter(|child| {
+            child.is_element()
+                && child.tag_name().namespace() == Some(DATA_CORE_NS)
+                && child.tag_name().name() == "item"
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        if text.is_empty() {
+            return format!("<{qname}/>");
+        }
+        let (core, declaration) = match property.lookup_prefix(DATA_CORE_NS) {
+            Some("") => (String::new(), String::new()),
+            Some(prefix) => (format!("{prefix}:"), String::new()),
+            None => ("v8:".to_string(), format!(" xmlns:v8=\"{DATA_CORE_NS}\"")),
+        };
+        return format!(
+            "<{qname}{declaration}>\n{indent}\t<{core}item>\n{indent}\t\t<{core}lang>{lang_text}</{core}lang>\n{indent}\t\t<{core}content>{escaped}</{core}content>\n{indent}\t</{core}item>\n{indent}</{qname}>"
+        );
+    }
+    let target = items.iter().copied().find(|item| {
+        core_child(*item, "lang").is_some_and(|node| meta_info_inner_text(node).trim() == lang)
+    });
+    let mut updated = existing.to_string();
+    match target {
+        Some(item) if !text.is_empty() => {
+            if let Some(content) = core_child(item, "content") {
+                let content_name = qualified_name(source, content);
+                updated.replace_range(
+                    local(content.range()),
+                    &format!("<{content_name}>{escaped}</{content_name}>"),
+                );
+            } else {
+                let language = core_child(item, "lang").expect("the item was found by its lang");
+                let core = qualified_name(source, language)
+                    .rsplit_once(':')
+                    .map_or(String::new(), |(prefix, _)| format!("{prefix}:"));
+                updated.insert_str(
+                    local(language.range()).end,
+                    &format!("<{core}content>{escaped}</{core}content>"),
+                );
+            }
+        }
+        Some(item) => {
+            if items.len() == 1 {
+                return format!("<{qname}/>");
+            }
+            let item_range = local(item.range());
+            let line_start = existing[..item_range.start]
+                .rfind('\n')
+                .map(|newline| newline + 1)
+                .filter(|start| {
+                    existing[*start..item_range.start]
+                        .chars()
+                        .all(|ch| ch == '\t' || ch == ' ')
+                });
+            let removed = match line_start {
+                // The item owns its line: drop the line with its terminator.
+                Some(start) => {
+                    let rest = &existing[item_range.end..];
+                    let eol = if rest.starts_with("\r\n") {
+                        2
+                    } else {
+                        usize::from(rest.starts_with('\n'))
+                    };
+                    start..item_range.end + eol
+                }
+                None => item_range,
+            };
+            updated.replace_range(removed, "");
+        }
+        None if text.is_empty() => {}
+        None => {
+            let last = *items.last().expect("items are not empty");
+            let core = qualified_name(source, last)
+                .rsplit_once(':')
+                .map_or(String::new(), |(prefix, _)| format!("{prefix}:"));
+            let last = local(last.range());
+            let line_start = existing[..last.start]
+                .rfind('\n')
+                .map_or(0, |index| index + 1);
+            let item_indent = &existing[line_start..last.start];
+            let item = if line_start > 0 && item_indent.chars().all(|ch| ch == '\t' || ch == ' ') {
+                let eol = if existing[..line_start].ends_with("\r\n") {
+                    "\r\n"
+                } else {
+                    "\n"
+                };
+                format!(
+                    "{eol}{item_indent}<{core}item>{eol}{item_indent}\t<{core}lang>{lang_text}</{core}lang>{eol}{item_indent}\t<{core}content>{escaped}</{core}content>{eol}{item_indent}</{core}item>"
+                )
+            } else {
+                format!(
+                    "<{core}item><{core}lang>{lang_text}</{core}lang><{core}content>{escaped}</{core}content></{core}item>"
+                )
+            };
+            updated.insert_str(last.end, &item);
+        }
+    }
+    updated
+}
+
+/// `LanguageCode` of the default language of a configuration or extension.
+///
+/// `configuration` is the source set's root `Configuration.xml`; `read`
+/// returns a file of the same source set by its relative path. The default
+/// language is `Configuration/Properties/DefaultLanguage` (`Language.<Name>`),
+/// and its code is `LanguageCode` of `Languages/<Name>.xml`. An extension has
+/// its own `Configuration.xml` and adopted languages, so the same reading
+/// serves both.
+pub(crate) fn meta_default_text_language(
+    configuration: &[u8],
+    read: impl FnOnce(&std::path::Path) -> Result<Option<Vec<u8>>, String>,
+) -> Result<String, String> {
+    let (_, document) = parse_metadata_image(configuration)?;
+    let root = document
+        .root_element()
+        .children()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some(MD_CLASSES_NS)
+                && node.tag_name().name() == "Configuration"
+        })
+        .ok_or_else(|| "the source set root descriptor is not a Configuration".to_string())?;
+    let default = meta_info_child(root, "Properties")
+        .and_then(|properties| meta_info_child_text(properties, "DefaultLanguage"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "the configuration has no DefaultLanguage".to_string())?;
+    let name = default.strip_prefix("Language.").unwrap_or(&default);
+    let relative = std::path::Path::new("Languages").join(format!("{name}.xml"));
+    let bytes = read(&relative)?.ok_or_else(|| {
+        format!(
+            "the default language descriptor {} was not found",
+            relative.display()
+        )
+    })?;
+    let (language, code) = super::validation_context::inspect_metadata_language_image(&bytes)?
+        .ok_or_else(|| format!("{} is not a Language descriptor", relative.display()))?;
+    if language != name {
+        return Err(format!(
+            "{} describes language `{language}`, not the default `{name}`",
+            relative.display()
+        ));
+    }
+    Ok(code)
 }
 
 pub(super) enum MetadataXmlType<'a> {
@@ -1277,6 +1504,85 @@ pub(super) fn emit_meta_typed_fill_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn set_synonym(source: &str, lang: &str, text: &str) -> String {
+        let document = roxmltree::Document::parse(source).unwrap();
+        let property = document
+            .descendants()
+            .find(|node| node.tag_name().name() == "Synonym")
+            .unwrap();
+        let replacement = meta_mltext_property_replacement(source, property, "\t", lang, text);
+        let mut updated = source.to_string();
+        updated.replace_range(property.range(), &replacement);
+        updated
+    }
+
+    #[test]
+    fn multilingual_edit_keeps_the_source_prefixes_and_other_items() {
+        let ru = "\r\n\t\t<c:item>\r\n\t\t\t<c:lang>ru</c:lang>\r\n\t\t\t<c:content>Старое</c:content>\r\n\t\t</c:item>";
+        let en = "\r\n\t\t<c:item>\r\n\t\t\t<c:lang>en</c:lang>\r\n\t\t\t<c:content>Old</c:content>\r\n\t\t</c:item>";
+        let source = format!(
+            "<m:P xmlns:m=\"{MD_CLASSES_NS}\" xmlns:c=\"{DATA_CORE_NS}\">\r\n\t<m:Synonym>{ru}{en}\r\n\t</m:Synonym>\r\n</m:P>"
+        );
+
+        assert_eq!(
+            set_synonym(&source, "ru", "Новое"),
+            source.replace("Старое", "Новое")
+        );
+        // An empty value removes only the default-language item.
+        assert_eq!(set_synonym(&source, "ru", ""), source.replace(ru, ""));
+        // A missing language is appended in the style of the existing items.
+        let only_en = source.replace(ru, "");
+        assert_eq!(
+            set_synonym(&only_en, "ru", "Новое"),
+            only_en.replace(en, &format!("{en}{}", ru.replace("Старое", "Новое")))
+        );
+        // The last item removed leaves an empty property.
+        assert_eq!(
+            set_synonym(&only_en, "en", ""),
+            only_en.replace(
+                &format!("<m:Synonym>{en}\r\n\t</m:Synonym>"),
+                "<m:Synonym/>"
+            )
+        );
+    }
+
+    #[test]
+    fn multilingual_value_in_an_empty_property_binds_the_data_core_namespace() {
+        let source = format!("<P xmlns=\"{MD_CLASSES_NS}\"><Synonym/></P>");
+        let updated = set_synonym(&source, "en", "Order");
+        let document = roxmltree::Document::parse(&updated).unwrap();
+        let values = document
+            .descendants()
+            .filter(|node| node.has_tag_name((DATA_CORE_NS, "lang")))
+            .map(|node| node.text().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(values, ["en"]);
+    }
+
+    #[test]
+    fn default_text_language_is_the_code_of_the_default_language_descriptor() {
+        let configuration = format!(
+            "<MetaDataObject xmlns=\"{MD_CLASSES_NS}\"><Configuration><Properties><Name>C</Name><DefaultLanguage>Language.English</DefaultLanguage></Properties></Configuration></MetaDataObject>"
+        );
+        let english = format!(
+            "<MetaDataObject xmlns=\"{MD_CLASSES_NS}\"><Language><Properties><Name>English</Name><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"
+        );
+        let code = meta_default_text_language(configuration.as_bytes(), |relative| {
+            assert_eq!(relative, std::path::Path::new("Languages/English.xml"));
+            Ok(Some(english.clone().into_bytes()))
+        });
+        assert_eq!(code.unwrap(), "en");
+
+        let missing = meta_default_text_language(configuration.as_bytes(), |_| Ok(None));
+        assert!(missing.unwrap_err().contains("Languages/English.xml"));
+        let renamed = meta_default_text_language(configuration.as_bytes(), |_| {
+            Ok(Some(
+                english.replace("<Name>English", "<Name>Other").into_bytes(),
+            ))
+        });
+        assert!(renamed.is_err());
+    }
 
     fn metadata_path(value: &str) -> MetadataAddress {
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
