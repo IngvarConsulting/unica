@@ -5,6 +5,7 @@ check:
   - crates/unica-coder/src/application/v13/task_tools.rs::compatibility_parser_accepts_only_canonical_ids_and_wait_zero_through_7000
   - crates/unica-coder/src/application/v13/task_tools.rs::compatibility_receipt_is_closed_and_terminal_result_reuses_domain_json
   - crates/unica-coder/src/application/v13/task_tools.rs::late_cancel_request_is_visible_in_task_state_without_changing_subject_result
+  - crates/unica-coder/src/interfaces/mcp.rs::compatibility_task_get_and_result_preserve_each_closed_failure_reason
   - crates/unica-coder/src/interfaces/mcp.rs::v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free
   - crates/unica-coder/tests/daemon_receipt_ledger/frontend_restart.rs::compatibility_completed_task_survives_daemon_process_restart
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_do_not_replace_open_frontend_cutoff_with_125ms

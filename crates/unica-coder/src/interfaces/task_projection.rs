@@ -191,42 +191,7 @@ fn task_v5(snapshot: &V5DaemonTaskSnapshot) -> Result<Task, TaskProjectionError>
     Ok(projected)
 }
 
-/// The closed failure vocabulary of the v5 daemon and its fixed host-facing
-/// text. The daemon never sends prose for a failure, so this table is the only
-/// place a failed invocation gets words.
-pub(super) fn closed_failure(reason: V5SafeFailureReason) -> (&'static str, &'static str) {
-    match reason {
-        V5SafeFailureReason::InvocationFailed => ("invocation_failed", "daemon invocation failed"),
-        V5SafeFailureReason::ResultTooLarge => (
-            "result_too_large",
-            "daemon invocation result exceeded the canonical byte limit",
-        ),
-        V5SafeFailureReason::Interrupted => ("interrupted", "daemon invocation was interrupted"),
-        V5SafeFailureReason::ResumeUnsupported => (
-            "resume_unsupported",
-            "daemon invocation cannot be resumed after restart",
-        ),
-        V5SafeFailureReason::PersistenceFailed => (
-            "persistence_failed",
-            "daemon invocation terminal state could not be persisted",
-        ),
-        V5SafeFailureReason::OutcomeUncertain => (
-            "outcome_uncertain",
-            "daemon invocation outcome is uncertain",
-        ),
-        V5SafeFailureReason::TaskCapacity => (
-            "task_capacity",
-            "daemon Task capacity was exhausted before execution",
-        ),
-        V5SafeFailureReason::WorkspaceCapacity => {
-            ("workspace_capacity", "workspace capacity was exhausted")
-        }
-        V5SafeFailureReason::WorkspaceRegistryFailed => (
-            "workspace_registry_failed",
-            "workspace registry is unavailable",
-        ),
-    }
-}
+pub(super) use crate::application::v13::task_tools::closed_task_failure as closed_failure;
 
 fn closed_failure_error(reason: V5SafeFailureReason) -> ErrorData {
     let (code, message) = closed_failure(reason);
