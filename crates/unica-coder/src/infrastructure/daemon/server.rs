@@ -1351,6 +1351,713 @@ pub(crate) mod actor_capacity_tests {
         }
     }
 
+    const ACCEPTANCE_SUBSYSTEMS: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/acceptance/workspace/src/Subsystems"
+    );
+    const ADMINISTRATION_INTERFACE: &str = "Subsystems/Администрирование/Ext/CommandInterface.xml";
+    const NESTED_CONTROL_INTERFACE: &str =
+        "Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей/Ext/CommandInterface.xml";
+    const ROOT_CONTROL_INTERFACE: &str =
+        "Subsystems/КонтрольРаботыПользователей/Ext/CommandInterface.xml";
+    const ROOT_INTERFACE: &str = "Ext/CommandInterface.xml";
+    const NESTED_CONTROL_AT: &str =
+        "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей.Interface";
+
+    /// Командный интерфейс в форме выгрузки 8.3.27: три команды одной группы
+    /// в `CommandsOrder`, ролевое значение видимости и три группы.
+    fn control_interface_document() -> String {
+        let command = |name: &str, group: &str| {
+            format!("\t\t<Command name=\"{name}\">\r\n\t\t\t<CommandGroup>{group}</CommandGroup>\r\n\t\t</Command>\r\n")
+        };
+        let mut text = String::from(
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<CommandsVisibility>\r\n\t\t<Command name=\"Catalog.Пользователи.StandardCommand.OpenList\">\r\n\t\t\t<Visibility>\r\n\t\t\t\t<xr:Common>true</xr:Common>\r\n\t\t\t\t<xr:Value name=\"Role.ПолныеПрава\">false</xr:Value>\r\n\t\t\t</Visibility>\r\n\t\t</Command>\r\n\t</CommandsVisibility>\r\n\t<CommandsOrder>\r\n",
+        );
+        for name in [
+            "Catalog.Пользователи.StandardCommand.OpenList",
+            "DataProcessor.ЖурналРегистрации.Command.ЖурналРегистрации",
+            "Catalog.ГруппыДоступа.StandardCommand.OpenList",
+        ] {
+            text.push_str(&command(name, "NavigationPanelOrdinary"));
+        }
+        text.push_str("\t</CommandsOrder>\r\n\t<GroupsOrder>\r\n\t\t<Group>NavigationPanelImportant</Group>\r\n\t\t<Group>NavigationPanelOrdinary</Group>\r\n\t\t<Group>NavigationPanelSeeAlso</Group>\r\n\t</GroupsOrder>\r\n</CommandInterface>");
+        text
+    }
+
+    /// Рабочее пространство на настоящих файлах выгрузки приёмочного корпуса:
+    /// подсистема `Администрирование` с её командным интерфейсом (порядок
+    /// нескольких групп, видимость, размещение) и вложенной
+    /// `КонтрольРаботыПользователей`. Рядом лежит одноимённая корневая
+    /// подсистема с тем же интерфейсом, а корень несёт порядок трёх подсистем.
+    fn interface_order_workspace() -> tempfile::TempDir {
+        let fixture = std::path::Path::new(ACCEPTANCE_SUBSYSTEMS);
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("src");
+        let write = |relative: &str, bytes: &[u8]| {
+            let path = source.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+        )
+        .unwrap();
+        write(
+            "Configuration.xml",
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Subsystem>Администрирование</Subsystem><Subsystem>КонтрольРаботыПользователей</Subsystem><Subsystem>Продажи</Subsystem></ChildObjects></Configuration></MetaDataObject>"#.as_bytes(),
+        );
+        write(
+            "Subsystems/Администрирование.xml",
+            &std::fs::read(fixture.join("Администрирование.xml")).unwrap(),
+        );
+        write(
+            ADMINISTRATION_INTERFACE,
+            &std::fs::read(fixture.join("Администрирование/Ext/CommandInterface.xml")).unwrap(),
+        );
+        let nested_descriptor = std::fs::read_to_string(
+            fixture.join("Администрирование/Subsystems/КонтрольРаботыПользователей.xml"),
+        )
+        .unwrap();
+        write(
+            "Subsystems/Администрирование/Subsystems/КонтрольРаботыПользователей.xml",
+            nested_descriptor.as_bytes(),
+        );
+        write(
+            NESTED_CONTROL_INTERFACE,
+            control_interface_document().as_bytes(),
+        );
+        // Одноимённая корневая подсистема: другой uuid, тот же интерфейс.
+        write(
+            "Subsystems/КонтрольРаботыПользователей.xml",
+            nested_descriptor
+                .replace(
+                    "054627a7-71c2-5d9e-bb19-5a71f42ee959",
+                    "154627a7-71c2-5d9e-bb19-5a71f42ee959",
+                )
+                .as_bytes(),
+        );
+        write(
+            ROOT_CONTROL_INTERFACE,
+            control_interface_document().as_bytes(),
+        );
+        write(
+            "Subsystems/Продажи.xml",
+            nested_descriptor
+                .replace(
+                    "054627a7-71c2-5d9e-bb19-5a71f42ee959",
+                    "254627a7-71c2-5d9e-bb19-5a71f42ee959",
+                )
+                .replace("КонтрольРаботыПользователей", "Продажи")
+                .as_bytes(),
+        );
+        // У корневой `Продажи` есть свой интерфейс: маршрут по последнему
+        // имени нашёл бы его вместо отказа.
+        write(
+            "Subsystems/Продажи/Ext/CommandInterface.xml",
+            control_interface_document().as_bytes(),
+        );
+        write(
+            ROOT_INTERFACE,
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<CommandInterface xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\r\n\t<SubsystemsOrder>\r\n\t\t<Subsystem>Subsystem.Администрирование</Subsystem>\r\n\t\t<Subsystem>Subsystem.КонтрольРаботыПользователей</Subsystem>\r\n\t\t<Subsystem>Subsystem.Продажи</Subsystem>\r\n\t</SubsystemsOrder>\r\n</CommandInterface>".as_bytes(),
+        );
+        workspace
+    }
+
+    /// Порядок одной секции интерфейса так, как его видит разбор XML, а не
+    /// писатель: `(команда, группа)` для `CommandsOrder`, значение элемента для
+    /// `GroupsOrder` и `SubsystemsOrder`.
+    fn interface_section(text: &str, section: &str) -> Vec<(String, Option<String>)> {
+        let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let Some(section) = document
+            .root_element()
+            .children()
+            .find(|node| node.has_tag_name(section))
+        else {
+            return Vec::new();
+        };
+        section
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .map(|item| match item.attribute("name") {
+                Some(name) => (
+                    name.to_string(),
+                    item.children()
+                        .find(|child| child.has_tag_name("CommandGroup"))
+                        .and_then(|child| child.text())
+                        .map(str::to_string),
+                ),
+                None => (item.text().unwrap_or_default().trim().to_string(), None),
+            })
+            .collect()
+    }
+
+    fn group_commands(text: &str, group: &str) -> Vec<String> {
+        interface_section(text, "CommandsOrder")
+            .into_iter()
+            .filter(|(_, owner)| owner.as_deref() == Some(group))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    fn section_values(text: &str, section: &str) -> Vec<String> {
+        interface_section(text, section)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// Всё, кроме названной секции: соседние секции файла не должна задеть
+    /// правка порядка.
+    fn without_section(text: &str, section: &str) -> String {
+        let open = text.find(&format!("<{section}>")).unwrap();
+        let close = text.find(&format!("</{section}>")).unwrap() + section.len() + 3;
+        format!("{}{}", &text[..open], &text[close..])
+    }
+
+    fn interface_apply_call(
+        runtime: &V5CanonicalInvocationRuntime,
+        workspace: &std::path::Path,
+        arguments: serde_json::Value,
+    ) -> DomainResult {
+        submit_canonical(runtime, workspace, ToolIdentity::Apply, arguments)
+    }
+
+    fn interface_op(op: &str, at: &str, values: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "at": at,
+            "ops": [{"op": op, "args": {"at": at, "values": values}}]
+        })
+    }
+
+    fn assert_refused_without_trace(result: &DomainResult, code: &str, needle: &str) {
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], code, "{result:?}");
+        let message = result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(message.contains(needle), "`{needle}` not in {message:?}");
+        assert!(
+            result
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .is_none(),
+            "a refusal never mints an executable plan: {result:?}"
+        );
+    }
+
+    /// Перестановка — это прежний состав в новом порядке. Для каждой из трёх
+    /// операций порядка пропуск, повтор и чужой элемент отклоняются до записи:
+    /// дерево исходников не меняется, а план, построенный до отказов,
+    /// по-прежнему исполняется — значит, ревизия, которой он связан, та же.
+    /// Для команд состав сравнивается в пределах одной группы: команда
+    /// соседней группы того же файла — чужая.
+    #[test]
+    fn canonical_interface_order_permutes_stored_composition_and_refuses_any_other_without_writing()
+    {
+        let workspace = interface_order_workspace();
+        let source = workspace.path().join("src");
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let read = |relative: &str| std::fs::read_to_string(source.join(relative)).unwrap();
+        let administration = read(ADMINISTRATION_INTERFACE);
+        let important = group_commands(&administration, "NavigationPanelImportant");
+        let ordinary = group_commands(&administration, "NavigationPanelOrdinary");
+        assert!(
+            important.len() >= 3 && !ordinary.is_empty(),
+            "{important:?}"
+        );
+        let groups = section_values(&administration, "GroupsOrder");
+        let subsystems = section_values(&read(ROOT_INTERFACE), "SubsystemsOrder");
+        assert_eq!(subsystems.len(), 3);
+
+        let swap = |names: &[String]| {
+            let mut swapped = names.to_vec();
+            swapped.swap(0, 1);
+            swapped
+        };
+        let administration_at = "main:Subsystem.Администрирование.Interface";
+        struct Case {
+            op: &'static str,
+            at: &'static str,
+            key: &'static str,
+            group: Option<&'static str>,
+            relative: &'static str,
+            section: &'static str,
+            stored: Vec<String>,
+            foreign: String,
+        }
+        let cases = [
+            Case {
+                op: "commandOrder.set",
+                at: administration_at,
+                key: "commands",
+                group: Some("NavigationPanelImportant"),
+                relative: ADMINISTRATION_INTERFACE,
+                section: "CommandsOrder",
+                stored: important.clone(),
+                // Команда того же файла, но другой группы: состав сравнивается
+                // в области операции.
+                foreign: ordinary[0].clone(),
+            },
+            Case {
+                op: "groupOrder.set",
+                at: administration_at,
+                key: "groups",
+                group: None,
+                relative: ADMINISTRATION_INTERFACE,
+                section: "GroupsOrder",
+                stored: groups.clone(),
+                foreign: "CommandGroup.НеСохранённая".to_string(),
+            },
+            Case {
+                op: "subsystemOrder.set",
+                at: "main:Configuration",
+                key: "subsystems",
+                group: None,
+                relative: ROOT_INTERFACE,
+                section: "SubsystemsOrder",
+                stored: subsystems.clone(),
+                foreign: "Subsystem.Склад".to_string(),
+            },
+        ];
+        for case in cases {
+            let values = |names: Vec<String>| {
+                let mut values = serde_json::Map::new();
+                if let Some(group) = case.group {
+                    values.insert("group".to_string(), serde_json::json!(group));
+                }
+                values.insert(case.key.to_string(), serde_json::json!(names));
+                serde_json::Value::Object(values)
+            };
+            let reordered = swap(&case.stored);
+            let before = crate::test_support::tree_snapshot(workspace.path());
+            let preview = interface_apply_call(
+                &runtime,
+                workspace.path(),
+                interface_op(case.op, case.at, values(reordered.clone())),
+            );
+            assert!(preview.ok, "{}: {preview:?}", case.op);
+            assert_eq!(
+                crate::test_support::tree_snapshot(workspace.path()),
+                before,
+                "{}: preview writes nothing",
+                case.op
+            );
+            let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+
+            let last = case.stored.len() - 1;
+            let mut omitted = reordered.clone();
+            omitted.pop();
+            let mut repeated = reordered.clone();
+            repeated.push(reordered[0].clone());
+            let mut doubled = reordered.clone();
+            doubled[last] = reordered[0].clone();
+            let mut substituted = reordered.clone();
+            substituted[last] = case.foreign.clone();
+            let mut added = reordered.clone();
+            added.push(case.foreign.clone());
+            for (label, names, needle) in [
+                ("omission", omitted, case.stored[last].clone()),
+                ("repeat", repeated, reordered[0].clone()),
+                ("repeat in place", doubled, reordered[0].clone()),
+                ("substitution", substituted, case.foreign.clone()),
+                ("addition", added, case.foreign.clone()),
+            ] {
+                let refused = interface_apply_call(
+                    &runtime,
+                    workspace.path(),
+                    interface_op(case.op, case.at, values(names)),
+                );
+                assert_refused_without_trace(&refused, "bad_value", &needle);
+                assert_eq!(
+                    refused.at.as_deref(),
+                    Some(format!("ops[0].args.values.{}", case.key).as_str()),
+                    "{} {label}: {refused:?}",
+                    case.op
+                );
+                assert_eq!(
+                    crate::test_support::tree_snapshot(workspace.path()),
+                    before,
+                    "{} {label}: a refusal writes nothing",
+                    case.op
+                );
+            }
+
+            let applied = interface_apply_call(
+                &runtime,
+                workspace.path(),
+                serde_json::json!({"executionToken": token}),
+            );
+            assert!(
+                applied.ok,
+                "{}: refusals left the revision of the earlier plan intact: {applied:?}",
+                case.op
+            );
+            let edited = read(case.relative);
+            let after = match case.group {
+                Some(group) => group_commands(&edited, group),
+                None => section_values(&edited, case.section),
+            };
+            assert_eq!(after, reordered, "{}", case.op);
+        }
+    }
+
+    /// Правка порядка одной группы трогает только её команды: порядок второй
+    /// группы, остальные секции, видимость и размещение остаются байт в байт.
+    #[test]
+    fn canonical_command_order_of_one_group_keeps_other_groups_and_sections() {
+        let workspace = interface_order_workspace();
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let path = workspace.path().join("src").join(ADMINISTRATION_INTERFACE);
+        let original = std::fs::read_to_string(&path).unwrap();
+        let entries = interface_section(&original, "CommandsOrder");
+        let important = group_commands(&original, "NavigationPanelImportant");
+        let mut reordered = important.clone();
+        reordered.reverse();
+
+        let preview = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "commandOrder.set",
+                "main:Subsystem.Администрирование.Interface",
+                serde_json::json!({"group": "NavigationPanelImportant", "commands": reordered}),
+            ),
+        );
+        assert!(preview.ok, "{preview:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+
+        let edited = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            without_section(&edited, "CommandsOrder"),
+            without_section(&original, "CommandsOrder"),
+            "видимость, размещение и порядок групп не меняются"
+        );
+        let mut targets = reordered.iter();
+        let expected = entries
+            .iter()
+            .map(|(name, group)| {
+                if group.as_deref() == Some("NavigationPanelImportant") {
+                    (targets.next().unwrap().clone(), group.clone())
+                } else {
+                    (name.clone(), group.clone())
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            interface_section(&edited, "CommandsOrder"),
+            expected,
+            "команды других групп остаются на своих местах"
+        );
+    }
+
+    /// Каждая из пяти операций меняет только свою секцию и названные в запросе
+    /// элементы: для видимости и размещения файл после правки совпадает
+    /// с исходным байт в байт, кроме значения одной команды, для порядков —
+    /// всё вне своей секции. Ролевое значение видимости переживает правку
+    /// общего.
+    #[test]
+    fn canonical_each_interface_operation_changes_only_its_own_section_and_items() {
+        let workspace = interface_order_workspace();
+        let source = workspace.path().join("src");
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let publish = |arguments: serde_json::Value| {
+            let preview = interface_apply_call(&runtime, workspace.path(), arguments);
+            assert!(preview.ok, "{preview:?}");
+            let applied = interface_apply_call(
+                &runtime,
+                workspace.path(),
+                serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+            );
+            assert!(applied.ok, "{applied:?}");
+        };
+        let read = |relative: &str| std::fs::read_to_string(source.join(relative)).unwrap();
+        // Значение одного дочернего элемента одной команды в одной секции.
+        let with_child = |text: &str, section: &str, command: &str, from: &str, to: &str| {
+            let open = text.find(&format!("<{section}>")).unwrap();
+            let start = open + text[open..].find(&format!("name=\"{command}\"")).unwrap();
+            let end = start + text[start..].find("</Command>").unwrap();
+            let block = text[start..end].replacen(from, to, 1);
+            assert_ne!(block, text[start..end], "{command}: {from} is in the block");
+            format!("{}{block}{}", &text[..start], &text[end..])
+        };
+        let administration_at = "main:Subsystem.Администрирование.Interface";
+        let command = "Catalog.Пользователи.StandardCommand.OpenList";
+
+        let original = read(ADMINISTRATION_INTERFACE);
+        publish(serde_json::json!({
+            "at": administration_at,
+            "ops": [{"op": "commandVisibility.set", "args": {"at": administration_at, "items": [{"command": command, "visible": true}]}}]
+        }));
+        assert_eq!(
+            read(ADMINISTRATION_INTERFACE),
+            with_child(
+                &original,
+                "CommandsVisibility",
+                command,
+                "<xr:Common>false</xr:Common>",
+                "<xr:Common>true</xr:Common>"
+            )
+        );
+
+        let original = read(ADMINISTRATION_INTERFACE);
+        publish(serde_json::json!({
+            "at": administration_at,
+            "ops": [{"op": "commandPlacement.set", "args": {"at": administration_at, "items": [{"command": command, "group": "NavigationPanelOrdinary"}]}}]
+        }));
+        assert_eq!(
+            read(ADMINISTRATION_INTERFACE),
+            with_child(
+                &original,
+                "CommandsPlacement",
+                command,
+                "<CommandGroup>NavigationPanelImportant</CommandGroup>",
+                "<CommandGroup>NavigationPanelOrdinary</CommandGroup>"
+            )
+        );
+
+        let original = read(ADMINISTRATION_INTERFACE);
+        let mut groups = section_values(&original, "GroupsOrder");
+        groups.reverse();
+        publish(interface_op(
+            "groupOrder.set",
+            administration_at,
+            serde_json::json!({"groups": groups}),
+        ));
+        let edited = read(ADMINISTRATION_INTERFACE);
+        assert_eq!(section_values(&edited, "GroupsOrder"), groups);
+        assert_eq!(
+            without_section(&edited, "GroupsOrder"),
+            without_section(&original, "GroupsOrder")
+        );
+
+        // Корень: рядом с порядком подсистем лежит видимость с ролевым значением.
+        let root = control_interface_document().replace(
+            "\t</CommandsOrder>\r\n",
+            "\t</CommandsOrder>\r\n\t<SubsystemsOrder>\r\n\t\t<Subsystem>Subsystem.Администрирование</Subsystem>\r\n\t\t<Subsystem>Subsystem.Продажи</Subsystem>\r\n\t</SubsystemsOrder>\r\n",
+        );
+        std::fs::write(source.join(ROOT_INTERFACE), &root).unwrap();
+        publish(interface_op(
+            "subsystemOrder.set",
+            "main:Configuration",
+            serde_json::json!({"subsystems": ["Subsystem.Продажи", "Subsystem.Администрирование"]}),
+        ));
+        let edited = read(ROOT_INTERFACE);
+        assert_eq!(
+            section_values(&edited, "SubsystemsOrder"),
+            ["Subsystem.Продажи", "Subsystem.Администрирование"]
+        );
+        assert_eq!(
+            without_section(&edited, "SubsystemsOrder"),
+            without_section(&root, "SubsystemsOrder")
+        );
+        assert!(edited.contains("<xr:Value name=\"Role.ПолныеПрава\">false</xr:Value>"));
+    }
+
+    /// Адрес интерфейса несёт всю цепочку владельцев: правка вложенной
+    /// подсистемы не уходит в одноимённую корневую. Неподдержанная цель и
+    /// чужой маршрут отказывают, а не выбирают другой интерфейс.
+    #[test]
+    fn canonical_interface_edits_reach_exactly_the_nested_owner_and_refuse_foreign_targets() {
+        let workspace = interface_order_workspace();
+        let source = workspace.path().join("src");
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let commands = group_commands(&control_interface_document(), "NavigationPanelOrdinary");
+        let root_before = std::fs::read(source.join(ROOT_CONTROL_INTERFACE)).unwrap();
+        let reversed = |names: &[String]| names.iter().rev().cloned().collect::<Vec<_>>();
+        let ops = [
+            serde_json::json!({"op": "commandVisibility.set", "args": {"at": NESTED_CONTROL_AT, "items": [{"command": commands[0], "visible": false}]}}),
+            serde_json::json!({"op": "commandPlacement.set", "args": {"at": NESTED_CONTROL_AT, "items": [{"command": commands[1], "group": "NavigationPanelImportant"}]}}),
+            serde_json::json!({"op": "commandOrder.set", "args": {"at": NESTED_CONTROL_AT, "values": {"group": "NavigationPanelOrdinary", "commands": reversed(&commands)}}}),
+            serde_json::json!({"op": "groupOrder.set", "args": {"at": NESTED_CONTROL_AT, "values": {"groups": ["NavigationPanelSeeAlso", "NavigationPanelOrdinary", "NavigationPanelImportant"]}}}),
+        ];
+        let preview = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"at": NESTED_CONTROL_AT, "ops": ops}),
+        );
+        assert!(preview.ok, "{preview:?}");
+        let applied = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(applied.ok, "{applied:?}");
+        assert_eq!(
+            std::fs::read(source.join(ROOT_CONTROL_INTERFACE)).unwrap(),
+            root_before,
+            "одноимённая корневая подсистема не тронута"
+        );
+        let nested = std::fs::read_to_string(source.join(NESTED_CONTROL_INTERFACE)).unwrap();
+        assert!(nested.contains("<xr:Common>false</xr:Common>"), "{nested}");
+        assert!(
+            nested.contains("<xr:Value name=\"Role.ПолныеПрава\">false</xr:Value>"),
+            "ролевое значение видимости сохранено: {nested}"
+        );
+        assert!(
+            nested.contains("<CommandsPlacement>") && nested.contains(&commands[1]),
+            "{nested}"
+        );
+        assert_eq!(
+            group_commands(&nested, "NavigationPanelOrdinary"),
+            reversed(&commands)
+        );
+        assert_eq!(
+            section_values(&nested, "GroupsOrder"),
+            [
+                "NavigationPanelSeeAlso",
+                "NavigationPanelOrdinary",
+                "NavigationPanelImportant"
+            ]
+        );
+
+        let before = crate::test_support::tree_snapshot(workspace.path());
+        // Вложенной подсистемы с таким именем нет — одноимённая корневая
+        // `Продажи` с годным для этой перестановки интерфейсом целью не
+        // становится.
+        let missing = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "groupOrder.set",
+                "main:Subsystem.Администрирование.Subsystem.Продажи.Interface",
+                serde_json::json!({"groups": ["NavigationPanelSeeAlso", "NavigationPanelOrdinary", "NavigationPanelImportant"]}),
+            ),
+        );
+        assert_refused_without_trace(&missing, "not_found", "command interface");
+        // Порядок подсистем живёт только в корне: на интерфейсе подсистемы
+        // операция отклоняется реестром, до планирования.
+        for at in [
+            "main:Subsystem.Администрирование.Interface",
+            NESTED_CONTROL_AT,
+            "main:Interface",
+        ] {
+            let refused = interface_apply_call(
+                &runtime,
+                workspace.path(),
+                interface_op(
+                    "subsystemOrder.set",
+                    at,
+                    serde_json::json!({"subsystems": ["Subsystem.КонтрольРаботыПользователей"]}),
+                ),
+            );
+            assert_refused_without_trace(
+                &refused,
+                "bad_value",
+                "apply operation `subsystemOrder.set` does not apply to Interface",
+            );
+        }
+        // Остальные четыре операции не метят в корень и в `main:Interface`.
+        for (op, key, value) in [
+            (
+                "commandVisibility.set",
+                "items",
+                serde_json::json!([{"command": commands[0], "visible": true}]),
+            ),
+            (
+                "commandPlacement.set",
+                "items",
+                serde_json::json!([{"command": commands[0], "group": "NavigationPanelImportant"}]),
+            ),
+            (
+                "commandOrder.set",
+                "values",
+                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+            ),
+            (
+                "groupOrder.set",
+                "values",
+                serde_json::json!({"groups": ["NavigationPanelOrdinary"]}),
+            ),
+        ] {
+            for (at, needle) in [
+                (
+                    "main:Configuration",
+                    format!("apply operation `{op}` does not apply to Configuration"),
+                ),
+                (
+                    "main:Interface",
+                    "targets `Subsystem.Name[.Subsystem.Child].Interface`".to_string(),
+                ),
+            ] {
+                let refused = interface_apply_call(
+                    &runtime,
+                    workspace.path(),
+                    serde_json::json!({"at": at, "ops": [{"op": op, "args": {"at": at, key: value}}]}),
+                );
+                assert_refused_without_trace(&refused, "bad_value", &needle);
+            }
+        }
+        assert_eq!(
+            crate::test_support::tree_snapshot(workspace.path()),
+            before,
+            "отказы ничего не пишут"
+        );
+    }
+
+    /// Предпросмотр ничего не пишет, а план связан с ревизией исходников:
+    /// если после него состав группы изменился, исполнение отказывает
+    /// и оставляет файл таким, каким его сделала сторонняя правка.
+    #[test]
+    fn canonical_interface_order_plan_is_refused_after_the_composition_changes() {
+        let workspace = interface_order_workspace();
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let path = workspace.path().join("src").join(NESTED_CONTROL_INTERFACE);
+        let original = std::fs::read_to_string(&path).unwrap();
+        let mut commands = group_commands(&original, "NavigationPanelOrdinary");
+        commands.swap(0, 1);
+        let before = crate::test_support::tree_snapshot(workspace.path());
+        let preview = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "commandOrder.set",
+                NESTED_CONTROL_AT,
+                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+            ),
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(crate::test_support::tree_snapshot(workspace.path()), before);
+
+        let extended = original.replace(
+            "\t</CommandsOrder>",
+            "\t\t<Command name=\"CommonCommand.НоваяКоманда\">\r\n\t\t\t<CommandGroup>NavigationPanelOrdinary</CommandGroup>\r\n\t\t</Command>\r\n\t</CommandsOrder>",
+        );
+        std::fs::write(&path, &extended).unwrap();
+        let stale = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            serde_json::json!({"executionToken": preview.data.as_ref().unwrap()["executionToken"]}),
+        );
+        assert!(!stale.ok, "{stale:?}");
+        assert_eq!(stale.diagnostics[0]["code"], "stale_revision", "{stale:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), extended);
+
+        // Новый план видит новый состав, и прежний список уже не перестановка.
+        let replanned = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "commandOrder.set",
+                NESTED_CONTROL_AT,
+                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+            ),
+        );
+        assert_refused_without_trace(&replanned, "bad_value", "CommonCommand.НоваяКоманда");
+    }
+
     #[test]
     fn canonical_subsystem_picture_property_refusal_never_mints_a_token_and_execution_cannot_override_ops(
     ) {

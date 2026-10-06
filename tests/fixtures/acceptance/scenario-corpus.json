@@ -8397,6 +8397,100 @@
      "gap": "Заимствование регистрирует общий модуль без каталога модуля, а первая запись модуля через `apply` его не создаёт: планировщик требует существующий каталог (`MissingParent`), и превью отвечает `provider_unavailable` «staged source evidence is unavailable» (#955, #1245)."
     }
    ]
+  },
+  {
+   "id": "S320",
+   "area": "Подсистемы и интерфейс",
+   "task": "Переставить важные команды Администрирования, забыв одну — перестановка проходит, неполный список отклоняется без записи",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface",
+      "ops": [
+       {
+        "op": "commandOrder.set",
+        "args": {
+         "values": {
+          "group": "NavigationPanelImportant",
+          "commands": [
+           "Catalog.ГруппыДоступа.StandardCommand.OpenList",
+           "Catalog.Пользователи.StandardCommand.OpenList",
+           "Catalog.ВнешниеПользователи.StandardCommand.OpenList",
+           "DataProcessor.ЖурналРегистрации.Command.ЖурналРегистрации",
+           "DataProcessor.ЗащитаПерсональныхДанных.Command.ЗащитаПерсональныхДанных",
+           "Catalog.ВариантыОтчетов.StandardCommand.OpenList",
+           "Catalog.ДополнительныеОтчетыИОбработки.StandardCommand.OpenList",
+           "Catalog.РассылкиОтчетов.StandardCommand.OpenList"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface",
+      "ops": [
+       {
+        "op": "commandOrder.set",
+        "args": {
+         "values": {
+          "group": "NavigationPanelImportant",
+          "commands": [
+           "Catalog.ГруппыДоступа.StandardCommand.OpenList",
+           "Catalog.Пользователи.StandardCommand.OpenList",
+           "Catalog.ВнешниеПользователи.StandardCommand.OpenList",
+           "DataProcessor.ЖурналРегистрации.Command.ЖурналРегистрации",
+           "DataProcessor.ЗащитаПерсональныхДанных.Command.ЗащитаПерсональныхДанных",
+           "Catalog.ВариантыОтчетов.StandardCommand.OpenList",
+           "Catalog.ДополнительныеОтчетыИОбработки.StandardCommand.OpenList"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: not a permutation of the stored commands of group `NavigationPanelImportant`: missing `Catalog.РассылкиОтчетов.StandardCommand.OpenList`"
+    }
+   ]
+  },
+  {
+   "id": "S321",
+   "area": "Подсистемы и интерфейс",
+   "task": "Задать порядок подсистем на интерфейсе подсистемы — порядок подсистем живёт в корне, отказ до планирования",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface",
+      "ops": [
+       {
+        "op": "subsystemOrder.set",
+        "args": {
+         "values": {
+          "subsystems": [
+           "Subsystem.КонтрольРаботыПользователей"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `subsystemOrder.set` does not apply to Interface"
+    }
+   ]
   }
  ]
 }

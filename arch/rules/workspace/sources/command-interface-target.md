@@ -1,7 +1,8 @@
 ---
 id: INV.SOURCE.COMMAND-INTERFACE-TARGET
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/934
+check:
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_interface_edits_reach_exactly_the_nested_owner_and_refuse_foreign_targets
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_interface_order_permutes_stored_composition_and_refuses_any_other_without_writing
 ---
 
 # Настройка командного интерфейса выбирает его владельца

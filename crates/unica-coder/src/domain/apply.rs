@@ -318,7 +318,6 @@ enum OperationApplicability {
     Xdto,
     Subsystem,
     Interface,
-    InterfaceOrRoot,
     Support,
     Code,
     Event,
@@ -374,10 +373,6 @@ impl OperationApplicability {
             ),
             Self::Subsystem => matches!(kind, NodeKind::Configuration | NodeKind::Subsystem),
             Self::Interface => kind == NodeKind::Interface,
-            // Порядок подсистем верхнего уровня живёт в корневом документе, а
-            // маршрута `main:Interface` намеренно нет: корень описывается
-            // свойством, а не узлом.
-            Self::InterfaceOrRoot => matches!(kind, NodeKind::Interface | NodeKind::Configuration),
             Self::Support => metadata || kind == NodeKind::Subsystem,
             // A common module is its own module terminal: the read projection
             // already shows it as kind `Module`, and the code planner writes it
@@ -735,7 +730,10 @@ operation_descriptors!(
     ("commandPlacement.set", Interface, Interface, Items),
     ("commandOrder.set", Interface, Interface, Values),
     ("groupOrder.set", Interface, Interface, Values),
-    ("subsystemOrder.set", Interface, InterfaceOrRoot, Values),
+    // Порядок подсистем верхнего уровня живёт в корневом документе, а
+    // маршрута `main:Interface` намеренно нет: корень описывается свойством,
+    // а не узлом. Интерфейс подсистемы эту операцию не принимает.
+    ("subsystemOrder.set", Interface, Configuration, Values),
     ("code.insert", Code, Code, Text),
     ("code.replace", Code, Code, Text),
     ("event.implement", Event, Event, Target),
