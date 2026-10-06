@@ -1,6 +1,12 @@
 ---
 id: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 check:
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::startup_completes_exact_staged_terminal_after_post_store_crash_without_replay
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::startup_completes_exact_staged_receipt_after_terminal_link_commit_without_replay
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::startup_publishes_saved_staged_winner_from_exact_provisional_without_replay
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::startup_refuses_changed_staged_winner_metadata_before_any_store_mutation
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::startup_validates_all_staged_owners_before_completing_any_receipt_or_link
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::begun_staged_post_store_crash_recovers_exact_winner_without_replay
   - crates/unica-coder/src/infrastructure/task_store_v5.rs::completed_terminal_cas_reconciles_commit_uncertain_by_exact_readback
   - crates/unica-coder/src/infrastructure/task_store_v5.rs::terminal_cas_rejects_foreign_stale_invalid_state_and_different_winner
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_terminal_receipt_crash_reconciles_without_replay

@@ -461,7 +461,7 @@ use crate::application::receipt_ledger::{
     MAX_RECEIPT_ENTITLEMENT_BYTES,
 };
 use crate::domain::invocation::{DomainResult, InvocationFailure};
-use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
+use crate::domain::invocation::{InvocationId, NormalizedArgumentsHash, SafeIdentityHash, TaskId};
 use crate::infrastructure::daemon::client_v5::V5DaemonProcessOwner;
 use crate::infrastructure::daemon::identity::{CoreIdentity, DaemonStateDirectory};
 use crate::infrastructure::daemon::protocol_v5::V5InvocationRequest;
@@ -1735,6 +1735,613 @@ fn startup_materializes_handoff_without_replaying_begun_work() {
             (_, _, other) => panic!("unexpected recovered handoff Task: {other:?}"),
         }
     }
+}
+
+#[derive(Default)]
+struct StagedTerminalPostStoreCrash {
+    exited: AtomicBool,
+}
+
+impl V5RuntimeHooks for StagedTerminalPostStoreCrash {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn holds(&self, point: V5PausePoint) -> bool {
+        point == V5PausePoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal
+    }
+
+    fn pause(&self, point: V5PausePoint, _deadline: Instant) -> Result<(), ReceiptLedgerError> {
+        if point == V5PausePoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal {
+            self.exited.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
+    fn process_exited(&self) -> bool {
+        self.exited.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Default)]
+struct StagedStartupObservation {
+    provisional_publications: AtomicUsize,
+    confirmed_terminals: AtomicUsize,
+}
+
+impl V5RuntimeHooks for StagedStartupObservation {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn staged_terminal_publication(
+        &self,
+        _handoff: &TaskHandoffActorBoundReceipt,
+        _provisional: &V5StoredInvocationRecord,
+        _terminal_record: &V5StoredInvocationRecord,
+        _link: &TaskTerminalBoundReceipt,
+    ) -> Result<(), ReceiptLedgerError> {
+        self.provisional_publications.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn terminal_bound_task(
+        &self,
+        _record: &V5StoredInvocationRecord,
+        _link: &TaskTerminalBoundReceipt,
+    ) {
+        self.confirmed_terminals.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+struct StagedStartupCrashFixture {
+    _root: tempfile::TempDir,
+    state: DaemonStateDirectory,
+    config: DaemonServerConfig,
+    clock: Arc<ManualEpochClock>,
+    service: Arc<SourceAdmissionProbe>,
+    key: ReceiptKey,
+    runtime: V5ReceiptRuntime,
+    before: V5StoredInvocationRecord,
+    task_path: std::path::PathBuf,
+    task_bytes: Vec<u8>,
+}
+
+fn prepare_staged_startup_handoff(
+    runtime: &V5ReceiptRuntime,
+    identity: &CoreIdentity,
+    phase: AttemptPhase,
+) -> TaskHandoffActorBoundReceipt {
+    let key = ReceiptKey::new(
+        InvocationId::new(),
+        TaskId::new(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(&serde_json::Map::new()),
+            request_scope_hash("workspace-a").expect("request scope"),
+        ),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reserved = runtime
+        .receipt_ledger
+        .reserve(
+            key.clone(),
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+            deadline,
+        )
+        .expect("reserve staged receipt")
+        .into_reservation()
+        .expect("new staged receipt");
+    let bound = runtime
+        .receipt_ledger
+        .bind_reserved_actor(
+            key.clone(),
+            reserved.record_version(),
+            SafeIdentityHash::from_sha256(Sha256::digest(b"staged-startup").into()),
+            deadline,
+        )
+        .expect("bind staged actor");
+    let version = match phase {
+        AttemptPhase::NotBegun => bound.record_version(),
+        AttemptPhase::Begun => runtime
+            .receipt_ledger
+            .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
+            .expect("persist Begun before staged handoff")
+            .record_version(),
+    };
+    let handoff = runtime
+        .receipt_ledger
+        .begin_bound_task_handoff(
+            key.clone(),
+            version,
+            1_009,
+            3_600_000,
+            V5_TASK_POLL_INTERVAL_MS,
+            deadline,
+        )
+        .expect("persist Begun handoff");
+    assert_eq!(handoff.phase(), phase);
+    handoff
+}
+
+fn staged_startup_crash_fixture() -> StagedStartupCrashFixture {
+    let root = tempfile::tempdir().expect("temporary staged startup root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical staged startup root");
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity).expect("open staged state");
+    let service = Arc::new(SourceAdmissionProbe::default());
+    let config = DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50))
+        .with_invocation_service(service.clone());
+    // A single epoch isolates recovery from delayed materialization and clock jumps.
+    let clock = Arc::new(ManualEpochClock::new(1_009));
+    let crash = Arc::new(StagedTerminalPostStoreCrash::default());
+    let runtime = V5ReceiptRuntime::open_with_epoch_clock(
+        &state,
+        &config.clone().with_runtime_hooks_for_test(crash.clone()),
+        clock.clone(),
+    )
+    .expect("open original staged runtime");
+    let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
+    let key = handoff.key().clone();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+        result: Box::new(DomainResult::success("durable staged winner")),
+    })
+    .expect("canonical saved winner");
+    assert!(matches!(
+        runtime.publish_staged_handoff_terminal_reply(handoff, winner.clone(), 1_009, deadline),
+        Err(ReceiptLedgerError::StoreUnavailable)
+    ));
+    assert!(
+        crash.process_exited(),
+        "the real post-store boundary was not reached"
+    );
+    let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+    let before = runtime
+        .task_projection
+        .task_store
+        .get(key.reserved_task_id(), provider_deadline)
+        .expect("read committed terminal before crash cleanup");
+    assert!(matches!(
+        &before.task,
+        V5StoredTask::Completed { terminal_epoch_ms: 1_009, terminal_digest, .. }
+            if terminal_digest == winner.digest()
+    ));
+    let receipt = runtime
+        .receipt_ledger
+        .recover(key.clone(), deadline)
+        .expect("staged owner remains active after post-store crash");
+    let ReceiptState::TaskHandoffActorBound(staged) = receipt else {
+        panic!("post-store crash lost the staged owner");
+    };
+    assert!(matches!(
+        staged.terminal_stage(),
+        HandoffTerminalStage::Staged { terminal, terminal_epoch_ms: 1_009, .. }
+            if terminal == &winner
+    ));
+    assert!(matches!(
+        runtime
+            .task_projection
+            .lifecycle_links
+            .read_by_task_id(key.reserved_task_id(), provider_deadline)
+            .expect("read unfinished TaskBound link"),
+        TaskLifecycleLinkRecord::TaskBound(_)
+    ));
+    let task_path = state
+        .path()
+        .join("tasks")
+        .join(format!("{}.json", key.reserved_task_id()));
+    let task_bytes = std::fs::read(&task_path).expect("read exact terminal bytes");
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+    StagedStartupCrashFixture {
+        _root: root,
+        state,
+        config,
+        clock,
+        service,
+        key,
+        runtime,
+        before,
+        task_path,
+        task_bytes,
+    }
+}
+
+fn assert_staged_startup_preserves_exact_winner(fixture: StagedStartupCrashFixture) {
+    let StagedStartupCrashFixture {
+        _root,
+        state,
+        config,
+        clock,
+        service,
+        key,
+        runtime,
+        before,
+        task_path,
+        task_bytes,
+    } = fixture;
+    drop(runtime);
+    let observation = Arc::new(StagedStartupObservation::default());
+    let config = config.with_runtime_hooks_for_test(observation.clone());
+    for _ in 0..2 {
+        let reopened = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())
+            .unwrap_or_else(|error| panic!("startup refused the committed staged winner: {error}"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        assert_eq!(
+            reopened
+                .task_projection
+                .task_store
+                .get(key.reserved_task_id(), provider_deadline)
+                .expect("read recovered terminal"),
+            before
+        );
+        assert_eq!(
+            std::fs::read(&task_path).expect("read recovered bytes"),
+            task_bytes
+        );
+        assert_eq!(
+            reopened.receipt_ledger.recover(key.clone(), deadline),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        );
+        let link = reopened
+            .task_projection
+            .lifecycle_links
+            .read_by_task_id(key.reserved_task_id(), provider_deadline)
+            .expect("read finished terminal link");
+        let TaskLifecycleLinkRecord::TaskTerminalBound(terminal_link) = link else {
+            panic!("startup did not complete terminal ownership");
+        };
+        assert!(task_terminal_bound_matches_record(&terminal_link, &before)
+            .unwrap_or_else(|failure| panic!("confirm recovered link: {}", failure.error)));
+        assert_eq!(terminal_link.terminal_epoch_ms(), 1_009);
+        assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+        drop(reopened);
+    }
+    assert_eq!(
+        observation.provisional_publications.load(Ordering::SeqCst),
+        0,
+        "readback of an existing winner must not claim a provisional replacement"
+    );
+    assert_eq!(observation.confirmed_terminals.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn startup_completes_exact_staged_terminal_after_post_store_crash_without_replay() {
+    assert_staged_startup_preserves_exact_winner(staged_startup_crash_fixture());
+}
+
+fn finish_staged_crash_lifecycle_link(fixture: &StagedStartupCrashFixture) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+    let link = fixture
+        .runtime
+        .task_projection
+        .lifecycle_links
+        .read_by_task_id(fixture.key.reserved_task_id(), provider_deadline)
+        .expect("read actual unfinished link");
+    let TaskLifecycleLinkRecord::TaskBound(bound) = link else {
+        panic!("the crash fixture must retain TaskBound");
+    };
+    // The retained owner finishes the actual link transition, then exits before
+    // completing its active receipt. No terminal record or link is synthesized.
+    fixture
+        .runtime
+        .task_projection
+        .finish_task_terminal_publication(&bound, fixture.before.clone(), deadline, &NoHooks)
+        .unwrap_or_else(|failure| panic!("publish actual terminal link: {}", failure.error));
+    assert!(matches!(
+        fixture
+            .runtime
+            .receipt_ledger
+            .recover(fixture.key.clone(), deadline),
+        Ok(ReceiptState::TaskHandoffActorBound(_))
+    ));
+    assert_eq!(
+        std::fs::read(&fixture.task_path).unwrap(),
+        fixture.task_bytes
+    );
+}
+
+#[test]
+fn startup_completes_exact_staged_receipt_after_terminal_link_commit_without_replay() {
+    let fixture = staged_startup_crash_fixture();
+    finish_staged_crash_lifecycle_link(&fixture);
+    assert_staged_startup_preserves_exact_winner(fixture);
+}
+
+fn staged_startup_persisted_bytes(
+    root: &std::path::Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut files = std::collections::BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(path);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    std::fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn startup_refuses_changed_staged_winner_metadata_before_any_store_mutation() {
+    for terminal_link_committed in [false, true] {
+        for field in [
+            "invocation",
+            "receipt",
+            "tool",
+            "arguments",
+            "workspace",
+            "created",
+            "updated",
+            "ttl",
+            "poll",
+            "cancel",
+            "version",
+            "terminal",
+        ] {
+            let fixture = staged_startup_crash_fixture();
+            if terminal_link_committed {
+                finish_staged_crash_lifecycle_link(&fixture);
+            }
+            let mut changed = fixture.before.clone();
+            match field {
+                "invocation" => changed.invocation_id = InvocationId::new(),
+                "receipt" => {
+                    changed.receipt_key_digest = "42"
+                        .repeat(32)
+                        .parse()
+                        .expect("valid changed receipt digest")
+                }
+                "tool" => changed.tool = V5ToolIdentity::Apply,
+                "arguments" => {
+                    changed.normalized_arguments_hash =
+                        NormalizedArgumentsHash::from_sha256([0x43; 32])
+                }
+                "workspace" => {
+                    changed.workspace_identity_hash = SafeIdentityHash::from_sha256([0x44; 32])
+                }
+                "created" => changed.created_at_epoch_ms -= 1,
+                "updated" => changed.updated_at_epoch_ms += 1,
+                "ttl" => changed.ttl_ms += 1,
+                "poll" => changed.poll_interval_ms += 1,
+                "cancel" => changed.cancel_requested = true,
+                "version" => changed.version += 1,
+                "terminal" => {
+                    let V5StoredTask::Completed { result, .. } = &mut changed.task else {
+                        panic!("fixture must contain a completed winner");
+                    };
+                    **result = DomainResult::success("different result with the same digest");
+                }
+                _ => unreachable!(),
+            }
+            let bytes = serde_json::to_vec(&changed).unwrap();
+            std::fs::write(&fixture.task_path, bytes).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            assert_eq!(
+                fixture
+                    .runtime
+                    .task_projection
+                    .task_store
+                    .get(
+                        fixture.key.reserved_task_id(),
+                        crate::domain::code_intelligence::ProviderDeadline::new(deadline)
+                    )
+                    .expect("tamper fixture must be a valid parsed Task"),
+                changed
+            );
+            drop(fixture.runtime);
+            let before = staged_startup_persisted_bytes(fixture.state.path());
+            let reopened = V5ReceiptRuntime::open_with_epoch_clock(
+                &fixture.state,
+                &fixture.config,
+                fixture.clock.clone(),
+            );
+            assert!(
+                reopened.is_err(),
+                "startup accepted changed {field}, terminal link={terminal_link_committed}"
+            );
+            assert_eq!(staged_startup_persisted_bytes(fixture.state.path()), before,
+                "refusal changed persisted bytes for {field}, terminal link={terminal_link_committed}");
+            assert_eq!(fixture.service.prepares.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+fn materialize_saved_staged_startup_owner(
+    runtime: &V5ReceiptRuntime,
+    handoff: TaskHandoffActorBoundReceipt,
+    winner: &crate::application::receipt_ledger::V5CanonicalTerminal,
+) -> (
+    TaskHandoffActorBoundReceipt,
+    V5StoredInvocationRecord,
+    TaskBoundReceipt,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let certificate = canonical_staged_transfer_certificate(
+        handoff.key(),
+        handoff.key_digest(),
+        handoff.link(),
+        1_009,
+        winner,
+    )
+    .unwrap();
+    let staged = runtime
+        .receipt_ledger
+        .stage_bound_task_handoff_terminal(
+            handoff.key().clone(),
+            handoff.record_version(),
+            1_009,
+            winner.clone(),
+            certificate,
+            deadline,
+        )
+        .unwrap();
+    let reservation = runtime
+        .task_projection
+        .reserve_bound_handoff_link(&staged, 1_009, deadline, &NoHooks)
+        .unwrap_or_else(|failure| panic!("reserve staged fixture link: {}", failure.error));
+    let (record, bound) = runtime
+        .task_projection
+        .materialize_staged_bound_handoff(&staged, &reservation, 1_009, deadline, &NoHooks)
+        .unwrap_or_else(|failure| panic!("materialize staged fixture owner: {}", failure.error));
+    (staged, record, bound)
+}
+
+#[test]
+fn startup_publishes_saved_staged_winner_from_exact_provisional_without_replay() {
+    for phase in [AttemptPhase::NotBegun, AttemptPhase::Begun] {
+        let root = tempfile::tempdir().unwrap();
+        let identity = CoreIdentity::production_v5();
+        let state =
+            DaemonStateDirectory::open(&root.path().canonicalize().unwrap(), &identity).unwrap();
+        let service = Arc::new(SourceAdmissionProbe::default());
+        let config = DaemonServerConfig::new(
+            root.path().canonicalize().unwrap(),
+            identity.clone(),
+            Duration::from_millis(50),
+        )
+        .with_invocation_service(service.clone());
+        let clock = Arc::new(ManualEpochClock::new(1_009));
+        let runtime =
+            V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone()).unwrap();
+        let handoff = prepare_staged_startup_handoff(&runtime, &identity, phase);
+        let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("saved before terminal publication")),
+        })
+        .unwrap();
+        let (staged, provisional, _) =
+            materialize_saved_staged_startup_owner(&runtime, handoff, &winner);
+        assert!(!provisional.task.is_terminal());
+        let key = staged.key().clone();
+        drop(runtime);
+        let observation = Arc::new(StagedStartupObservation::default());
+        let config = config.with_runtime_hooks_for_test(observation.clone());
+        let reopened =
+            V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let stored = reopened
+            .task_projection
+            .task_store
+            .get(key.reserved_task_id(), provider_deadline)
+            .unwrap();
+        let mut expected = provisional;
+        expected.version += 1;
+        expected.updated_at_epoch_ms = 1_009;
+        expected.task = V5TaskProjection::terminal_publication(&winner, 1_009)
+            .0
+            .into_stored_task();
+        assert_eq!(stored, expected);
+        assert_eq!(
+            reopened.receipt_ledger.recover(key.clone(), deadline),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        );
+        let path = state
+            .path()
+            .join("tasks")
+            .join(format!("{}.json", key.reserved_task_id()));
+        let bytes = std::fs::read(&path).unwrap();
+        drop(reopened);
+        let reopened = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock).unwrap();
+        assert_eq!(
+            reopened
+                .task_projection
+                .task_store
+                .get(key.reserved_task_id(), provider_deadline)
+                .unwrap(),
+            expected
+        );
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            observation.provisional_publications.load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(observation.confirmed_terminals.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[test]
+fn startup_validates_all_staged_owners_before_completing_any_receipt_or_link() {
+    let root = tempfile::tempdir().unwrap();
+    let identity = CoreIdentity::production_v5();
+    let state =
+        DaemonStateDirectory::open(&root.path().canonicalize().unwrap(), &identity).unwrap();
+    let service = Arc::new(SourceAdmissionProbe::default());
+    let config = DaemonServerConfig::new(
+        root.path().canonicalize().unwrap(),
+        identity.clone(),
+        Duration::from_millis(50),
+    )
+    .with_invocation_service(service.clone());
+    let clock = Arc::new(ManualEpochClock::new(1_009));
+    let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone()).unwrap();
+    let handoffs = (0..2)
+        .map(|_| prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun))
+        .collect::<Vec<_>>();
+    let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+        result: Box::new(DomainResult::success("captured winner before crash")),
+    })
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+    let mut committed = Vec::new();
+    for handoff in handoffs {
+        let (staged, provisional, _) =
+            materialize_saved_staged_startup_owner(&runtime, handoff, &winner);
+        // Actual store CAS, intentionally stop before the following link/receipt
+        // transitions. Both captured owners were admitted before this boundary.
+        let terminal = runtime
+            .task_projection
+            .task_store
+            .publish_staged_terminal_against_exact_provisional(
+                &provisional,
+                V5TaskProjection::terminal_publication(&winner, 1_009).0,
+                provider_deadline,
+            )
+            .unwrap();
+        committed.push((
+            staged.key_digest().as_str().to_owned(),
+            staged.key().clone(),
+            terminal,
+        ));
+    }
+    committed.sort_by(|left, right| left.0.cmp(&right.0));
+    let (_, key, mut changed) = committed.pop().unwrap();
+    changed.poll_interval_ms += 1;
+    let path = state
+        .path()
+        .join("tasks")
+        .join(format!("{}.json", key.reserved_task_id()));
+    std::fs::write(path, serde_json::to_vec(&changed).unwrap()).unwrap();
+    assert_eq!(
+        runtime
+            .task_projection
+            .task_store
+            .get(key.reserved_task_id(), provider_deadline)
+            .unwrap(),
+        changed
+    );
+    drop(runtime);
+    let before = staged_startup_persisted_bytes(state.path());
+    assert!(V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock).is_err());
+    assert_eq!(
+        staged_startup_persisted_bytes(state.path()),
+        before,
+        "a later invalid owner must prevent completion of the earlier exact staged owner"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
 }
 
 fn assert_staged_handoff_terminal_transfer(phase: AttemptPhase, outcome: ReceiptTerminalOutcome) {
