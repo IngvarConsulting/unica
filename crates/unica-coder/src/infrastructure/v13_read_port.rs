@@ -89,7 +89,6 @@ pub(crate) struct DcsValidationInput {
 
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EXTERNAL_OWNER_ENTRIES: usize = 256;
-const MAX_EXTERNAL_INVENTORY_BYTES: usize = 32 * 1024 * 1024;
 
 /// One actor-issued read authority for one admitted source set. Hidden v0.13
 /// reads are descriptor-relative to this retained directory and revisions come
@@ -530,7 +529,6 @@ impl ProviderReadAuthority {
             })?;
         let mut registered = std::collections::BTreeSet::new();
         let mut owner_path_mismatches = Vec::new();
-        let mut retained_bytes = 0_usize;
         for name in names {
             checkpoint()?;
             let path = Path::new(&name);
@@ -542,17 +540,8 @@ impl ProviderReadAuthority {
                 continue;
             }
             let relative = PathBuf::from(&name);
-            let remaining = MAX_EXTERNAL_INVENTORY_BYTES.saturating_sub(retained_bytes);
-            if remaining == 0 {
-                return Err(ViewError::detailed(
-                    RefusalDetail::InventoryTooLarge,
-                    format!(
-                        "external owner inventory exceeds {MAX_EXTERNAL_INVENTORY_BYTES} bytes"
-                    ),
-                ));
-            }
-            let bytes = self.read_relative(&relative, remaining.min(MAX_CONFIGURATION_BYTES))?;
-            retained_bytes = retained_bytes.saturating_add(bytes.len());
+            let bytes =
+                self.read_relative_with_checkpoint(&relative, MAX_CONFIGURATION_BYTES, checkpoint)?;
             checkpoint()?;
             if path
                 .file_name()
