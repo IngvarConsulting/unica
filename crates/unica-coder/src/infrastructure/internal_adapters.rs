@@ -2189,13 +2189,29 @@ pub trait HttpClient {
     fn post_json(&self, endpoint: &str, payload: &Value) -> Result<String, String>;
 }
 
-struct UreqHttpClient;
+/// Продовый клиент сервера стандартов поверх общего HTTP-клиента процесса.
+#[derive(Default)]
+pub(crate) struct NetworkHttpClient {
+    /// `None` — общий клиент процесса.
+    client: Option<std::sync::Arc<unica_bootstrap::network::NetworkClient>>,
+}
+
+impl NetworkHttpClient {
+    #[cfg(test)]
+    pub(crate) fn with_client(
+        client: std::sync::Arc<unica_bootstrap::network::NetworkClient>,
+    ) -> Self {
+        Self {
+            client: Some(client),
+        }
+    }
+}
 
 /// Общий продовый HTTP-клиент для потребителей за пределами модуля:
 /// поставщик `v8std` реестра документации держит его в `Arc`, а не через
 /// статическую ссылку, чтобы тесты подменяли транспорт значением.
 pub(crate) fn shared_http_client() -> std::sync::Arc<dyn HttpClient + Send + Sync> {
-    std::sync::Arc::new(UreqHttpClient)
+    std::sync::Arc::new(NetworkHttpClient::default())
 }
 
 impl StandardsAdapter {
@@ -2309,15 +2325,24 @@ impl StandardsOutcome {
     }
 }
 
-impl HttpClient for UreqHttpClient {
+impl HttpClient for NetworkHttpClient {
     fn post_json(&self, endpoint: &str, payload: &Value) -> Result<String, String> {
-        ureq::AgentBuilder::new()
-            .timeout(StandardsAdapter::DEFAULT_TIMEOUT)
-            .build()
-            .post(endpoint)
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/json, text/event-stream")
-            .send_string(&payload.to_string())
+        let client = match &self.client {
+            Some(client) => std::sync::Arc::clone(client),
+            None => {
+                unica_bootstrap::network::NetworkClient::shared().map_err(|err| err.to_string())?
+            }
+        };
+        client
+            .post(
+                endpoint,
+                &[
+                    ("Content-Type", "application/json"),
+                    ("Accept", "application/json, text/event-stream"),
+                ],
+                &payload.to_string(),
+                Some(StandardsAdapter::DEFAULT_TIMEOUT),
+            )
             .map_err(|err| err.to_string())?
             .into_string()
             .map_err(|err| err.to_string())

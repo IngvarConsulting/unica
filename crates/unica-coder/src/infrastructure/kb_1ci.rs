@@ -31,17 +31,33 @@ pub trait KbTransport: Send + Sync {
     fn get(&self, url: &str) -> Result<String, String>;
 }
 
-/// Продовый транспорт: `ureq`, честный User-Agent, таймаут 30 с и не чаще
-/// одного запроса в 500 мс на процесс, чтобы не отправлять запросы
-/// к площадке непрерывным потоком.
-pub struct UreqKbTransport;
+/// Продовый транспорт: общий HTTP-клиент процесса (TLS с доверием ОС,
+/// прокси из окружения), честный User-Agent, таймаут 30 с и не чаще одного
+/// запроса в 500 мс на процесс, чтобы не отправлять запросы к площадке
+/// непрерывным потоком.
+#[derive(Default)]
+pub struct NetworkKbTransport {
+    /// `None` — общий клиент процесса.
+    client: Option<std::sync::Arc<unica_bootstrap::network::NetworkClient>>,
+}
+
+impl NetworkKbTransport {
+    #[cfg(test)]
+    pub(crate) fn with_client(
+        client: std::sync::Arc<unica_bootstrap::network::NetworkClient>,
+    ) -> Self {
+        Self {
+            client: Some(client),
+        }
+    }
+}
 
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 const REQUEST_SPACING: Duration = Duration::from_millis(500);
 const USER_AGENT: &str =
     "unica-coder documentation provider (+https://github.com/IngvarConsulting/unica)";
 
-impl KbTransport for UreqKbTransport {
+impl KbTransport for NetworkKbTransport {
     fn get(&self, url: &str) -> Result<String, String> {
         // Слот времени бронируется под замком, а сон идёт СНАРУЖИ: сон под
         // мьютексом заставил бы каждый параллельный запрос ждать весь чужой
@@ -61,12 +77,17 @@ impl KbTransport for UreqKbTransport {
         if !wait.is_zero() {
             std::thread::sleep(wait);
         }
-        ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .get(url)
-            .set("User-Agent", USER_AGENT)
-            .call()
+        let client = match &self.client {
+            Some(client) => std::sync::Arc::clone(client),
+            None => unica_bootstrap::network::NetworkClient::shared()
+                .map_err(|error| error.to_string())?,
+        };
+        client
+            .get(
+                url,
+                &[("User-Agent", USER_AGENT)],
+                Some(Duration::from_secs(30)),
+            )
             .map_err(|error| error.to_string())?
             .into_string()
             .map_err(|error| error.to_string())
@@ -1713,7 +1734,7 @@ mod provider_tests {
         let provider = Kb1ciProvider {
             base: KB_BASE.to_string(),
             network: NetworkAccess::Allow,
-            transport: Arc::new(UreqKbTransport),
+            transport: Arc::new(NetworkKbTransport::default()),
             cancellation: crate::domain::cancellation::CancellationToken::default(),
             cache_ttl: Duration::from_secs(3600),
             lexicon: Arc::new(InstallationLexiconSource),
@@ -1804,6 +1825,72 @@ mod provider_tests {
             0,
             "отменённый вызов не должен трогать сеть"
         );
+    }
+
+    /// Площадка на стенде с собственным корнем, через штатный транспорт.
+    fn provider_on_stand(
+        stand: &unica_bootstrap::network::test_support::TlsStand,
+        variables: &[(&str, &str)],
+    ) -> Kb1ciProvider {
+        Kb1ciProvider {
+            base: stand.url("").trim_end_matches('/').to_string(),
+            network: NetworkAccess::Allow,
+            transport: Arc::new(NetworkKbTransport::with_client(
+                unica_bootstrap::network::test_support::client_with(variables),
+            )),
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            cache_ttl: Duration::from_secs(3600),
+            lexicon: Arc::new(InstallationLexiconSource),
+        }
+    }
+
+    /// Корень, которого нет в хранилище ОС, — так выглядит подмена
+    /// сертификата средством защиты. Секция называет вероятную причину,
+    /// а не только код ошибки TLS.
+    #[test]
+    fn kb_over_a_root_the_os_does_not_trust_names_interception() {
+        use unica_bootstrap::network::test_support::{TestRoot, TlsStand};
+        let _serial = kb_test_lock();
+        let root = TestRoot::generate("Unica kb untrusted root");
+        let stand = TlsStand::start(&root, "[]", "application/json");
+        let provider = provider_on_stand(&stand, &[]);
+        let (request, context) = request("URL", Some("8.3.27"));
+
+        let sections = provider.search(&request, &context);
+
+        let developer = corpus_section(&sections, "kb-developer-guide");
+        match &developer.status {
+            DocumentationSectionStatus::Unavailable { detail, .. } => {
+                for expected in ["intercepted", "trust store", "HTTPS_PROXY"] {
+                    assert!(detail.contains(expected), "{expected}: {detail}");
+                }
+            }
+            other => panic!("ожидался отказ площадки, получено {other:?}"),
+        }
+        assert!(stand.requests().is_empty(), "до HTTP дело не дошло");
+    }
+
+    #[test]
+    fn kb_requests_go_through_https_proxy_and_bypass_it_by_no_proxy() {
+        use unica_bootstrap::network::test_support::{ConnectProxy, TestRoot, TlsStand};
+        let _serial = kb_test_lock();
+        let root = TestRoot::generate("Unica kb proxy root");
+        let (request, context) = request("URL", Some("8.3.27"));
+
+        let stand = TlsStand::start(&root, "[]", "application/json");
+        let proxy = ConnectProxy::start();
+        provider_on_stand(&stand, &[("HTTPS_PROXY", &proxy.url())]).search(&request, &context);
+        assert_eq!(proxy.targets(), vec![stand.authority()]);
+
+        let stand = TlsStand::start(&root, "[]", "application/json");
+        let proxy = ConnectProxy::start();
+        provider_on_stand(
+            &stand,
+            &[("HTTPS_PROXY", &proxy.url()), ("NO_PROXY", "127.0.0.1")],
+        )
+        .search(&request, &context);
+        assert!(proxy.targets().is_empty(), "{:?}", proxy.targets());
+        assert!(stand.connections() >= 1, "соединение шло напрямую");
     }
 }
 

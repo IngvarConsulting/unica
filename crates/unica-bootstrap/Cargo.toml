@@ -13,6 +13,11 @@ path = "src/main.rs"
 name = "unica_bootstrap"
 path = "src/lib.rs"
 
+[features]
+# Стенды TLS-сервера и CONNECT-прокси для тестов сетевых потребителей.
+# Включается только в dev-dependencies: продуктовая сборка их не содержит.
+network-test-support = ["dep:rcgen"]
+
 [dependencies]
 flate2.workspace = true
 fs2.workspace = true
@@ -21,6 +26,9 @@ serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true
 ureq.workspace = true
+rustls.workspace = true
+rustls-platform-verifier.workspace = true
+rcgen = { workspace = true, optional = true }
 url.workspace = true
 uuid.workspace = true
 zip.workspace = true
@@ -29,6 +37,7 @@ zip.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true

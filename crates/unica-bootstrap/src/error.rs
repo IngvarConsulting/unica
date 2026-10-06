@@ -70,6 +70,9 @@ impl Failure {
 pub struct BootstrapError {
     message: String,
     failure: Failure,
+    /// Лечение, которое знает сам отказ. Общий совет класса («повторите»)
+    /// для недоверенного сертификата вводит в заблуждение: повтор не поможет.
+    cure: Option<String>,
 }
 
 impl BootstrapError {
@@ -83,7 +86,14 @@ impl BootstrapError {
         Self {
             message: message.into(),
             failure,
+            cure: None,
         }
+    }
+
+    /// Заменить общий совет класса отказа своим.
+    pub fn with_cure(mut self, cure: impl Into<String>) -> Self {
+        self.cure = Some(cure.into());
+        self
     }
 
     pub const fn failure(&self) -> Failure {
@@ -101,7 +111,7 @@ impl BootstrapError {
             "{}\n  reason: {}\n  cure: {}",
             self.message,
             self.failure.reason(),
-            self.failure.cure()
+            self.cure.as_deref().unwrap_or(self.failure.cure())
         )
     }
 }

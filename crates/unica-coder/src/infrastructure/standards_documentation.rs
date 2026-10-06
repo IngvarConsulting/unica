@@ -1365,4 +1365,64 @@ mod tests {
             BUILTIN_STANDARDS_ENDPOINT
         );
     }
+
+    fn provider_on_stand(
+        stand: &unica_bootstrap::network::test_support::TlsStand,
+        variables: &[(&str, &str)],
+    ) -> V8StdDocumentationProvider {
+        V8StdDocumentationProvider {
+            endpoint: stand.url("mcp"),
+            network: NetworkAccess::Allow,
+            http: Arc::new(
+                crate::infrastructure::internal_adapters::NetworkHttpClient::with_client(
+                    unica_bootstrap::network::test_support::client_with(variables),
+                ),
+            ),
+            cancellation: crate::domain::cancellation::CancellationToken::default(),
+            search_cache_ttl: Duration::from_secs(3600),
+            revalidate_search: false,
+        }
+    }
+
+    /// Корень, которого нет в хранилище ОС: секция называет вероятную
+    /// причину — перехват TLS — и что исправить.
+    #[test]
+    fn v8std_over_a_root_the_os_does_not_trust_names_interception() {
+        use unica_bootstrap::network::test_support::{TestRoot, TlsStand};
+        let root = TestRoot::generate("Unica v8std untrusted root");
+        let stand = TlsStand::start(&root, LIVE_BODY, "application/json");
+
+        let sections = provider_on_stand(&stand, &[]).search(&request(), &context());
+
+        match &sections[0].status {
+            DocumentationSectionStatus::Failed { diagnostic } => {
+                for expected in ["intercepted", "trust store", "HTTPS_PROXY"] {
+                    assert!(diagnostic.contains(expected), "{expected}: {diagnostic}");
+                }
+            }
+            other => panic!("ожидался отказ сервера, получено {other:?}"),
+        }
+        assert!(stand.requests().is_empty());
+    }
+
+    #[test]
+    fn v8std_requests_go_through_https_proxy_and_bypass_it_by_no_proxy() {
+        use unica_bootstrap::network::test_support::{ConnectProxy, TestRoot, TlsStand};
+        let root = TestRoot::generate("Unica v8std proxy root");
+
+        let stand = TlsStand::start(&root, LIVE_BODY, "application/json");
+        let proxy = ConnectProxy::start();
+        provider_on_stand(&stand, &[("HTTPS_PROXY", &proxy.url())]).search(&request(), &context());
+        assert_eq!(proxy.targets(), vec![stand.authority()]);
+
+        let stand = TlsStand::start(&root, LIVE_BODY, "application/json");
+        let proxy = ConnectProxy::start();
+        provider_on_stand(
+            &stand,
+            &[("HTTPS_PROXY", &proxy.url()), ("NO_PROXY", "127.0.0.1")],
+        )
+        .search(&request(), &context());
+        assert!(proxy.targets().is_empty(), "{:?}", proxy.targets());
+        assert!(stand.connections() >= 1);
+    }
 }

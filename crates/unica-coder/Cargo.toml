@@ -61,7 +61,6 @@ xml.workspace = true
 rust-stemmers.workspace = true
 regex.workspace = true
 tempfile.workspace = true
-ureq.workspace = true
 url.workspace = true
 uuid.workspace = true
 # `flate2` кодом крейта не вызывается: она объявлена, чтобы `zip` получил
@@ -85,6 +84,7 @@ cap-primitives.workspace = true
 cap-fs-ext.workspace = true
 
 [dev-dependencies]
+unica-bootstrap = { path = "../unica-bootstrap", features = ["network-test-support"] }
 jsonschema.workspace = true
 proc-macro2.workspace = true
 quote.workspace = true
