@@ -83,13 +83,23 @@ LEDGER_CONTRACT = (
     "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--test", "daemon_receipt_ledger",
 )
 
+# These private fixture tests exercise the daemon through helpers, so the
+# generic source classifier cannot see their sockets. Enable only this library
+# module, apart from the production workspace and the public ledger contract.
+SCENARIO_TEST_PREFIX = "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::"
+LEDGER_SCENARIO_LIBRARY = (
+    "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--lib",
+    "-E", f"test(/^{SCENARIO_TEST_PREFIX}/)",
+)
+
 
 def rust_selections(profile: str) -> list[tuple[str, ...]]:
     """Что отбирает каждый вызов nextest: весь workspace и, если ворота
-    принимают `medium` или `large`, контракт ReceiptLedger."""
+    принимают `medium` или `large`, контракт и private scenario-модуль ReceiptLedger."""
     selections = [("--workspace",)]
     if set(ADMITTED[profile]) & {"medium", "large"}:
         selections.append(LEDGER_CONTRACT)
+        selections.append(LEDGER_SCENARIO_LIBRARY)
     return selections
 
 
@@ -232,8 +242,12 @@ def commands(
 def write_rust_plan(results: Path, profile: str) -> int:
     """План прогона — до тестов, чтобы упавший раннер не унёс его с собой."""
     entries = []
-    for command in rust_list_commands(profile):
-        entries.extend(allure_results.nextest_list(REPO_ROOT, command))
+    for selection, command in zip(rust_selections(profile), rust_list_commands(profile), strict=True):
+        cases = allure_results.nextest_list(REPO_ROOT, command)
+        for case in cases:
+            if scenario_library_medium(selection, case["binary"], case["name"]):
+                case["size"] = "medium"
+        entries.extend(cases)
     allure_results.write_plan(results, entries)
     return len(entries)
 
@@ -249,12 +263,24 @@ def write_python_plan(profile: str, results: Path, runner: str, suite: str | Non
     return sum(1 for entry in entries if entry.get("ecosystem") == "python")
 
 
-def emit_rust(results: Path, profile: str, runner: str, junit: Path | None = None) -> int:
+def scenario_library_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
+    return selection == LEDGER_SCENARIO_LIBRARY and binary == "unica-coder" and name.startswith(SCENARIO_TEST_PREFIX)
+
+
+def emit_rust(
+    results: Path, profile: str, runner: str, junit: Path | None = None,
+    *, selection: tuple[str, ...] | None = None,
+) -> int:
     """JUnit от nextest + причины `#[ignore]` из атрибутов → allure-results."""
     junit = nextest_junit(profile) if junit is None else junit
     reasons = allure_results.ignore_reasons(REPO_ROOT)
     entries = allure_results.junit_records(junit, runner=runner, profile=profile, reasons=reasons)
     for entry in entries:
+        binary, _, name = entry["fullName"].partition("::")
+        if scenario_library_medium(selection, binary, name):
+            for label in entry["labels"]:
+                if label["name"] == "size":
+                    label["value"] = "medium"
         allure_results.write(results, entry)
     return len(entries)
 
@@ -344,18 +370,18 @@ def execute(
         allure_results.write_run(results, profile=profile, runner=runner, ecosystem=ecosystem, line=line, sha=sha)
     code = 0
     if ecosystem in ("rust", "all"):
-        # Оба вызова nextest пишут JUnit в один каталог профиля, поэтому
+        # Все вызовы nextest пишут JUnit в один каталог профиля, поэтому
         # результаты снимаются после каждого. Старый JUnit от прошлого
         # прогона — не результат этого: если nextest упадёт до отчёта, файл на
         # месте выдал бы чужие записи за свежие. Красный первый вызов второго
         # не отменяет — упавший тест не прячет остальных, — но Python после
         # красного Rust не идёт, как не шёл следующий шаг workflow.
-        for command in rust_commands(profile):
+        for selection, command in zip(rust_selections(profile), rust_commands(profile), strict=True):
             if junit.is_file():
                 junit.unlink()
             rust_code = run_commands([command])
             if results is not None and junit.is_file():
-                print(f"результаты Rust: {emit_rust(results, profile, runner, junit)} записей")
+                print(f"результаты Rust: {emit_rust(results, profile, runner, junit, selection=selection)} записей")
             code = code or rust_code
         if code != 0:
             return code

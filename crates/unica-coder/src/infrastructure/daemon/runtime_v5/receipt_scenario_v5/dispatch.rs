@@ -10,7 +10,60 @@ pub(super) fn unsupported_shape(shape: &str) -> String {
     format!("protocol-v5 receipt scenario shape is not supported: {shape}")
 }
 
+/// Refusing Restart must still join the operations this runner already owns.
+/// Closing fixture permissions wakes them without granting a successor or
+/// manufacturing a cancellation/physical exit. Every handle is joined even
+/// when an earlier worker failed or panicked.
+fn join_operations_after_restart_refusal(
+    control: &ReceiptScenarioControl,
+    operations: &mut HashMap<String, ScenarioOperation>,
+) -> Vec<String> {
+    control.process_life().close_permissions();
+    let mut failures = Vec::new();
+    for (label, operation) in operations.drain() {
+        let joined = operation.handle.join();
+        control.record_operation_event(&label, "joined");
+        match joined {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failures.push(format!("scenario operation {label} failed: {error}")),
+            Err(_) => failures.push(format!("scenario operation {label} panicked")),
+        }
+    }
+    failures
+}
+
 pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<String, String> {
+    run_receipt_scenario_with_completion_observer(request, None)
+}
+
+type ReceiptScenarioCompletionObserver<'a> = dyn FnMut(
+        &crate::infrastructure::daemon::protocol_v5::V5EndpointRecord,
+        &HashMap<String, ReceiptKey>,
+    ) -> Result<(), String>
+    + 'a;
+
+/// Read-only proof of the last submitted daemon, before normal scenario cleanup.
+/// The callback receives its original record, never a refreshed/spawned endpoint.
+pub(super) fn run_receipt_scenario_with_completion_observer(
+    request: &str,
+    completion_observer: Option<&mut ReceiptScenarioCompletionObserver<'_>>,
+) -> Result<String, String> {
+    run_receipt_scenario_with_control_observer(request, None, completion_observer)
+}
+
+#[cfg(test)]
+pub(super) fn run_receipt_scenario_with_control_for_test(
+    request: &str,
+    control: Arc<ReceiptScenarioControl>,
+) -> Result<String, String> {
+    run_receipt_scenario_with_control_observer(request, Some(control), None)
+}
+
+fn run_receipt_scenario_with_control_observer(
+    request: &str,
+    supplied_control: Option<Arc<ReceiptScenarioControl>>,
+    completion_observer: Option<&mut ReceiptScenarioCompletionObserver<'_>>,
+) -> Result<String, String> {
     let scenario = match serde_json::from_str::<ReceiptScenario>(request) {
         Ok(scenario) => scenario,
         Err(error) => return Err(format!("decode protocol-v5 receipt scenario: {error}")),
@@ -69,7 +122,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
     };
 
     let mut report = ScenarioReportBuilder::default();
-    let control = Arc::new(ReceiptScenarioControl::new());
+    let control = supplied_control.unwrap_or_else(|| Arc::new(ReceiptScenarioControl::new()));
     for action in &scenario.actions {
         if let ReceiptScenarioAction::InvalidateActorProof { point, .. } = action {
             control.install(*point);
@@ -102,6 +155,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
     let mut startup_failed = false;
     let mut listener_published = false;
     let mut startup_listener_override = false;
+    let mut completion_endpoint = None;
     let mut seeded_task_versions = HashMap::new();
     let mut corrupted_identity_snapshot: Option<Value> = None;
     let mut bulk_task_projection: Option<TaskProjectionObservation> = None;
@@ -225,7 +279,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -382,9 +436,10 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
             }
             ReceiptScenarioAction::ReconcileStartup => {
                 startup_listener_override = true;
+                control.prepare_process_open()?;
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
-                    scenario_server_config_with_clock(state.path(), &identity, None, &clock);
+                    scenario_server_config_with_clock(state.path(), &identity, None, &clock)?;
                 match V5ReceiptRuntime::open_with_epoch_clock(
                     &daemon_state,
                     &config
@@ -441,18 +496,20 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 if pending_submit.is_some() || live_daemon.is_some() {
                     let worker_label = label.clone();
                     let worker_control = Arc::clone(&control);
+                    let worker_life = control.process_life();
                     let operation =
                         spawn_scenario_operation(label.clone(), Arc::clone(&control), move || {
                             worker_control
-                                .acquire_lifecycle_gate(
+                                .acquire_lifecycle_gate_for(
+                                    &worker_life,
                                     &worker_label,
                                     Instant::now() + SCENARIO_OPERATION_TIMEOUT,
                                 )
                                 .map_err(|error| {
                                     format!("acquire live cancel lifecycle gate: {error}")
                                 })?;
-                            worker_control.request_gate_cancel();
-                            worker_control.release_lifecycle_gate(&worker_label);
+                            worker_life.request_gate_cancel();
+                            worker_control.release_lifecycle_gate_for(&worker_life, &worker_label);
                             Ok(())
                         });
                     operations.insert(label, operation);
@@ -599,7 +656,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -945,6 +1002,17 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                         clock.now_epoch_millis(),
                         response_budget_ms,
                     )?);
+                    if completion_observer.is_some() {
+                        // Capture while this submit still owns its published
+                        // endpoint. Defer observer errors to the cleanup boundary.
+                        completion_endpoint = Some(
+                            DaemonStateDirectory::open(state.path(), &identity).and_then(|state| {
+                                state.read_v5_endpoint_record()?.ok_or_else(|| {
+                                    "submitted scenario endpoint was not published".to_owned()
+                                })
+                            }),
+                        );
+                    }
                 } else {
                     let client = spawn_additional_submit_client(
                         state.path(),
@@ -1047,6 +1115,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                         clock.now_epoch_millis(),
                         response_budget_ms,
                     )?);
+                    if completion_observer.is_some() {
+                        completion_endpoint = Some(
+                            DaemonStateDirectory::open(state.path(), &identity).and_then(|state| {
+                                state.read_v5_endpoint_record()?.ok_or_else(|| {
+                                    "submitted scenario endpoint was not published".to_owned()
+                                })
+                            }),
+                        );
+                    }
                 } else {
                     let observed_cutoff = *original_submit_cutoff
                         .get_or_insert((clock.now_epoch_millis(), response_budget_ms));
@@ -1737,14 +1814,41 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 }
             }
             ReceiptScenarioAction::Restart => {
-                control.clear_fail_stop_reclaimed();
-                startup_listener_override = true;
-                if pending_submit.is_some() {
-                    if !control.process_exited() {
-                        return Err(
-                            "protocol-v5 receipt scenario cannot restart a live submit".to_owned()
-                        );
+                if !operations.is_empty() {
+                    let mut cleanup =
+                        join_operations_after_restart_refusal(&control, &mut operations);
+                    drop(operation_runtime.take());
+                    drop(live_actor.take());
+                    drop(live_task_projection.take());
+                    if let Some(daemon) = live_daemon.take() {
+                        if let Err(error) = daemon.stop_and_join(
+                            "protocol-v5 receipt scenario live daemon panicked after refused restart",
+                        ) {
+                            cleanup.push(error);
+                        }
                     }
+                    let refusal =
+                        "protocol-v5 receipt scenario must join operations before restart";
+                    return Err(if cleanup.is_empty() {
+                        refusal.to_owned()
+                    } else {
+                        format!(
+                            "{refusal}; operation cleanup failed: {}",
+                            cleanup.join("; ")
+                        )
+                    });
+                }
+                startup_listener_override = true;
+                if pending_submit.is_some() && !control.process_exited() {
+                    return Err(
+                        "protocol-v5 receipt scenario cannot restart a live submit".to_owned()
+                    );
+                }
+                // Stop old fixture permissions before joining blocked owners. The
+                // retained Runtime is still owned until those joins complete; this
+                // does not record an OS exit or invent a cancellation request.
+                control.process_life().close_permissions();
+                if pending_submit.is_some() {
                     // The receipt a fail-stopped process left behind is the
                     // successor's to reconcile at startup. Terminalizing it here
                     // would be the harness doing the restart's own work early.
@@ -1772,14 +1876,16 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 }
                 live_actor = None;
                 live_task_projection = None;
+                operation_runtime = None;
                 if let Some(daemon) = live_daemon.take() {
                     daemon.stop_and_join(
                         "protocol-v5 receipt scenario live daemon panicked before restart",
                     )?;
                 }
+                control.begin_successor_process()?;
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
-                    scenario_server_config_with_clock(state.path(), &identity, None, &clock);
+                    scenario_server_config_with_clock(state.path(), &identity, None, &clock)?;
                 match V5ReceiptRuntime::open_with_epoch_clock(
                     &daemon_state,
                     &config
@@ -2147,7 +2253,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                 }
                 let daemon_state = DaemonStateDirectory::open(state.path(), &identity)?;
                 let config =
-                    scenario_server_config_with_clock(state.path(), &identity, None, &clock);
+                    scenario_server_config_with_clock(state.path(), &identity, None, &clock)?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(Arc::clone(&telemetry), None));
@@ -2267,7 +2373,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -2290,7 +2396,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -2368,7 +2474,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                     &identity,
                     Some(&control),
                     &clock,
-                );
+                )?;
                 let runtime =
                     V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
                         .with_hooks_for_test(ScenarioHooks::install(
@@ -2751,7 +2857,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
                         task_store_create_attempts,
                         daemon,
                     ) = pending.finish()?;
-                    let close_after_release = telemetry.snapshot().restart_requested
+                    let close_after_release = control.current_process_requires_stop()
                         || matches!(
                             point,
                             ScenarioBarrierPoint::AfterCancelReservationConvertedBeforeTerminal
@@ -2872,7 +2978,15 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
     report.gate_events = control.gate_events();
     report.operation_events = control.operation_events();
     quiesce_promoted_continuation(state.path(), &identity, &control, &telemetry)?;
-    let encoded = report.encode(telemetry.snapshot().events);
+    let observed = match completion_observer {
+        Some(observer) => match completion_endpoint {
+            Some(Ok(record)) => observer(&record, &submit_keys),
+            Some(Err(error)) => Err(error),
+            None => Err("scenario completion observer has no submitted endpoint".to_owned()),
+        },
+        None => Ok(()),
+    };
+    let encoded = observed.and_then(|()| report.encode(telemetry.snapshot().events));
     drop(live_actor.take());
     let cleanup = match live_daemon.take() {
         Some(daemon) => daemon.stop_and_join(

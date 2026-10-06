@@ -297,7 +297,7 @@ fn seed_receipt_state(
     }
 
     let state = DaemonStateDirectory::open(state_root, identity)?;
-    let config = scenario_server_config_with_clock(state_root, identity, None, clock);
+    let config = scenario_server_config_with_clock(state_root, identity, None, clock)?;
     let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock.clone())?;
     let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;
     let epoch_ms = clock.now_epoch_millis();
@@ -747,7 +747,7 @@ fn run_cross_store_crash_cases(
                 clock.advance(7_001)?;
             }
             let daemon_state = DaemonStateDirectory::open(state.path(), identity)?;
-            let config = scenario_server_config_with_clock(state.path(), identity, None, clock);
+            let config = scenario_server_config_with_clock(state.path(), identity, None, clock)?;
             let runtime =
                 V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?;
             drop(runtime);
@@ -893,7 +893,7 @@ fn seed_staged_cross_store_terminal(
     let daemon_state = DaemonStateDirectory::open(state_root, identity)?;
     let receipts = daemon_state.create_private_retained_subdirectory("receipts")?;
     control.set_state_root(receipts.path());
-    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), clock);
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), clock)?;
     let runtime = V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
         .with_hooks_for_test(ScenarioHooks::install(
             Arc::new(V5ReceiptRuntimeTelemetry::new()),
@@ -1207,7 +1207,7 @@ fn run_direct_load(
         side_effect_marker: false,
     });
     let mut config =
-        scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+        scenario_server_config_with_clock(state_root, identity, Some(&control), &clock)?;
     // This actor/store batch benchmark owns the daemon explicitly until the operation completes.
     // The anchor proves that the listener remains available, but the measured calls intentionally
     // enter below TCP admission; process-session throughput is separate evidence.
@@ -1414,7 +1414,7 @@ fn run_lazy_cancel_storm(
         cooperative_cancel: true,
         side_effect_marker: false,
     });
-    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock)?;
     let daemon_control = Arc::clone(&control);
     let daemon_clock = Arc::clone(&clock);
     let daemon_telemetry = Arc::clone(&telemetry);
@@ -1663,7 +1663,7 @@ fn open_retirement_runtime(
     clock: Arc<ScenarioEpochClock>,
 ) -> Result<V5ReceiptRuntime, String> {
     let state = DaemonStateDirectory::open(state_root, identity)?;
-    let config = scenario_server_config_with_clock(state_root, identity, None, &clock);
+    let config = scenario_server_config_with_clock(state_root, identity, None, &clock)?;
     V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock)
 }
 
@@ -1875,7 +1875,7 @@ fn run_task_retirement_case(
     let recovered_runtime =
         if matches!(case, ScenarioTaskRetirementWorkload::DeleteIdentityMismatch) {
             let daemon_state = DaemonStateDirectory::open(state.path(), identity)?;
-            let config = scenario_server_config_with_clock(state.path(), identity, None, &clock)
+            let config = scenario_server_config_with_clock(state.path(), identity, None, &clock)?
                 .without_v5_startup_reconciliation_for_test();
             let epoch_clock: Arc<dyn EpochMillisClock> = clock.clone();
             V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, epoch_clock)?
@@ -2564,7 +2564,10 @@ fn scenario_server_config(
     state_root: &Path,
     identity: &CoreIdentity,
     control: Option<&Arc<ReceiptScenarioControl>>,
-) -> DaemonServerConfig {
+) -> Result<DaemonServerConfig, String> {
+    if let Some(control) = control {
+        control.prepare_process_open()?;
+    }
     // Every scenario runtime observes through scenario hooks: a fresh
     // telemetry unless the runner shares its own later, and the control it
     // was handed, exactly as the runtime used to default them.
@@ -2580,15 +2583,17 @@ fn scenario_server_config(
     if control.is_some_and(|control| control.take_skip_next_startup_reconciliation()) {
         config = config.without_v5_startup_reconciliation_for_test();
     }
-    match control.and_then(|control| control.provider().map(|provider| (control, provider))) {
-        Some((control, provider)) => {
-            config.with_invocation_service(Arc::new(ScenarioInvocationService {
-                control: Arc::clone(control),
-                provider,
-            }))
-        }
-        None => config,
-    }
+    Ok(
+        match control.and_then(|control| control.provider().map(|provider| (control, provider))) {
+            Some((control, provider)) => {
+                config.with_invocation_service(Arc::new(ScenarioInvocationService {
+                    control: Arc::clone(control),
+                    provider,
+                }))
+            }
+            None => config,
+        },
+    )
 }
 
 fn scenario_server_config_with_clock(
@@ -2596,12 +2601,12 @@ fn scenario_server_config_with_clock(
     identity: &CoreIdentity,
     control: Option<&Arc<ReceiptScenarioControl>>,
     clock: &Arc<ScenarioEpochClock>,
-) -> DaemonServerConfig {
+) -> Result<DaemonServerConfig, String> {
     let invocation_clock: Arc<dyn Clock> = clock.clone();
     let epoch_clock: Arc<dyn EpochMillisClock> = clock.clone();
-    scenario_server_config(state_root, identity, control)
+    Ok(scenario_server_config(state_root, identity, control)?
         .with_invocation_clock_for_test(invocation_clock)
-        .with_v5_epoch_clock_for_test(epoch_clock)
+        .with_v5_epoch_clock_for_test(epoch_clock))
 }
 
 /// Waits for a promoted attempt the runtime finished off the reply thread to
@@ -2626,10 +2631,10 @@ fn quiesce_promoted_continuation(
             thread::sleep(Duration::from_millis(2));
         }
     }
-    // Clean up one fail-stop once. `restart_requested` is never cleared, so
-    // without the latch every later quiesce would spend both deadlines again on
-    // an exit that was already handled.
-    if telemetry.snapshot().restart_requested && !control.fail_stop_reclaimed() {
+    // Reclaim one fail-stopped process life once. Historical restart telemetry
+    // survives a successor, so it cannot authorize cleanup of the new listener.
+    // The request selects the life; Runtime release below still gates reclaim.
+    if control.current_process_requires_stop() && !control.fail_stop_reclaimed() {
         control.mark_fail_stop_reclaimed();
         // A fail-stopped attempt exits the process on the runtime's own clock;
         // wait for that close so a checkpoint sees the closed listener.
@@ -2669,7 +2674,7 @@ fn exchange_once(
     exchange: impl FnOnce(&mut V5DaemonProcessOwner) -> Result<V5ServerResponse, String>,
 ) -> Result<V5ServerResponse, String> {
     let config =
-        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
+        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock)?;
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime =
             runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, scenario_control));
@@ -2698,7 +2703,7 @@ fn publish_listener_once(
     clock: Arc<ScenarioEpochClock>,
     telemetry: Arc<V5ReceiptRuntimeTelemetry>,
 ) -> Result<(), String> {
-    let config = scenario_server_config_with_clock(state_root, identity, None, &clock);
+    let config = scenario_server_config_with_clock(state_root, identity, None, &clock)?;
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime = runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, None));
         runtime.epoch_clock = clock;
@@ -2718,7 +2723,7 @@ fn exchange_once_retaining_actor(
     exchange: impl FnOnce(&mut V5DaemonProcessOwner) -> Result<V5ServerResponse, String>,
 ) -> Result<(V5ServerResponse, ReceiptLedgerActor), String> {
     let config =
-        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
+        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock)?;
     let (actor_sender, actor_receiver) = mpsc::sync_channel(1);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let _ = actor_sender.send(runtime.receipt_ledger.clone());
@@ -2755,7 +2760,7 @@ fn exchange_raw_v5_request(
     request_frame: Vec<u8>,
 ) -> Result<V5ServerResponse, String> {
     let config =
-        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
+        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock)?;
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime =
             runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, scenario_control));
@@ -4769,7 +4774,7 @@ fn exchange_ack_and_expect_disconnect(
     key: ReceiptKey,
     terminal_digest: TerminalDigest,
 ) -> Result<(), String> {
-    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock)?;
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime =
             runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, Some(control)));
@@ -4805,7 +4810,7 @@ fn exchange_submit_and_expect_disconnect(
     telemetry: Arc<V5ReceiptRuntimeTelemetry>,
     invocation: V5InvocationRequest,
 ) -> Result<(), String> {
-    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock)?;
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime =
             runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, Some(control)));
@@ -4842,7 +4847,7 @@ fn submit_and_disconnect_after_write(
     telemetry: Arc<V5ReceiptRuntimeTelemetry>,
     invocation: V5InvocationRequest,
 ) -> Result<(), String> {
-    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock)?;
     let daemon_telemetry = Arc::clone(&telemetry);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime =
@@ -4895,7 +4900,7 @@ fn exchange_batch(
     requests: Vec<ScenarioWireRequest>,
 ) -> Result<Vec<V5ServerResponse>, String> {
     let config =
-        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock);
+        scenario_server_config_with_clock(state_root, identity, scenario_control.as_ref(), &clock)?;
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime =
             runtime.with_hooks_for_test(ScenarioHooks::install(telemetry, scenario_control));
@@ -5007,17 +5012,15 @@ fn open_scenario_operation_runtime(
     // A gated operation observes the seeded fixture it was handed, not what a
     // successor would reconcile it into.
     control.arm_skip_next_startup_reconciliation();
-    let config = scenario_server_config_with_clock(state_root, identity, Some(control), clock);
+    let config = scenario_server_config_with_clock(state_root, identity, Some(control), clock)?;
     let runtime = V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?
         .with_hooks_for_test(ScenarioHooks::install(
             Arc::clone(telemetry),
             Some(Arc::clone(control)),
         ));
-    Ok((
-        Arc::new(runtime),
-        task_projection,
-        task_store_create_attempts,
-    ))
+    let runtime = Arc::new(runtime);
+    runtime.hooks.runtime_opened(&runtime);
+    Ok((runtime, task_projection, task_store_create_attempts))
 }
 
 fn spawn_scenario_operation(
@@ -5301,7 +5304,7 @@ fn start_blocked_submit(
     // The submitting process owns the attempt it is about to run, and any
     // fixture the scenario seeded for it.
     control.arm_skip_next_startup_reconciliation();
-    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock);
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), &clock)?;
     let (actor_tx, actor_rx) = mpsc::sync_channel(1);
     let daemon = ScenarioDaemon::spawn(config, move |runtime| {
         let mut runtime =
