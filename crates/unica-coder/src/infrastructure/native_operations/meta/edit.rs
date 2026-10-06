@@ -47,8 +47,9 @@ use super::format_contract::{
 use super::publisher::{fresh_metadata_uuid, PreparedMetaEdit};
 use super::template_catalog::{
     emit_meta_attribute, emit_meta_enum_value, emit_meta_register_field, emit_meta_tabular_section,
-    meta_attribute_context, metadata_standard_attribute_names, split_meta_camel_case,
-    MetadataAttributeTemplate, MetadataEnumValueTemplate, MetadataTabularSectionTemplate,
+    meta_attribute_context, meta_tabular_attribute_context, metadata_standard_attribute_names,
+    split_meta_camel_case, MetadataAttributeTemplate, MetadataEnumValueTemplate,
+    MetadataTabularSectionTemplate,
 };
 use super::validation_context::{
     event_source_dependency_contract, validate_event_source_dependency_descriptor,
@@ -4144,7 +4145,14 @@ where
     let tag = collection_tag(collection);
     ensure_typed_name_free(xml_text, tag, scope, &element.name)?;
     let position = typed_insert_position(element.position.as_ref());
-    let mut lines = render_typed_element(object_kind, object_name, collection, element, next_uuid)?;
+    let mut lines = render_typed_element(
+        object_kind,
+        object_name,
+        collection,
+        scope.is_some(),
+        element,
+        next_uuid,
+    )?;
     if matches!(
         collection,
         MetaCollection::Dimensions | MetaCollection::Resources
@@ -4271,6 +4279,7 @@ fn render_typed_element<F>(
     object_kind: &str,
     object_name: &str,
     collection: MetaCollection,
+    in_tabular_section: bool,
     element: &MetaElementDefinition,
     next_uuid: &mut F,
 ) -> Result<Vec<String>, MetaDiagnostic>
@@ -4287,6 +4296,15 @@ where
         required: element.required.unwrap_or(false),
     };
     match collection {
+        // A tabular-section column sits two levels deeper
+        // (`TabularSection/ChildObjects`) and has its own platform profile.
+        MetaCollection::Attributes if in_tabular_section => emit_meta_attribute(
+            &mut lines,
+            "\t\t\t\t\t",
+            &attr(),
+            meta_tabular_attribute_context(object_kind),
+            next_uuid,
+        ),
         MetaCollection::Attributes => emit_meta_attribute(
             &mut lines,
             "\t\t\t",
@@ -6607,6 +6625,7 @@ pub(crate) mod tests {
             "InformationRegister",
             "Sample",
             MetaCollection::Dimensions,
+            false,
             &element,
             &mut next_uuid,
         )
@@ -6625,6 +6644,7 @@ pub(crate) mod tests {
             "InformationRegister",
             "Sample",
             MetaCollection::Resources,
+            false,
             &element,
             &mut next_uuid,
         )
@@ -7710,6 +7730,141 @@ pub(crate) mod tests {
             for tag in forbidden {
                 assert!(!xml.contains(tag), "{kind} emitted forbidden {tag}\n{xml}");
             }
+        }
+    }
+
+    /// The `<Attribute>` named `column` inside tabular section `section`:
+    /// its source block with the line indent and uuids masked, and the
+    /// ordered names of its properties.
+    fn tabular_attribute_shape(xml: &str, section: &str, column: &str) -> (String, Vec<String>) {
+        let document = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let offset = xml.len() - xml.trim_start_matches('\u{feff}').len();
+        let attribute = document
+            .descendants()
+            .filter(|node| node.has_tag_name("TabularSection"))
+            .find(|node| meta_edit_child_object_name(*node).as_deref() == Some(section))
+            .and_then(|node| meta_info_child(node, "ChildObjects"))
+            .into_iter()
+            .flat_map(|node| meta_info_children(node, "Attribute"))
+            .find(|node| meta_edit_child_object_name(*node).as_deref() == Some(column))
+            .unwrap_or_else(|| panic!("{section}.{column} is not a tabular attribute\n{xml}"));
+        let properties = meta_info_child(attribute, "Properties")
+            .unwrap()
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .map(|node| node.tag_name().name().to_string())
+            .collect();
+        let range = attribute.range();
+        let start = offset + range.start;
+        let line_start = xml[..start].rfind('\n').map_or(0, |index| index + 1);
+        let block = &xml[line_start..offset + range.end];
+        let uuid = regex::Regex::new(r#"uuid="[^"]*""#).unwrap();
+        (
+            uuid.replace_all(block, "uuid=\"*\"").into_owned(),
+            properties,
+        )
+    }
+
+    #[test]
+    fn typed_scoped_attribute_add_uses_the_tabular_section_attribute_profile() {
+        let dumps = [
+            (
+                "Catalog",
+                include_str!(
+                    "../../../../../../tests/fixtures/acceptance/workspace/src/Catalogs/Валюты.xml"
+                ),
+                "Представления",
+                "КодЯзыка",
+            ),
+            (
+                "Document",
+                include_str!(
+                    "../../../../../../tests/fixtures/acceptance/workspace/src/Documents/АктОбУничтоженииПерсональныхДанных.xml"
+                ),
+                "КатегорииДанных",
+                "",
+            ),
+        ];
+        for (kind, dump, dump_section, dump_column) in dumps {
+            let section = |attributes: Vec<MetaElementInput>| {
+                MetaEditOperation::add(
+                    MetaCollection::TabularSections,
+                    None,
+                    vec![MetaElementInput {
+                        name: "Lines".into(),
+                        attributes: Some(attributes),
+                        ..MetaElementInput::default()
+                    }],
+                )
+                .unwrap()
+            };
+
+            let mut created = object_xml(kind, "Owner", "");
+            apply_typed_operations(
+                &mut created,
+                &[section(vec![
+                    MetaElementInput::named("Seed"),
+                    MetaElementInput::named("Column"),
+                ])],
+            )
+            .unwrap();
+
+            let mut scoped = object_xml(kind, "Owner", "");
+            apply_typed_operations(
+                &mut scoped,
+                &[
+                    section(vec![MetaElementInput::named("Seed")]),
+                    MetaEditOperation::add(
+                        MetaCollection::Attributes,
+                        Some(MetaScope {
+                            tabular_section: "Lines".into(),
+                        }),
+                        vec![MetaElementInput::named("Column")],
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap();
+
+            let (created_block, created_properties) =
+                tabular_attribute_shape(&created, "Lines", "Column");
+            let (scoped_block, scoped_properties) =
+                tabular_attribute_shape(&scoped, "Lines", "Column");
+            assert_eq!(
+                scoped_block, created_block,
+                "{kind}: attribute.add with scope differs from tabularSection.add"
+            );
+            assert_eq!(scoped_properties, created_properties);
+            for forbidden in ["FillFromFillingValue", "FillValue", "Use"] {
+                assert!(
+                    !scoped_properties.iter().any(|name| name == forbidden),
+                    "{kind}: tabular attribute carries {forbidden}\n{scoped_block}"
+                );
+            }
+
+            // The platform's own dump of a tabular-section attribute of the
+            // same owner kind carries exactly this property set and order.
+            let document = Document::parse(dump.trim_start_matches('\u{feff}')).unwrap();
+            let dump_column = if dump_column.is_empty() {
+                document
+                    .descendants()
+                    .filter(|node| node.has_tag_name("TabularSection"))
+                    .find(|node| {
+                        meta_edit_child_object_name(*node).as_deref() == Some(dump_section)
+                    })
+                    .and_then(|node| meta_info_child(node, "ChildObjects"))
+                    .into_iter()
+                    .flat_map(|node| meta_info_children(node, "Attribute"))
+                    .find_map(meta_edit_child_object_name)
+                    .unwrap()
+            } else {
+                dump_column.to_string()
+            };
+            let (_, dump_properties) = tabular_attribute_shape(dump, dump_section, &dump_column);
+            assert_eq!(
+                scoped_properties, dump_properties,
+                "{kind}: tabular attribute profile differs from the 8.3.27 dump"
+            );
         }
     }
 

@@ -2956,6 +2956,19 @@ pub(super) fn meta_attribute_context(object_type: &str) -> &'static str {
     }
 }
 
+/// Profile of an attribute nested in a tabular section of `object_type`.
+///
+/// Both writers of tabular-section attributes — a section created with its
+/// columns and a column added to an existing section — take it from here, so
+/// they cannot drift apart.
+pub(super) fn meta_tabular_attribute_context(object_type: &str) -> &'static str {
+    if matches!(object_type, "DataProcessor" | "Report") {
+        "processor-tabular"
+    } else {
+        "tabular"
+    }
+}
+
 pub(super) fn emit_meta_tabular_section<F>(
     lines: &mut Vec<String>,
     indent: &str,
@@ -3024,17 +3037,12 @@ pub(super) fn emit_meta_tabular_section<F>(
     }
     lines.push(format!("{indent}\t</Properties>"));
     lines.push(format!("{indent}\t<ChildObjects>"));
-    let column_context = if matches!(object_type, "DataProcessor" | "Report") {
-        "processor-tabular"
-    } else {
-        "tabular"
-    };
     for column in &section.columns {
         emit_meta_attribute(
             lines,
             &format!("{indent}\t\t"),
             column,
-            column_context,
+            meta_tabular_attribute_context(object_type),
             next_uuid,
         );
     }
