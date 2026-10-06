@@ -1754,6 +1754,30 @@ fn zip_with_symlink() -> Vec<u8> {
     writer.finish().expect("finish zip").into_inner()
 }
 
+/// Повтор имени, спрятанный за поддельной записью конца каталога в
+/// комментарии: поддельная запись объявляет столько записей, сколько имён
+/// видит читатель, и повтор прошёл бы, поверь установщик ей.
+fn zip_with_fake_end_record() -> Vec<u8> {
+    let mut fake = vec![0x50, 0x4b, 0x05, 0x06, 0, 0, 0, 0];
+    fake.extend_from_slice(&3u16.to_le_bytes());
+    fake.extend_from_slice(&3u16.to_le_bytes());
+    fake.extend_from_slice(&[0; 8]);
+    fake.extend_from_slice(&0u16.to_le_bytes());
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for (path, contents) in RUNNER_FILES
+        .iter()
+        .copied()
+        .chain([("v8-runner-x/READMF.md", b"readme".as_slice())])
+    {
+        writer.start_file(path, options).expect("zip entry");
+        writer.write_all(contents).expect("zip contents");
+    }
+    writer.set_raw_comment(fake.into());
+    let archive = writer.finish().expect("finish zip").into_inner();
+    rename_zip_entry(archive, "v8-runner-x/READMF.md", "v8-runner-x/README.md")
+}
+
 /// `v8-runner` с 0.12.0 издаётся архивом: каталог платформы, бинарь и
 /// сопутствующие файлы. Манифест перечисляет каждый файл архива.
 fn manifest_with_zip_artifact(
@@ -1899,6 +1923,7 @@ fn a_publisher_zip_is_refused_when_unsafe_or_drifted() {
             ]),
         ),
         ("symlink", zip_with_symlink()),
+        ("fake-end-record", zip_with_fake_end_record()),
         ("not-a-zip", b"not a zip at all".to_vec()),
     ];
 

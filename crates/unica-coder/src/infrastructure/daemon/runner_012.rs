@@ -375,8 +375,9 @@ fn project_layer(mut value: Value, root: &Path, file: &str) -> Result<Value, Str
         &["workPath"][..],
         &["tools", "platform", "path"],
         &["tools", "va", "epf_path"],
-        &["tools", "designer_agent", "host_key"],
-        &["tools", "designer_agent", "base_dir"],
+        // Секция агента в схеме раннера названа через дефис (`kebab-case`).
+        &["tools", "designer_agent", "host-key"],
+        &["tools", "designer_agent", "base-dir"],
         &["tools", "client_mcp", "extension", "source", "path"],
         &["tools", "client_mcp", "extension", "artifact", "path"],
         &["tests", "va", "params_path"],
@@ -594,7 +595,7 @@ mod tests {
     fn projection_preserves_overlay_paths_and_removes_private_files_on_failure() {
         let (root, base, local) = projected(
             "format: DESIGNER\ninfobases: {origin: {connection: 'File=base'}}\nproviders: {download: designer}\n",
-            Some("infobases: {origin: {password: private-test-secret}}\nworkPath: work-local\ntools: {platform: {path: platform}, designer_agent: {host_key: keys/agent}}\nproviders: {infobase.configuration.export: agent}\n"),
+            Some("infobases: {origin: {password: private-test-secret}}\nworkPath: work-local\ntools: {platform: {path: platform}, designer_agent: {host-key: keys/agent, base-dir: agent-base}}\nproviders: {infobase.configuration.export: agent}\n"),
         );
         let local = local.unwrap();
         assert!(base.get("infobases").is_none() && base.get("infobase").is_none());
@@ -609,8 +610,12 @@ mod tests {
             text(root.join("platform"))
         );
         assert_eq!(
-            local["tools"]["designer_agent"]["host_key"],
+            local["tools"]["designer_agent"]["host-key"],
             text(root.join("keys/agent"))
+        );
+        assert_eq!(
+            local["tools"]["designer_agent"]["base-dir"],
+            text(root.join("agent-base"))
         );
         assert_eq!(local["workPath"], text(root.join("work-local")));
         assert_eq!(local["providers"]["download"], "agent");

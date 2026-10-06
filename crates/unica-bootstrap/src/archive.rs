@@ -155,10 +155,24 @@ fn declared_zip_entries(archive_path: &Path) -> Result<usize> {
     }
     // Запись стоит в конце и может нести комментарий до 65535 байт.
     let earliest = bytes.len().saturating_sub(RECORD + usize::from(u16::MAX));
-    let start = (earliest..=bytes.len() - RECORD)
-        .rev()
-        .find(|&offset| bytes[offset..offset + 4] == SIGNATURE)
-        .ok_or_else(malformed)?;
+    // Настоящая запись кончается ровно там, где кончается её комментарий. Если
+    // так сходятся две записи, вторая спрятана в комментарии первой, и какой из
+    // них верить, решить нельзя — такой архив не ставится.
+    let candidates = (earliest..=bytes.len() - RECORD)
+        .filter(|&offset| {
+            let comment = usize::from(u16::from_le_bytes([bytes[offset + 20], bytes[offset + 21]]));
+            bytes[offset..offset + 4] == SIGNATURE && offset + RECORD + comment == bytes.len()
+        })
+        .collect::<Vec<_>>();
+    let start = match candidates.as_slice() {
+        [start] => *start,
+        [] => return Err(malformed()),
+        _ => {
+            return Err(BootstrapError::new(
+                "unsupported runtime archive: the end of central directory is ambiguous",
+            ))
+        }
+    };
     let total = u16::from_le_bytes([bytes[start + 10], bytes[start + 11]]);
     if total == u16::MAX {
         return Err(BootstrapError::new(

@@ -124,7 +124,7 @@ impl RunOperation {
                 Some(RUNNER_012_LOAD_GAP)
             }
             RunIntent::SourceImport => Some("source push requires force:true and applies the database configuration; generation protection and noApply:true are unavailable"),
-            RunIntent::SourceExport => Some("pull requires force:true and replaces one full source set; local-work protection and all mode are unavailable"),
+            RunIntent::SourceExport => Some("pull requires force:true and replaces one full source set, deleting its uncommitted and untracked files without a copy; local-work protection and all mode are unavailable"),
             RunIntent::InfobaseCreate => Some("creates an absent infobase without establishing runner 1.0 synchronization state"),
             _ => None,
         }

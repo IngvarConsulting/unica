@@ -61,9 +61,9 @@ mixed with `infobases` in one file are refused. `unica.run` accepts optional
 top-level `infobase: "origin"`; another target is never silently redirected to
 origin. Do not use legacy top-level `connection` in `v8project.yaml`.
 
-Relative `workPath`, infobase file paths, and source-set paths are resolved from
-the directory containing the primary config; the adapter passes that directory
-to the runner as `basePath`.
+`basePath` is not part of the pinned v8-runner contract, and `unica.run`
+refuses a config that sets it. Relative `workPath`, infobase file paths, and
+source-set paths are resolved from the directory containing the primary config.
 
 `execution_timeout` is not supported. v8-runner 0.12 has no overall command
 deadline: a command runs to its terminal outcome, and limits belong to the
