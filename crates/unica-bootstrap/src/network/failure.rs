@@ -34,7 +34,7 @@ pub struct NetworkError {
 }
 
 /// Совет одной строкой: параметры читаются при старте процесса.
-const RESTART_NOTE: &str = "Unica reads proxy variables and the trust store when its process starts: restart the host session (and the Unica daemon, if it is running) after changing them";
+const RESTART_NOTE: &str = "proxy variables and the trust store are read when a Unica process starts: close every agent session that uses Unica and wait until its background process exits after 15 minutes without work, or end the background unica process, then start a new session";
 
 impl NetworkError {
     pub(crate) fn new(failure: NetworkFailure, message: impl Into<String>) -> Self {
@@ -123,9 +123,10 @@ fn certificate_refusal(
     host: &str,
     route: &str,
 ) -> NetworkError {
-    match reason {
+    match apple_reason(reason).unwrap_or(reason) {
         // `Other` — так macOS и Windows сообщают о недоверенном корне, когда
-        // их код не сводится к `UnknownIssuer`.
+        // их код не сводится к `UnknownIssuer` (на macOS это
+        // `errSecNotTrusted`, -67843).
         CertificateError::UnknownIssuer
         | CertificateError::BadSignature
         | CertificateError::Other(_) => NetworkError::new(
@@ -152,6 +153,30 @@ fn certificate_refusal(
         .with_cure(format!(
             "if the certificate belongs to another name or purpose, the connection may be intercepted by a gateway: check the proxy settings (HTTPS_PROXY, NO_PROXY) and the HTTPS-scanning exclusions for {host}"
         )),
+    }
+}
+
+/// Верификатор macOS сводит к своим вариантам только четыре кода, а
+/// остальные отдаёт как `Other` с кодом `OSStatus` в тексте. Просроченный
+/// сертификат и неверное назначение среди них, и совет про антивирус для
+/// них ложен. Коды взяты из `SecBase.h`.
+fn apple_reason(reason: &CertificateError) -> Option<&'static CertificateError> {
+    static EXPIRED: CertificateError = CertificateError::Expired;
+    static NOT_VALID_YET: CertificateError = CertificateError::NotValidYet;
+    static INVALID_PURPOSE: CertificateError = CertificateError::InvalidPurpose;
+    let CertificateError::Other(other) = reason else {
+        return None;
+    };
+    let text = other.to_string();
+    if text.ends_with(": -67818") {
+        Some(&EXPIRED)
+    } else if text.ends_with(": -67819") {
+        Some(&NOT_VALID_YET)
+    } else if text.ends_with(": -67609") || text == "certificate had invalid extensions" {
+        // errSecInvalidExtendedKeyUsage и его прямое сопоставление (`EkuError`).
+        Some(&INVALID_PURPOSE)
+    } else {
+        None
     }
 }
 
@@ -238,6 +263,24 @@ mod tests {
         let cure = error.cure().expect("cure");
         assert!(cure.contains("date"), "{cure}");
         assert!(!cure.contains("antivirus"), "{cure}");
+    }
+
+    fn apple_other(text: &str) -> CertificateError {
+        CertificateError::Other(rustls::OtherError(std::sync::Arc::new(
+            std::io::Error::other(text.to_owned()),
+        )))
+    }
+
+    #[test]
+    fn macos_codes_for_expiry_and_purpose_are_not_read_as_interception() {
+        // Так верификатор macOS отдаёт коды, которые не сводит к своим вариантам.
+        let expired = classify(apple_other("“github.com” has expired: -67818"));
+        assert_eq!(expired.failure(), NetworkFailure::RejectedCertificate);
+        assert!(expired.cure().expect("cure").contains("date"));
+        let purpose = classify(apple_other("certificate had invalid extensions"));
+        assert_eq!(purpose.failure(), NetworkFailure::RejectedCertificate);
+        let untrusted = classify(apple_other("“Root” certificate is not trusted: -67843"));
+        assert_eq!(untrusted.failure(), NetworkFailure::UntrustedCertificate);
     }
 
     #[test]

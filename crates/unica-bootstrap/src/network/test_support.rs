@@ -199,7 +199,8 @@ fn read_head(reader: &mut impl BufRead) -> std::io::Result<String> {
     Ok(request_line.trim().to_owned())
 }
 
-/// HTTP-прокси, который понимает только CONNECT и запоминает цели.
+/// HTTP-прокси, который туннелирует CONNECT и запоминает цели. Запрос
+/// к http-адресу он только записывает и отвечает `405`.
 pub struct ConnectProxy {
     port: u16,
     targets: Arc<Mutex<Vec<String>>>,
@@ -228,7 +229,8 @@ impl ConnectProxy {
         format!("http://127.0.0.1:{}", self.port)
     }
 
-    /// Цели CONNECT в порядке прихода, например `127.0.0.1:443`.
+    /// Цели в порядке прихода: `127.0.0.1:443` для CONNECT, полный адрес
+    /// для запроса к http-адресу.
     pub fn targets(&self) -> Vec<String> {
         self.targets.lock().expect("proxy log").clone()
     }
@@ -239,6 +241,11 @@ fn tunnel(client: TcpStream, seen: &Mutex<Vec<String>>) -> std::io::Result<()> {
     let request_line = read_head(&mut reader)?;
     let mut parts = request_line.split_whitespace();
     let (Some("CONNECT"), Some(target)) = (parts.next(), parts.next()) else {
+        // Запрос к http-адресу через прокси идёт абсолютной формой, без
+        // туннеля: запоминаем адрес и отказываем, пересылать стенд не умеет.
+        if let Some(target) = request_line.split_whitespace().nth(1) {
+            seen.lock().expect("proxy log").push(target.to_owned());
+        }
         let mut client = client;
         client.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nContent-Length: 0\r\n\r\n")?;
         return Ok(());

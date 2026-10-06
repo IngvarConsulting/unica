@@ -23,7 +23,7 @@ pub mod test_support;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use failure::{NetworkError, NetworkFailure};
 use proxy::{EnvLookup, ProxyChoice, ProxySettings};
@@ -96,13 +96,15 @@ impl NetworkClient {
     }
 
     /// GET с проходом редиректов. Ответ `4xx`/`5xx` — отказ
-    /// [`NetworkFailure::Status`].
+    /// [`NetworkFailure::Status`]. `timeout` — общий срок всего вызова,
+    /// включая редиректы, как было у агента `ureq`.
     pub fn get(
         &self,
         url: &str,
         headers: Headers<'_>,
         timeout: Option<Duration>,
     ) -> Result<ureq::Response, NetworkError> {
+        let deadline = timeout.map(|timeout| Instant::now() + timeout);
         let mut current = parse(url)?;
         for _ in 0..=MAX_REDIRECTS {
             let (agent, route) = self.route(&current)?;
@@ -110,8 +112,8 @@ impl NetworkClient {
             for (name, value) in headers {
                 request = request.set(name, value);
             }
-            if let Some(timeout) = timeout {
-                request = request.timeout(timeout);
+            if let Some(deadline) = deadline {
+                request = request.timeout(deadline.saturating_duration_since(Instant::now()));
             }
             let response = request
                 .call()
@@ -122,19 +124,7 @@ impl NetworkClient {
             let Some(location) = response.header("Location") else {
                 return Ok(response);
             };
-            let next = current.join(location).map_err(|error| {
-                NetworkError::new(
-                    NetworkFailure::Transport,
-                    format!("{current} redirected to an invalid location {location}: {error}"),
-                )
-            })?;
-            if current.scheme() == "https" && next.scheme() != "https" {
-                return Err(NetworkError::new(
-                    NetworkFailure::InsecureRedirect,
-                    format!("{current} redirected to a non-HTTPS URL: {next}"),
-                ));
-            }
-            current = next;
+            current = next_hop(&current, location)?;
         }
         Err(NetworkError::new(
             NetworkFailure::Transport,
@@ -177,6 +167,24 @@ impl NetworkClient {
             Err(error) => Err(NetworkError::proxy_setting(error.message.clone())),
         }
     }
+}
+
+/// Куда ведёт редирект. Относительный адрес разрешается от текущего;
+/// уход с HTTPS на HTTP запрещён на любом шаге.
+fn next_hop(current: &url::Url, location: &str) -> Result<url::Url, NetworkError> {
+    let next = current.join(location).map_err(|error| {
+        NetworkError::new(
+            NetworkFailure::Transport,
+            format!("{current} redirected to an invalid location {location}: {error}"),
+        )
+    })?;
+    if current.scheme() == "https" && next.scheme() != "https" {
+        return Err(NetworkError::new(
+            NetworkFailure::InsecureRedirect,
+            format!("{current} redirected to a non-HTTPS URL: {next}"),
+        ));
+    }
+    Ok(next)
 }
 
 fn parse(url: &str) -> Result<url::Url, NetworkError> {
@@ -275,6 +283,59 @@ mod tests {
                 ),
             ],
             "докачка на новом адресе просит тот же хвост"
+        );
+    }
+
+    #[test]
+    fn a_redirect_from_https_to_plain_http_is_refused_at_any_step() {
+        let current = url::Url::parse("https://github.com/release").expect("url");
+        let error = next_hop(&current, "http://objects.example/asset").expect_err("понижение");
+        assert_eq!(error.failure(), NetworkFailure::InsecureRedirect);
+        assert_eq!(
+            next_hop(&current, "/asset")
+                .expect("относительный")
+                .as_str(),
+            "https://github.com/asset"
+        );
+        let plain = url::Url::parse("http://mirror.example/a").expect("url");
+        assert!(next_hop(&plain, "https://github.com/a").is_ok());
+    }
+
+    #[test]
+    fn each_redirect_step_chooses_its_own_route() {
+        // Первый узел в NO_PROXY, второй — нет: второй шаг обязан пойти
+        // через прокси, хотя первый шёл напрямую.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let first = format!("http://{}/start", listener.local_addr().expect("address"));
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().expect("clone"));
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 2 {
+                    line.clear();
+                }
+                let _ = stream.write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: http://proxied.example/final\r\nContent-Length: 0\r\n\r\n",
+                );
+            }
+        });
+        let proxy = test_support::ConnectProxy::start();
+        let proxy_url = proxy.url();
+        let client = NetworkClient::from_environment(&move |name| match name {
+            "http_proxy" => Some(proxy_url.clone()),
+            "NO_PROXY" => Some("127.0.0.1".to_owned()),
+            _ => None,
+        })
+        .expect("client");
+
+        let error = client
+            .get(&first, &[], None)
+            .expect_err("прокси стенда отвечает 405");
+
+        assert_eq!(error.failure(), NetworkFailure::Status(405));
+        assert_eq!(
+            proxy.targets(),
+            vec!["http://proxied.example/final".to_owned()]
         );
     }
 

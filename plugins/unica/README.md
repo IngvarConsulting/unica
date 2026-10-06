@@ -250,8 +250,9 @@ HTTP client. The operating system verifies certificates, so a corporate gateway
 root installed in the OS trust store is accepted; on Linux `SSL_CERT_FILE` and
 `SSL_CERT_DIR` replace the system bundle. HTTPS requests use `https_proxy` or
 `HTTPS_PROXY`, then `all_proxy` or `ALL_PROXY`; only HTTP proxies are supported,
-and `NO_PROXY` lists hosts reached directly. These settings are read when the
-process starts. If the OS does not trust the presented certificate, the refusal
+and `NO_PROXY` lists hosts reached directly (no CIDR ranges). These settings
+are read when a Unica process starts; the background process is shared by all
+sessions and exits after 15 minutes without work. If the OS does not trust the presented certificate, the refusal
 names TLS interception by security software or a gateway as the likely cause.
 
 ## Skills

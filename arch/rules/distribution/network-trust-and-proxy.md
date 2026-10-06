@@ -11,6 +11,10 @@ check:
   - crates/unica-bootstrap/src/network/proxy.rs::https_proxy_wins_over_all_proxy_and_lowercase_over_uppercase
   - crates/unica-bootstrap/src/network/proxy.rs::no_proxy_matches_hosts_and_subdomains_but_not_lookalikes
   - crates/unica-bootstrap/src/network/failure.rs::an_expired_certificate_points_at_the_clock_not_the_antivirus
+  - crates/unica-bootstrap/src/network/failure.rs::macos_codes_for_expiry_and_purpose_are_not_read_as_interception
+  - crates/unica-bootstrap/src/network/mod.rs::each_redirect_step_chooses_its_own_route
+  - crates/unica-bootstrap/src/network/mod.rs::a_redirect_from_https_to_plain_http_is_refused_at_any_step
+  - crates/unica-coder/src/infrastructure/engine_delivery.rs::an_untrusted_certificate_reaches_the_caller_as_its_own_class_with_the_cure
   - crates/unica-coder/src/infrastructure/platform/network_trust_tests.rs::standards_answer_over_a_root_from_the_os_store
   - crates/unica-coder/src/infrastructure/platform/network_trust_tests.rs::standards_answer_through_https_proxy
   - crates/unica-coder/src/infrastructure/platform/network_trust_tests.rs::kb_reads_over_a_root_from_the_os_store_and_through_https_proxy
@@ -36,13 +40,19 @@ check:
 Адрес `https://` идёт через `https_proxy`, `HTTPS_PROXY`, затем `all_proxy`,
 `ALL_PROXY`; адрес `http://` — через `http_proxy`, затем `all_proxy`,
 `ALL_PROXY`. Узлы из `no_proxy` или `NO_PROXY` и их поддомены соединяются
-напрямую. Маршрут выбирается заново на каждом шаге редиректа. Неподдерживаемая
+напрямую. Маршрут выбирается заново на каждом шаге редиректа, а переход
+с HTTPS на HTTP запрещён на любом шаге. Неподдерживаемая
 схема или неразборчивое значение действующей переменной дают отказ с именем
 переменной и без пароля, а не прямое соединение.
 
 Если ОС не доверяет цепочке, отказ называет вероятную причину — перехват TLS
 средством защиты или шлюзом — и что исправить: исключение для узла, корень
-в хранилище ОС или прокси. Просроченный сертификат даёт совет проверить часы.
+в хранилище ОС или прокси. Доставка движка передаёт это отдельным классом
+отказа `untrusted-certificate` с тем же советом, без адреса узла.
+Просроченный сертификат даёт совет проверить часы.
+
+Переменные и хранилище читаются при старте процесса Unica; фоновый процесс
+общий для сессий, поэтому новые значения действуют после его завершения.
 
 Успешное соединение с корнем из хранилища ОС проверяется на Linux. На macOS
 и Windows хранилище в тестах не меняется: там проверяются отказ на

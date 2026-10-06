@@ -73,6 +73,9 @@ pub struct BootstrapError {
     /// Лечение, которое знает сам отказ. Общий совет класса («повторите»)
     /// для недоверенного сертификата вводит в заблуждение: повтор не поможет.
     cure: Option<String>,
+    /// Сетевой класс отказа, если отказ сетевой. Код выхода он не меняет:
+    /// его читает доставка движков, чтобы назвать недоверенный сертификат.
+    network: Option<crate::network::NetworkFailure>,
 }
 
 impl BootstrapError {
@@ -87,6 +90,7 @@ impl BootstrapError {
             message: message.into(),
             failure,
             cure: None,
+            network: None,
         }
     }
 
@@ -94,6 +98,16 @@ impl BootstrapError {
     pub fn with_cure(mut self, cure: impl Into<String>) -> Self {
         self.cure = Some(cure.into());
         self
+    }
+
+    pub(crate) fn with_network(mut self, network: crate::network::NetworkFailure) -> Self {
+        self.network = Some(network);
+        self
+    }
+
+    /// Сетевой класс отказа, если отказ пришёл из сети.
+    pub fn network_failure(&self) -> Option<crate::network::NetworkFailure> {
+        self.network
     }
 
     pub const fn failure(&self) -> Failure {
@@ -118,7 +132,13 @@ impl BootstrapError {
 
 impl fmt::Display for BootstrapError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+        formatter.write_str(&self.message)?;
+        // Свой совет отказа — часть его смысла: без него текст доставки
+        // движка сказал бы только «соединение не удалось».
+        if let Some(cure) = &self.cure {
+            write!(formatter, ". What to do: {cure}")?;
+        }
+        Ok(())
     }
 }
 

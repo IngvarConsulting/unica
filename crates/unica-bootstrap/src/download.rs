@@ -161,7 +161,8 @@ fn download_failure(url: &str, error: NetworkError) -> BootstrapError {
             "failed to download runtime asset {url}: {}",
             error.message()
         ),
-    );
+    )
+    .with_network(error.failure());
     match error.cure() {
         Some(cure) => refusal.with_cure(cure),
         None => refusal,
