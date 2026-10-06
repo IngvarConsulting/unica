@@ -148,11 +148,11 @@ OWNERS: dict[str, frozenset[str]] = {
     ),
     # --- воротные пробы на живом рантайме: операция под воротами доводит
     # собственную попытку, а не чужую.
-    "attempt_task_store_bind_under_gate_for_test": frozenset(
+    "materialize_task_handoff_for_test": frozenset(
         {
             "begin_bound_task_handoff",
-            "publish_receipt_backed_task_terminal",
-            "retain_begun_task_after_link_capacity",
+            "complete_bound_task_handoff",
+            "complete_staged_task_handoff",
         }
     ),
     "bind_task_under_gate_for_test": frozenset(

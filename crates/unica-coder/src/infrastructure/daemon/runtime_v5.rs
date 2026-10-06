@@ -1831,10 +1831,6 @@ impl V5TaskProjectionFailure {
                 error: ReceiptLedgerError::DeadlineExceeded,
                 fail_stop: false,
             },
-            TaskLifecycleLinkStoreError::Capacity { .. } => Self {
-                error: ReceiptLedgerError::CapacityExceeded,
-                fail_stop: false,
-            },
             TaskLifecycleLinkStoreError::RecordTooLarge { .. } => Self {
                 error: ReceiptLedgerError::RecordTooLarge,
                 fail_stop: false,

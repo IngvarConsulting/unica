@@ -7,7 +7,7 @@ use super::scenario_hooks::{
     V5ReceiptRuntimeTelemetry,
 };
 use super::ScenarioBarrierPoint;
-use crate::application::receipt_ledger::{receipt_key_digest, ProvenTaskLinkCapacity};
+use crate::application::receipt_ledger::receipt_key_digest;
 use crate::infrastructure::daemon::protocol_v5::V5PendingDirectReceipt;
 use serde_json::json;
 
@@ -198,17 +198,16 @@ impl V5ReceiptRuntime {
         Ok(Some((terminal_record, terminal_link)))
     }
 
-    pub(super) fn attempt_task_store_bind_under_gate_for_test(
+    pub(super) fn materialize_task_handoff_for_test(
         &self,
         key: &ReceiptKey,
-        operation_label: &str,
         deadline: Instant,
-    ) -> Result<(Value, Value), String> {
+    ) -> Result<V5ServerResponse, String> {
         let epoch_ms = self.epoch_clock.now_epoch_millis();
         let state = self
             .receipt_ledger
             .recover(key.clone(), deadline)
-            .map_err(|error| format!("recover capacity handoff receipt: {error}"))?;
+            .map_err(|error| format!("recover Task handoff: {error}"))?;
         let handoff = match state {
             ReceiptState::TaskPromisedActorBound(promised) => self
                 .receipt_ledger
@@ -220,172 +219,108 @@ impl V5ReceiptRuntime {
                     promised.task().poll_interval_ms(),
                     deadline,
                 )
-                .map_err(|error| format!("begin capacity handoff: {error}"))?,
+                .map_err(|error| format!("begin Task handoff: {error}"))?,
             ReceiptState::TaskHandoffActorBound(handoff) => handoff,
             other => {
                 return Err(format!(
-                    "capacity bind requires actor-bound Task handoff, found {}",
+                    "materialization requires an actor-bound handoff, found {}",
                     other.kind().diagnostic_name()
                 ))
             }
         };
-        let task_store_generation = u64::try_from(self.task_projection.recovery.entries().len())
-            .map_err(|_| "TaskStore generation does not fit capacity evidence".to_owned())?;
-        let attempts_before = self
-            .scenario_hooks()
-            .telemetry
-            .snapshot()
-            .task_store_create_attempts;
-        let checked_sequence = self
-            .scenario_hooks()
-            .telemetry
-            .record_event(V5ReceiptRuntimeEventKind::V5ReceiptRuntimeEntered, epoch_ms);
-        let failure = match self.task_projection.materialize_bound_handoff(
-            &handoff,
-            epoch_ms,
-            deadline,
-            self.hooks.as_ref(),
-        ) {
-            Ok(_) => {
-                return Err(
-                    "full lifecycle-link pool unexpectedly admitted another Task".to_owned(),
-                )
+        let task_record = match handoff.terminal_stage() {
+            HandoffTerminalStage::NoTerminal => {
+                let (record, bound) = self
+                    .task_projection
+                    .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
+                    .map_err(|failure| format!("materialize Task handoff: {}", failure.error))?;
+                let bound = self
+                    .receipt_ledger
+                    .complete_bound_task_handoff(
+                        handoff.key().clone(),
+                        handoff.record_version(),
+                        bound,
+                        deadline,
+                    )
+                    .map_err(|error| format!("complete Task handoff: {error}"))?;
+                self.hooks.bound_task(&record, &bound);
+                self.hooks
+                    .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+                record
             }
-            Err(failure) => failure,
-        };
-        if failure.fail_stop || failure.error != ReceiptLedgerError::CapacityExceeded {
-            return Err(format!(
-                "capacity bind failed for a non-capacity reason: {}",
-                failure.error
-            ));
-        }
-        let rejected_sequence = self.scenario_hooks().telemetry.record_event(
-            V5ReceiptRuntimeEventKind::TaskLinkCapacityRejected,
-            epoch_ms,
-        );
-        let proof = ProvenTaskLinkCapacity::Count {
-            observed_live_links: u64::try_from(
-                crate::infrastructure::task_lifecycle_link_store_v5::MAX_TASK_LIFECYCLE_LINK_RECORDS,
-            )
-            .expect("Task lifecycle-link limit fits u64"),
-            maximum_live_links: u64::try_from(
-                crate::infrastructure::task_lifecycle_link_store_v5::MAX_TASK_LIFECYCLE_LINK_RECORDS,
-            )
-            .expect("Task lifecycle-link limit fits u64"),
-        };
-        let staged = match handoff.terminal_stage() {
-            HandoffTerminalStage::NoTerminal => None,
             HandoffTerminalStage::Staged {
                 terminal,
-                certificate,
+                terminal_epoch_ms,
                 ..
-            } => Some((terminal.clone(), certificate.clone())),
-        };
-        let terminal = if let Some((staged_terminal, _)) = &staged {
-            let committed = self
-                .receipt_ledger
-                .publish_receipt_backed_task_terminal(
-                    handoff.key().clone(),
-                    TaskCancellationReceipt::HandoffActorBound(handoff.clone()),
+            } => {
+                let reservation = self
+                    .task_projection
+                    .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, self.hooks.as_ref())
+                    .map_err(|failure| format!("reserve staged Task handoff: {}", failure.error))?;
+                let (record, bound) = self
+                    .task_projection
+                    .materialize_staged_bound_handoff(
+                        &handoff,
+                        &reservation,
+                        epoch_ms,
+                        deadline,
+                        self.hooks.as_ref(),
+                    )
+                    .map_err(|failure| {
+                        format!("materialize staged Task handoff: {}", failure.error)
+                    })?;
+                let (terminal_record, terminal_link) = self
+                    .task_projection
+                    .publish_bound_task_terminal(
+                        &bound,
+                        &record,
+                        terminal,
+                        *terminal_epoch_ms,
+                        deadline,
+                        self.hooks.as_ref(),
+                    )
+                    .map_err(|failure| {
+                        format!("publish staged Task terminal: {}", failure.error)
+                    })?;
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
                     epoch_ms,
-                    staged_terminal.clone(),
-                    deadline,
-                )
-                .map_err(|error| {
-                    format!("preserve staged Task terminal after link capacity: {error}")
-                })?;
-            if let Some(control) = &self.scenario_hooks().control {
-                control
-                    .record_staged_capacity_fallback(&committed)
-                    .map_err(|error| format!("record staged capacity fallback: {error}"))?;
-                control
-                    .record_receipt_backed_terminal(committed.clone())
-                    .map_err(|error| format!("record staged link-capacity terminal: {error}"))?;
-            }
-            self.scenario_hooks().telemetry.record_event(
-                V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                epoch_ms,
-            );
-            Some(committed.terminal().clone())
-        } else if handoff.phase() == AttemptPhase::Begun {
-            self.receipt_ledger
-                .retain_begun_task_after_link_capacity(
-                    handoff.key().clone(),
-                    handoff.record_version(),
-                    proof,
-                    deadline,
-                )
-                .map_err(|error| format!("retain receipt-owned begun Task: {error}"))?;
-            None
-        } else {
-            let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
-                reason: V5SafeFailureReason::TaskCapacity,
-            })
-            .map_err(|error| format!("encode Task capacity terminal: {error}"))?;
-            let committed = self
-                .receipt_ledger
-                .publish_receipt_backed_task_terminal(
-                    handoff.key().clone(),
-                    TaskCancellationReceipt::HandoffActorBound(handoff.clone()),
+                );
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
                     epoch_ms,
-                    terminal,
-                    deadline,
-                )
-                .map_err(|error| format!("publish Task capacity terminal: {error}"))?;
-            if let Some(control) = &self.scenario_hooks().control {
-                control
-                    .record_receipt_backed_terminal(committed.clone())
-                    .map_err(|error| format!("record Task capacity terminal: {error}"))?;
+                );
+                let terminal_link = self
+                    .receipt_ledger
+                    .complete_staged_task_handoff(
+                        handoff.key().clone(),
+                        handoff.record_version(),
+                        terminal_link,
+                        deadline,
+                    )
+                    .map_err(|error| format!("complete staged Task handoff: {error}"))?;
+                self.hooks
+                    .staged_terminal_publication(
+                        &handoff,
+                        &record,
+                        &terminal_record,
+                        &terminal_link,
+                    )
+                    .map_err(|error| format!("observe staged publication: {error}"))?;
+                self.hooks.event(
+                    V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+                    epoch_ms,
+                );
+                self.hooks
+                    .terminal_bound_task(&terminal_record, &terminal_link);
+                terminal_record
             }
-            self.scenario_hooks().telemetry.record_event(
-                V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                epoch_ms,
-            );
-            Some(committed.terminal().clone())
         };
-        let attempts_after = self
-            .scenario_hooks()
-            .telemetry
-            .snapshot()
-            .task_store_create_attempts;
-        let terminal_observation = terminal
-            .as_ref()
-            .map(|terminal| terminal_observation_value(terminal, epoch_ms));
-        let staged_certificate_sha256 = staged
-            .as_ref()
-            .map(|(_, certificate)| {
-                serde_json::to_vec(certificate.as_ref())
-                    .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
-                    .map_err(|error| format!("encode staged transfer certificate: {error}"))
-            })
-            .transpose()?;
-        let response = json!({
-            "kind": if terminal.is_some() { "task" } else { "rejected" },
-            "error": if staged.is_some() { Value::Null } else { Value::String("task_capacity".to_owned()) },
-            "terminal": terminal_observation,
-            "key": receipt_key_observation_value(key),
-            "task": null,
-            "acknowledgement": null,
-            "cutoffEpochMs": null,
-            "originalBudgetMs": null,
-            "latencyMs": 0,
-        });
-        let observation = json!({
-            "operationLabel": operation_label,
-            "receiptKey": receipt_key_observation_value(key),
-            "terminal": terminal_observation,
-            "stagedTransferCertificateSha256": staged_certificate_sha256,
-            "evidence": {
-                "source": "link_capacity",
-                "capacity_checked_sequence": checked_sequence,
-                "capacity_rejected_sequence": rejected_sequence,
-                "task_store_generation_before": task_store_generation,
-                "task_store_generation_after": task_store_generation,
-                "task_store_create_attempts_before": attempts_before,
-                "task_store_create_attempts_after": attempts_after,
-            }
-        });
-        Ok((response, observation))
+        Ok(V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Task {
+                snapshot: task_store_snapshot(&task_record),
+            },
+        })
     }
 
     pub(super) fn stage_bound_handoff_terminal_for_test(
@@ -541,9 +476,7 @@ impl V5ReceiptRuntime {
             epoch_ms,
         );
         let injected = V5TaskProjectionFailure::from_task_store(
-            V5TaskStoreError::Capacity {
-                max_records: crate::application::invocation_store_v5::MAX_V5_TASK_RECORDS,
-            },
+            V5TaskStoreError::Capacity { max_records: 4_096 },
             handoff.key_digest().clone(),
             true,
         );

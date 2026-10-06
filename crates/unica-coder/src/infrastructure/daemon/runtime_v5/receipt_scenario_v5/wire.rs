@@ -170,7 +170,7 @@ pub(super) enum ReceiptScenarioAction {
     FillTaskLinksLeavingOneReservationSlot,
     FillTombstones,
     InjectTaskStoreCapacityInvariantViolationOnce,
-    AttemptTaskStoreBindUnderGate {
+    MaterializeTaskHandoff {
         label: String,
     },
     AttemptUnstagedTaskBindAgainstStagedTerminal {

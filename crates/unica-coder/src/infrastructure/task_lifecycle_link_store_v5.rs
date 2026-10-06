@@ -11,9 +11,10 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
 use crate::infrastructure::platform::filesystem::{
     create_owner_only_file_child, file_identity, open_directory_ownership_lock,
-    open_regular_child_nofollow, read_directory_names_bounded, remove_identity_bound_regular_child,
+    open_regular_child_nofollow, remove_identity_bound_regular_child,
     rename_identity_bound_regular_child_no_replace, replace_identity_bound_regular_child,
-    restrict_stage_to_owner, sync_directory, verify_owner_only_acl, RetainedDirectoryCapability,
+    restrict_stage_to_owner, sync_directory, verify_owner_only_acl, FileIdentity,
+    RetainedDirectoryCapability,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -21,7 +22,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::Duration;
@@ -29,8 +30,6 @@ use uuid::Uuid;
 
 pub(crate) const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: usize =
     APPLICATION_MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES as usize;
-pub(crate) const MAX_TASK_LIFECYCLE_LINK_RECORDS: usize = 4_096;
-pub(crate) const MAX_TASK_LIFECYCLE_LINK_POOL_BYTES: usize = 4 * 1_024 * 1_024;
 
 const STORE_SCHEMA_VERSION: u32 = 1;
 const STORE_LOCK_FILE: &str = ".task-lifecycle-link-v5.lock";
@@ -38,8 +37,6 @@ const STORE_SNAPSHOT_FILE: &str = "task-lifecycle-links-v1.json";
 const STORE_STAGING_PREFIX: &str = ".task-lifecycle-links-v1.";
 const STORE_STAGING_SUFFIX: &str = ".tmp";
 const STORE_WRITER_WAIT_SLICE: Duration = Duration::from_millis(10);
-const MAX_DIRECTORY_ENTRIES: usize = 66;
-const MAX_SNAPSHOT_BYTES: usize = 8 * 1_024 * 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TaskLifecycleLinkStoreError {
@@ -57,10 +54,6 @@ pub(crate) enum TaskLifecycleLinkStoreError {
     VersionMismatch {
         expected: u64,
         actual: u64,
-    },
-    Capacity {
-        maximum_records: usize,
-        maximum_bytes: usize,
     },
     RecordTooLarge {
         actual: usize,
@@ -83,9 +76,14 @@ impl fmt::Display for TaskLifecycleLinkStoreError {
             Self::DeadlineExceeded => {
                 formatter.write_str("Task lifecycle-link store deadline expired")
             }
-            Self::NotFound { task_id } => write!(formatter, "Task lifecycle link {task_id} was not found"),
+            Self::NotFound { task_id } => {
+                write!(formatter, "Task lifecycle link {task_id} was not found")
+            }
             Self::AlreadyMaterialized { task_id } => {
-                write!(formatter, "Task lifecycle link {task_id} is already materialized")
+                write!(
+                    formatter,
+                    "Task lifecycle link {task_id} is already materialized"
+                )
             }
             Self::IdentityMismatch => {
                 formatter.write_str("Task lifecycle-link identity belongs to another exact key")
@@ -98,13 +96,6 @@ impl fmt::Display for TaskLifecycleLinkStoreError {
                 formatter,
                 "Task lifecycle-link version mismatch: expected {expected}, actual {actual}"
             ),
-            Self::Capacity {
-                maximum_records,
-                maximum_bytes,
-            } => write!(
-                formatter,
-                "Task lifecycle-link capacity is exhausted ({maximum_records} records, {maximum_bytes} bytes)"
-            ),
             Self::RecordTooLarge { actual, maximum } => write!(
                 formatter,
                 "Task lifecycle-link record uses {actual} bytes, maximum is {maximum}"
@@ -113,7 +104,9 @@ impl fmt::Display for TaskLifecycleLinkStoreError {
                 formatter,
                 "Task lifecycle-link commit is uncertain for {receipt_key_digest}"
             ),
-            Self::Corrupt(message) => write!(formatter, "corrupt Task lifecycle-link store: {message}"),
+            Self::Corrupt(message) => {
+                write!(formatter, "corrupt Task lifecycle-link store: {message}")
+            }
             Self::Storage { operation, message } => write!(formatter, "{operation}: {message}"),
         }
     }
@@ -266,6 +259,7 @@ impl TaskLifecycleLinkCatalogSnapshot {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskLifecycleLinkCapacitySnapshot {
     live_reservations: usize,
@@ -273,6 +267,7 @@ pub(crate) struct TaskLifecycleLinkCapacitySnapshot {
     accounted_bytes: usize,
 }
 
+#[cfg(test)]
 impl TaskLifecycleLinkCapacitySnapshot {
     pub(crate) const fn live_reservations(self) -> usize {
         self.live_reservations
@@ -293,16 +288,12 @@ impl TaskLifecycleLinkCapacitySnapshot {
 
 #[derive(Debug, Clone, Copy)]
 struct StoreLimits {
-    max_records: usize,
-    max_pool_bytes: usize,
     max_record_bytes: usize,
 }
 
 impl StoreLimits {
     const fn production() -> Self {
         Self {
-            max_records: MAX_TASK_LIFECYCLE_LINK_RECORDS,
-            max_pool_bytes: MAX_TASK_LIFECYCLE_LINK_POOL_BYTES,
             max_record_bytes: MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
         }
     }
@@ -343,6 +334,7 @@ impl CatalogEntry {
         }
     }
 
+    #[cfg(test)]
     fn accounted_bytes(&self, maximum_record_bytes: usize) -> usize {
         match self {
             Self::Reservation(_) => maximum_record_bytes,
@@ -360,6 +352,7 @@ struct StoreCatalog {
 }
 
 impl StoreCatalog {
+    #[cfg(test)]
     fn capacity_snapshot(&self, maximum_record_bytes: usize) -> TaskLifecycleLinkCapacitySnapshot {
         let mut live_reservations = 0;
         let mut materialized_links = 0;
@@ -886,6 +879,7 @@ impl StoredEntryV1 {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StoredCatalogV1 {
@@ -917,8 +911,10 @@ impl TaskLifecycleLinkStoreV5 {
         deadline: ProviderDeadline,
     ) -> Result<Vec<TaskTerminalBoundReceipt>, TaskLifecycleLinkStoreError> {
         let mut writer = self.lock_writer(deadline)?;
-        if !writer.entries.is_empty() || records.len() > self.limits.max_records {
-            return Err(self.capacity_error());
+        if !writer.entries.is_empty() {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "bulk fixture requires an empty catalog",
+            ));
         }
         self.verify_root_authority()?;
         let mut next = writer.clone();
@@ -950,7 +946,6 @@ impl TaskLifecycleLinkStoreV5 {
                 TaskLifecycleLinkRecord::TaskTerminalBound(record),
             ))?;
         }
-        validate_capacity(&next, self.limits)?;
         let Some(first_digest) = first_digest else {
             return Ok(Vec::new());
         };
@@ -964,24 +959,6 @@ impl TaskLifecycleLinkStoreV5 {
         deadline: ProviderDeadline,
     ) -> Result<Self, TaskLifecycleLinkStoreError> {
         Self::open_with_limits(root, StoreLimits::production(), deadline)
-    }
-
-    #[cfg(test)]
-    fn open_with_limits_for_test(
-        root: impl AsRef<Path>,
-        max_records: usize,
-        max_pool_bytes: usize,
-        deadline: ProviderDeadline,
-    ) -> Result<Self, TaskLifecycleLinkStoreError> {
-        Self::open_with_limits(
-            root,
-            StoreLimits {
-                max_records,
-                max_pool_bytes,
-                max_record_bytes: MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES,
-            },
-            deadline,
-        )
     }
 
     fn open_with_limits(
@@ -1027,6 +1004,7 @@ impl TaskLifecycleLinkStoreV5 {
         Ok(store)
     }
 
+    #[cfg(test)]
     pub(crate) fn capacity_snapshot(&self) -> TaskLifecycleLinkCapacitySnapshot {
         self.writer
             .lock()
@@ -1127,15 +1105,6 @@ impl TaskLifecycleLinkStoreV5 {
                 .is_some_and(|digest| digest != &key_digest)
         {
             return Err(TaskLifecycleLinkStoreError::IdentityMismatch);
-        }
-        let capacity = writer.capacity_snapshot(self.limits.max_record_bytes);
-        if capacity.task_store_slots_accounted() >= self.limits.max_records
-            || capacity
-                .accounted_bytes()
-                .checked_add(self.limits.max_record_bytes)
-                .is_none_or(|bytes| bytes > self.limits.max_pool_bytes)
-        {
-            return Err(self.capacity_error());
         }
         let mutation_sequence = next_sequence(writer.mutation_sequence)?;
         let reservation = build_reservation(key, link, mutation_sequence, self.limits)?;
@@ -1429,72 +1398,64 @@ impl TaskLifecycleLinkStoreV5 {
         deadline: ProviderDeadline,
     ) -> Result<StoreCatalog, TaskLifecycleLinkStoreError> {
         self.verify_root_authority()?;
-        let entries = read_directory_names_bounded(&self.root_file, MAX_DIRECTORY_ENTRIES, || {
-            checkpoint_io(deadline)
-        })
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::TimedOut {
-                TaskLifecycleLinkStoreError::DeadlineExceeded
-            } else if error.kind() == io::ErrorKind::FileTooLarge {
-                TaskLifecycleLinkStoreError::Corrupt(
-                    "Task lifecycle-link directory entry bound was exceeded",
-                )
-            } else {
-                storage_error("enumerate Task lifecycle-link root", error)
-            }
-        })?;
         let mut snapshot_present = false;
-        let mut staging_removed = false;
-        for name in entries {
-            check_deadline(deadline)?;
-            let encoded = name.to_str().ok_or(TaskLifecycleLinkStoreError::Corrupt(
-                "Task lifecycle-link entry name is not UTF-8",
-            ))?;
-            if encoded == STORE_LOCK_FILE {
-                continue;
-            }
-            if encoded == STORE_SNAPSHOT_FILE {
-                if snapshot_present {
-                    return Err(TaskLifecycleLinkStoreError::Corrupt(
-                        "duplicate Task lifecycle-link snapshot entry",
-                    ));
+        let mut abandoned_staging = Vec::new();
+        self.root
+            .visit_immediate_names(|name| -> Result<(), TaskLifecycleLinkStoreError> {
+                check_deadline(deadline)?;
+                let encoded = name.to_str().ok_or(TaskLifecycleLinkStoreError::Corrupt(
+                    "Task lifecycle-link entry name is not UTF-8",
+                ))?;
+                if encoded == STORE_LOCK_FILE {
+                    return Ok(());
                 }
-                snapshot_present = true;
-                continue;
-            }
-            if encoded.starts_with(STORE_STAGING_PREFIX) && encoded.ends_with(STORE_STAGING_SUFFIX)
-            {
-                let staged = open_regular_child_nofollow(&self.root_file, &name).map_err(|_| {
-                    TaskLifecycleLinkStoreError::Corrupt(
-                        "Task lifecycle-link staging entry is not a regular file",
-                    )
-                })?;
-                verify_owner_only_acl(&staged).map_err(|error| {
-                    storage_error("verify Task lifecycle-link staging ownership", error)
-                })?;
-                let identity = file_identity(&staged).map_err(|error| {
-                    storage_error("identify Task lifecycle-link staging entry", error)
-                })?;
-                remove_identity_bound_regular_child(&self.root_file, &name, identity, &staged)
-                    .map_err(|error| {
-                        storage_error("remove abandoned Task lifecycle-link staging", error)
+                if encoded == STORE_SNAPSHOT_FILE {
+                    if snapshot_present {
+                        return Err(TaskLifecycleLinkStoreError::Corrupt(
+                            "duplicate Task lifecycle-link snapshot entry",
+                        ));
+                    }
+                    snapshot_present = true;
+                    return Ok(());
+                }
+                if encoded.starts_with(STORE_STAGING_PREFIX)
+                    && encoded.ends_with(STORE_STAGING_SUFFIX)
+                {
+                    let staged =
+                        open_regular_child_nofollow(&self.root_file, &name).map_err(|_| {
+                            TaskLifecycleLinkStoreError::Corrupt(
+                                "Task lifecycle-link staging entry is not a regular file",
+                            )
+                        })?;
+                    verify_owner_only_acl(&staged).map_err(|error| {
+                        storage_error("verify Task lifecycle-link staging ownership", error)
                     })?;
-                staging_removed = true;
-                continue;
-            }
-            return Err(TaskLifecycleLinkStoreError::Corrupt(
-                "Task lifecycle-link root contains an unsupported entry",
-            ));
+                    let identity = file_identity(&staged).map_err(|error| {
+                        storage_error("identify Task lifecycle-link staging entry", error)
+                    })?;
+                    abandoned_staging.push((name, identity));
+                    return Ok(());
+                }
+                Err(TaskLifecycleLinkStoreError::Corrupt(
+                    "Task lifecycle-link root contains an unsupported entry",
+                ))
+            })?;
+        let catalog = if snapshot_present {
+            self.read_catalog_from_disk(deadline)?
+        } else {
+            StoreCatalog::default()
+        };
+        let staging_removed = !abandoned_staging.is_empty();
+        for (name, identity) in abandoned_staging {
+            self.remove_verified_staging(&name, identity, deadline)?;
         }
         if staging_removed {
             sync_directory(&self.root_file).map_err(|error| {
                 storage_error("sync Task lifecycle-link staging cleanup", error)
             })?;
         }
-        if !snapshot_present {
-            return Ok(StoreCatalog::default());
-        }
-        self.read_catalog_from_disk(deadline)
+        self.verify_root_authority()?;
+        Ok(catalog)
     }
 
     fn read_catalog_from_disk(
@@ -1507,44 +1468,27 @@ impl TaskLifecycleLinkStoreV5 {
         verify_owner_only_acl(&file).map_err(|error| {
             storage_error("verify Task lifecycle-link snapshot ownership", error)
         })?;
-        let mut bytes = Vec::new();
-        file.take((MAX_SNAPSHOT_BYTES as u64).saturating_add(1))
-            .read_to_end(&mut bytes)
-            .map_err(|error| storage_error("read Task lifecycle-link snapshot", error))?;
-        if bytes.len() > MAX_SNAPSHOT_BYTES {
-            return Err(TaskLifecycleLinkStoreError::Corrupt(
-                "Task lifecycle-link snapshot exceeds its bounded envelope",
-            ));
+        use serde::de::DeserializeSeed;
+        let mut decoder = serde_json::Deserializer::from_reader(BufReader::new(CheckpointReader {
+            inner: file,
+            deadline,
+        }));
+        let mut failure = None;
+        let result = CatalogReadSeed {
+            limits: self.limits,
+            failure: &mut failure,
         }
-        let stored: StoredCatalogV1 = serde_json::from_slice(&bytes).map_err(|_| {
-            TaskLifecycleLinkStoreError::Corrupt(
-                "Task lifecycle-link snapshot is not strict schema-v1 JSON",
-            )
-        })?;
-        require_schema_v1(stored.schema_version)?;
-        let mut catalog = StoreCatalog {
-            mutation_sequence: stored.mutation_sequence,
-            ..StoreCatalog::default()
-        };
-        let mut maximum_sequence = 0;
-        for stored_entry in stored.entries {
-            let encoded_len = stored_entry.encoded_len()?;
-            ensure_record_size(encoded_len, self.limits)?;
-            let entry = stored_entry.into_catalog_entry()?;
-            maximum_sequence = maximum_sequence.max(entry.mutation_sequence());
-            if catalog.entries.contains_key(entry.key_digest()) {
-                return Err(TaskLifecycleLinkStoreError::Corrupt(
-                    "Task lifecycle-link snapshot contains a duplicate exact key",
-                ));
+        .deserialize(&mut decoder);
+        let catalog = match result {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                if let Some(failure) = failure {
+                    return Err(failure);
+                }
+                return Err(snapshot_decode_error(error));
             }
-            catalog.insert_exact(entry)?;
-        }
-        if maximum_sequence > catalog.mutation_sequence {
-            return Err(TaskLifecycleLinkStoreError::Corrupt(
-                "Task lifecycle-link entry mutation exceeds the durable high-water mark",
-            ));
-        }
-        validate_capacity(&catalog, self.limits)?;
+        };
+        decoder.end().map_err(snapshot_decode_error)?;
         check_deadline(deadline)?;
         self.verify_root_authority()?;
         Ok(catalog)
@@ -1556,15 +1500,6 @@ impl TaskLifecycleLinkStoreV5 {
         receipt_key_digest: &ReceiptKeyDigest,
         deadline: ProviderDeadline,
     ) -> Result<StoreCatalog, TaskLifecycleLinkStoreError> {
-        validate_capacity(catalog, self.limits)?;
-        let snapshot = stored_catalog(catalog)?;
-        let encoded = serde_json::to_vec(&snapshot)
-            .map_err(|error| storage_message("serialize Task lifecycle-link snapshot", error))?;
-        if encoded.len() > MAX_SNAPSHOT_BYTES {
-            return Err(TaskLifecycleLinkStoreError::Corrupt(
-                "Task lifecycle-link snapshot exceeds its bounded envelope",
-            ));
-        }
         check_deadline(deadline)?;
         self.verify_root_authority()?;
         let temporary_name = format!(
@@ -1588,17 +1523,36 @@ impl TaskLifecycleLinkStoreV5 {
                 error,
             ));
         }
-        if let Err(error) = staged.write_all(&encoded).and_then(|()| staged.sync_all()) {
+        let serialized = {
+            let mut writer = CheckpointWriter {
+                inner: BufWriter::new(&mut staged),
+                deadline,
+            };
+            serde_json::to_writer(&mut writer, &borrowed_catalog(catalog))
+                .map_err(snapshot_write_error)
+                .and_then(|()| {
+                    writer.flush().map_err(|error| {
+                        if error.kind() == io::ErrorKind::TimedOut {
+                            TaskLifecycleLinkStoreError::DeadlineExceeded
+                        } else {
+                            storage_error("flush Task lifecycle-link staging buffer", error)
+                        }
+                    })
+                })
+        };
+        let flushed = serialized.and_then(|()| {
+            staged
+                .sync_all()
+                .map_err(|error| storage_error("sync Task lifecycle-link staging file", error))
+        });
+        if let Err(error) = flushed {
             let _ = remove_identity_bound_regular_child(
                 &self.root_file,
                 temporary_name,
                 staged_identity,
                 &staged,
             );
-            return Err(storage_error(
-                "flush Task lifecycle-link staging file",
-                error,
-            ));
+            return Err(error);
         }
         check_deadline(deadline)?;
         self.verify_root_authority()?;
@@ -1663,6 +1617,36 @@ impl TaskLifecycleLinkStoreV5 {
         Ok(readback)
     }
 
+    fn remove_verified_staging(
+        &self,
+        name: &OsStr,
+        identity: FileIdentity,
+        deadline: ProviderDeadline,
+    ) -> Result<(), TaskLifecycleLinkStoreError> {
+        check_deadline(deadline)?;
+        self.verify_root_authority()?;
+        let staged = open_regular_child_nofollow(&self.root_file, name)
+            .map_err(|error| storage_error("reopen Task lifecycle-link staging", error))?;
+        verify_owner_only_acl(&staged).map_err(|error| {
+            storage_error(
+                "verify reopened Task lifecycle-link staging ownership",
+                error,
+            )
+        })?;
+        if file_identity(&staged)
+            .map_err(|error| storage_error("identify reopened lifecycle-link staging", error))?
+            != identity
+        {
+            return Err(TaskLifecycleLinkStoreError::Corrupt(
+                "abandoned lifecycle-link staging identity changed",
+            ));
+        }
+        remove_identity_bound_regular_child(&self.root_file, name, identity, &staged).map_err(
+            |error| storage_error("remove abandoned Task lifecycle-link staging", error),
+        )?;
+        Ok(())
+    }
+
     fn lock_writer(
         &self,
         deadline: ProviderDeadline,
@@ -1685,13 +1669,6 @@ impl TaskLifecycleLinkStoreV5 {
             .map_err(|error| storage_error("validate Task lifecycle-link root", error))?;
         verify_owner_only_acl(&self.root_file)
             .map_err(|error| storage_error("verify Task lifecycle-link root ownership", error))
-    }
-
-    fn capacity_error(&self) -> TaskLifecycleLinkStoreError {
-        TaskLifecycleLinkStoreError::Capacity {
-            maximum_records: self.limits.max_records,
-            maximum_bytes: self.limits.max_pool_bytes,
-        }
     }
 }
 
@@ -1933,6 +1910,231 @@ fn exact_task_terminal_bound<'a>(
     }
 }
 
+struct CatalogReadSeed<'a> {
+    limits: StoreLimits,
+    failure: &'a mut Option<TaskLifecycleLinkStoreError>,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for CatalogReadSeed<'_> {
+    type Value = StoreCatalog;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for CatalogReadSeed<'_> {
+    type Value = StoreCatalog;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("strict schema-v1 lifecycle-link catalog")
+    }
+
+    fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        use serde::de::Error;
+        let mut schema = None;
+        let mut sequence = None;
+        let mut catalog = None;
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "schemaVersion" => {
+                    if schema.is_some() {
+                        return Err(M::Error::duplicate_field("schemaVersion"));
+                    }
+                    schema = Some(map.next_value::<u32>()?);
+                }
+                "mutationSequence" => {
+                    if sequence.is_some() {
+                        return Err(M::Error::duplicate_field("mutationSequence"));
+                    }
+                    sequence = Some(map.next_value::<u64>()?);
+                }
+                "entries" => {
+                    if catalog.is_some() {
+                        return Err(M::Error::duplicate_field("entries"));
+                    }
+                    catalog = Some(map.next_value_seed(CatalogEntriesSeed {
+                        limits: self.limits,
+                        failure: &mut *self.failure,
+                    })?);
+                }
+                _ => {
+                    return Err(M::Error::unknown_field(
+                        &field,
+                        &["schemaVersion", "mutationSequence", "entries"],
+                    ))
+                }
+            }
+        }
+        let schema = schema.ok_or_else(|| M::Error::missing_field("schemaVersion"))?;
+        if let Err(error) = require_schema_v1(schema) {
+            *self.failure = Some(error);
+            return Err(M::Error::custom("unsupported catalog schema"));
+        }
+        let sequence = sequence.ok_or_else(|| M::Error::missing_field("mutationSequence"))?;
+        let mut catalog = catalog.ok_or_else(|| M::Error::missing_field("entries"))?;
+        if catalog
+            .entries
+            .values()
+            .any(|entry| entry.mutation_sequence() > sequence)
+        {
+            *self.failure = Some(TaskLifecycleLinkStoreError::Corrupt(
+                "Task lifecycle-link entry mutation exceeds the durable high-water mark",
+            ));
+            return Err(M::Error::custom("entry exceeds catalog high-water mark"));
+        }
+        catalog.mutation_sequence = sequence;
+        Ok(catalog)
+    }
+}
+
+// This is a private owner-only store of validated identity records. Reading
+// retains one parsed record, not the serialized corpus. The canonical per-record
+// bound below does not bound serde's allocation for a malformed large scalar.
+struct CatalogEntriesSeed<'a> {
+    limits: StoreLimits,
+    failure: &'a mut Option<TaskLifecycleLinkStoreError>,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for CatalogEntriesSeed<'_> {
+    type Value = StoreCatalog;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for CatalogEntriesSeed<'_> {
+    type Value = StoreCatalog;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an array of exact lifecycle-link records")
+    }
+
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        use serde::de::Error;
+        let mut catalog = StoreCatalog::default();
+        while let Some(stored) = seq.next_element::<StoredEntryV1>()? {
+            let result = (|| {
+                ensure_record_size(stored.encoded_len()?, self.limits)?;
+                let entry = stored.into_catalog_entry()?;
+                if catalog.entries.contains_key(entry.key_digest()) {
+                    return Err(TaskLifecycleLinkStoreError::Corrupt(
+                        "Task lifecycle-link snapshot contains a duplicate exact key",
+                    ));
+                }
+                catalog.insert_exact(entry)
+            })();
+            if let Err(error) = result {
+                *self.failure = Some(error);
+                return Err(S::Error::custom("invalid exact lifecycle-link entry"));
+            }
+        }
+        Ok(catalog)
+    }
+}
+
+struct CheckpointReader<R> {
+    inner: R,
+    deadline: ProviderDeadline,
+}
+
+impl<R: Read> Read for CheckpointReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        checkpoint_io(self.deadline)?;
+        self.inner.read(buffer)
+    }
+}
+
+struct CheckpointWriter<W> {
+    inner: W,
+    deadline: ProviderDeadline,
+}
+
+impl<W: Write> Write for CheckpointWriter<W> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        checkpoint_io(self.deadline)?;
+        self.inner.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        checkpoint_io(self.deadline)?;
+        self.inner.flush()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BorrowedCatalog<'a> {
+    schema_version: u32,
+    mutation_sequence: u64,
+    entries: BorrowedCatalogEntries<'a>,
+}
+
+struct BorrowedCatalogEntries<'a>(Vec<&'a CatalogEntry>);
+
+impl Serialize for BorrowedCatalogEntries<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for entry in &self.0 {
+            seq.serialize_element(&StoredEntryV1::from_catalog_entry(entry))?;
+        }
+        seq.end()
+    }
+}
+
+fn borrowed_catalog(catalog: &StoreCatalog) -> BorrowedCatalog<'_> {
+    let mut entries: Vec<_> = catalog
+        .entries
+        .values()
+        .map(|entry| {
+            let state = match entry {
+                CatalogEntry::Reservation(_) => "reservation",
+                CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(_)) => "task_bound",
+                CatalogEntry::Link(TaskLifecycleLinkRecord::TaskTerminalBound(_)) => {
+                    "task_terminal_bound"
+                }
+                CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(_)) => {
+                    "task_retirement_pending"
+                }
+            };
+            (state, entry.key().invocation_id().to_string(), entry)
+        })
+        .collect();
+    entries.sort_unstable_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    BorrowedCatalog {
+        schema_version: STORE_SCHEMA_VERSION,
+        mutation_sequence: catalog.mutation_sequence,
+        entries: BorrowedCatalogEntries(entries.into_iter().map(|(_, _, entry)| entry).collect()),
+    }
+}
+
+fn snapshot_decode_error(error: serde_json::Error) -> TaskLifecycleLinkStoreError {
+    match error.io_error_kind() {
+        Some(io::ErrorKind::TimedOut) => TaskLifecycleLinkStoreError::DeadlineExceeded,
+        Some(_) => storage_message("read Task lifecycle-link snapshot", error),
+        None => TaskLifecycleLinkStoreError::Corrupt(
+            "Task lifecycle-link snapshot is not strict schema-v1 JSON",
+        ),
+    }
+}
+
+fn snapshot_write_error(error: serde_json::Error) -> TaskLifecycleLinkStoreError {
+    if error.io_error_kind() == Some(io::ErrorKind::TimedOut) {
+        TaskLifecycleLinkStoreError::DeadlineExceeded
+    } else {
+        storage_message("serialize Task lifecycle-link snapshot", error)
+    }
+}
+
+#[cfg(test)]
 fn stored_catalog(catalog: &StoreCatalog) -> Result<StoredCatalogV1, TaskLifecycleLinkStoreError> {
     let mut entries: Vec<_> = catalog
         .entries
@@ -1955,6 +2157,7 @@ fn stored_catalog(catalog: &StoreCatalog) -> Result<StoredCatalogV1, TaskLifecyc
     })
 }
 
+#[cfg(test)]
 fn serialize_stored_entry_for_order(entry: &StoredEntryV1) -> Result<Vec<u8>, serde_json::Error> {
     #[cfg(test)]
     STORED_ENTRY_SERIALIZATION_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -1977,22 +2180,6 @@ fn validate_exact_identity(
         || link.invocation_id() != key.invocation_id()
     {
         return Err(TaskLifecycleLinkStoreError::IdentityMismatch);
-    }
-    Ok(())
-}
-
-fn validate_capacity(
-    catalog: &StoreCatalog,
-    limits: StoreLimits,
-) -> Result<(), TaskLifecycleLinkStoreError> {
-    let snapshot = catalog.capacity_snapshot(limits.max_record_bytes);
-    if snapshot.task_store_slots_accounted() > limits.max_records
-        || snapshot.accounted_bytes() > limits.max_pool_bytes
-    {
-        return Err(TaskLifecycleLinkStoreError::Capacity {
-            maximum_records: limits.max_records,
-            maximum_bytes: limits.max_pool_bytes,
-        });
     }
     Ok(())
 }
@@ -2059,6 +2246,12 @@ fn lock_is_contended(error: &io::Error) -> bool {
             .raw_os_error()
             .zip(expected.raw_os_error())
             .is_some_and(|(actual, expected)| actual == expected)
+}
+
+impl From<io::Error> for TaskLifecycleLinkStoreError {
+    fn from(error: io::Error) -> Self {
+        storage_error("enumerate Task lifecycle-link root", error)
+    }
 }
 
 fn storage_error(operation: &'static str, error: io::Error) -> TaskLifecycleLinkStoreError {
@@ -2155,6 +2348,142 @@ mod tests {
 
     fn terminal_digest() -> TerminalDigest {
         TerminalDigest::from_str(&"88".repeat(32)).expect("terminal digest")
+    }
+
+    fn seed_reservation_snapshot(root: &Path, count: u128) -> Vec<(ReceiptKey, TaskLinkReference)> {
+        let mut entries = Vec::new();
+        let mut identities = Vec::new();
+        for index in 0..count {
+            let (key, link, _) = generated_fixture(index);
+            let reservation = build_reservation(
+                key.clone(),
+                link.clone(),
+                index as u64 + 1,
+                StoreLimits::production(),
+            )
+            .unwrap();
+            entries.push(StoredEntryV1::from_catalog_entry(
+                &CatalogEntry::Reservation(reservation),
+            ));
+            identities.push((key, link));
+        }
+        let snapshot = StoredCatalogV1 {
+            schema_version: 1,
+            mutation_sequence: count as u64,
+            entries,
+        };
+        let directory = open_directory_nofollow(root).unwrap();
+        let mut file =
+            create_owner_only_file_child(&directory, OsStr::new(STORE_SNAPSHOT_FILE)).unwrap();
+        restrict_stage_to_owner(&file).unwrap();
+        serde_json::to_writer(&mut file, &snapshot).unwrap();
+        file.sync_all().unwrap();
+        identities
+    }
+
+    #[test]
+    fn production_links_reserve_and_materialize_past_4096_and_reopen() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let identities = seed_reservation_snapshot(&root_path, 4096);
+        let budget = || ProviderDeadline::from_budget(Duration::from_secs(60));
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, budget()).unwrap();
+        let (key, link, task) = generated_fixture(4096);
+        let reservation = store
+            .reserve_task_link(key.clone(), link.clone(), budget())
+            .expect("reserve 4097th exact link");
+        let bound = store
+            .materialize_task_bound(
+                &reservation,
+                task,
+                1,
+                1_000,
+                AttemptPhase::NotBegun,
+                budget(),
+            )
+            .expect("materialize 4097th");
+        drop(store);
+        let reopened =
+            TaskLifecycleLinkStoreV5::open(&root_path, budget()).expect("reopen all links");
+        assert_eq!(
+            reopened
+                .read_by_task_id(key.reserved_task_id(), budget())
+                .unwrap(),
+            TaskLifecycleLinkRecord::TaskBound(bound)
+        );
+        for (key, link) in identities {
+            assert_eq!(
+                reopened
+                    .reserve_task_link(key, link, budget())
+                    .unwrap()
+                    .reservation_version(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn real_snapshot_over_8mib_can_reopen_mutate() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        seed_reservation_snapshot(&root_path, 13000);
+        assert!(
+            std::fs::metadata(root_path.join(STORE_SNAPSHOT_FILE))
+                .unwrap()
+                .len()
+                > 8 * 1024 * 1024
+        );
+        let budget = || ProviderDeadline::from_budget(Duration::from_secs(60));
+        let store =
+            TaskLifecycleLinkStoreV5::open(&root_path, budget()).expect("read real large snapshot");
+        let (key, link, _) = generated_fixture(13000);
+        let reservation = store
+            .reserve_task_link(key.clone(), link.clone(), budget())
+            .expect("publish real large snapshot");
+        drop(store);
+        let reopened = TaskLifecycleLinkStoreV5::open(&root_path, budget()).unwrap();
+        assert_eq!(
+            reopened.reserve_task_link(key, link, budget()).unwrap(),
+            reservation
+        );
+        for entry in std::fs::read_dir(root_path).unwrap() {
+            assert!(matches!(
+                entry.unwrap().file_name().to_str(),
+                Some(STORE_SNAPSHOT_FILE | STORE_LOCK_FILE)
+            ));
+        }
+    }
+
+    #[test]
+    fn inspection_cleans_links_staging_past_former_directory_bound() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        seed_reservation_snapshot(&root_path, 1);
+        let committed = fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap();
+        let directory = open_directory_nofollow(&root_path).unwrap();
+        for index in 0..100 {
+            let file = create_owner_only_file_child(
+                &directory,
+                OsStr::new(&format!(
+                    "{STORE_STAGING_PREFIX}{index}{STORE_STAGING_SUFFIX}"
+                )),
+            )
+            .unwrap();
+            restrict_stage_to_owner(&file).unwrap();
+        }
+        let store =
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("inspect all staging");
+        assert_eq!(store.capacity_snapshot().live_reservations(), 1);
+        assert_eq!(
+            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap(),
+            committed
+        );
+        for entry in fs::read_dir(root_path).unwrap() {
+            assert!(matches!(
+                entry.unwrap().file_name().to_str(),
+                Some(STORE_SNAPSHOT_FILE | STORE_LOCK_FILE)
+            ));
+        }
     }
 
     #[test]
@@ -2529,30 +2858,115 @@ mod tests {
     }
 
     #[test]
-    fn count_and_byte_entitlement_reject_second_reservation_before_task_store_create() {
-        for (max_records, max_bytes) in [(1, 2_048), (2, 1_024)] {
-            let root = tempfile::tempdir().expect("temporary root");
-            let root_path = physical_root(&root);
-            let (first_key, first_link, _) = fixture(INVOCATION_A, TASK_A, "workspace-a");
-            let (second_key, second_link, _) = fixture(INVOCATION_B, TASK_B, "workspace-b");
-            let store = TaskLifecycleLinkStoreV5::open_with_limits_for_test(
-                &root_path,
-                max_records,
-                max_bytes,
-                deadline(),
-            )
-            .expect("open bounded store");
+    fn corrupt_snapshot_preserves_verified_orphan_before_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        seed_reservation_snapshot(&root_path, 1);
+        fs::write(root_path.join(STORE_SNAPSHOT_FILE), b"{malformed").unwrap();
+        let directory = open_directory_nofollow(&root_path).unwrap();
+        let name = format!("{STORE_STAGING_PREFIX}abandoned{STORE_STAGING_SUFFIX}");
+        let mut file = create_owner_only_file_child(&directory, OsStr::new(&name)).unwrap();
+        file.write_all(b"retained").unwrap();
+        drop(file);
+        assert!(matches!(
+            TaskLifecycleLinkStoreV5::open(&root_path, deadline()),
+            Err(TaskLifecycleLinkStoreError::Corrupt(_))
+        ));
+        assert_eq!(
+            fs::read(root_path.join(name)).expect("failed validation must preserve orphan"),
+            b"retained"
+        );
+    }
 
-            store
-                .reserve_task_link(first_key, first_link, deadline())
-                .expect("first reservation");
-            assert!(matches!(
-                store.reserve_task_link(second_key, second_link, deadline()),
-                Err(TaskLifecycleLinkStoreError::Capacity { .. })
-            ));
-            assert_eq!(store.capacity_snapshot().task_store_slots_accounted(), 1);
-            assert_eq!(store.capacity_snapshot().accounted_bytes(), 1_024);
+    #[test]
+    fn second_pass_refuses_replaced_link_staging_without_deleting_either_file() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).unwrap();
+        let name = OsStr::new(".task-lifecycle-links-v1.abandoned.tmp");
+        let mut original = create_owner_only_file_child(&store.root_file, name).unwrap();
+        original.write_all(b"original").unwrap();
+        let identity = file_identity(&original).unwrap();
+        drop(original);
+        fs::rename(
+            root_path.join(name),
+            root_path.join(".task-lifecycle-links-v1.saved.tmp"),
+        )
+        .unwrap();
+        let mut replacement = create_owner_only_file_child(&store.root_file, name).unwrap();
+        replacement.write_all(b"replacement").unwrap();
+        drop(replacement);
+        assert!(store
+            .remove_verified_staging(name, identity, deadline())
+            .is_err());
+        assert_eq!(fs::read(root_path.join(name)).unwrap(), b"replacement");
+        assert_eq!(
+            fs::read(root_path.join(".task-lifecycle-links-v1.saved.tmp")).unwrap(),
+            b"original"
+        );
+    }
+
+    #[test]
+    fn second_pass_refuses_link_staging_symlink_and_preserves_external_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline()).unwrap();
+        let name = OsStr::new(".task-lifecycle-links-v1.abandoned.tmp");
+        let original = create_owner_only_file_child(&store.root_file, name).unwrap();
+        let identity = file_identity(&original).unwrap();
+        drop(original);
+        fs::remove_file(root_path.join(name)).unwrap();
+        let outside = root.path().join("outside");
+        fs::write(&outside, b"external").unwrap();
+        let Some(created) =
+            crate::infrastructure::platform::filesystem::create_file_symlink_for_test(
+                &outside,
+                root_path.join(name),
+            )
+        else {
+            return;
+        };
+        created.expect("create a file symlink on the supported test host");
+        assert!(store
+            .remove_verified_staging(name, identity, deadline())
+            .is_err());
+        assert_eq!(fs::read(outside).unwrap(), b"external");
+        assert!(fs::symlink_metadata(root_path.join(name))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn catalog_schema_rejects_duplicate_unknown_missing_and_trailing_fields() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        seed_reservation_snapshot(&root_path, 1);
+        let snapshot_path = root_path.join(STORE_SNAPSHOT_FILE);
+        let original = fs::read_to_string(&snapshot_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&original).unwrap();
+        let entries = serde_json::to_string(&value["entries"]).unwrap();
+        for invalid in [
+            format!("{{\"schemaVersion\":1,\"schemaVersion\":1,\"mutationSequence\":1,\"entries\":{entries}}}"),
+            format!("{{\"schemaVersion\":1,\"mutationSequence\":1,\"mutationSequence\":1,\"entries\":{entries}}}"),
+            format!("{{\"schemaVersion\":1,\"mutationSequence\":1,\"entries\":{entries},\"entries\":{entries}}}"),
+            format!("{{\"schemaVersion\":1,\"mutationSequence\":1,\"entries\":{entries},\"unexpected\":null}}"),
+            format!("{{\"mutationSequence\":1,\"entries\":{entries}}}"),
+            format!("{{\"schemaVersion\":1,\"entries\":{entries}}}"),
+            "{\"schemaVersion\":1,\"mutationSequence\":1}".to_owned(),
+            format!("{original} {{}}"),
+        ] {
+            fs::write(&snapshot_path, invalid).unwrap();
+            assert!(matches!(TaskLifecycleLinkStoreV5::open(&root_path, deadline()), Err(TaskLifecycleLinkStoreError::Corrupt(_))));
         }
+        fs::write(
+            &snapshot_path,
+            format!("{{\"entries\":{entries},\"mutationSequence\":1,\"schemaVersion\":1}}"),
+        )
+        .unwrap();
+        let store = TaskLifecycleLinkStoreV5::open(&root_path, deadline())
+            .expect("field order remains independent");
+        assert_eq!(store.capacity_snapshot().live_reservations(), 1);
     }
 
     #[test]
@@ -2620,10 +3034,83 @@ mod tests {
     }
 
     #[test]
-    fn production_link_pool_limits_are_the_decision_literals() {
+    fn production_single_link_limit_remains_until_its_payload_path_changes() {
         assert_eq!(MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES, 1_024);
-        assert_eq!(MAX_TASK_LIFECYCLE_LINK_RECORDS, 4_096);
-        assert_eq!(MAX_TASK_LIFECYCLE_LINK_POOL_BYTES, 4 * 1_024 * 1_024);
+    }
+
+    #[test]
+    fn streaming_catalog_preserves_canonical_bytes_for_all_states_and_id_orders() {
+        let mut catalog = StoreCatalog::default();
+        for index in [19, 1, 31, 2, 17, 3, 29, 4] {
+            let (key, link, task) = generated_fixture(index);
+            let sequence = index as u64 + 1;
+            let entry = match index % 4 {
+                0 => CatalogEntry::Reservation(
+                    build_reservation(key, link, sequence, StoreLimits::production()).unwrap(),
+                ),
+                1 => CatalogEntry::Link(TaskLifecycleLinkRecord::TaskBound(
+                    build_task_bound(
+                        key,
+                        link,
+                        task,
+                        2,
+                        sequence,
+                        1,
+                        1_000,
+                        AttemptPhase::Begun,
+                        StoreLimits::production(),
+                    )
+                    .unwrap(),
+                )),
+                2 | 3 => {
+                    let terminal_task = ReceiptTaskProjection::new(
+                        key.reserved_task_id(),
+                        key.invocation_id(),
+                        1_000,
+                        2_000,
+                        3_600_000,
+                        100,
+                        2,
+                    )
+                    .unwrap();
+                    let terminal = build_task_terminal_bound(
+                        key,
+                        link,
+                        terminal_task,
+                        3,
+                        sequence,
+                        2,
+                        ClosedTerminalStatus::Completed,
+                        terminal_digest(),
+                        2_000,
+                        3_602_000,
+                        StoreLimits::production(),
+                    )
+                    .unwrap();
+                    if index % 4 == 2 {
+                        CatalogEntry::Link(TaskLifecycleLinkRecord::TaskTerminalBound(terminal))
+                    } else {
+                        CatalogEntry::Link(TaskLifecycleLinkRecord::TaskRetirementPending(
+                            build_task_retirement_pending(
+                                &terminal,
+                                4,
+                                sequence,
+                                64,
+                                64,
+                                StoreLimits::production(),
+                            )
+                            .unwrap(),
+                        ))
+                    }
+                }
+                _ => unreachable!(),
+            };
+            catalog.insert_exact(entry).unwrap();
+            catalog.mutation_sequence = catalog.mutation_sequence.max(sequence);
+        }
+        let previous = serde_json::to_vec(&stored_catalog(&catalog).unwrap()).unwrap();
+        let streaming = serde_json::to_vec(&borrowed_catalog(&catalog)).unwrap();
+        assert_eq!(streaming, previous);
     }
 
     #[test]

@@ -1,40 +1,56 @@
 ---
 id: INV.APP.DAEMON-TASK-CAPACITY
 check:
-  - crates/unica-coder/src/infrastructure/task_store_v5.rs::capacity_never_lazily_expires_terminal_records_and_not_found_is_typed
-  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::count_and_byte_entitlement_reject_second_reservation_before_task_store_create
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::production_catalog_creates_past_4096_and_reopens_exactly
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::inspection_cleans_staging_past_former_directory_bound
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::terminal_records_remain_until_exact_retirement_and_not_found_is_typed
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::production_links_reserve_and_materialize_past_4096_and_reopen
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::real_snapshot_over_8mib_can_reopen_mutate
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::inspection_cleans_links_staging_past_former_directory_bound
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::corrupt_snapshot_preserves_verified_orphan_before_cleanup
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::catalog_schema_rejects_duplicate_unknown_missing_and_trailing_fields
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::streaming_catalog_preserves_canonical_bytes_for_all_states_and_id_orders
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_bind_direct_ack_and_receipt_terminal_expiry_release_exact_quota
   - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::reservation_consumes_task_store_slot_before_materialization_and_reopens_exactly
   - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::task_bound_terminal_and_retirement_transitions_are_exact_cas_and_reopen_stable
-gap: https://github.com/IngvarConsulting/unica/issues/948
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::corrupt_committed_task_preserves_orphan_before_cleanup
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::second_pass_refuses_replaced_task_staging_without_deleting_either_file
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::second_pass_refuses_task_staging_symlink_and_preserves_external_bytes
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::second_pass_refuses_replaced_link_staging_without_deleting_either_file
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::second_pass_refuses_link_staging_symlink_and_preserves_external_bytes
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_handoff_before_begun_materializes_past_former_link_quota_without_callback
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::retained_receipt_and_task_catalogs_are_independent_after_restart
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::historical_receipt_owned_capacity_state_can_complete_and_reopen_without_task_store
+gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
-# Место для фонового задания резервируется до его создания
+# Передача в фоновое задание сохраняет точную связь и накопленные записи
 
-До создания задания резервируются место в `TaskStore` и предельный размер
-его связи с квитанцией. Нехватка любого из этих ресурсов отклоняет
-резервирование. Учитываются и созданные задания, и ещё не использованные
-резервации; предел хранилища — 4096 записей. Связь с квитанцией занимает не более
-1 КиБ, общий пул связей — не более 4 МиБ.
+Перед созданием задания сохраняется резервация его точной связи с квитанцией.
+Число заданий, резерваций и связей, суммарный размер каталога и число
+осиротевших staging-файлов не ограничены искусственной квотой. Данные
+снимка читаются и записываются последовательно; каталоги идентичности
+остаются в памяти. Это не обещание постоянного расхода памяти всего хранилища.
 
-Хранилище не удаляет завершённое задание при чтении или нехватке места,
+Хранилище не удаляет завершённое задание при чтении или ради нового задания,
 даже если срок хранения прошёл. Удалением управляет общий жизненный цикл
-задачи и её квитанции.
+задачи и её квитанции. После передачи остаётся одна активная связь того же
+вызова; смена стадии не сохраняет вторую активную квитанцию.
 
-Если место уже зарезервировано, а `TaskStore` всё же сообщает о нехватке,
-это нарушение внутренней гарантии. Демон сохраняет намерение передачи
-и резервацию, закрывает приём и завершает процесс. Он не освобождает место
-ценой потери подготовленного результата и не запускает работу повторно.
+Повторное открытие сохраняет записи, номера версий, индексы идентичности
+и намерение отмены. Некорректная схема, противоречащая идентичность,
+арифметическое переполнение и настоящая ошибка диска или доступа остаются
+ошибками. Неопределённый исход публикации не разрешает потерять подготовленный
+результат, освободить его владельца или повторить предметную операцию.
 
-Если места для связи с TaskStore не хватает до начала работы, квитанция
-завершается с `task_capacity`. После начала результат остаётся в квитанции;
-после сбоя без сохранённого результата возвращается `outcome_uncertain`.
-Уже сохранённый результат и принятая отмена не заменяются ошибкой нехватки
-места. Новая запись TaskStore не создаётся, другие задания не вытесняются.
-Эта реакция ещё не подключена к обычному пути демона: прежние сценарии
-самостоятельно вызывали её внутренние методы. Требуются подключение
-и проверка настоящего вызова, в том числе с принятой отменой.
+Прежняя ошибка `Capacity` из TaskStore после успешной резервации по-прежнему
+считается нарушением внутренней гарантии: демон сохраняет намерение передачи,
+закрывает приём и завершается. Проверка использует явно внесённый отказ;
+продуктивное хранилище больше не выдаёт его из-за числа записей.
 
-После передачи в TaskStore связь занимает одну ограниченную запись.
-Смена стадии не сохраняет вторую активную квитанцию того же вызова.
+Предел одной связи 1 КиБ и предел сохранённого результата задачи пока
+пересматриваются отдельно в #1119. Их снятие требует соответствующего пути
+переноса данных; агрегатные пороги не возвращаются под другим именем.

@@ -473,50 +473,6 @@ impl ReceiptScenarioControl {
         Ok(())
     }
 
-    pub(super) fn record_staged_capacity_fallback(
-        &self,
-        receipt: &TaskTerminalReceiptBackedReceipt,
-    ) -> Result<(), String> {
-        let root = self
-            .state_root
-            .lock()
-            .map_err(|_| "scenario state root mutex poisoned".to_owned())?
-            .clone()
-            .ok_or_else(|| "scenario state root was not configured".to_owned())?;
-        let receipt_record = std::fs::read(
-            root.join("active")
-                .join(format!("{}.json", receipt.key_digest().as_str())),
-        )
-        .map_err(|error| format!("read staged capacity fallback receipt: {error}"))?;
-        let snapshot = self::scenario_probes::receipt_state_task_snapshot_for_test(
-            ReceiptState::TaskTerminalReceiptBacked(receipt.clone()),
-        )
-        .map_err(|error| format!("project staged capacity fallback Task: {error}"))?;
-        let response = encode_strict_v5_response_jsonl(&V5ServerResponse::Task { snapshot })?;
-        let key = receipt_key_observation(receipt.key());
-        let mut preparations = self
-            .staged_terminal_preparations
-            .lock()
-            .map_err(|_| "scenario staged terminal preparation mutex poisoned".to_owned())?;
-        let preparation = preparations
-            .iter_mut()
-            .find(|value| value.get("receiptKey") == Some(&key))
-            .ok_or_else(|| "staged capacity fallback has no exact preparation".to_owned())?;
-        let fallback = preparation
-            .pointer_mut("/transferSizeCertificate/capacityFallbackCases/0")
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| "staged certificate has no capacity fallback case".to_owned())?;
-        fallback.insert(
-            "receipt_backed_record".to_owned(),
-            artifact_evidence(&receipt_record),
-        );
-        fallback.insert(
-            "task_response_jsonl".to_owned(),
-            artifact_evidence(&response),
-        );
-        Ok(())
-    }
-
     pub(super) fn record_bound_terminal_publication(
         &self,
         bound: &TaskBoundReceipt,
