@@ -6,8 +6,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::cancellation_after_create_keeps_the_confirmation_probe_and_receipt
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::restore_detaches_only_its_mutating_call
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::protected_mutation_preserves_success_and_failure_after_cancel_request
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::protected_mutation_does_not_arm_the_two_second_cancel_watchdog
-  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::inline_protected_mutation_cancel_does_not_arm_fail_stop_watchdog
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others
   - crates/unica-coder/src/infrastructure/daemon/server.rs::mutating_runner_cancel_keeps_the_factual_receipt_over_the_v5_daemon_wire
   - crates/unica-coder/src/interfaces/mcp.rs::public_task_cancel_and_result_preserve_a_started_infobase_create_receipt
   - crates/unica-coder/src/interfaces/mcp.rs::public_native_cancel_waits_for_slow_job_attach_before_answering

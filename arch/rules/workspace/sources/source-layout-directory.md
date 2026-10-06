@@ -52,5 +52,5 @@ gap: https://github.com/IngvarConsulting/unica/issues/976
 этой выборкой, вызов отказывает, а не возвращает ложный `not_found`.
 Полноценное потоковое подтверждение XML остаётся открытым пробелом.
 Превышение применимого предела даёт
-`provider_limit_exceeded`, отмена — `cancelled`, истечение переданного
-срока — `deadline_exceeded`.
+`provider_limit_exceeded`, отмена — `cancelled`. Срока по умолчанию
+у построения справочника нет.

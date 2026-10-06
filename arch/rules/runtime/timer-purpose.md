@@ -20,6 +20,7 @@ check:
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_graph_without_deadline_refuses_before_legacy_service_dispatch
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_search_without_deadline_refuses_before_legacy_service_dispatch
   - crates/unica-coder/src/infrastructure/rlm_navigation.rs::no_deadline_navigation_refuses_before_readiness_or_legacy_service_dispatch
+  - crates/unica-coder/src/infrastructure/diagnostics.rs::no_deadline_analyze_dispatches_the_analyzer_without_a_timeout
   - crates/unica-coder/src/infrastructure/diagnostics.rs::no_deadline_diagnostics_refuses_before_legacy_backend_dispatch
   - crates/unica-coder/src/infrastructure/diagnostics.rs::no_deadline_diagnostics_explicit_cancel_wins_before_unsupported_bridge
   - crates/unica-coder/src/infrastructure/platform/source_revision_fence.rs::no_deadline_fsevents_flush_observes_write_and_preserves_explicit_cancel
@@ -27,6 +28,10 @@ check:
   - crates/unica-coder/src/infrastructure/task_store_v5.rs::no_deadline_task_commit_preserves_exact_terminal_cas_and_reopens
   - crates/unica-coder/src/infrastructure/task_store_v5.rs::no_deadline_task_visible_io_failure_is_still_commit_uncertain
   - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::default_operation_paths_reach_providers_without_a_deadline
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::production_operation_paths_start_no_new_finite_deadline
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks
+  - crates/unica-coder/src/infrastructure/internal_adapters.rs::diagnostics_analyze_without_configured_timeout_runs_without_process_timeout
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
@@ -70,13 +75,16 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 работы. Тестовые watchdog и измеряемые цели производительности не являются
 продуктовыми сроками операций.
 
-В #1119 остаётся пересмотр автоматических отсечек, описанных в
-[сроке сервиса](service-lifetime.md),
-[сроке обращения к сервису](service-request-deadline.md) и
-[жизненном цикле дерева процессов](../platform/process-tree-lifecycle.md).
-Прежние нормативные требования к отсечкам пересматриваются по уточнённому
-решению владельца. Согласование этих записей, кода и содержательных проверок
-остаётся в #1119; старые формулировки не являются исключениями из нового
-обязательства. Совместимость форматов и восстановление принятой работы
-проверяются при изменении соответствующего пути. Снятие таймерного истечения
-курсора само по себе не обещает сохранение курсора после перезапуска процесса.
+`view`, `check`, `diff`, `resolve`, `run`, предпросмотр и исполнение
+`apply` получают работу без срока операции; анализ BSL для `check` получает
+срок, только если его задал пользователь. Конечный срок в рабочем коде
+остаётся у пределов отдельного шага: подключения, кадра протокола,
+ожидания после принудительной остановки, публикации конечного исхода
+задания, а также на путях прежней поверхности, недостижимых с провода
+v0.13. Сроки поиска и чтений поставщиков по умолчанию снимаются в
+[#1254](https://github.com/IngvarConsulting/unica/issues/1254).
+
+В #1119 остаются неподтверждённые квоты объёма. Совместимость форматов
+и восстановление принятой работы проверяются при изменении соответствующего
+пути. Снятие таймерного истечения курсора само по себе не обещает
+сохранение курсора после перезапуска процесса.
