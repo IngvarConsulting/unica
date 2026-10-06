@@ -6,7 +6,8 @@
 //! total-bytes quota keep it bounded.
 
 use crate::application::v13::body_snapshot::{BodyPosition, BodySnapshot};
-use crate::domain::refusal::RefusalCode;
+use crate::domain::invocation::DomainResult;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
@@ -26,7 +27,6 @@ const VIEW_MAX_ENTRIES: usize = 128;
 // serialized snapshot. Charge each issued token so they cannot bypass the
 // aggregate byte quota while sharing one Arc.
 const VIEW_ENTRY_CHARGE: usize = 128;
-const SEARCH_MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultStoreError {
@@ -139,14 +139,12 @@ pub(crate) struct StoredViewCursor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ViewCursorError {
     Invalid,
-    Stale,
 }
 
 impl ViewCursorError {
     pub(crate) const fn code(self) -> RefusalCode {
         match self {
             Self::Invalid => RefusalCode::InvalidCursor,
-            Self::Stale => RefusalCode::StaleCursor,
         }
     }
 }
@@ -172,9 +170,8 @@ pub(crate) struct ViewCursorStore {
     capacity_observer: Option<Arc<dyn ViewCapacityObserver>>,
 }
 
-/// A search continuation stores only the question and the next offset. The
-/// source is read again under a fresh read fence, so a long result never has
-/// to fit in the cursor store before its first page can be returned.
+/// A search continuation binds the exact question through its digest. The
+/// source is read again; neither the question nor the result is retained here.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct SearchCursorBinding {
     pub(crate) workspace_identity: String,
@@ -189,114 +186,167 @@ pub(crate) struct SearchCursorBinding {
     pub(crate) page_limit: usize,
 }
 
-#[derive(Debug)]
-struct SearchCursorSnapshot {
-    binding: SearchCursorBinding,
-    bytes: usize,
-    secret: [u8; 32],
+const SEARCH_CURSOR_PAYLOAD_BYTES: usize = 106;
+const SEARCH_CURSOR_CIPHERTEXT_BYTES: usize = SEARCH_CURSOR_PAYLOAD_BYTES + 16;
+const SEARCH_CURSOR_TOKEN_BYTES: usize = 4 + 2 * SEARCH_CURSOR_CIPHERTEXT_BYTES;
+const SEARCH_CURSOR_AAD: &[u8] = b"unica.search.cursor.sc2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SearchCursorError {
+    Invalid,
+    Stale,
+    OwnerUnavailable,
+    EntropyUnavailable,
+    TokenUnavailable,
+    OffsetNotRepresentable,
 }
 
-struct SearchCursorEntry {
-    snapshot: Arc<SearchCursorSnapshot>,
-    offset: usize,
-    stored_at: Instant,
-    last_read: Instant,
+impl SearchCursorError {
+    pub(crate) const fn code(self) -> RefusalCode {
+        match self {
+            Self::Invalid => RefusalCode::InvalidCursor,
+            Self::Stale => RefusalCode::StaleCursor,
+            Self::OwnerUnavailable => RefusalDetail::CachePoisoned.code(),
+            Self::EntropyUnavailable => RefusalDetail::ProviderAbsent.code(),
+            Self::TokenUnavailable | Self::OffsetNotRepresentable => RefusalCode::ProviderFailed,
+        }
+    }
+
+    pub(crate) fn into_result(self, at: Option<String>) -> DomainResult {
+        let detail = match self {
+            Self::OwnerUnavailable => Some(RefusalDetail::CachePoisoned),
+            Self::EntropyUnavailable => Some(RefusalDetail::ProviderAbsent),
+            _ => None,
+        };
+        match detail {
+            Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, self.message()),
+            None => DomainResult::canonical_rejection(at, self.code(), self.message()),
+        }
+    }
+
+    pub(crate) const fn message(self) -> &'static str {
+        match self {
+            Self::Invalid => "search cursor does not belong to this question and owner",
+            Self::Stale => "search cursor answer or coverage has changed",
+            Self::OwnerUnavailable => "search cursor owner is unavailable",
+            Self::EntropyUnavailable => "search cursor entropy is unavailable",
+            Self::TokenUnavailable => "search continuation could not be authenticated or issued",
+            Self::OffsetNotRepresentable => "search continuation offset is not representable",
+        }
+    }
+}
+
+struct SearchCursorOwner {
+    key: zeroize::Zeroizing<[u8; 64]>,
+}
+
+impl std::fmt::Debug for SearchCursorOwner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SearchCursorOwner")
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct StoredSearchCursor {
-    snapshot: Arc<SearchCursorSnapshot>,
+    owner: Arc<SearchCursorOwner>,
+    payload: zeroize::Zeroizing<[u8; SEARCH_CURSOR_PAYLOAD_BYTES]>,
     pub(crate) offset: usize,
 }
 
-pub(crate) struct SearchCursorStore {
-    ttl: Duration,
-    max_entries: usize,
-    max_total_bytes: usize,
-    entries: Mutex<HashMap<String, SearchCursorEntry>>,
-}
+#[cfg(test)]
+type SearchEntropy = fn(&mut [u8]) -> Result<(), SearchCursorError>;
 
-impl Default for SearchCursorStore {
-    fn default() -> Self {
-        Self::new(DEFAULT_TTL, VIEW_MAX_ENTRIES, SEARCH_MAX_TOTAL_BYTES)
-    }
+/// Search retains one owner key, not the questions, results or issued tokens.
+/// An authenticated token carries its fixed record; the answer is read again.
+#[derive(Default)]
+pub(crate) struct SearchCursorStore {
+    owner: Mutex<Option<Arc<SearchCursorOwner>>>,
+    #[cfg(test)]
+    entropy: Option<SearchEntropy>,
 }
 
 impl SearchCursorStore {
-    pub(crate) fn new(ttl: Duration, max_entries: usize, max_total_bytes: usize) -> Self {
-        Self {
-            ttl,
-            max_entries,
-            max_total_bytes,
-            entries: Mutex::new(HashMap::new()),
-        }
-    }
-
     pub(crate) fn insert_first(
         &self,
         binding: SearchCursorBinding,
         offset: usize,
-    ) -> Option<String> {
-        if self.max_entries < 2 {
-            return None;
-        }
-        let json_bytes = bounded_json_size(&binding, self.max_total_bytes)?;
-        let bytes = search_snapshot_charge(&binding, json_bytes);
-        if bytes.saturating_add(2 * VIEW_ENTRY_CHARGE) > self.max_total_bytes {
-            return None;
-        }
-        let mut secret = [0u8; 32];
-        secret[..16].copy_from_slice(Uuid::new_v4().as_bytes());
-        secret[16..].copy_from_slice(Uuid::new_v4().as_bytes());
-        self.insert_entry(
-            Arc::new(SearchCursorSnapshot {
-                binding,
-                bytes,
-                secret,
-            }),
-            offset,
-            None,
-        )
+    ) -> Result<String, SearchCursorError> {
+        let mut payload = zeroize::Zeroizing::new([0u8; SEARCH_CURSOR_PAYLOAD_BYTES]);
+        payload[0] = 1;
+        payload[1..33].copy_from_slice(&search_question_digest(&binding)?);
+        let (present, digest) = search_answer_digest(&binding);
+        payload[33] = present;
+        payload[34..66].copy_from_slice(&digest);
+        payload[98..106].copy_from_slice(&search_offset_bytes(offset)?);
+        let owner = {
+            let mut current = self
+                .owner
+                .lock()
+                .map_err(|_| SearchCursorError::OwnerUnavailable)?;
+            if current.is_none() {
+                let mut key = zeroize::Zeroizing::new([0u8; 64]);
+                self.fill_entropy(&mut key[..])?;
+                *current = Some(Arc::new(SearchCursorOwner { key }));
+            }
+            Arc::clone(
+                current
+                    .as_ref()
+                    .ok_or(SearchCursorError::OwnerUnavailable)?,
+            )
+        };
+        // A failure here leaves the installed owner and all earlier tokens intact.
+        self.fill_entropy(&mut payload[66..98])?;
+        issue_search_cursor(&owner, &payload)
     }
 
     pub(crate) fn read(
         &self,
         token: &str,
         expected: &SearchCursorBinding,
-    ) -> Result<StoredSearchCursor, ViewCursorError> {
-        if !valid_search_cursor_token(token) {
-            return Err(ViewCursorError::Invalid);
-        }
-        let mut entries = self.entries.lock().expect("search cursor store poisoned");
-        let now = Instant::now();
-        let Some(entry) = entries.get(token) else {
-            return Err(ViewCursorError::Invalid);
-        };
-        if now.duration_since(entry.stored_at) >= self.ttl {
-            entries.remove(token);
-            return Err(ViewCursorError::Invalid);
-        }
-        let entry = entries
-            .get_mut(token)
-            .expect("checked search cursor exists");
-        let binding = &entry.snapshot.binding;
-        if binding.workspace_identity != expected.workspace_identity
-            || binding.query != expected.query
-            || binding.scope != expected.scope
-            || binding.mode != expected.mode
-            || binding.kind != expected.kind
-            || binding.source_sets != expected.source_sets
-            || binding.page_limit != expected.page_limit
+    ) -> Result<StoredSearchCursor, SearchCursorError> {
+        use aes_siv::KeyInit;
+        let ciphertext = decode_search_cursor(token)?;
+        let owner = self
+            .owner
+            .lock()
+            .map_err(|_| SearchCursorError::OwnerUnavailable)?
+            .as_ref()
+            .cloned()
+            .ok_or(SearchCursorError::Invalid)?;
+        let mut cipher = aes_siv::siv::Aes256Siv::new_from_slice(&owner.key[..])
+            .map_err(|_| SearchCursorError::TokenUnavailable)?;
+        let plaintext = zeroize::Zeroizing::new(
+            cipher
+                .decrypt([SEARCH_CURSOR_AAD], &ciphertext)
+                .map_err(|_| SearchCursorError::Invalid)?,
+        );
+        if plaintext.len() != SEARCH_CURSOR_PAYLOAD_BYTES
+            || plaintext[0] != 1
+            || plaintext[33] > 1
+            || (plaintext[33] == 0 && plaintext[34..66].iter().any(|byte| *byte != 0))
         {
-            return Err(ViewCursorError::Invalid);
+            return Err(SearchCursorError::Invalid);
         }
-        if binding.result_fingerprint != expected.result_fingerprint {
-            return Err(ViewCursorError::Stale);
+        if plaintext[1..33] != search_question_digest(expected)? {
+            return Err(SearchCursorError::Invalid);
         }
-        entry.last_read = now;
+        let (present, digest) = search_answer_digest(expected);
+        if plaintext[33] != present || plaintext[34..66] != digest {
+            return Err(SearchCursorError::Stale);
+        }
+        let raw_offset: [u8; 8] = plaintext[98..106]
+            .try_into()
+            .map_err(|_| SearchCursorError::Invalid)?;
+        let offset = usize::try_from(u64::from_be_bytes(raw_offset))
+            .map_err(|_| SearchCursorError::Invalid)?;
+        let mut payload = zeroize::Zeroizing::new([0u8; SEARCH_CURSOR_PAYLOAD_BYTES]);
+        payload.copy_from_slice(&plaintext);
         Ok(StoredSearchCursor {
-            snapshot: Arc::clone(&entry.snapshot),
-            offset: entry.offset,
+            owner,
+            payload,
+            offset,
         })
     }
 
@@ -304,118 +354,148 @@ impl SearchCursorStore {
         &self,
         current: &StoredSearchCursor,
         offset: usize,
-        current_token: &str,
-    ) -> Option<String> {
-        self.insert_entry(Arc::clone(&current.snapshot), offset, Some(current_token))
+    ) -> Result<String, SearchCursorError> {
+        let owner = self
+            .owner
+            .lock()
+            .map_err(|_| SearchCursorError::OwnerUnavailable)?
+            .as_ref()
+            .cloned()
+            .ok_or(SearchCursorError::Invalid)?;
+        if !Arc::ptr_eq(&owner, &current.owner) {
+            return Err(SearchCursorError::Invalid);
+        }
+        let mut payload = current.payload.clone();
+        payload[98..106].copy_from_slice(&search_offset_bytes(offset)?);
+        issue_search_cursor(&owner, &payload)
     }
 
-    fn insert_entry(
-        &self,
-        snapshot: Arc<SearchCursorSnapshot>,
-        offset: usize,
-        current_token: Option<&str>,
-    ) -> Option<String> {
-        if self.max_entries < 2
-            || snapshot.bytes.saturating_add(2 * VIEW_ENTRY_CHARGE) > self.max_total_bytes
-        {
-            return None;
+    pub(crate) fn token_probe() -> String {
+        encode_search_cursor(&[0u8; SEARCH_CURSOR_CIPHERTEXT_BYTES])
+    }
+
+    pub(crate) fn next_offset(offset: usize, consumed: usize) -> Result<usize, SearchCursorError> {
+        offset
+            .checked_add(consumed)
+            .ok_or(SearchCursorError::OffsetNotRepresentable)
+    }
+
+    fn fill_entropy(&self, bytes: &mut [u8]) -> Result<(), SearchCursorError> {
+        #[cfg(test)]
+        if let Some(fill) = self.entropy {
+            return fill(bytes);
         }
-        let token = search_cursor_token(&snapshot.secret, offset);
-        let now = Instant::now();
-        let mut entries = self.entries.lock().expect("search cursor store poisoned");
-        entries.retain(|_, entry| now.duration_since(entry.stored_at) < self.ttl);
-        if let Some(existing) = entries.get_mut(&token) {
-            if Arc::ptr_eq(&existing.snapshot, &snapshot) && existing.offset == offset {
-                existing.last_read = now;
-                return Some(token);
-            }
-            return None;
-        }
-        while entries.len() >= self.max_entries
-            || unique_search_snapshot_bytes(&entries, Some(&snapshot))
-                .saturating_add((entries.len() + 1).saturating_mul(VIEW_ENTRY_CHARGE))
-                > self.max_total_bytes
-        {
-            let oldest = entries
-                .iter()
-                .filter(|(candidate, _)| current_token != Some(candidate.as_str()))
-                .min_by_key(|(_, entry)| entry.last_read)
-                .map(|(candidate, _)| candidate.clone())?;
-            entries.remove(&oldest);
-        }
-        entries.insert(
-            token.clone(),
-            SearchCursorEntry {
-                snapshot,
-                offset,
-                stored_at: now,
-                last_read: now,
-            },
-        );
-        Some(token)
+        getrandom::fill(bytes).map_err(|_| SearchCursorError::EntropyUnavailable)
     }
 }
 
-fn search_snapshot_charge(binding: &SearchCursorBinding, json_bytes: usize) -> usize {
-    let strings = binding.source_sets.iter().map(String::capacity).fold(
-        binding
-            .workspace_identity
-            .capacity()
-            .saturating_add(binding.query.capacity())
-            .saturating_add(binding.scope.as_ref().map_or(0, String::capacity))
-            .saturating_add(binding.mode.capacity())
-            .saturating_add(binding.kind.as_ref().map_or(0, String::capacity))
-            .saturating_add(
-                binding
-                    .result_fingerprint
-                    .as_ref()
-                    .map_or(0, String::capacity),
-            ),
-        usize::saturating_add,
-    );
-    json_bytes.max(
-        std::mem::size_of::<SearchCursorSnapshot>()
-            .saturating_add(strings)
-            .saturating_add(
-                binding
-                    .source_sets
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<String>()),
-            ),
-    )
+fn search_offset_bytes(offset: usize) -> Result<[u8; 8], SearchCursorError> {
+    u64::try_from(offset)
+        .map(u64::to_be_bytes)
+        .map_err(|_| SearchCursorError::OffsetNotRepresentable)
 }
 
-fn unique_search_snapshot_bytes(
-    entries: &HashMap<String, SearchCursorEntry>,
-    extra: Option<&Arc<SearchCursorSnapshot>>,
-) -> usize {
-    let mut seen = HashSet::new();
-    let mut total = 0usize;
-    for entry in entries.values() {
-        if seen.insert(Arc::as_ptr(&entry.snapshot) as usize) {
-            total = total.saturating_add(entry.snapshot.bytes);
-        }
+fn issue_search_cursor(
+    owner: &SearchCursorOwner,
+    payload: &[u8; SEARCH_CURSOR_PAYLOAD_BYTES],
+) -> Result<String, SearchCursorError> {
+    use aes_siv::KeyInit;
+    let mut cipher = aes_siv::siv::Aes256Siv::new_from_slice(&owner.key[..])
+        .map_err(|_| SearchCursorError::TokenUnavailable)?;
+    let ciphertext = cipher
+        .encrypt([SEARCH_CURSOR_AAD], &payload[..])
+        .map_err(|_| SearchCursorError::TokenUnavailable)?;
+    if ciphertext.len() != SEARCH_CURSOR_CIPHERTEXT_BYTES {
+        return Err(SearchCursorError::TokenUnavailable);
     }
-    if let Some(snapshot) = extra {
-        if seen.insert(Arc::as_ptr(snapshot) as usize) {
-            total = total.saturating_add(snapshot.bytes);
-        }
-    }
-    total
+    Ok(encode_search_cursor(&ciphertext))
 }
 
-fn search_cursor_token(secret: &[u8; 32], offset: usize) -> String {
-    let mut token = view_cursor_token(secret, offset);
-    token.replace_range(..3, "sc1");
+fn encode_search_cursor(ciphertext: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(SEARCH_CURSOR_TOKEN_BYTES);
+    token.push_str("sc2.");
+    for byte in ciphertext {
+        token.push(char::from(HEX[usize::from(byte >> 4)]));
+        token.push(char::from(HEX[usize::from(byte & 15)]));
+    }
     token
 }
 
-fn valid_search_cursor_token(token: &str) -> bool {
-    token.len() == 36
-        && token.starts_with("sc1.")
-        && token[4..]
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+fn decode_search_cursor(
+    token: &str,
+) -> Result<[u8; SEARCH_CURSOR_CIPHERTEXT_BYTES], SearchCursorError> {
+    if token.len() != SEARCH_CURSOR_TOKEN_BYTES || !token.starts_with("sc2.") {
+        return Err(SearchCursorError::Invalid);
+    }
+    fn nibble(byte: u8) -> Result<u8, SearchCursorError> {
+        match byte {
+            b'0'..=b'9' => Ok(byte - b'0'),
+            b'a'..=b'f' => Ok(byte - b'a' + 10),
+            _ => Err(SearchCursorError::Invalid),
+        }
+    }
+    let mut ciphertext = [0u8; SEARCH_CURSOR_CIPHERTEXT_BYTES];
+    for (pair, out) in token.as_bytes()[4..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(&mut ciphertext)
+    {
+        *out = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+    }
+    Ok(ciphertext)
+}
+
+fn search_question_digest(binding: &SearchCursorBinding) -> Result<[u8; 32], SearchCursorError> {
+    #[derive(serde::Serialize)]
+    struct Question<'a> {
+        workspace_identity: &'a str,
+        query: &'a str,
+        scope: &'a Option<String>,
+        mode: &'a str,
+        kind: &'a Option<String>,
+        source_sets: &'a [String],
+        page_limit: usize,
+    }
+    struct HashWriter(Sha256);
+    impl Write for HashWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(Sha256::new());
+    writer.0.update(b"unica.search.question.sc2\0");
+    serde_json::to_writer(
+        &mut writer,
+        &Question {
+            workspace_identity: &binding.workspace_identity,
+            query: &binding.query,
+            scope: &binding.scope,
+            mode: &binding.mode,
+            kind: &binding.kind,
+            source_sets: &binding.source_sets,
+            page_limit: binding.page_limit,
+        },
+    )
+    .map_err(|_| SearchCursorError::TokenUnavailable)?;
+    Ok(writer.0.finalize().into())
+}
+
+fn search_answer_digest(binding: &SearchCursorBinding) -> (u8, [u8; 32]) {
+    match &binding.result_fingerprint {
+        None => (0, [0u8; 32]),
+        Some(answer) => {
+            let mut digest = Sha256::new();
+            digest.update(b"unica.search.answer.sc2\0");
+            digest.update(answer.as_bytes());
+            (1, digest.finalize().into())
+        }
+    }
 }
 
 impl Default for ViewCursorStore {
@@ -795,6 +875,7 @@ impl Write for BoundedSizeWriter {
     }
 }
 
+#[cfg(test)]
 fn bounded_json_size(value: &impl serde::Serialize, limit: usize) -> Option<usize> {
     bounded_json_size_attempt(value, limit).ok()
 }
@@ -1156,35 +1237,35 @@ mod tests {
         let store = SearchCursorStore::default();
         let binding = search_binding("needle", "rev-1");
         let first = store.insert_first(binding.clone(), 20).unwrap();
-        assert!(first.starts_with("sc1."));
+        assert!(first.starts_with("sc2."));
         assert_eq!(
             SearchCursorStore::default().read(&first, &binding).err(),
-            Some(ViewCursorError::Invalid)
+            Some(SearchCursorError::Invalid)
         );
         let mut different = binding.clone();
         different.source_sets.push("extension".to_owned());
         assert_eq!(
             store.read(&first, &different).err(),
-            Some(ViewCursorError::Invalid)
+            Some(SearchCursorError::Invalid)
         );
         let mut other_workspace = binding.clone();
         other_workspace.workspace_identity = "workspace-b".to_owned();
         assert_eq!(
             store.read(&first, &other_workspace).err(),
-            Some(ViewCursorError::Invalid)
+            Some(SearchCursorError::Invalid)
         );
         let stale = binding.clone();
         assert_eq!(store.read(&first, &stale).unwrap().offset, 20);
         let page = store.read(&first, &binding).unwrap();
         assert_eq!(page.offset, 20);
-        let second = store.insert_next(&page, 40, &first).unwrap();
-        assert_eq!(store.insert_next(&page, 40, &first).unwrap(), second);
+        let second = store.insert_next(&page, 40).unwrap();
+        assert_eq!(store.insert_next(&page, 40).unwrap(), second);
         assert_eq!(store.read(&second, &binding).unwrap().offset, 40);
         assert_eq!(
             store
                 .read("sc1.00000000000000000000000000000000", &binding)
                 .err(),
-            Some(ViewCursorError::Invalid)
+            Some(SearchCursorError::Invalid)
         );
     }
 
@@ -1201,51 +1282,457 @@ mod tests {
         other_kind.kind = Some("Document".to_owned());
         assert_eq!(
             store.read(&token, &other_kind).err(),
-            Some(ViewCursorError::Invalid)
+            Some(SearchCursorError::Invalid)
         );
         let mut changed_answer = binding.clone();
         changed_answer.result_fingerprint = Some("names-sha256-v1:two".to_owned());
         assert_eq!(
             store.read(&token, &changed_answer).err(),
-            Some(ViewCursorError::Stale)
+            Some(SearchCursorError::Stale)
         );
         assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
     }
 
     #[test]
-    fn search_cursor_store_bounds_binding_bytes_and_reserves_its_successor() {
-        let binding = search_binding("needle", "rev-1");
-        let json_bytes = bounded_json_size(&binding, usize::MAX).unwrap();
-        let bytes = search_snapshot_charge(&binding, json_bytes);
-        let insufficient =
-            SearchCursorStore::new(DEFAULT_TTL, 2, bytes + 2 * VIEW_ENTRY_CHARGE - 1);
-        assert!(insufficient.insert_first(binding.clone(), 20).is_none());
-        let enough = SearchCursorStore::new(DEFAULT_TTL, 2, bytes + 2 * VIEW_ENTRY_CHARGE);
-        let first = enough.insert_first(binding.clone(), 20).unwrap();
-        let page = enough.read(&first, &binding).unwrap();
-        assert!(enough.insert_next(&page, 40, &first).is_some());
-
-        let limited = SearchCursorStore::new(DEFAULT_TTL, 2, 2_048);
-        let first = limited.insert_first(binding.clone(), 20).unwrap();
-        let oversized = search_binding(&"X".repeat(3_000), "rev-1");
-        assert!(limited.insert_first(oversized, 20).is_none());
-        assert!(limited.read(&first, &binding).is_ok());
+    fn live_search_keeps_all_300_independent_chains_and_their_replay() {
+        let store = SearchCursorStore::default();
+        let binding = search_binding("needle", "unused");
+        let tokens: Vec<_> = (0..300)
+            .map(|_| store.insert_first(binding.clone(), 20).unwrap())
+            .collect();
+        assert_eq!(
+            tokens
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            300
+        );
+        for token in &tokens {
+            let page = store
+                .read(token, &binding)
+                .expect("issued chain is retained");
+            assert_eq!(page.offset, 20);
+            let successor = store.insert_next(&page, 40).unwrap();
+            assert_eq!(store.read(&successor, &binding).unwrap().offset, 40);
+            assert_eq!(store.insert_next(&page, 40).unwrap(), successor);
+            assert_eq!(store.read(token, &binding).unwrap().offset, 20);
+        }
     }
 
     #[test]
-    fn expired_search_cursor_is_invalid_and_releases_its_charge() {
-        let store = SearchCursorStore::new(Duration::ZERO, 2, 2_048);
-        let binding = search_binding("needle", "rev-1");
-        let first = store.insert_first(binding.clone(), 20).unwrap();
+    fn live_search_keeps_the_exact_question_past_eight_mib() {
+        let store = SearchCursorStore::default();
+        let mut binding = search_binding(&"needle".repeat(1_600_000), "unused");
+        binding.scope = Some("main:Configuration".to_owned());
+        binding.source_sets.push("extension".to_owned());
+        let token = store
+            .insert_first(binding.clone(), 20)
+            .expect("question metadata has no aggregate byte quota");
+        let page = store.read(&token, &binding).unwrap();
+        assert_eq!(page.offset, 20);
+        let next = store.insert_next(&page, 40).unwrap();
+        assert_eq!(store.read(&next, &binding).unwrap().offset, 40);
+        let mut changed = binding.clone();
+        changed.query.push('x');
         assert_eq!(
-            store.read(&first, &binding).err(),
-            Some(ViewCursorError::Invalid)
+            store.read(&token, &changed).err(),
+            Some(SearchCursorError::Invalid)
         );
-        let second = store.insert_first(binding, 40).unwrap();
-        let entries = store.entries.lock().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert!(!entries.contains_key(&first));
-        assert!(entries.contains_key(&second));
+        let mut reordered = binding.clone();
+        reordered.source_sets.reverse();
+        assert_eq!(
+            store.read(&token, &reordered).err(),
+            Some(SearchCursorError::Invalid)
+        );
+        assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
+    }
+
+    #[test]
+    fn search_question_mismatch_precedes_changed_result_fingerprint() {
+        let store = SearchCursorStore::default();
+        let mut binding = search_binding("needle", "unused");
+        binding.result_fingerprint = Some(String::new());
+        let token = store.insert_first(binding.clone(), 20).unwrap();
+        let mut no_fingerprint = binding.clone();
+        no_fingerprint.result_fingerprint = None;
+        assert_eq!(
+            store.read(&token, &no_fingerprint).err(),
+            Some(SearchCursorError::Stale)
+        );
+        no_fingerprint.query.push('x');
+        assert_eq!(
+            store.read(&token, &no_fingerprint).err(),
+            Some(SearchCursorError::Invalid)
+        );
+        assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
+    }
+
+    #[test]
+    fn search_cursor_lifetime_is_the_actual_owner_without_retained_entries() {
+        let store = SearchCursorStore::default();
+        let binding = search_binding("needle", "unused");
+        let first = store.insert_first(binding.clone(), 20).unwrap();
+        let page = store.read(&first, &binding).unwrap();
+        let successor = store.insert_next(&page, 40).unwrap();
+        assert_eq!(store.insert_next(&page, 40).unwrap(), successor);
+        assert_eq!(store.read(&first, &binding).unwrap().offset, 20);
+        assert_eq!(store.read(&successor, &binding).unwrap().offset, 40);
+        let foreign = SearchCursorStore::default();
+        assert_eq!(
+            foreign.insert_next(&page, 60).err(),
+            Some(SearchCursorError::Invalid)
+        );
+        assert!(foreign.owner.lock().unwrap().is_none());
+        let foreign_token = foreign.insert_first(binding.clone(), 20).unwrap();
+        assert_eq!(
+            foreign.insert_next(&page, 60).err(),
+            Some(SearchCursorError::Invalid)
+        );
+        assert_eq!(
+            store.read(&foreign_token, &binding).err(),
+            Some(SearchCursorError::Invalid)
+        );
+        drop(page);
+        assert_eq!(
+            Arc::strong_count(store.owner.lock().unwrap().as_ref().unwrap()),
+            1
+        );
+        drop(store);
+        assert_eq!(
+            SearchCursorStore::default().read(&first, &binding).err(),
+            Some(SearchCursorError::Invalid)
+        );
+        assert_eq!(
+            foreign.read(&first, &binding).err(),
+            Some(SearchCursorError::Invalid)
+        );
+    }
+
+    #[test]
+    fn search_authentication_rejects_every_changed_token_byte_and_noncanonical_encoding() {
+        let store = SearchCursorStore::default();
+        let binding = search_binding("needle", "unused");
+        let token = store.insert_first(binding.clone(), 20).unwrap();
+        assert_eq!(token.len(), SearchCursorStore::token_probe().len());
+        assert_eq!(token.len(), SEARCH_CURSOR_TOKEN_BYTES);
+        for index in 0..token.len() {
+            let mut altered = token.clone().into_bytes();
+            altered[index] = if altered[index] == b'0' { b'1' } else { b'0' };
+            assert_eq!(
+                store
+                    .read(std::str::from_utf8(&altered).unwrap(), &binding)
+                    .err(),
+                Some(SearchCursorError::Invalid),
+                "changed token byte {index}"
+            );
+        }
+        for invalid in [
+            token[..token.len() - 1].to_owned(),
+            format!("{token}0"),
+            token.to_uppercase(),
+            SearchCursorStore::token_probe(),
+            "sc1.00000000000000000000000000000000".into(),
+        ] {
+            assert_eq!(
+                store.read(&invalid, &binding).err(),
+                Some(SearchCursorError::Invalid)
+            );
+        }
+        assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
+    }
+
+    #[test]
+    fn search_authenticated_schema_is_closed_and_some_zero_is_not_a_none_sentinel() {
+        let store = SearchCursorStore::default();
+        let binding = search_binding("needle", "unused");
+        let token = store.insert_first(binding.clone(), 20).unwrap();
+        let page = store.read(&token, &binding).unwrap();
+        for (position, value) in [(0, 2), (33, 2), (34, 1)] {
+            let mut payload = page.payload.clone();
+            payload[position] = value;
+            let invalid = issue_search_cursor(&page.owner, &payload).unwrap();
+            assert_eq!(
+                store.read(&invalid, &binding).err(),
+                Some(SearchCursorError::Invalid)
+            );
+        }
+        let mut some_zero = page.payload.clone();
+        some_zero[33] = 1;
+        let signed = issue_search_cursor(&page.owner, &some_zero).unwrap();
+        assert_eq!(
+            store.read(&signed, &binding).err(),
+            Some(SearchCursorError::Stale)
+        );
+        assert_eq!(
+            SearchCursorStore::next_offset(usize::MAX, 1),
+            Err(SearchCursorError::OffsetNotRepresentable)
+        );
+        assert_eq!(
+            SearchCursorStore::next_offset(usize::MAX - 1, 1),
+            Ok(usize::MAX)
+        );
+    }
+
+    #[test]
+    fn search_every_question_field_precedes_answer_fingerprint_validation() {
+        let store = SearchCursorStore::default();
+        let mut binding = search_binding("needle", "unused");
+        binding.source_sets = vec!["main".into(), "extension".into()];
+        binding.result_fingerprint = Some("answer".into());
+        let token = store.insert_first(binding.clone(), 20).unwrap();
+        let changes: [fn(&mut SearchCursorBinding); 7] = [
+            |v| v.workspace_identity.push('x'),
+            |v| v.query.push('x'),
+            |v| v.scope = Some(String::new()),
+            |v| v.mode.push('x'),
+            |v| v.kind = Some(String::new()),
+            |v| v.source_sets.reverse(),
+            |v| v.page_limit += 1,
+        ];
+        for change in changes {
+            let mut other = binding.clone();
+            change(&mut other);
+            other.result_fingerprint = None;
+            assert_eq!(
+                store.read(&token, &other).err(),
+                Some(SearchCursorError::Invalid)
+            );
+        }
+        for fingerprint in [
+            None,
+            Some(String::new()),
+            Some("changed coverage/index/warnings".into()),
+        ] {
+            let mut other = binding.clone();
+            other.result_fingerprint = fingerprint;
+            assert_eq!(
+                store.read(&token, &other).err(),
+                Some(SearchCursorError::Stale)
+            );
+        }
+        assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
+    }
+
+    #[test]
+    fn search_failed_key_entropy_publishes_nothing_and_retry_uses_a_real_key() {
+        fn partial_failure(bytes: &mut [u8]) -> Result<(), SearchCursorError> {
+            bytes[0] = 42;
+            Err(SearchCursorError::EntropyUnavailable)
+        }
+        let mut store = SearchCursorStore {
+            entropy: Some(partial_failure),
+            ..Default::default()
+        };
+        let binding = search_binding("needle", "unused");
+        let error = store.insert_first(binding.clone(), 20).unwrap_err();
+        assert_eq!(error, SearchCursorError::EntropyUnavailable);
+        assert_eq!(
+            error.into_result(None).diagnostics[0]["detailCode"],
+            "provider_absent"
+        );
+        assert!(store.owner.lock().unwrap().is_none());
+        assert_eq!(
+            store
+                .read(&SearchCursorStore::token_probe(), &binding)
+                .err(),
+            Some(SearchCursorError::Invalid)
+        );
+        store.entropy = None;
+        let token = store.insert_first(binding.clone(), 20).unwrap();
+        assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
+    }
+
+    #[test]
+    fn search_failed_chain_entropy_preserves_the_existing_owner_and_tokens() {
+        fn failure(_: &mut [u8]) -> Result<(), SearchCursorError> {
+            Err(SearchCursorError::EntropyUnavailable)
+        }
+        let mut store = SearchCursorStore::default();
+        let binding = search_binding("needle", "unused");
+        let first = store.insert_first(binding.clone(), 20).unwrap();
+        let original = store.owner.lock().unwrap().as_ref().unwrap().clone();
+        store.entropy = Some(failure);
+        let error = store.insert_first(binding.clone(), 20).unwrap_err();
+        assert_eq!(error, SearchCursorError::EntropyUnavailable);
+        assert_eq!(
+            error.into_result(None).diagnostics[0]["detailCode"],
+            "provider_absent"
+        );
+        assert!(Arc::ptr_eq(
+            &original,
+            store.owner.lock().unwrap().as_ref().unwrap()
+        ));
+        let page = store.read(&first, &binding).unwrap();
+        let next = store.insert_next(&page, 40).unwrap();
+        assert_eq!(store.read(&next, &binding).unwrap().offset, 40);
+        assert_eq!(format!("{original:?}"), "SearchCursorOwner { .. }");
+    }
+
+    #[test]
+    fn search_poison_is_a_typed_owner_failure_without_discarding_its_identity() {
+        let store = Arc::new(SearchCursorStore::default());
+        let binding = search_binding("needle", "unused");
+        let first = store.insert_first(binding.clone(), 20).unwrap();
+        let page = store.read(&first, &binding).unwrap();
+        let poisoned = Arc::clone(&store);
+        assert!(std::thread::spawn(move || {
+            let _owner = poisoned.owner.lock().unwrap();
+            panic!("injected cursor owner poison");
+        })
+        .join()
+        .is_err());
+        let error = store
+            .read(&first, &binding)
+            .err()
+            .expect("actual poisoned owner refuses");
+        assert_eq!(error, SearchCursorError::OwnerUnavailable);
+        assert_eq!(
+            error.into_result(None).diagnostics[0]["detailCode"],
+            "cache_poisoned"
+        );
+        assert_eq!(
+            store.insert_first(binding, 40).err(),
+            Some(SearchCursorError::OwnerUnavailable)
+        );
+        assert_eq!(
+            store.insert_next(&page, 40).err(),
+            Some(SearchCursorError::OwnerUnavailable)
+        );
+        assert_eq!(
+            SearchCursorError::OwnerUnavailable.code(),
+            RefusalCode::ProviderUnavailable
+        );
+    }
+
+    #[test]
+    fn search_concurrent_chains_and_successor_replay_share_one_immutable_owner() {
+        let store = Arc::new(SearchCursorStore::default());
+        let binding = search_binding("needle", "unused");
+        let workers: Vec<_> = (0..16)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let binding = binding.clone();
+                std::thread::spawn(move || {
+                    let first = store.insert_first(binding.clone(), 20).unwrap();
+                    let page = store.read(&first, &binding).unwrap();
+                    let next = store.insert_next(&page, 40).unwrap();
+                    assert_eq!(store.insert_next(&page, 40).unwrap(), next);
+                    assert_eq!(store.read(&first, &binding).unwrap().offset, 20);
+                    (first, next)
+                })
+            })
+            .collect();
+        let chains: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(
+            chains
+                .iter()
+                .map(|chain| &chain.0)
+                .collect::<HashSet<_>>()
+                .len(),
+            chains.len()
+        );
+        for (first, next) in chains {
+            assert_eq!(store.read(&first, &binding).unwrap().offset, 20);
+            assert_eq!(store.read(&next, &binding).unwrap().offset, 40);
+        }
+        assert_eq!(
+            Arc::strong_count(store.owner.lock().unwrap().as_ref().unwrap()),
+            1
+        );
+    }
+
+    #[test]
+    fn search_cursor_failures_preserve_exact_public_reason_and_next_actor() {
+        let cases = [
+            (
+                SearchCursorError::Invalid,
+                "invalid_cursor",
+                None,
+                "fixCall",
+            ),
+            (SearchCursorError::Stale, "stale_cursor", None, "fixCall"),
+            (
+                SearchCursorError::OwnerUnavailable,
+                "provider_unavailable",
+                Some("cache_poisoned"),
+                "needsHuman",
+            ),
+            (
+                SearchCursorError::EntropyUnavailable,
+                "provider_unavailable",
+                Some("provider_absent"),
+                "needsHuman",
+            ),
+            (
+                SearchCursorError::TokenUnavailable,
+                "provider_failed",
+                None,
+                "deadEnd",
+            ),
+            (
+                SearchCursorError::OffsetNotRepresentable,
+                "provider_failed",
+                None,
+                "deadEnd",
+            ),
+        ];
+        for (error, code, detail, outcome) in cases {
+            let at = "main:Configuration";
+            let result = error.into_result(Some(at.into()));
+            assert!(!result.ok);
+            assert_eq!(result.at.as_deref(), Some(at));
+            assert!(result.data.is_none());
+            let diagnostic = &result.diagnostics[0];
+            assert_eq!(diagnostic["code"], code);
+            assert_eq!(diagnostic.get("detailCode").and_then(Value::as_str), detail);
+            assert_eq!(diagnostic["outcome"], outcome);
+            assert_eq!(diagnostic["message"], error.message());
+        }
+    }
+
+    #[test]
+    fn search_cipher_passes_rfc5297_deterministic_known_answer() {
+        use aes_siv::KeyInit;
+        fn hex(text: &str) -> Vec<u8> {
+            text.as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        }
+        let key = hex("fffefdfcfbfaf9f8f7f6f5f4f3f2f1f0f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff");
+        let aad = hex("101112131415161718191a1b1c1d1e1f2021222324252627");
+        let plain = hex("112233445566778899aabbccddee");
+        let expected = hex("85632d07c6e8f37f950acd320a2ecc9340c02b9690c4dc04daef7f6afe5c");
+        let mut cipher = aes_siv::siv::Aes128Siv::new_from_slice(&key).unwrap();
+        assert_eq!(cipher.encrypt([&aad], &plain).unwrap(), expected);
+        assert_eq!(cipher.decrypt([&aad], &expected).unwrap(), plain);
+    }
+
+    #[test]
+    fn search_cipher_passes_upstream_aes256_known_answer() {
+        use aes_siv::KeyInit;
+        fn hex(text: &str) -> Vec<u8> {
+            text.as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        }
+        // RustCrypto aes-siv v0.8.0, tests/siv.rs::aes256cmacsiv, first vector:
+        // https://github.com/RustCrypto/AEADs/blob/aes-siv-v0.8.0/aes-siv/tests/siv.rs
+        let key = hex("fffefdfcfbfaf9f8f7f6f5f4f3f2f1f06f6e6d6c6b6a69686766656463626160f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff000102030405060708090a0b0c0d0e0f");
+        let aad = hex("101112131415161718191a1b1c1d1e1f2021222324252627");
+        let plain = hex("112233445566778899aabbccddee");
+        let expected = hex("f125274c598065cfc26b0e71575029088b035217e380cac8919ee800c126");
+        let mut cipher = aes_siv::siv::Aes256Siv::new_from_slice(&key).unwrap();
+        assert_eq!(cipher.encrypt([&aad], &plain).unwrap(), expected);
+        assert_eq!(cipher.decrypt([&aad], &expected).unwrap(), plain);
     }
 
     #[test]

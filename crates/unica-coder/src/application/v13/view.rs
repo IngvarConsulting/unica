@@ -784,7 +784,6 @@ fn cursor_error(error: ViewCursorError) -> ViewError {
             ViewCursorError::Invalid => {
                 "view cursor is invalid, expired, or belongs to another question"
             }
-            ViewCursorError::Stale => "source revision changed after the view cursor was issued",
         },
     )
 }
