@@ -6105,3 +6105,463 @@ fn canonical_dcs_format_owner_read_stops_at_typed_midstream_checkpoint() {
         );
     }
 }
+
+fn external_leaf_descriptor(kind: &str, name: &str, comment_bytes: usize) -> String {
+    format!(
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="10000000-0000-4000-8000-000000000010"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}><!--{}--></MetaDataObject>"#,
+        "x".repeat(comment_bytes)
+    )
+}
+
+fn external_leaf_fixture(kind: SourceSetKind) -> (tempfile::TempDir, PathBuf) {
+    let workspace = tempfile::tempdir().unwrap();
+    let source = workspace.path().join("external");
+    fs::create_dir(&source).unwrap();
+    let source_type = if kind == SourceSetKind::ExternalProcessor {
+        "EXTERNAL_DATA_PROCESSORS"
+    } else {
+        "EXTERNAL_REPORTS"
+    };
+    fs::write(workspace.path().join("v8project.yaml"), format!("format: DESIGNER\nsource-set:\n  - name: artifact\n    type: {source_type}\n    path: external\n")).unwrap();
+    let source = fs::canonicalize(source).unwrap();
+    (workspace, source)
+}
+
+fn external_leaf_read(source: &Path, kind: SourceSetKind) -> ProviderReadAuthority {
+    ProviderReadAuthority::new_local_snapshot(
+        "artifact",
+        "external-leaf-identity",
+        kind,
+        Arc::new(RetainedDirectoryCapability::open(source).unwrap()),
+        "external-leaf-local-read".into(),
+    )
+}
+
+#[test]
+fn external_inventory_accepts_a_single_owner_descriptor_beyond_eight_mib() {
+    for (kind, xml_kind) in [
+        (SourceSetKind::ExternalProcessor, "ExternalDataProcessor"),
+        (SourceSetKind::ExternalReport, "ExternalReport"),
+    ] {
+        let (_workspace, source) = external_leaf_fixture(kind);
+        let original = external_leaf_descriptor(xml_kind, "Large", 9 * 1024 * 1024);
+        fs::write(source.join("Large.xml"), &original).unwrap();
+        let payload = configuration_payload(&external_leaf_read(&source, kind))
+            .expect("valid external owner must not fail the old per-file cap");
+        assert_eq!(
+            payload["registeredObjects"],
+            json!([{"kind":xml_kind,"name":"Large"}])
+        );
+        assert_eq!(payload["format"], "PlatformXml");
+        assert_eq!(payload["name"], "artifact");
+        assert_eq!(
+            fs::read_to_string(source.join("Large.xml")).unwrap(),
+            original
+        );
+    }
+}
+
+#[test]
+fn named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback() {
+    for (kind, xml_kind) in [
+        (SourceSetKind::ExternalProcessor, "ExternalDataProcessor"),
+        (SourceSetKind::ExternalReport, "ExternalReport"),
+    ] {
+        let (_workspace, source) = external_leaf_fixture(kind);
+        fs::write(
+            source.join("Large.xml"),
+            external_leaf_descriptor(xml_kind, "Large", 9 * 1024 * 1024),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let authority = LogicalViewReadAuthority::with_read_authority(
+            &cancellation,
+            external_leaf_read(&source, kind),
+            PlatformProfile::v8_3_27(),
+            ProviderDeadline::no_deadline(),
+        );
+        let at = format!("artifact:{xml_kind}.Large");
+        let result = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new(&at).unwrap());
+        assert!(result.ok, "large external named view refused: {result:?}");
+        let node = result.data.unwrap();
+        assert_eq!(node["at"], at);
+        assert_eq!(node["kind"], xml_kind);
+        assert_eq!(node["title"], "Large");
+        assert_eq!(node["props"]["kind"], xml_kind);
+    }
+}
+
+#[test]
+fn external_inventory_retains_all_257_immediate_owners_and_the_last_named_view() {
+    for (kind, xml_kind) in [
+        (SourceSetKind::ExternalProcessor, "ExternalDataProcessor"),
+        (SourceSetKind::ExternalReport, "ExternalReport"),
+    ] {
+        let (_workspace, source) = external_leaf_fixture(kind);
+        let mut expected = Vec::new();
+        for index in 0..257 {
+            let name = format!("Owner{index:03}");
+            fs::write(
+                source.join(format!("{name}.xml")),
+                external_leaf_descriptor(xml_kind, &name, 0),
+            )
+            .unwrap();
+            expected.push(json!({"kind":xml_kind,"name":name}));
+        }
+        let payload = configuration_payload(&external_leaf_read(&source, kind))
+            .expect("all immediate owner names must be inspected without a count quota");
+        assert_eq!(
+            payload["registeredObjects"],
+            serde_json::Value::Array(expected)
+        );
+        let cancellation = CancellationToken::new();
+        let authority = LogicalViewReadAuthority::with_read_authority(
+            &cancellation,
+            external_leaf_read(&source, kind),
+            PlatformProfile::v8_3_27(),
+            ProviderDeadline::no_deadline(),
+        );
+        let at = format!("artifact:{xml_kind}.Owner256");
+        let viewed = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new(&at).unwrap());
+        assert!(viewed.ok, "last real owner was lost: {viewed:?}");
+        assert_eq!(viewed.data.as_ref().unwrap()["at"], at);
+        assert_eq!(viewed.data.as_ref().unwrap()["title"], "Owner256");
+    }
+}
+
+#[test]
+fn external_inventory_does_not_limit_noise_before_a_valid_owner() {
+    let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+    for index in 0..257 {
+        fs::write(source.join(format!("noise{index:03}.txt")), "unrelated").unwrap();
+    }
+    fs::write(
+        source.join("Useful.xml"),
+        external_leaf_descriptor("ExternalDataProcessor", "Useful", 0),
+    )
+    .unwrap();
+    let payload = configuration_payload(&external_leaf_read(
+        &source,
+        SourceSetKind::ExternalProcessor,
+    ))
+    .unwrap();
+    assert_eq!(
+        payload["registeredObjects"],
+        json!([{"kind":"ExternalDataProcessor","name":"Useful"}])
+    );
+}
+
+#[test]
+fn external_inventory_rejects_malformed_and_non_utf8_late_tails_without_partial_rows() {
+    for invalid_utf8 in [false, true] {
+        let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+        fs::write(
+            source.join("AGood.xml"),
+            external_leaf_descriptor("ExternalDataProcessor", "AGood", 0),
+        )
+        .unwrap();
+        let mut bytes =
+            external_leaf_descriptor("ExternalDataProcessor", "ZLarge", 9 * 1024 * 1024)
+                .into_bytes();
+        if invalid_utf8 {
+            bytes.push(0xff);
+        } else {
+            bytes.extend_from_slice(b"<unfinished>");
+        }
+        fs::write(source.join("ZLarge.xml"), &bytes).unwrap();
+        let error = configuration_payload(&external_leaf_read(
+            &source,
+            SourceSetKind::ExternalProcessor,
+        ))
+        .unwrap_err();
+        assert_eq!(error.code(), RefusalCode::ProviderUnavailable);
+        assert!(
+            !error.to_string().contains("read limit"),
+            "must reach actual full parser beyond former cap: {error}"
+        );
+        let cancellation = CancellationToken::new();
+        let authority = LogicalViewReadAuthority::with_read_authority(
+            &cancellation,
+            external_leaf_read(&source, SourceSetKind::ExternalProcessor),
+            PlatformProfile::v8_3_27(),
+            ProviderDeadline::no_deadline(),
+        );
+        let result = ViewService::new(authority, ViewCursorStore::default())
+            .view(ViewRequest::new("artifact:Configuration").unwrap());
+        assert!(!result.ok);
+        assert!(
+            result.data.is_none(),
+            "malformed late descriptor cannot publish earlier partial rows"
+        );
+        assert_eq!(fs::read(source.join("ZLarge.xml")).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn external_inventory_preserves_explicit_cancellation_during_a_large_owner_read() {
+    let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+    fs::write(
+        source.join("Large.xml"),
+        external_leaf_descriptor("ExternalDataProcessor", "Large", 9 * 1024 * 1024),
+    )
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let mut checks = 0;
+    let error = external_leaf_read(&source, SourceSetKind::ExternalProcessor)
+        .configuration_payload_with_checkpoint(&mut || {
+            checks += 1;
+            if checks == 16 {
+                cancellation.cancel();
+            }
+            if cancellation.is_cancelled() {
+                Err(ViewError::new(
+                    RefusalCode::Cancelled,
+                    "manual external cancellation",
+                ))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+    assert_eq!(checks, 16);
+    assert_eq!(error.code(), RefusalCode::Cancelled);
+}
+
+#[test]
+fn named_external_view_rejects_replaced_retained_root_without_reading_ambient_owner() {
+    if !supports_retained_root_replacement_test() {
+        return;
+    }
+    let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+    fs::write(
+        source.join("Original.xml"),
+        external_leaf_descriptor("ExternalDataProcessor", "Original", 0),
+    )
+    .unwrap();
+    let read = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
+    let saved = source.with_file_name("retained-external");
+    fs::rename(&source, &saved).unwrap();
+    fs::create_dir(&source).unwrap();
+    let foreign = external_leaf_descriptor("ExternalDataProcessor", "Foreign", 0);
+    fs::write(source.join("Foreign.xml"), &foreign).unwrap();
+    let cancellation = CancellationToken::new();
+    let authority = LogicalViewReadAuthority::with_read_authority(
+        &cancellation,
+        read,
+        PlatformProfile::v8_3_27(),
+        ProviderDeadline::no_deadline(),
+    );
+    let result = ViewService::new(authority, ViewCursorStore::default())
+        .view(ViewRequest::new("artifact:Configuration").unwrap());
+    assert!(!result.ok);
+    assert!(result.data.is_none());
+    assert_eq!(
+        fs::read_to_string(source.join("Foreign.xml")).unwrap(),
+        foreign
+    );
+    assert!(saved.join("Original.xml").is_file());
+}
+
+#[test]
+fn external_inventory_leaf_preserves_actor_admission_membership_finality() {
+    let (workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+    fs::write(
+        source.join("Useful.xml"),
+        external_leaf_descriptor("ExternalDataProcessor", "Useful", 0),
+    )
+    .unwrap();
+    for index in 0..257 {
+        fs::write(source.join(format!("noise{index:03}.txt")), "unrelated").unwrap();
+    }
+    let admission =
+        crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+            workspace.path(),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(admission.map().source_sets.len(), 1);
+    assert_eq!(
+        admission.map().source_sets[0].kind,
+        SourceSetKind::ExternalProcessor
+    );
+    let before_format = admission.map().source_sets[0].source_format;
+    let before_evidence = admission.map().source_sets[0].format_evidence.clone();
+    let evidence = admission.into_evidence();
+    evidence
+        .validate(ProviderDeadline::no_deadline(), &CancellationToken::new())
+        .unwrap();
+    fs::write(
+        source.join("noise-after-admission.txt"),
+        "late unrelated member",
+    )
+    .unwrap();
+    let current = crate::infrastructure::project_sources::discover_project_source_map_controlled(
+        workspace.path(),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(current.source_sets[0].source_format, before_format);
+    assert_eq!(current.source_sets[0].format_evidence, before_evidence);
+    assert_eq!(
+        evidence
+            .validate(ProviderDeadline::no_deadline(), &CancellationToken::new())
+            .unwrap_err()
+            .kind(),
+        crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed
+    );
+}
+
+#[test]
+fn named_external_descriptor_and_owner_evidence_preserve_chunk_cancellation() {
+    for evidence_read in [false, true] {
+        let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+        fs::write(
+            source.join("Large.xml"),
+            external_leaf_descriptor("ExternalDataProcessor", "Large", 9 * 1024 * 1024),
+        )
+        .unwrap();
+        let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
+        assert_eq!(
+            configuration_payload(&reader).unwrap()["registeredObjects"],
+            json!([{"kind":"ExternalDataProcessor","name":"Large"}])
+        );
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "ExternalDataProcessor.Large",
+        )
+        .unwrap();
+        let cancellation = CancellationToken::new();
+        let mut checks = 0;
+        let mut checkpoint = || {
+            checks += 1;
+            if checks == 16 {
+                cancellation.cancel();
+            }
+            if cancellation.is_cancelled() {
+                Err(ViewError::new(
+                    RefusalCode::Cancelled,
+                    "manual named owner cancellation",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        let error = if evidence_read {
+            reader
+                .metadata_owner_evidence(&target, &mut checkpoint)
+                .expect_err("cancelled named proof cannot succeed")
+        } else {
+            reader
+                .external_metadata_payload(&target, &mut checkpoint)
+                .expect_err("cancelled named payload cannot succeed")
+        };
+        assert_eq!(checks, 16);
+        assert_eq!(error.code(), RefusalCode::Cancelled);
+    }
+}
+
+#[test]
+fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
+    for evidence_read in [false, true] {
+        let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+        let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "ExternalDataProcessor.Missing",
+        )
+        .unwrap();
+        let missing = if evidence_read {
+            reader
+                .metadata_owner_evidence(&target, &mut || Ok(()))
+                .unwrap_err()
+        } else {
+            reader
+                .external_metadata_payload(&target, &mut || Ok(()))
+                .unwrap_err()
+        };
+        assert_eq!(missing.code(), RefusalCode::NotFound);
+        assert_eq!(missing.detail(), None);
+        assert_eq!(
+            missing.to_string(),
+            "metadata descriptor `Missing.xml` is absent"
+        );
+        assert_eq!(reader.metadata_descriptor_read_count(target.as_str()), 1);
+
+        fs::create_dir(source.join("Missing.xml")).unwrap();
+        let unreadable = if evidence_read {
+            reader
+                .metadata_owner_evidence(&target, &mut || Ok(()))
+                .unwrap_err()
+        } else {
+            reader
+                .external_metadata_payload(&target, &mut || Ok(()))
+                .unwrap_err()
+        };
+        assert_eq!(
+            unreadable.detail(),
+            Some(crate::domain::refusal::RefusalDetail::SourceUnreadable)
+        );
+        assert_ne!(unreadable.code(), RefusalCode::NotFound);
+        assert_eq!(reader.metadata_descriptor_read_count(target.as_str()), 2);
+        assert!(source.join("Missing.xml").is_dir());
+    }
+}
+
+#[test]
+fn named_external_missing_descriptor_preserves_explicit_cancellation() {
+    for evidence_read in [false, true] {
+        let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+        let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "ExternalDataProcessor.Missing",
+        )
+        .unwrap();
+        let expected = ViewError::new(RefusalCode::Cancelled, "manual missing owner cancellation");
+        let mut checks = 0;
+        let mut checkpoint = || {
+            checks += 1;
+            Err(expected.clone())
+        };
+        let error = if evidence_read {
+            reader
+                .metadata_owner_evidence(&target, &mut checkpoint)
+                .unwrap_err()
+        } else {
+            reader
+                .external_metadata_payload(&target, &mut checkpoint)
+                .unwrap_err()
+        };
+        assert_eq!(error, expected);
+        assert_eq!(checks, 1);
+        assert!(!source.join("Missing.xml").exists());
+    }
+}
+
+#[test]
+fn external_leaf_preserves_an_explicit_finite_relative_read_limit() {
+    let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+    let bytes = external_leaf_descriptor("ExternalDataProcessor", "Large", 1024).into_bytes();
+    fs::write(source.join("Large.xml"), &bytes).unwrap();
+    let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
+    let error = reader
+        .read_relative(Path::new("Large.xml"), 128)
+        .unwrap_err();
+    assert_eq!(
+        error.detail(),
+        Some(crate::domain::refusal::RefusalDetail::SourceUnreadable)
+    );
+    assert!(error.to_string().contains("128-byte read limit"));
+    assert_eq!(
+        reader
+            .read_relative(Path::new("Large.xml"), bytes.len())
+            .unwrap(),
+        bytes
+    );
+    assert_eq!(
+        configuration_payload(&reader).unwrap()["registeredObjects"],
+        json!([{"kind":"ExternalDataProcessor","name":"Large"}])
+    );
+}
