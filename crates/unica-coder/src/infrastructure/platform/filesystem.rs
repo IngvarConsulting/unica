@@ -4119,6 +4119,24 @@ pub(crate) fn create_new_regular_child(
     )
 }
 
+/// Removes the directory tree `name` beneath the open `parent` without
+/// following a symbolic link anywhere in it: a link is removed, not entered.
+pub(crate) fn remove_directory_tree_child(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    cap_primitives::fs::remove_dir_all(parent, Path::new(name))
+}
+
+/// Whether a held ownership lock keeps its own directory from being renamed.
+///
+/// Unix locks the directory object, which a rename carries along. Windows
+/// locks a child file opened without delete sharing, and the system refuses to
+/// rename a directory beneath such a handle.
+pub(crate) const fn ownership_locks_pin_their_directory() -> bool {
+    cfg!(windows)
+}
+
 /// Returns the stable object on which a store can hold its lifetime ownership
 /// lock without rediscovering ownership through a replaceable name.
 ///

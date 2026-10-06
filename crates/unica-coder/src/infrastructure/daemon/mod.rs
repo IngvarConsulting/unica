@@ -5,6 +5,7 @@ pub(crate) mod protocol;
 pub(crate) mod protocol_v5;
 pub(crate) mod runtime_v5;
 pub(crate) mod server;
+pub(crate) mod state_collection;
 pub(crate) mod terminal_codec_v5;
 mod v13_artifact_build;
 mod v13_call_graph;

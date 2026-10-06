@@ -9,6 +9,9 @@ check:
   - crates/unica-coder/tests/host_workspace_context.rs::client_roots_override_stale_startup_environment_on_every_call
   - crates/unica-bootstrap/src/host/workspace_context.rs::first_client_root_outranks_stale_launch_environment_but_not_request_metadata
   - crates/unica-bootstrap/src/host/workspace_context.rs::a_supplied_root_satisfies_required_context_and_a_malformed_one_never_falls_back
+  - crates/unica-coder/tests/host_workspace_context.rs::view_names_the_channel_that_chose_the_workspace_and_hints_only_for_stale_ones
+  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::workspace_origin_is_named_next_to_every_workspace_root
+  - crates/unica-coder/src/infrastructure/daemon/protocol_v5.rs::workspace_origin_is_not_part_of_the_strict_submit_receipt_identity
 ---
 
 # Рабочую папку вызова передаёт приложение-хост
@@ -40,6 +43,15 @@ Claude Code передаёт `CLAUDE_PROJECT_DIR`, ZCode — `ZCODE_PROJECT_DIR`
 cwd не становится рабочим пространством. Прямой запуск бинарника без этого
 требования сохраняет fallback на cwd запуска. Каталог демона остаётся
 служебным, а рабочая папка передаётся в каждое предметное обращение явно.
+
+Каждый ответ с `workspaceRoot` называет рядом в `workspaceRootOrigin` канал,
+выбравший каталог (`requestMetadata`, `clientRoots`, `startupEnvironment`
+с именем переменной, `launchCwd`), и сам запрошенный каталог: корень может
+оказаться его предком. Если клиент в сессии до протокола 2026-07-28 объявил
+roots, но канал запуска остался главным, ответ называет причину из закрытого набора (`empty`, `error`,
+`timeout`, `closed`) без текста ошибки клиента. Для каналов, захваченных при
+запуске, ответ подсказывает, как перейти к другому проекту. Канал объясняет
+каталог и в идентичность запроса не входит.
 
 Особенности приложений сосредоточены в [адаптере хоста](../platform/host-integration.md).
 Разделение состояния сохраняет [идентичность workspace и профиля](source-profile-state-isolation.md).

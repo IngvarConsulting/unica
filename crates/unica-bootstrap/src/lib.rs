@@ -21,7 +21,8 @@ pub use host::{
     capture_host_workspace_context, host_tool_deadline, host_workspace_capabilities,
     host_workspace_environment_keys, provider_state_root, request_needs_client_roots,
     runtime_cache_root, verify_installed_plugin_metadata, verify_installed_skill_package,
-    ClientRoots, HostRequest, HostWorkspaceContext,
+    ClientRoots, HostRequest, HostWorkspaceContext, ResolvedWorkspace, RootsFailure, RootsFallback,
+    WorkspaceOrigin,
 };
 pub use manifest::{
     Artifact, ArtifactRole, DeliveryForm, ReleaseIdentity, RuntimeAsset, RuntimeFile,

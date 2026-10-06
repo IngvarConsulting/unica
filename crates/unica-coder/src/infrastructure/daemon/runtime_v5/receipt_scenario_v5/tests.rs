@@ -795,7 +795,7 @@ fn genuine_no_elapsed_fail_stop_releases_its_owner_before_a_fresh_native_success
         old_key.reserved_task_id(),
         V5ToolIdentity::View,
         arguments.clone(),
-        workspace.hint().to_owned(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace.hint().to_owned()),
         7_000,
     )
     .expect("old native invocation");
@@ -858,7 +858,7 @@ fn genuine_no_elapsed_fail_stop_releases_its_owner_before_a_fresh_native_success
         fresh_key.reserved_task_id(),
         V5ToolIdentity::View,
         arguments,
-        workspace.hint().to_owned(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace.hint().to_owned()),
         7_000,
     )
     .expect("fresh native invocation");

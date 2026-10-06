@@ -186,7 +186,9 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
         task_id,
         tool,
         serde_json::Map::new(),
-        workspace_root.to_string_lossy().into_owned(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(
+            workspace_root.to_string_lossy().into_owned(),
+        ),
         7_000,
     )
     .unwrap();
@@ -221,7 +223,9 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
                     TaskId::new(),
                     V5ToolIdentity::View,
                     serde_json::Map::new(),
-                    independent_workspace.path().to_string_lossy().into_owned(),
+                    unica_bootstrap::ResolvedWorkspace::launch_cwd(
+                        independent_workspace.path().to_string_lossy().into_owned(),
+                    ),
                     7_000,
                 )
                 .unwrap(),
@@ -547,7 +551,7 @@ fn cancel_task_signals_the_running_v5_canonical_execution() {
             "at".to_owned(),
             serde_json::Value::String("main:Catalog.Items".to_owned()),
         )]),
-        workspace.to_string_lossy().into_owned(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace.to_string_lossy().into_owned()),
         7_000,
     )
     .expect("valid known-long invocation");
@@ -800,7 +804,7 @@ fn seven_second_submit_budget_is_not_truncated_by_transport_timeouts() {
         TaskId::new(),
         V5ToolIdentity::View,
         serde_json::Map::new(),
-        "workspace-a".to_owned(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd("workspace-a".to_owned()),
         7_000,
     )
     .expect("valid long-submit request");
@@ -3314,7 +3318,7 @@ fn cancel_reserved_survives_former_ttl_and_restart_before_late_submit_without_ca
         reserved_task_id,
         V5ToolIdentity::View,
         arguments,
-        "workspace-a".to_owned(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd("workspace-a".to_owned()),
         7_000,
     )
     .expect("strict late invocation");
@@ -3367,7 +3371,7 @@ fn authenticated_pre_cancel_submit_and_recover_cross_the_actor_owned_runtime() {
         reserved_task_id,
         V5ToolIdentity::View,
         arguments,
-        "workspace-a".to_string(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd("workspace-a".to_string()),
         7_000,
     )
     .expect("strict invocation");
@@ -4164,10 +4168,12 @@ fn promised_work_call_over_tcp(
         TaskId::new(),
         tool,
         arguments.as_object().unwrap().clone(),
-        std::fs::canonicalize(workspace)
-            .unwrap()
-            .display()
-            .to_string(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(
+            std::fs::canonicalize(workspace)
+                .unwrap()
+                .display()
+                .to_string(),
+        ),
         7_000,
     )
     .unwrap();

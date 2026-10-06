@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::descriptor::KNOWN;
@@ -12,8 +13,92 @@ use super::descriptor::KNOWN;
 /// the context of other calls sharing the same frontend.
 #[derive(Clone, Debug)]
 pub struct HostWorkspaceContext {
-    launch_directory: Result<PathBuf, String>,
+    launch_directory: Result<LaunchDirectory, String>,
     require_existing_directory: bool,
+}
+
+/// The launch context and the project variable that named it, if any.
+#[derive(Clone, Debug)]
+struct LaunchDirectory {
+    path: PathBuf,
+    variable: Option<&'static str>,
+}
+
+/// How a `roots/list` exchange failed. A closed set: the client's own error
+/// text is neither carried to the daemon nor shown in a result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RootsFailure {
+    Error,
+    Timeout,
+    Closed,
+}
+
+/// Why a client that declared roots still left the launch context in charge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RootsFallback {
+    /// The client listed no roots.
+    Empty,
+    Error,
+    Timeout,
+    Closed,
+}
+
+/// Which channel chose the directory a call was resolved to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "channel",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum WorkspaceOrigin {
+    /// Per-call host metadata under this capability.
+    RequestMetadata { capability: String },
+    /// The first root the client listed for this call. A struct variant, so
+    /// that strict decoding refuses fields it does not carry.
+    ClientRoots {},
+    /// The project variable captured when the frontend started.
+    StartupEnvironment {
+        variable: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        roots: Option<RootsFallback>,
+    },
+    /// The directory the frontend was started in.
+    LaunchCwd {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        roots: Option<RootsFallback>,
+    },
+}
+
+impl WorkspaceOrigin {
+    /// Captured once at start, so it does not follow a session that later
+    /// changes its project.
+    pub fn can_be_stale(&self) -> bool {
+        matches!(
+            self,
+            Self::StartupEnvironment { .. } | Self::LaunchCwd { .. }
+        )
+    }
+}
+
+/// The directory of one call and the channel that chose it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedWorkspace {
+    pub directory: String,
+    pub origin: WorkspaceOrigin,
+}
+
+impl ResolvedWorkspace {
+    /// A directory the process was started in, with no host channel: direct
+    /// invocations and fixtures that name their workspace themselves.
+    pub fn launch_cwd(directory: impl Into<String>) -> Self {
+        Self {
+            directory: directory.into(),
+            origin: WorkspaceOrigin::LaunchCwd { roots: None },
+        }
+    }
 }
 
 /// Roots the MCP client reported for this request (`roots/list`).
@@ -31,7 +116,7 @@ pub enum ClientRoots {
     /// The client declared roots but the exchange failed: an error answer,
     /// a timeout or a closed transport. Nothing was supplied, so the launch
     /// context still applies.
-    Unavailable(String),
+    Unavailable(RootsFailure),
 }
 
 /// Host context of one tool call: wire metadata and the client's roots.
@@ -89,7 +174,10 @@ impl HostWorkspaceContext {
     /// Explicit launch directory for direct invocation and embedded consumers.
     pub fn from_directory(directory: PathBuf) -> Self {
         Self {
-            launch_directory: Ok(directory),
+            launch_directory: Ok(LaunchDirectory {
+                path: directory,
+                variable: None,
+            }),
             require_existing_directory: false,
         }
     }
@@ -98,14 +186,15 @@ impl HostWorkspaceContext {
     /// an error, never permission to fall back to another project's directory.
     pub fn resolve(&self, metadata: &Map<String, Value>) -> Result<String, String> {
         self.resolve_request(&HostRequest::from_metadata(metadata.clone()))
+            .map(|resolved| resolved.directory)
     }
 
     /// Precedence: per-call host metadata, then the first client root, then
     /// the launch context. The first root is the session's project in the
     /// order Claude Code lists it; the MCP specification does not order roots.
-    pub fn resolve_request(&self, request: &HostRequest) -> Result<String, String> {
+    pub fn resolve_request(&self, request: &HostRequest) -> Result<ResolvedWorkspace, String> {
         let metadata = &request.metadata;
-        let mut request_directory: Option<PathBuf> = None;
+        let mut request_directory: Option<(PathBuf, &'static str)> = None;
         for channel in KNOWN.iter().filter_map(|host| host.workspace_metadata) {
             if let Some(context) = metadata.get(channel.capability) {
                 let directory = context
@@ -121,29 +210,54 @@ impl HostWorkspaceContext {
                     PathBuf::from(existing_directory(&parse_request_directory(directory)?)?);
                 if request_directory
                     .as_ref()
-                    .is_some_and(|previous| !same_directory(previous, &directory))
+                    .is_some_and(|(previous, _)| !same_directory(previous, &directory))
                 {
                     return Err(
                         "Host workspace metadata declares conflicting directories".to_owned()
                     );
                 }
-                request_directory.get_or_insert(directory);
+                request_directory.get_or_insert((directory, channel.capability));
             }
         }
-        if let Some(directory) = request_directory {
-            return absolute_directory(&directory);
+        if let Some((directory, capability)) = request_directory {
+            return Ok(ResolvedWorkspace {
+                directory: absolute_directory(&directory)?,
+                origin: WorkspaceOrigin::RequestMetadata {
+                    capability: capability.to_owned(),
+                },
+            });
         }
-        if let ClientRoots::Listed(roots) = &request.roots {
-            if let Some(root) = roots.first() {
-                return existing_directory(&parse_root_uri(root)?);
-            }
-        }
-        let directory = self.launch_directory.as_ref().map_err(Clone::clone)?;
-        if self.require_existing_directory {
-            existing_directory(directory)
+        let roots = match &request.roots {
+            ClientRoots::Listed(roots) => match roots.first() {
+                Some(root) => {
+                    return Ok(ResolvedWorkspace {
+                        directory: existing_directory(&parse_root_uri(root)?)?,
+                        origin: WorkspaceOrigin::ClientRoots {},
+                    })
+                }
+                None => Some(RootsFallback::Empty),
+            },
+            ClientRoots::Unavailable(failure) => Some(match failure {
+                RootsFailure::Error => RootsFallback::Error,
+                RootsFailure::Timeout => RootsFallback::Timeout,
+                RootsFailure::Closed => RootsFallback::Closed,
+            }),
+            ClientRoots::NotDeclared => None,
+        };
+        let launch = self.launch_directory.as_ref().map_err(Clone::clone)?;
+        let directory = if self.require_existing_directory {
+            existing_directory(&launch.path)?
         } else {
-            absolute_directory(directory)
-        }
+            absolute_directory(&launch.path)?
+        };
+        let origin = match launch.variable {
+            Some(variable) => WorkspaceOrigin::StartupEnvironment {
+                variable: variable.to_owned(),
+                roots,
+            },
+            None => WorkspaceOrigin::LaunchCwd { roots },
+        };
+        Ok(ResolvedWorkspace { directory, origin })
     }
 }
 
@@ -152,7 +266,7 @@ fn capture_with(
     cwd: Result<PathBuf, String>,
 ) -> HostWorkspaceContext {
     let launch_directory = (|| {
-        let mut selected: Option<PathBuf> = None;
+        let mut selected: Option<LaunchDirectory> = None;
         for key in host_workspace_environment_keys() {
             if let Some(value) = read_env(key) {
                 let value = value
@@ -161,14 +275,17 @@ fn capture_with(
                 let directory = PathBuf::from(existing_directory(Path::new(value))?);
                 if selected
                     .as_ref()
-                    .is_some_and(|previous| !same_directory(previous, &directory))
+                    .is_some_and(|previous| !same_directory(&previous.path, &directory))
                 {
                     return Err(
                         "Host project environment declares conflicting directories".to_owned()
                     );
                 }
                 if selected.is_none() {
-                    selected = Some(directory);
+                    selected = Some(LaunchDirectory {
+                        path: directory,
+                        variable: Some(key),
+                    });
                 }
             }
         }
@@ -180,7 +297,10 @@ fn capture_with(
         if required {
             return Err("The host did not supply workspace context for this request".to_owned());
         }
-        cwd
+        cwd.map(|path| LaunchDirectory {
+            path,
+            variable: None,
+        })
     })();
     HostWorkspaceContext {
         launch_directory,
@@ -380,7 +500,11 @@ mod tests {
         let selected = context
             .resolve_request(&with_roots(Map::new(), listed.clone()))
             .unwrap();
-        assert!(same_directory(Path::new(&selected), &fixture.project()));
+        assert!(same_directory(
+            Path::new(&selected.directory),
+            &fixture.project()
+        ));
+        assert_eq!(selected.origin, WorkspaceOrigin::ClientRoots {});
 
         let selected = context
             .resolve_request(&with_roots(
@@ -388,21 +512,48 @@ mod tests {
                 listed,
             ))
             .unwrap();
-        assert!(same_directory(Path::new(&selected), &other));
+        assert!(same_directory(Path::new(&selected.directory), &other));
+        assert_eq!(
+            selected.origin,
+            WorkspaceOrigin::RequestMetadata {
+                capability: "codex/sandbox-state-meta".to_owned()
+            }
+        );
 
-        // Пустой список и сорванный обмен ничего не передают: остаётся запуск.
-        for roots in [
-            ClientRoots::Listed(Vec::new()),
-            ClientRoots::Unavailable("timed out".into()),
-            ClientRoots::NotDeclared,
+        // Пустой список и сорванный обмен ничего не передают: остаётся запуск,
+        // но ответ помнит, что roots были объявлены и почему не сработали.
+        for (roots, fallback) in [
+            (ClientRoots::Listed(Vec::new()), Some(RootsFallback::Empty)),
+            (
+                ClientRoots::Unavailable(RootsFailure::Timeout),
+                Some(RootsFallback::Timeout),
+            ),
+            (ClientRoots::NotDeclared, None),
         ] {
+            let resolved = context
+                .resolve_request(&with_roots(Map::new(), roots))
+                .unwrap();
+            assert_eq!(resolved.directory, fixture.0.to_str().unwrap());
             assert_eq!(
-                context
-                    .resolve_request(&with_roots(Map::new(), roots))
-                    .unwrap(),
-                fixture.0.to_str().unwrap()
+                resolved.origin,
+                WorkspaceOrigin::StartupEnvironment {
+                    variable: "CLAUDE_PROJECT_DIR".to_owned(),
+                    roots: fallback
+                }
             );
+            assert!(resolved.origin.can_be_stale());
         }
+        let launch_cwd = capture_with(&env(&[]), Ok(fixture.0.clone()))
+            .resolve_request(&HostRequest::default())
+            .unwrap();
+        assert_eq!(
+            launch_cwd.origin,
+            WorkspaceOrigin::LaunchCwd { roots: None }
+        );
+        assert_eq!(
+            serde_json::to_value(&launch_cwd.origin).unwrap(),
+            serde_json::json!({"channel": "launchCwd"})
+        );
     }
 
     #[test]
@@ -419,7 +570,10 @@ mod tests {
                 ClientRoots::Listed(vec![root_uri(&fixture.project())]),
             ))
             .unwrap();
-        assert!(same_directory(Path::new(&selected), &fixture.project()));
+        assert!(same_directory(
+            Path::new(&selected.directory),
+            &fixture.project()
+        ));
 
         let launch = HostWorkspaceContext::from_directory(fixture.0.clone());
         for root in [
