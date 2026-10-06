@@ -623,8 +623,11 @@ impl V5ReceiptRuntime {
                         let response_deadline = self
                             .invocation_executor
                             .capture_response_deadline(invocation.response_budget_ms());
-                        self.invocation_executor
-                            .bind(invocation.clone(), response_deadline)
+                        self.invocation_executor.bind(
+                            invocation.clone(),
+                            response_deadline,
+                            &CancellationToken::new(),
+                        )
                     })
                 })
                 .collect::<Vec<_>>();
@@ -1094,19 +1097,11 @@ impl V5ReceiptRuntime {
         &self.scenario_hooks().telemetry
     }
 
-    /// Whether a fail-stop watchdog is due on the runtime's clock: the accept
-    /// loop exits on it, and the harness waits for that exit.
     /// How many promoted attempts the owner handed to a worker are still
     /// running their continuation off the reply thread.
     pub(super) fn promoted_continuation_in_flight_for_test(&self) -> usize {
         self.promoted_continuations
             .load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    pub(super) fn fail_stop_due_for_test(&self) -> bool {
-        self.fail_stop_watchdogs
-            .due(self.invocation_executor.now())
-            .is_some()
     }
 
     /// The observer the harness installed; probes read its telemetry and

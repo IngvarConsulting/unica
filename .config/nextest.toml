@@ -137,6 +137,7 @@ binary(unica_coder) & (
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+    | test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
 )
 )
 )'''
@@ -169,6 +170,7 @@ binary(unica_coder) & (
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+    | test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
 )
 )
 )'''
@@ -198,6 +200,7 @@ binary(unica_coder) & (
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+    | test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
 )
 )
 )'''
@@ -237,6 +240,7 @@ binary(unica_coder) & (
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+    | test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
 )
 )
 '''
@@ -354,6 +358,7 @@ binary(unica_coder) & (
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_route_names_cross_former_8mib_with_real_absences$/)
+    | test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
 )
 )
 '''

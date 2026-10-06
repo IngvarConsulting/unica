@@ -3,13 +3,17 @@ use crate::domain::refusal::RefusalCode;
 #[path = "invocation_service.rs"]
 mod invocation_service;
 #[cfg(test)]
+use self::invocation_service::bind_workspace_invocation;
+#[cfg(test)]
+pub(crate) use self::invocation_service::test_control as admission_test_control;
+#[cfg(test)]
 use self::invocation_service::{
     actor_read_source_capability_for_test, actor_read_source_metadata_for_test,
     bind_workspace_invocation_with_source_override_for_test, ActorInvocationResourcesForTest,
     ActorReadSourceCapability,
 };
 use self::invocation_service::{
-    bind_workspace_invocation, UnadmittedCause, WorkspaceAdmissionError,
+    bind_workspace_invocation_cancellable, UnadmittedCause, WorkspaceAdmissionError,
 };
 pub(crate) use self::invocation_service::{
     ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService,
@@ -27,7 +31,7 @@ use crate::infrastructure::runtime_jobs::RuntimeJobService;
 use crate::infrastructure::runtime_jobs::RuntimeResourceOwner;
 use crate::infrastructure::workspace_actor::WorkspaceActorRegistry;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Безымянный неуспех — только для стенда.
 ///
@@ -174,12 +178,11 @@ fn reject_workspace_admission(
             format!("workspace source discovery failed: {reason}"),
             vec![verdict()],
         ),
-        // Повторяют тем же вызовом, поэтому продолжения нет: маршрут в обход
-        // рабочего пространства стоил бы того же срока.
-        UnadmittedCause::AdmissionDeadline => (
-            RefusalCode::DeadlineExceeded,
-            "workspace source discovery did not finish within the actor admission deadline"
-                .to_string(),
+        // Допуск остановила явная отмена задачи: продолжения нет, конечный
+        // исход задачи уже опубликован отменой.
+        UnadmittedCause::AdmissionCancelled => (
+            RefusalCode::Cancelled,
+            "workspace actor admission was cancelled".to_string(),
             Vec::new(),
         ),
         UnadmittedCause::ActorBindingFailed { stage } => (
@@ -612,12 +615,6 @@ impl V5CanonicalInvocationRuntime {
             .restrict_to_frontend_budget(Duration::from_millis(response_budget_ms))
     }
 
-    /// The instant this runtime's clock reads now; fail-stop watchdogs are
-    /// armed and read on it.
-    pub(super) fn now(&self) -> Instant {
-        self.clock.now()
-    }
-
     /// Bind under a deadline captured here and now: the direct path tests
     /// take, production captures at the reservation and binds with it.
     #[cfg(test)]
@@ -626,7 +623,7 @@ impl V5CanonicalInvocationRuntime {
         request: InvocationRequest,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         let response_deadline = self.capture_response_deadline(request.response_budget_ms());
-        self.bind_with_deadline(request, response_deadline)
+        self.bind_with_deadline(request, response_deadline, &CancellationToken::new())
     }
 
     /// Binds under a deadline the caller captured earlier: the same clock and
@@ -635,6 +632,7 @@ impl V5CanonicalInvocationRuntime {
         &self,
         mut request: InvocationRequest,
         response_deadline: InvocationResponseDeadline,
+        admission_cancellation: &CancellationToken,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         if let Err(summary) = validate_hidden_v13_request(&request) {
             return Err(V5CanonicalPrepareError::Rejected(Box::new(
@@ -778,7 +776,7 @@ impl V5CanonicalInvocationRuntime {
         let runtime_service = self.runtime_service.clone();
         #[cfg(not(test))]
         let runtime_service = None;
-        let invocation = bind_workspace_invocation(
+        let invocation = bind_workspace_invocation_cancellable(
             &request,
             &self.workspace_actors,
             Arc::clone(&self.deliveries),
@@ -786,6 +784,7 @@ impl V5CanonicalInvocationRuntime {
             Arc::clone(&self.runtime_resources),
             runtime_service,
             response_deadline,
+            admission_cancellation,
         )
         .map_err(|error| reject_workspace_admission(&request, error))?;
         Ok(V5ActorBoundCanonicalInvocation::Workspace {
@@ -9060,6 +9059,98 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// #1251, criterion 1: the default paths of `view`, an addressed `check`
+    /// of a module body and an `apply` preview reach their providers through
+    /// the daemon's real admission and invocation service without any
+    /// operation deadline.
+    #[test]
+    fn default_operation_paths_reach_providers_without_a_deadline() {
+        let workspace =
+            scheduled_handler_workspace("CONFIGURATION", "Procedure Run() Export\nEndProcedure\n");
+        let runtime = bootstrap_runtime();
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let cancellation = CancellationToken::new();
+        let admit = |tool, arguments| {
+            let request = InvocationRequest::new(
+                tool,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap()
+        };
+
+        let view = admit(
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Catalog.Items"}),
+        );
+        let reader_deadlines = view
+            .read_sources()
+            .unwrap()
+            .iter()
+            .map(|source| source.deadline().remaining())
+            .collect::<Vec<_>>();
+        assert!(!reader_deadlines.is_empty());
+        assert!(
+            reader_deadlines.iter().all(Option::is_none),
+            "view readers received an operation deadline: {reader_deadlines:?}"
+        );
+        let viewed = service.execute(&view, cancellation.clone()).unwrap();
+        let viewed = view.publish(Ok(viewed), &cancellation).unwrap().unwrap();
+        assert!(viewed.ok, "{viewed:?}");
+
+        let (provider, analyzer) =
+            crate::infrastructure::diagnostics::analyze_timeout_probe::recording_provider();
+        crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+            .with(|slot| *slot.borrow_mut() = Some(provider));
+        let check = admit(
+            ToolIdentity::Check,
+            serde_json::json!({"at": "main:CommonModule.Handlers.Body"}),
+        );
+        let checked = service.execute(&check, cancellation.clone()).unwrap();
+        crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+            .with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(
+            analyzer.timeouts(),
+            [None],
+            "the analyzer of an addressed check received a timeout: {checked:?}"
+        );
+
+        super::admission_test_control::take_apply_deadlines();
+        let apply = admit(
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:CommonModule.Handlers",
+                "ops": [{"op": "code.replace", "args": {
+                    "at": "main:CommonModule.Handlers.Body",
+                    "text": "Procedure Run() Export\n    // planned\nEndProcedure\n",
+                }}],
+            }),
+        );
+        let planned = service.execute(&apply, cancellation.clone()).unwrap();
+        assert!(planned.ok, "{planned:?}");
+        assert_eq!(
+            super::admission_test_control::take_apply_deadlines(),
+            [None],
+            "the apply preview admission received an operation deadline"
+        );
+    }
+
     struct ManualInvocationClock(Mutex<Instant>);
 
     impl ManualInvocationClock {
@@ -11612,6 +11703,244 @@ fn main() {
         crate::infrastructure::workspace_actor::tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
         crate::infrastructure::workspace_actor::tests::warm_actor_whose_named_root_was_replaced_is_rebuilt();
         crate::infrastructure::workspace_actor::tests::warm_actors_do_not_block_a_distinct_identity(
+        );
+    }
+}
+
+/// #1251: no production operation path may start a finite `ProviderDeadline`
+/// again, under its own name or an alias, outside the listed per-step limits.
+#[cfg(test)]
+mod finite_deadline_guard {
+
+    /// Constructors that start a finite operation deadline.
+    const FINITE_DEADLINE_CONSTRUCTORS: [&str; 3] = ["from_budget", "new", "from_started_at"];
+
+    /// Production places that may still start a finite `ProviderDeadline`
+    /// (#1251). Each entry is a per-step safety bound, a deadline the user set
+    /// explicitly, a path the v0.13 wire does not reach, or search work moved
+    /// to #1254. Any other operation path admits work without a deadline; a
+    /// new constructor anywhere, or one more in a listed file, fails here.
+    const FINITE_DEADLINE_ALLOW_LIST: &[(&str, usize, &str)] = &[
+        (
+            "application/code_intelligence.rs",
+            2,
+            "search and provider reads: #1254",
+        ),
+        (
+            "application/diagnostics.rs",
+            2,
+            "explicit analyze timeout; resident actions of the retired code.diagnostics",
+        ),
+        (
+            "application/mod.rs",
+            1,
+            "PUBLIC_INVOCATION_DEADLINE: legacy v0.12 surface, unreachable from the v0.13 wire",
+        ),
+        (
+            "infrastructure/application_ports.rs",
+            1,
+            "NATIVE_TYPED_INVOCATION_DEADLINE: legacy v0.12 surface",
+        ),
+        (
+            "infrastructure/daemon/runtime_v5.rs",
+            27,
+            "per-step Task store and lifecycle-link I/O bounds",
+        ),
+    ];
+
+    /// `cfg(test)`, `cfg(all(test, ..))` or the receipt-ledger harness
+    /// feature; a condition such as `cfg(any(test, feature = ".."))` also
+    /// compiles outside tests and stays production code.
+    fn is_test_only(attrs: &[syn::Attribute]) -> bool {
+        attrs.iter().any(|attr| {
+            let syn::Meta::List(list) = &attr.meta else {
+                return false;
+            };
+            let condition = list.tokens.to_string();
+            attr.path().is_ident("cfg")
+                && (condition == "test"
+                    || condition.starts_with("all (test ,")
+                    || condition == "feature = \"receipt-ledger-test-support\"")
+        })
+    }
+
+    /// Calls `<ProviderDeadline or an alias of it>::<finite constructor>(..)`
+    /// in production code: test-only items and modules are skipped.
+    #[derive(Default)]
+    struct FiniteDeadlineCalls {
+        aliases: Vec<String>,
+        calls: usize,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for FiniteDeadlineCalls {
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            let attrs = match item {
+                syn::Item::Fn(item) => &item.attrs,
+                syn::Item::Mod(item) => &item.attrs,
+                syn::Item::Impl(item) => &item.attrs,
+                syn::Item::Const(item) => &item.attrs,
+                syn::Item::Static(item) => &item.attrs,
+                syn::Item::Struct(item) => &item.attrs,
+                syn::Item::Use(item) => &item.attrs,
+                syn::Item::Macro(item) => &item.attrs,
+                _ => return syn::visit::visit_item(self, item),
+            };
+            if !is_test_only(attrs) {
+                syn::visit::visit_item(self, item);
+            }
+        }
+
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            if !is_test_only(&item.attrs) {
+                syn::visit::visit_impl_item_fn(self, item);
+            }
+        }
+
+        fn visit_stmt(&mut self, stmt: &'ast syn::Stmt) {
+            let attrs = match stmt {
+                syn::Stmt::Local(local) => &local.attrs,
+                syn::Stmt::Expr(syn::Expr::If(expr), _) => &expr.attrs,
+                syn::Stmt::Expr(syn::Expr::Call(expr), _) => &expr.attrs,
+                syn::Stmt::Expr(syn::Expr::MethodCall(expr), _) => &expr.attrs,
+                syn::Stmt::Macro(stmt) => &stmt.attrs,
+                _ => return syn::visit::visit_stmt(self, stmt),
+            };
+            if !is_test_only(attrs) {
+                syn::visit::visit_stmt(self, stmt);
+            }
+        }
+
+        fn visit_use_rename(&mut self, rename: &'ast syn::UseRename) {
+            if rename.ident == "ProviderDeadline" {
+                self.aliases.push(rename.rename.to_string());
+            }
+        }
+
+        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+            let segments = expr
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            if let [.., owner, constructor] = segments.as_slice() {
+                if (owner == "ProviderDeadline" || self.aliases.contains(owner))
+                    && FINITE_DEADLINE_CONSTRUCTORS.contains(&constructor.as_str())
+                {
+                    self.calls += 1;
+                }
+            }
+            syn::visit::visit_expr_path(self, expr);
+        }
+    }
+
+    fn finite_deadline_calls(source: &str) -> usize {
+        let file = syn::parse_file(source).expect("production source parses");
+        let mut calls = FiniteDeadlineCalls::default();
+        syn::visit::Visit::visit_file(&mut calls, &file);
+        calls.calls
+    }
+
+    /// Files that compile only into tests or the receipt-ledger test harness.
+    fn is_test_source(relative: &str) -> bool {
+        let name = relative.rsplit('/').next().unwrap_or(relative);
+        name == "tests.rs"
+            || name.ends_with("_tests.rs")
+            || name == "test_support.rs"
+            || name == "test_control.rs"
+            || name == "testing.rs"
+            || relative.contains("/tests/")
+            || relative.contains("receipt_scenario_v5")
+    }
+
+    #[test]
+    fn production_operation_paths_start_no_new_finite_deadline() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut pending = vec![root.clone()];
+        let mut found = std::collections::BTreeMap::new();
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+                    continue;
+                }
+                let relative = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if is_test_source(&relative) {
+                    continue;
+                }
+                let calls = finite_deadline_calls(&std::fs::read_to_string(&path).unwrap());
+                if calls > 0 {
+                    found.insert(relative, calls);
+                }
+            }
+        }
+        let allowed = FINITE_DEADLINE_ALLOW_LIST
+            .iter()
+            .map(|(file, calls, _)| ((*file).to_string(), *calls))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            found, allowed,
+            "a production path starts a finite operation deadline outside the per-step allow-list"
+        );
+    }
+
+    #[test]
+    fn finite_deadline_guard_recognizes_aliases_and_skips_only_test_code() {
+        assert_eq!(
+            finite_deadline_calls(
+                "fn read() { let _ = ProviderDeadline::from_budget(Duration::from_secs(120)); }"
+            ),
+            1
+        );
+        assert_eq!(
+            finite_deadline_calls(
+                "fn read() { let _ = crate::domain::code_intelligence::ProviderDeadline::new(Instant::now()); }"
+            ),
+            1
+        );
+        assert_eq!(
+            finite_deadline_calls(
+                "use crate::domain::code_intelligence::ProviderDeadline as Budget;\nfn read() { let _ = Budget::from_started_at(Instant::now(), BUDGET); }"
+            ),
+            1,
+            "a renamed import must not hide a new deadline"
+        );
+        assert_eq!(
+            finite_deadline_calls("fn read() { let _ = ProviderDeadline::no_deadline(); }"),
+            0
+        );
+        assert_eq!(
+            finite_deadline_calls(
+                "#[cfg(test)]\nmod tests { fn fixture() { let _ = ProviderDeadline::from_budget(B); } }"
+            ),
+            0
+        );
+        assert_eq!(
+            finite_deadline_calls(
+                "#[cfg(any(test, feature = \"hostile\"))]\nfn escape() { let _ = ProviderDeadline::from_budget(B); }"
+            ),
+            1,
+            "a condition that also compiles outside tests stays production code"
+        );
+        assert_eq!(
+            finite_deadline_calls(
+                "#[cfg(not(test))]\nfn production() { let _ = ProviderDeadline::from_budget(B); }"
+            ),
+            1
+        );
+        assert_eq!(
+            finite_deadline_calls(
+                "#[cfg(all(test, target_os = \"macos\"))]\nmod tests { fn f() { let _ = ProviderDeadline::from_budget(B); } }"
+            ),
+            0
         );
     }
 }

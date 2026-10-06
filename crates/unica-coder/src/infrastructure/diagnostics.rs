@@ -394,6 +394,75 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
 static WORKSPACE_BSL_DIAGNOSTIC_BACKEND: WorkspaceBslDiagnosticBackend =
     WorkspaceBslDiagnosticBackend;
 
+/// The real bsl-analyzer provider over a backend that records the process
+/// timeout it would hand the analyzer, for tests that drive `check` through
+/// the daemon's invocation service.
+#[cfg(test)]
+pub(crate) mod analyze_timeout_probe {
+    use super::*;
+
+    pub(crate) struct RecordingAnalyzeBackend {
+        timeouts: std::sync::Mutex<Vec<Option<Duration>>>,
+    }
+
+    impl RecordingAnalyzeBackend {
+        pub(crate) fn timeouts(&self) -> Vec<Option<Duration>> {
+            self.timeouts.lock().unwrap().clone()
+        }
+    }
+
+    impl BslDiagnosticBackend for RecordingAnalyzeBackend {
+        fn invoke(
+            &self,
+            _context: &DiagnosticContext,
+            request: BslDiagnosticBackendRequest,
+            timeout: Option<Duration>,
+            _cancellation: &CancellationToken,
+        ) -> Result<BslDiagnosticBackendReply, String> {
+            self.timeouts.lock().unwrap().push(timeout);
+            match request {
+                BslDiagnosticBackendRequest::Analyze { .. } => {
+                    Ok(BslDiagnosticBackendReply::Analyze(AnalyzerDiagnosticsBatch {
+                        outcome: DiagnosticProviderOutcome {
+                            status: DiagnosticProviderStatus::Empty,
+                            complete: true,
+                            version: Some("probe".to_string()),
+                            observations: Vec::new(),
+                            rules: Vec::new(),
+                            readiness: None,
+                            error: None,
+                        },
+                        files: crate::infrastructure::diagnostics_jsonl::AnalyzerDiagnosticsFileTotals {
+                            discovered: Some(1),
+                            processed: Some(1),
+                            failed: Some(0),
+                        },
+                        diagnostics_reported: Some(0),
+                        elapsed_seconds: Some(0.0),
+                    }))
+                }
+                BslDiagnosticBackendRequest::Resident { .. } => {
+                    Err("the analyze probe answers only analyze".to_string())
+                }
+            }
+        }
+    }
+
+    pub(crate) fn recording_provider() -> (
+        std::sync::Arc<dyn DiagnosticProvider>,
+        &'static RecordingAnalyzeBackend,
+    ) {
+        let backend: &'static RecordingAnalyzeBackend =
+            Box::leak(Box::new(RecordingAnalyzeBackend {
+                timeouts: std::sync::Mutex::new(Vec::new()),
+            }));
+        (
+            std::sync::Arc::new(BslAnalyzerDiagnosticProvider::with_backend(backend)),
+            backend,
+        )
+    }
+}
+
 pub(crate) struct BslAnalyzerDiagnosticProvider<'a> {
     backend: &'a (dyn BslDiagnosticBackend + Send + Sync),
 }

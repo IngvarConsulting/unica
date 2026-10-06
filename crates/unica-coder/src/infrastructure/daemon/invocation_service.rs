@@ -830,12 +830,15 @@ impl ActorBoundExecution {
                     })
             })
             .collect::<Result<Vec<_>, ApplyAdmissionError>>()?;
+        let deadline = ProviderDeadline::no_deadline();
+        #[cfg(test)]
+        test_control::record_apply_deadline(deadline);
         let admission = self.invocation.actor.admit_apply_with_dependencies(
             &binding,
             &dependencies,
             request.if_rev(),
             request.dry_run(),
-            ProviderDeadline::no_deadline(),
+            deadline,
             cancellation,
         )?;
         Ok((binding, admission))
@@ -1240,6 +1243,7 @@ pub(crate) trait CanonicalInvocationService: Send + Sync {
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure>;
 }
+#[cfg(test)]
 pub(super) fn bind_workspace_invocation(
     request: &InvocationRequest,
     actors: &WorkspaceActorRegistry,
@@ -1248,6 +1252,32 @@ pub(super) fn bind_workspace_invocation(
     runtime_resources: Arc<RuntimeResourceOwner>,
     runtime_service: Option<Arc<RuntimeJobService>>,
     response_deadline: InvocationResponseDeadline,
+) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
+    bind_workspace_invocation_cancellable(
+        request,
+        actors,
+        deliveries,
+        provider_hosts,
+        runtime_resources,
+        runtime_service,
+        response_deadline,
+        &CancellationToken::new(),
+    )
+}
+
+/// Admission has no deadline: it may outlive the handoff moment and continue
+/// into the Task the daemon promised there. Only an explicit cancel of that
+/// Task stops it, at the next admission checkpoint (#1251).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn bind_workspace_invocation_cancellable(
+    request: &InvocationRequest,
+    actors: &WorkspaceActorRegistry,
+    deliveries: Arc<crate::infrastructure::engine_delivery::DeliveryDesk>,
+    provider_hosts: Arc<ProviderHostOwner>,
+    runtime_resources: Arc<RuntimeResourceOwner>,
+    runtime_service: Option<Arc<RuntimeJobService>>,
+    response_deadline: InvocationResponseDeadline,
+    cancellation: &CancellationToken,
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     bind_workspace_invocation_controlled(
         request,
@@ -1259,6 +1289,7 @@ pub(super) fn bind_workspace_invocation(
             runtime_service,
         },
         response_deadline,
+        cancellation,
         |_| {},
     )
 }
@@ -1315,6 +1346,7 @@ pub(super) fn bind_workspace_invocation_with_source_override_for_test(
         actors,
         resources.0,
         response_deadline,
+        &CancellationToken::new(),
         |sources| {
             sources[0].kind = source_kind;
             sources[0].source_format = source_format;
@@ -1328,6 +1360,7 @@ fn bind_workspace_invocation_controlled(
     actors: &WorkspaceActorRegistry,
     resources: ActorInvocationResources,
     response_deadline: InvocationResponseDeadline,
+    cancellation: &CancellationToken,
     after_actor_admission: impl FnOnce(&mut [DiscoveredActorSource]),
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
     let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
@@ -1336,23 +1369,25 @@ fn bind_workspace_invocation_controlled(
         workspace_root: context.workspace_root.clone(),
         cause,
     };
-    // Истёкший срок обрывает обход той же ошибкой, что и сорванный обход, и
-    // отличить их может только сам чекпоинт. Разница не косметическая: срок
-    // повторяют тем же вызовом, а сорванный обход — нет.
-    let admission_deadline_elapsed = std::cell::Cell::new(false);
+    // Срока у допуска нет: обход идёт до конца. Отмена обрывает обход той же
+    // ошибкой, что и сорванный обход, и отличить их может только сам
+    // чекпоинт: отменённый допуск не описывают как сбой обхода.
+    let admission_cancelled = std::cell::Cell::new(false);
     let mut checkpoint = || {
-        response_deadline
-            .checkpoint_actor_admission()
-            .map_err(|error| {
-                admission_deadline_elapsed.set(true);
-                error.to_string()
-            })
+        #[cfg(test)]
+        test_control::pause_admission(&context.workspace_root);
+        if cancellation.is_cancelled() {
+            admission_cancelled.set(true);
+            Err("daemon actor admission was cancelled".to_string())
+        } else {
+            Ok(())
+        }
     };
     let source_admission =
         discover_project_source_admission(&context.workspace_root, &mut checkpoint).map_err(
             |reason| {
-                if admission_deadline_elapsed.get() {
-                    unadmitted(UnadmittedCause::AdmissionDeadline)
+                if admission_cancelled.get() {
+                    unadmitted(UnadmittedCause::AdmissionCancelled)
                 } else if project_config_present(&context.workspace_root) {
                     unadmitted(UnadmittedCause::ProjectConfigInvalid(reason))
                 } else {
@@ -1545,8 +1580,8 @@ pub(super) enum UnadmittedCause {
     ProjectConfigInvalid(String),
     /// Обход наборов не завершился, и не по сроку.
     SourceDiscoveryFailed(String),
-    /// Срок допуска истёк раньше, чем завершился обход.
-    AdmissionDeadline,
+    /// Явная отмена задачи остановила обход до связывания актора.
+    AdmissionCancelled,
     /// Наборы объявлены, но ни один не в формате выгрузки конфигуратора.
     NoPlatformXmlSourceSet(Vec<ProjectSourceSet>),
     /// Набор PlatformXml объявлен, но его корень не читается.
@@ -1557,6 +1592,100 @@ pub(super) enum UnadmittedCause {
     },
     /// Наборы отобраны, но актор их не связал.
     ActorBindingFailed { stage: &'static str },
+}
+
+/// Test control of the workspace admission walk: a test can hold the walk at
+/// its first checkpoint for one workspace root and release it later.
+#[cfg(test)]
+pub(crate) mod test_control {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Condvar, Mutex, OnceLock};
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct Gate {
+        state: Mutex<(usize, bool)>,
+        changed: Condvar,
+    }
+
+    fn gates() -> &'static Mutex<HashMap<PathBuf, Arc<Gate>>> {
+        static GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Gate>>>> = OnceLock::new();
+        GATES.get_or_init(Mutex::default)
+    }
+
+    pub(crate) struct AdmissionPause {
+        workspace: PathBuf,
+        gate: Arc<Gate>,
+    }
+
+    impl AdmissionPause {
+        pub(crate) fn install(workspace: PathBuf) -> Self {
+            let gate = Arc::new(Gate::default());
+            assert!(gates()
+                .lock()
+                .unwrap()
+                .insert(workspace.clone(), Arc::clone(&gate))
+                .is_none());
+            Self { workspace, gate }
+        }
+
+        pub(crate) fn wait_until_entered(&self) {
+            let (state, _) = self
+                .gate
+                .changed
+                .wait_timeout_while(
+                    self.gate.state.lock().unwrap(),
+                    Duration::from_secs(10),
+                    |(entries, _)| *entries == 0,
+                )
+                .unwrap();
+            assert!(state.0 >= 1, "workspace admission reached its walk");
+        }
+
+        /// How many admission checkpoints this workspace's walk has reached.
+        pub(crate) fn entries(&self) -> usize {
+            self.gate.state.lock().unwrap().0
+        }
+
+        pub(crate) fn release(&self) {
+            self.gate.state.lock().unwrap().1 = true;
+            self.gate.changed.notify_all();
+        }
+    }
+
+    impl Drop for AdmissionPause {
+        fn drop(&mut self) {
+            self.release();
+            gates().lock().unwrap().remove(&self.workspace);
+        }
+    }
+
+    thread_local! {
+        static APPLY_DEADLINES: std::cell::RefCell<Vec<Option<Duration>>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// The remaining operation time the apply admission handed to the actor.
+    pub(super) fn record_apply_deadline(deadline: super::ProviderDeadline) {
+        APPLY_DEADLINES.with(|deadlines| deadlines.borrow_mut().push(deadline.remaining()));
+    }
+
+    pub(crate) fn take_apply_deadlines() -> Vec<Option<Duration>> {
+        APPLY_DEADLINES.with(|deadlines| std::mem::take(&mut *deadlines.borrow_mut()))
+    }
+
+    pub(super) fn pause_admission(workspace: &Path) {
+        let gate = gates().lock().unwrap().get(workspace).cloned();
+        if let Some(gate) = gate {
+            let mut state = gate.state.lock().unwrap();
+            state.0 += 1;
+            gate.changed.notify_all();
+            while !state.1 {
+                state = gate.changed.wait(state).unwrap();
+            }
+        }
+    }
 }
 
 #[cfg(test)]

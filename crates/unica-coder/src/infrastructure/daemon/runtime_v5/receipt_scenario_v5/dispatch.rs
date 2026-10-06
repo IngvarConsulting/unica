@@ -1633,53 +1633,6 @@ fn run_receipt_scenario_with_control_observer(
                         }
                     }
                 }
-                // A watchdog due on the runtime's clock exits the process on
-                // its own: the observer waits for that exit and cleans up.
-                let fail_stop_due = control
-                    .runtime()
-                    .is_some_and(|runtime| runtime.fail_stop_due_for_test());
-                if fail_stop_due {
-                    telemetry.wait_for_event(
-                        V5ReceiptRuntimeEventKind::ListenerClosed,
-                        Instant::now() + SCENARIO_OPERATION_TIMEOUT,
-                    )?;
-                    if pending_submit.is_some() {
-                        control.release_all_barriers();
-                        let pending = pending_submit
-                            .take()
-                            .expect("fail-stopped pending submit exists");
-                        let (label, accepted, budget, response, actor, _, _, daemon) =
-                            pending.finish()?;
-                        drop(actor);
-                        daemon.stop_and_join(
-                            "protocol-v5 receipt scenario daemon panicked after fail-stop",
-                        )?;
-                        if !matches!(
-                            response,
-                            V5ServerResponse::Invocation {
-                                outcome: V5InvocationResponse::ReceiptPending { .. }
-                            }
-                        ) {
-                            report.responses.entry(label).or_insert(
-                                response_observation_with_exact_task(
-                                    &response,
-                                    Some((accepted, budget)),
-                                    &exact_key,
-                                    state.path(),
-                                    &identity,
-                                    Some(None),
-                                )?,
-                            );
-                        }
-                    }
-                    if let Some(daemon) = live_daemon.take() {
-                        live_actor = None;
-                        live_task_projection = None;
-                        daemon.stop_and_join(
-                            "protocol-v5 receipt scenario live daemon panicked after fail-stop",
-                        )?;
-                    }
-                }
             }
             ReceiptScenarioAction::Crash { point } => {
                 if matches!(

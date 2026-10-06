@@ -98,7 +98,6 @@ pub(crate) struct V5ReceiptRuntime {
     task_execution_threads: Mutex<Vec<thread::JoinHandle<()>>>,
     task_terminal_coordinator: Mutex<()>,
     external_store_fail_stop: AtomicBool,
-    fail_stop_watchdogs: FailStopWatchdogs,
     /// How many promoted attempts the owner handed to a worker are still
     /// running their continuation: the contract harness waits on this to
     /// observe a promoted Task the runtime finishes off-thread.
@@ -297,47 +296,6 @@ impl PipelineSlot {
         matches!(state.decision, PipelineDecision::PromotedByOwner)
     }
 }
-
-/// Deadlines after which a stalled attempt fail-stops the process: the grace
-/// after an unbound promise without an actor bind, and the grace after a
-/// cancel without a terminal. The accept loop reads them on the runtime's
-/// own clock, so the observer's clock drives them the same way.
-#[derive(Default)]
-struct FailStopWatchdogs {
-    armed: Mutex<HashMap<ReceiptKeyDigest, (Instant, Instant)>>,
-}
-
-impl FailStopWatchdogs {
-    fn arm(&self, digest: ReceiptKeyDigest, now: Instant, grace: Duration) {
-        self.armed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(digest)
-            .or_insert((now, now + grace));
-    }
-
-    fn disarm(&self, digest: &ReceiptKeyDigest) {
-        self.armed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(digest);
-    }
-
-    /// The elapsed grace of a watchdog that is due at `now`.
-    fn due(&self, now: Instant) -> Option<Duration> {
-        self.armed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .values()
-            .filter(|(_, due)| now >= *due)
-            .map(|(armed_at, _)| now.saturating_duration_since(*armed_at))
-            .max()
-    }
-}
-
-/// The grace a promised or cancelled attempt gets before the process
-/// fail-stops on it.
-const FAIL_STOP_GRACE: Duration = TASK_RECONCILIATION_BUDGET;
 
 fn task_outcome_after_cancel(
     candidate: ReceiptTerminalOutcome,
@@ -2258,14 +2216,11 @@ impl V5InvocationExecutor {
             .capture_response_deadline(response_budget_ms)
     }
 
-    fn now(&self) -> Instant {
-        self.invocation_runtime.now()
-    }
-
     fn bind(
         &self,
         invocation: V5InvocationRequest,
         response_deadline: crate::application::invocation::InvocationResponseDeadline,
+        admission_cancellation: &CancellationToken,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         let tool = match invocation.tool() {
             crate::application::receipt_ledger::V5ToolIdentity::View => ToolIdentity::View,
@@ -2293,8 +2248,11 @@ impl V5InvocationExecutor {
                 ),
             ))
         })?;
-        self.invocation_runtime
-            .bind_with_deadline(request, response_deadline)
+        self.invocation_runtime.bind_with_deadline(
+            request,
+            response_deadline,
+            admission_cancellation,
+        )
     }
 }
 
@@ -2352,7 +2310,6 @@ impl V5ReceiptRuntime {
             task_execution_threads: Mutex::new(Vec::new()),
             task_terminal_coordinator: Mutex::new(()),
             external_store_fail_stop: AtomicBool::new(false),
-            fail_stop_watchdogs: FailStopWatchdogs::default(),
             promoted_continuations: AtomicUsize::new(0),
             hooks,
         };
@@ -2692,25 +2649,6 @@ impl V5ReceiptRuntime {
 
     /// Whether the attempt on this thread must stop: the observer simulated
     /// the process's death, or the process latched fail-stop for real.
-    /// A cancelled Working Task gets the grace to reach its terminal before
-    /// the process fail-stops on it.
-    fn arm_cancel_grace(&self, record: &V5StoredInvocationRecord) {
-        // The ordinary grace protects a cancelled, non-cooperative attempt.
-        // A protected runner has crossed the process launch boundary; killing
-        // the daemon here would discard the database operation's receipt.
-        if record.task == V5StoredTask::Working
-            && !self
-                .active_task_cancellations
-                .protected_started(record.task_id)
-        {
-            self.fail_stop_watchdogs.arm(
-                record.receipt_key_digest.clone(),
-                self.invocation_executor.now(),
-                FAIL_STOP_GRACE,
-            );
-        }
-    }
-
     fn attempt_is_dead(&self) -> bool {
         self.hooks.process_exited() || self.restart_required()
     }
@@ -2748,8 +2686,9 @@ impl V5ReceiptRuntime {
                 .cancel_exact_bound_task(&key, deadline)
                 .map_err(|failure| self.project_task_failure(failure))?
             {
+                // Исполнитель, который не ответит на отмену, держит только
+                // свою задачу: демон и соседние задачи продолжают работать.
                 self.active_task_cancellations.cancel(record.task_id);
-                self.arm_cancel_grace(&record);
                 return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
                         snapshot: task_store_snapshot(&record),
@@ -2771,6 +2710,11 @@ impl V5ReceiptRuntime {
                 let expected = match state {
                     ReceiptState::TaskPromisedUnbound(receipt) => {
                         let task_id = receipt.task().task_id();
+                        // The admission of this promised Task may still be
+                        // running: its checkpoint observes this token and
+                        // stops before the actor bind (#1251).
+                        self.active_task_cancellations
+                            .cancel(receipt.key().reserved_task_id());
                         let cancelled = self.receipt_ledger.request_task_cancel(
                             receipt.key().clone(),
                             TaskCancellationReceipt::PromisedUnbound(receipt),
@@ -2787,7 +2731,6 @@ impl V5ReceiptRuntime {
                             terminal,
                             deadline,
                         )?;
-                        self.fail_stop_watchdogs.disarm(committed.key_digest());
                         self.hooks.receipt_backed_terminal(&committed)?;
                         self.hooks.release_pre_actor_pauses();
                         self.hooks.event(
@@ -2817,22 +2760,10 @@ impl V5ReceiptRuntime {
                     ReceiptState::Reserved(reserved)
                         if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
                     {
-                        // A running inline attempt: signal its token and give
-                        // it the grace before the process fail-stops on it.
+                        // A running inline attempt: signal its token. One that
+                        // ignores it keeps only its own attempt (#1251).
                         self.active_task_cancellations
                             .cancel(reserved.key().reserved_task_id());
-                        if !self
-                            .active_task_cancellations
-                            .protected_started(reserved.key().reserved_task_id())
-                        {
-                            self.fail_stop_watchdogs.arm(
-                                crate::application::receipt_ledger::receipt_key_digest(
-                                    reserved.key(),
-                                ),
-                                self.invocation_executor.now(),
-                                FAIL_STOP_GRACE,
-                            );
-                        }
                         return self
                             .reply_for_existing_state(ReceiptState::Reserved(reserved), deadline);
                     }
@@ -3085,13 +3016,8 @@ impl V5ReceiptRuntime {
                     V5ReceiptRuntimeEventKind::UnboundPromiseCommitted,
                     cutoff_epoch_ms,
                 );
-                // Validation or admission still runs: it gets the grace, and
-                // the process fail-stops if the actor is not bound by then.
-                self.fail_stop_watchdogs.arm(
-                    promised.key_digest().clone(),
-                    self.invocation_executor.now(),
-                    FAIL_STOP_GRACE,
-                );
+                // Validation or admission still runs and continues into this
+                // Task without a deadline; an explicit cancel stops it.
                 let _ = epoch_ms;
                 Ok(Some(V5RuntimeReply::Json(V5ServerResponse::Invocation {
                     outcome: V5InvocationResponse::Task {
@@ -3190,6 +3116,17 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// The epoch a continuation binds its Task at. The handler created the
+    /// Task at the handoff moment, after the submit was accepted; a bind
+    /// stamped with the submit epoch would precede the Task it binds, which
+    /// the lifecycle link rightly rejects as corrupt. Once admission may run
+    /// past the handoff (#1251), this is the ordinary path, not a race.
+    fn continuation_epoch_ms(&self, submit_epoch_ms: u64, task: &ReceiptTaskProjection) -> u64 {
+        self.epoch_ms()
+            .max(submit_epoch_ms)
+            .max(task.created_at_epoch_ms())
+    }
+
     /// A fresh bound for the durable steps of an attempt the handler already
     /// answered for: the operation budget of the submit is spent by definition.
     fn continuation_deadline() -> Instant {
@@ -3268,13 +3205,32 @@ impl V5ReceiptRuntime {
                 deadline,
             );
         }
-        // The actor bind may run into the grace of a promised Task: the
-        // handler promises at the handoff moment, and after it the watchdog,
-        // not the admission checkpoint, bounds the bind.
-        let actor_bound = match self.invocation_executor.bind(
-            invocation,
-            response_deadline.with_actor_admission_grace(FAIL_STOP_GRACE),
-        ) {
+        // The actor bind has no deadline: it may outlive the handoff moment
+        // and continue into the Task the handler promised there. An explicit
+        // cancel of that Task signals this token, and the admission
+        // checkpoint stops the bind before any source operation begins.
+        let (admission_cancellation, admission_cancellation_guard) = self
+            .active_task_cancellations
+            .register(reservation.key().reserved_task_id())?;
+        let bound_actor =
+            self.invocation_executor
+                .bind(invocation, response_deadline, &admission_cancellation);
+        drop(admission_cancellation_guard);
+        if admission_cancellation.is_cancelled() {
+            // The cancel already published this Task's terminal; nothing of
+            // the attempt may begin or publish after it.
+            let deadline = Self::continuation_deadline();
+            let current = self
+                .receipt_ledger
+                .recover(reservation.key().clone(), deadline)?;
+            return self.reply_for_existing_state(current, deadline);
+        }
+        let deadline = if slot.promoted_by_owner() {
+            Self::continuation_deadline()
+        } else {
+            deadline
+        };
+        let actor_bound = match bound_actor {
             Ok(actor_bound) => actor_bound,
             Err(error) => {
                 let fail_stop = matches!(error, V5CanonicalPrepareError::WorkspaceRegistryFailed);
@@ -4077,6 +4033,7 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let epoch_ms = self.continuation_epoch_ms(epoch_ms, promised.task());
         self.hooks
             .actor_workspace_identity(actor_bound.workspace_identity_hash());
         let actor_promised = self.receipt_ledger.bind_promised_task_actor(
@@ -4085,7 +4042,6 @@ impl V5ReceiptRuntime {
             actor_bound.workspace_identity_hash().clone(),
             deadline,
         )?;
-        self.fail_stop_watchdogs.disarm(actor_promised.key_digest());
         self.hooks
             .event(V5ReceiptRuntimeEventKind::ActorBoundCommitted, epoch_ms);
         self.hooks.pause(V5PausePoint::ActorBound, deadline)?;
@@ -4200,6 +4156,7 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let epoch_ms = self.continuation_epoch_ms(epoch_ms, handoff.task());
         let (task_record, task_bound) = self
             .task_projection
             .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
@@ -4399,7 +4356,7 @@ impl V5ReceiptRuntime {
                     &task_record,
                     &terminal,
                     epoch_ms,
-                    deadline,
+                    Self::continuation_deadline(),
                 );
             }
         };
@@ -4439,7 +4396,7 @@ impl V5ReceiptRuntime {
                 &bound,
                 task_record.task_id,
                 outcome,
-                deadline,
+                Self::continuation_deadline(),
             )?;
             drop(cancellation_guard);
             return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
@@ -4494,8 +4451,15 @@ impl V5ReceiptRuntime {
         }
         self.hooks
             .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
-        let snapshot =
-            self.publish_task_execution_outcome(&bound, task_record.task_id, outcome, deadline);
+        // The terminal bound starts when the outcome is ready, not when the
+        // attempt was prepared: an execution may run far longer than the
+        // per-step publication bound (#1251).
+        let snapshot = self.publish_task_execution_outcome(
+            &bound,
+            task_record.task_id,
+            outcome,
+            Self::continuation_deadline(),
+        );
         drop(cancellation_guard);
         snapshot.map(|snapshot| {
             V5RuntimeReply::Json(V5ServerResponse::Invocation {
@@ -4692,10 +4656,6 @@ impl V5ReceiptRuntime {
             terminal,
             deadline,
         )?;
-        self.fail_stop_watchdogs
-            .disarm(&crate::application::receipt_ledger::receipt_key_digest(
-                reservation.key(),
-            ));
         self.hooks.event(
             V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
             epoch_ms,
@@ -4730,8 +4690,6 @@ impl V5ReceiptRuntime {
                 self.hooks.as_ref(),
             )
             .map_err(|failure| self.project_task_failure(failure))?;
-        self.fail_stop_watchdogs
-            .disarm(&task_record.receipt_key_digest);
         self.hooks.event(
             V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
             epoch_ms,
@@ -4999,6 +4957,7 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let epoch_ms = self.continuation_epoch_ms(epoch_ms, handoff.task());
         if self.hooks.prepare_rejects() {
             let terminal = injected_rejection_terminal("scenario prepare rejected invocation")?;
             return self
@@ -5051,7 +5010,6 @@ impl V5ReceiptRuntime {
                     terminal,
                     deadline,
                 )?;
-                self.fail_stop_watchdogs.disarm(receipt.key_digest());
                 self.hooks.receipt_backed_terminal(&receipt)?;
                 self.hooks.event(
                     V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
@@ -5341,7 +5299,6 @@ impl V5ReceiptRuntime {
                 .map_err(|failure| self.project_task_failure(failure))?
             {
                 self.active_task_cancellations.cancel(task_id);
-                self.arm_cancel_grace(&record);
                 let provider_deadline =
                     crate::domain::code_intelligence::ProviderDeadline::new(deadline);
                 let link = self
@@ -5412,6 +5369,9 @@ impl V5ReceiptRuntime {
             }
             _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
         };
+        // An admission still running for this Task observes the token at its
+        // next checkpoint and stops before the actor bind (#1251).
+        self.active_task_cancellations.cancel(task_id);
         let cancelled =
             self.receipt_ledger
                 .request_task_cancel(expected.key().clone(), expected, deadline)?;
@@ -5425,7 +5385,6 @@ impl V5ReceiptRuntime {
                 terminal,
                 deadline,
             )?;
-            self.fail_stop_watchdogs.disarm(committed.key_digest());
             self.hooks.receipt_backed_terminal(&committed)?;
             self.hooks.release_pre_actor_pauses();
             self.hooks.event(
@@ -5905,22 +5864,8 @@ fn run_daemon_configured_until(
         // maintenance deadline to expire, which then tears down the listener before the
         // request's own response budget elapses. Mutations and session admission validate the
         // named authority themselves; the accept loop only observes their process-owned
-        // fail-stop latch.
-        if let Some(elapsed) = runtime
-            .fail_stop_watchdogs
-            .due(runtime.invocation_executor.now())
-        {
-            // A promised attempt without its actor, or a cancelled attempt
-            // without its terminal, outlived the grace: the process stops
-            // admitting and dies, and the successor terminalizes it.
-            runtime
-                .external_store_fail_stop
-                .store(true, Ordering::Release);
-            runtime.hooks.restart_requested();
-            restart_requested = true;
-            runtime.hooks.forced_process_exit(Some(elapsed));
-            break;
-        }
+        // fail-stop latch. A slow admission or an attempt that ignores its cancel does not
+        // stop the process: it keeps only its own Task (#1251).
         if runtime.restart_required() {
             restart_requested = true;
             runtime.hooks.forced_process_exit(None);
