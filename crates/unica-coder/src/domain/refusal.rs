@@ -328,8 +328,6 @@ pub enum RefusalDetail {
     DependencyPending,
     /// Спросили не у того вида набора.
     WrongSourceKind,
-    /// Предмет не помещается в ответ целиком.
-    InventoryTooLarge,
     /// Внутренний кэш отравлен: поток запаниковал под замком, и до
     /// перезапуска процесса замок не отдаётся.
     CachePoisoned,
@@ -351,7 +349,6 @@ impl RefusalDetail {
             Self::DeliveryInProgress => "delivery_in_progress",
             Self::DependencyPending => "dependency_pending",
             Self::WrongSourceKind => "wrong_source_kind",
-            Self::InventoryTooLarge => "inventory_too_large",
             Self::CachePoisoned => "cache_poisoned",
             Self::BackendBusy => "backend_busy",
             Self::BackendIncompatible => "backend_incompatible",
@@ -367,7 +364,6 @@ impl RefusalDetail {
             | Self::DeliveryInProgress
             | Self::DependencyPending
             | Self::WrongSourceKind
-            | Self::InventoryTooLarge
             | Self::CachePoisoned => RefusalCode::ProviderUnavailable,
             Self::BackendBusy | Self::BackendIncompatible | Self::BackendBroken => {
                 RefusalCode::TaskBackendFailed
@@ -382,7 +378,6 @@ impl RefusalDetail {
             Self::ProviderAbsent | Self::BackendIncompatible => Outcome::NeedsHuman,
             Self::DeliveryInProgress | Self::DependencyPending => Outcome::RetryAsIs,
             Self::WrongSourceKind => Outcome::FixCall,
-            Self::InventoryTooLarge => Outcome::GoElsewhere,
             Self::BackendBusy => Outcome::RetryAsIs,
             // Отравление `std::sync::Mutex` необратимо в пределах процесса:
             // поток запаниковал под замком, и всякий следующий `lock` вернёт
@@ -395,13 +390,12 @@ impl RefusalDetail {
     }
 
     /// Все уточнения — для проверок полноты.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::SourceUnreadable,
         Self::ProviderAbsent,
         Self::DeliveryInProgress,
         Self::DependencyPending,
         Self::WrongSourceKind,
-        Self::InventoryTooLarge,
         Self::CachePoisoned,
         Self::BackendBusy,
         Self::BackendIncompatible,
@@ -419,6 +413,22 @@ impl std::fmt::Display for RefusalDetail {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn legacy_inventory_size_diagnostic_remains_readable_as_data() {
+        use crate::domain::invocation::DomainResult;
+
+        let mut historical = DomainResult::success("historical inventory refusal");
+        historical.ok = false;
+        historical.diagnostics.push(serde_json::json!({
+            "code": RefusalCode::ProviderUnavailable.as_str(),
+            "detailCode": "inventory_too_large",
+            "outcome": "goElsewhere"
+        }));
+        let bytes = serde_json::to_vec(&historical).unwrap();
+        let decoded: DomainResult = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded, historical);
+    }
 
     #[test]
     fn every_code_has_a_distinct_wire_name() {
