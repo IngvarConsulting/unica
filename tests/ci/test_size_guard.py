@@ -27,6 +27,7 @@ import importlib.util
 import re
 import tomllib
 import unittest
+from copy import deepcopy
 from functools import cache
 from pathlib import Path
 
@@ -152,6 +153,53 @@ class SizeGuardTests(unittest.TestCase):
         self.assertEqual(pr, f"not (\n{self.medium}\n) & not (\n{large}\n)")
         self.assertEqual(self.deadline["slow-timeout"], {"period": "300s", "terminate-after": 2})
         self.assertTrue(self.medium.startswith("kind(test)"))
+
+    def test_measured_volume_case_is_exact_medium_without_its_layout_neighbor(self) -> None:
+        module = load_size_filters()
+        binary_id, binary_name, name = module.MEASURED_MEDIUM_CASES[0]
+        listed = {"rust-suites": {binary_id: {
+            "kind": "lib", "binary-id": binary_id, "binary-name": binary_name,
+            "testcases": {name: {}},
+        }}}
+        terms = module.medium_terms(listed, {})
+        self.assertEqual(terms, [f"test(/^{re.escape(name)}$/)"])
+        self.assertIn(terms[0], self.medium)
+        pattern = terms[0][len("test(/"):-len("/)")]
+        self.assertIsNotNone(re.fullmatch(pattern, name))
+        spec = importlib.util.spec_from_file_location("allure_results", REPO_ROOT / "scripts" / "ci" / "allure_results.py")
+        results = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(results)
+        matcher = results.SizeMatcher.from_toml(NEXTEST_TOML)
+        self.assertEqual(matcher.size(binary_id, name), "medium")
+        for neighbor in [name + "_neighbor", name.rsplit("::", 1)[0] + "::malformed_project_config_is_a_typed_incomplete_snapshot"]:
+            self.assertIsNone(re.fullmatch(pattern, neighbor))
+            self.assertNotIn(f"test(/^{re.escape(neighbor)}$/)", self.medium)
+            self.assertEqual(matcher.size(binary_id, neighbor), "small")
+
+    def test_measured_volume_case_refuses_missing_renamed_or_wrong_binary(self) -> None:
+        module = load_size_filters()
+        binary_id, binary_name, name = module.MEASURED_MEDIUM_CASES[0]
+        base = {"rust-suites": {binary_id: {
+            "kind": "lib", "binary-id": binary_id, "binary-name": binary_name,
+            "testcases": {name: {}},
+        }}}
+        cases = {}
+        missing = deepcopy(base)
+        missing["rust-suites"][binary_id]["testcases"] = {}
+        cases["missing"] = missing
+        renamed = deepcopy(base)
+        renamed["rust-suites"][binary_id]["testcases"] = {name + "_renamed": {}}
+        cases["renamed"] = renamed
+        for field, value in [("kind", "bin"), ("binary-id", "another-crate"), ("binary-name", "another_binary")]:
+            wrong = deepcopy(base)
+            wrong["rust-suites"][binary_id][field] = value
+            cases[field] = wrong
+        duplicate = deepcopy(base)
+        duplicate["rust-suites"]["another-target"] = deepcopy(duplicate["rust-suites"][binary_id])
+        cases["duplicate"] = duplicate
+        for label, listed in cases.items():
+            with self.subTest(case=label), self.assertRaises(ValueError):
+                module.medium_terms(listed, {})
 
     def test_crate_root_belongs_to_lib_and_main_is_not_lost(self) -> None:
         """Корень крейта — за `lib.rs`, и `main.rs` не пропадает из разбора.

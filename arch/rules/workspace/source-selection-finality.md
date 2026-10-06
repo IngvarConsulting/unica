@@ -1,6 +1,7 @@
 ---
 id: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 check:
+  - crates/unica-coder/src/infrastructure/project_sources.rs::actor_health_accepts_yaml_input_past_eight_mib_and_binds_late_bytes
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::retained_selection_pass_rejects_inconsistent_regular_repeat
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::retained_selection_pass_rejects_inconsistent_directory_repeat
   - crates/unica-coder/src/infrastructure/source_selection_evidence.rs::retained_selection_pass_rejects_inconsistent_membership_repeat
