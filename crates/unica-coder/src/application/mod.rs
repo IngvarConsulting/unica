@@ -3763,7 +3763,7 @@ pub(crate) mod tests {
         ) -> Result<ports::HandlerOutcome, String> {
             self.handler_calls.fetch_add(1, Ordering::SeqCst);
             *self.observed_analyze_timeout.lock().unwrap() =
-                operational_config.map(|config| config.code_diagnostics().analyze_timeout());
+                operational_config.and_then(|config| config.code_diagnostics().analyze_timeout());
             let outcome = AdapterOutcome::ok("handled");
             Ok(
                 if spec.execution == ToolExecution::Read

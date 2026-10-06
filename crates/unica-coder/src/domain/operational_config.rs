@@ -8,7 +8,6 @@ const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 300;
 const SEARCH_RLM_DEFAULT_SECONDS: u64 = 300;
 const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 2;
 const PROVIDER_READ_DEFAULT_SECONDS: u64 = 45;
-pub(crate) const DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS: u64 = 120;
 const EXPLICIT_DIAGNOSTICS_ANALYZE_MIN_SECONDS: u64 = 30;
 const EXPLICIT_DIAGNOSTICS_ANALYZE_MAX_SECONDS: u64 = 3_600;
 
@@ -48,7 +47,7 @@ impl OperationalConfig {
             ));
         }
         self.code_diagnostics = CodeDiagnosticsDeadlines {
-            analyze_timeout: timeout,
+            analyze_timeout: Some(timeout),
         };
         Ok(self)
     }
@@ -78,11 +77,11 @@ impl OperationalConfig {
             local.and_then(|layer| layer.provider_read_timeout),
             defaults.code_intelligence.provider_read_timeout,
         );
-        let analyze = resolve_deadline(
-            shared.and_then(|layer| layer.diagnostics_analyze_timeout),
-            local.and_then(|layer| layer.diagnostics_analyze_timeout),
-            defaults.code_diagnostics.analyze_timeout,
-        );
+        // У анализа нет срока по умолчанию: срок появляется, только когда
+        // пользователь задал его в файле настроек (#1251).
+        let analyze = local
+            .and_then(|layer| layer.diagnostics_analyze_timeout)
+            .or_else(|| shared.and_then(|layer| layer.diagnostics_analyze_timeout));
 
         // A lower explicit global deadline also bounds providers that kept
         // their compiled defaults. Only an explicit provider/global conflict
@@ -116,7 +115,7 @@ impl OperationalConfig {
                 provider_read_timeout: provider_read.value,
             },
             code_diagnostics: CodeDiagnosticsDeadlines {
-                analyze_timeout: analyze.value,
+                analyze_timeout: analyze,
             },
         })
     }
@@ -204,17 +203,18 @@ impl CodeIntelligenceDeadlines {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CodeDiagnosticsDeadlines {
-    analyze_timeout: Duration,
+    analyze_timeout: Option<Duration>,
 }
 
 impl CodeDiagnosticsDeadlines {
     const fn compiled_defaults() -> Self {
         Self {
-            analyze_timeout: Duration::from_secs(DIAGNOSTICS_ANALYZE_DEFAULT_SECONDS),
+            analyze_timeout: None,
         }
     }
 
-    pub const fn analyze_timeout(self) -> Duration {
+    /// `None` — пользователь срок анализа не задавал, и анализ идёт до конца.
+    pub const fn analyze_timeout(self) -> Option<Duration> {
         self.analyze_timeout
     }
 }
@@ -467,7 +467,8 @@ mod tests {
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(120)
+            None,
+            "an unconfigured analysis has no deadline"
         );
     }
 
@@ -492,7 +493,7 @@ mod tests {
         );
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
-            Duration::from_secs(7_200)
+            Some(Duration::from_secs(7_200))
         );
     }
 
@@ -536,12 +537,9 @@ mod tests {
                 .expect("a timeout inside the inclusive public range must be accepted");
             assert_eq!(
                 configured.code_diagnostics().analyze_timeout(),
-                Duration::from_secs(seconds)
+                Some(Duration::from_secs(seconds))
             );
-            assert_eq!(
-                defaults.code_diagnostics().analyze_timeout(),
-                Duration::from_secs(120)
-            );
+            assert_eq!(defaults.code_diagnostics().analyze_timeout(), None);
         }
         for seconds in [29, 3_601] {
             let diagnostic = defaults

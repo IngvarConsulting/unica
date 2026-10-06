@@ -36,7 +36,9 @@ impl MetadataOperations {
             &request.source_set,
             &request.metadata_path,
             context,
-            ProviderDeadline::new(std::time::Instant::now() + std::time::Duration::from_secs(5)),
+            // Чтение описания объекта для `check` идёт до конца: срока у него
+            // нет, остановить его может только отмена (#1251).
+            ProviderDeadline::no_deadline(),
             cancellation,
             support_reader,
         )?;

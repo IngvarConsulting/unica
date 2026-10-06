@@ -334,7 +334,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "check",
-                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. If an incomplete workspace EOL inspection offers another check, call unica.check with an empty object again to resume its bounded checkpoint; each call uses a fresh deadline. Capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.",
+                    description: "Confirm workspace source-set admission, or validate one logical node: readability plus every validator its kind owns. The workspace inspection runs to its end; capacity and other fixed failures require their reported cause to be resolved. Node diagnostics are returned in stable pages.",
                     input_schema: schema(
                         json!({
                             // One type per field and no schema `default` (#1210, #1211):

@@ -334,7 +334,7 @@ trait BslDiagnosticBackend: Send + Sync {
         &self,
         context: &DiagnosticContext,
         request: BslDiagnosticBackendRequest,
-        timeout: Duration,
+        timeout: Option<Duration>,
         cancellation: &CancellationToken,
     ) -> Result<BslDiagnosticBackendReply, String>;
 }
@@ -346,7 +346,7 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
         &self,
         context: &DiagnosticContext,
         request: BslDiagnosticBackendRequest,
-        timeout: Duration,
+        timeout: Option<Duration>,
         cancellation: &CancellationToken,
     ) -> Result<BslDiagnosticBackendReply, String> {
         match request {
@@ -366,28 +366,102 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
                 source_root,
                 tool_name,
                 arguments,
-            } => WorkspaceServiceManager::new()
-                .call_bsl_mcp_cancellable_with_budget(
-                    &context.workspace,
-                    &source_root,
-                    WorkspaceServiceBslCall::new(tool_name, arguments, timeout, timeout),
-                    cancellation,
-                )
-                .map(|output| {
-                    let version = find_plugin_root(&context.workspace.cwd)
-                        .and_then(|root| bundled_tool_version(&root, "bsl-analyzer").ok());
-                    BslDiagnosticBackendReply::Resident(BslDiagnosticResidentReply {
-                        result_text: output.result_text,
-                        stderr: output.stderr,
-                        version,
+            } => {
+                let timeout = timeout.ok_or_else(|| {
+                    crate::domain::code_intelligence::ProviderDeadlineError::Unsupported.to_string()
+                })?;
+                WorkspaceServiceManager::new()
+                    .call_bsl_mcp_cancellable_with_budget(
+                        &context.workspace,
+                        &source_root,
+                        WorkspaceServiceBslCall::new(tool_name, arguments, timeout, timeout),
+                        cancellation,
+                    )
+                    .map(|output| {
+                        let version = find_plugin_root(&context.workspace.cwd)
+                            .and_then(|root| bundled_tool_version(&root, "bsl-analyzer").ok());
+                        BslDiagnosticBackendReply::Resident(BslDiagnosticResidentReply {
+                            result_text: output.result_text,
+                            stderr: output.stderr,
+                            version,
+                        })
                     })
-                }),
+            }
         }
     }
 }
 
 static WORKSPACE_BSL_DIAGNOSTIC_BACKEND: WorkspaceBslDiagnosticBackend =
     WorkspaceBslDiagnosticBackend;
+
+/// The real bsl-analyzer provider over a backend that records the process
+/// timeout it would hand the analyzer, for tests that drive `check` through
+/// the daemon's invocation service.
+#[cfg(test)]
+pub(crate) mod analyze_timeout_probe {
+    use super::*;
+
+    pub(crate) struct RecordingAnalyzeBackend {
+        timeouts: std::sync::Mutex<Vec<Option<Duration>>>,
+    }
+
+    impl RecordingAnalyzeBackend {
+        pub(crate) fn timeouts(&self) -> Vec<Option<Duration>> {
+            self.timeouts.lock().unwrap().clone()
+        }
+    }
+
+    impl BslDiagnosticBackend for RecordingAnalyzeBackend {
+        fn invoke(
+            &self,
+            _context: &DiagnosticContext,
+            request: BslDiagnosticBackendRequest,
+            timeout: Option<Duration>,
+            _cancellation: &CancellationToken,
+        ) -> Result<BslDiagnosticBackendReply, String> {
+            self.timeouts.lock().unwrap().push(timeout);
+            match request {
+                BslDiagnosticBackendRequest::Analyze { .. } => {
+                    Ok(BslDiagnosticBackendReply::Analyze(AnalyzerDiagnosticsBatch {
+                        outcome: DiagnosticProviderOutcome {
+                            status: DiagnosticProviderStatus::Empty,
+                            complete: true,
+                            version: Some("probe".to_string()),
+                            observations: Vec::new(),
+                            rules: Vec::new(),
+                            readiness: None,
+                            error: None,
+                        },
+                        files: crate::infrastructure::diagnostics_jsonl::AnalyzerDiagnosticsFileTotals {
+                            discovered: Some(1),
+                            processed: Some(1),
+                            failed: Some(0),
+                        },
+                        diagnostics_reported: Some(0),
+                        elapsed_seconds: Some(0.0),
+                    }))
+                }
+                BslDiagnosticBackendRequest::Resident { .. } => {
+                    Err("the analyze probe answers only analyze".to_string())
+                }
+            }
+        }
+    }
+
+    pub(crate) fn recording_provider() -> (
+        std::sync::Arc<dyn DiagnosticProvider>,
+        &'static RecordingAnalyzeBackend,
+    ) {
+        let backend: &'static RecordingAnalyzeBackend =
+            Box::leak(Box::new(RecordingAnalyzeBackend {
+                timeouts: std::sync::Mutex::new(Vec::new()),
+            }));
+        (
+            std::sync::Arc::new(BslAnalyzerDiagnosticProvider::with_backend(backend)),
+            backend,
+        )
+    }
+}
 
 pub(crate) struct BslAnalyzerDiagnosticProvider<'a> {
     backend: &'a (dyn BslDiagnosticBackend + Send + Sync),
@@ -417,9 +491,13 @@ impl<'a> BslAnalyzerDiagnosticProvider<'a> {
         if cancellation.is_cancelled() {
             return Err("cancelled: diagnostics provider stopped before request".to_string());
         }
-        let timeout = match deadline.finite_remaining() {
-            Ok(timeout) => timeout,
-            Err(error) => {
+        // Анализ модуля для `check` идёт без срока, если пользователь его
+        // не задал (#1251). Резидентные действия прежней поверхности
+        // по-прежнему требуют конечного срока.
+        let timeout = match (request.action, deadline.finite_remaining()) {
+            (_, Ok(timeout)) => Some(timeout),
+            (DiagnosticAction::Analyze, Err(_)) => None,
+            (_, Err(error)) => {
                 return Ok(provider_failed_with_status(
                     DiagnosticProviderStatus::Unsupported,
                     None,
@@ -429,7 +507,7 @@ impl<'a> BslAnalyzerDiagnosticProvider<'a> {
                 ))
             }
         };
-        if timeout.is_zero() {
+        if timeout.is_some_and(|timeout| timeout.is_zero()) {
             return Ok(provider_failed(
                 None,
                 "provider_timeout",
@@ -999,6 +1077,7 @@ mod bsl_diagnostics_provider_tests {
 
     struct FakeBackend {
         calls: Mutex<Vec<BslDiagnosticBackendRequest>>,
+        timeouts: Mutex<Vec<Option<Duration>>>,
         replies: Mutex<VecDeque<Result<BslDiagnosticBackendReply, String>>>,
     }
 
@@ -1006,6 +1085,7 @@ mod bsl_diagnostics_provider_tests {
         fn new(replies: Vec<BslDiagnosticBackendReply>) -> Self {
             Self {
                 calls: Mutex::new(Vec::new()),
+                timeouts: Mutex::new(Vec::new()),
                 replies: Mutex::new(replies.into_iter().map(Ok).collect()),
             }
         }
@@ -1024,10 +1104,11 @@ mod bsl_diagnostics_provider_tests {
             &self,
             _context: &DiagnosticContext,
             request: BslDiagnosticBackendRequest,
-            _timeout: Duration,
+            timeout: Option<Duration>,
             _cancellation: &CancellationToken,
         ) -> Result<BslDiagnosticBackendReply, String> {
             self.calls.lock().unwrap().push(request);
+            self.timeouts.lock().unwrap().push(timeout);
             self.replies
                 .lock()
                 .unwrap()
@@ -1037,11 +1118,36 @@ mod bsl_diagnostics_provider_tests {
     }
 
     #[test]
+    fn no_deadline_analyze_dispatches_the_analyzer_without_a_timeout() {
+        let fixture = ProviderFixture::new();
+        let backend = FakeBackend::new(vec![empty_analyze()]);
+        let outcome = BslAnalyzerDiagnosticProvider::with_backend(&backend).execute(
+            &fixture.request(DiagnosticAction::Analyze),
+            &fixture.context,
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(
+            outcome.status,
+            DiagnosticProviderStatus::Empty,
+            "{outcome:?}"
+        );
+        assert!(matches!(
+            backend.calls.lock().unwrap().as_slice(),
+            [BslDiagnosticBackendRequest::Analyze { .. }]
+        ));
+        assert_eq!(
+            backend.timeouts.lock().unwrap().as_slice(),
+            [None],
+            "an unconfigured analysis must reach the analyzer without a timeout"
+        );
+    }
+
+    #[test]
     fn no_deadline_diagnostics_refuses_before_legacy_backend_dispatch() {
         let fixture = ProviderFixture::new();
         let backend = FakeBackend::new(Vec::new());
         for action in [
-            DiagnosticAction::Analyze,
             DiagnosticAction::Findings,
             DiagnosticAction::Status,
             DiagnosticAction::Catalog,

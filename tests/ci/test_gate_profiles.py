@@ -20,6 +20,13 @@ import tree_sitter_rust
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATES = ("pr", "queue", "main", "release")
+# Library modules whose named tests may enter the large tier, with the source
+# file that declares them: map capacity checks and the real-time daemon run
+# past the former operation deadlines (#1251).
+LARGE_LIBRARY_MODULES = {
+    "infrastructure::source_selection_evidence::tests::": "src/infrastructure/source_selection_evidence.rs",
+    "infrastructure::daemon::runtime_v5::tests::": "src/infrastructure/daemon/runtime_v5/tests.rs",
+}
 
 
 def large_groups(expression: str) -> dict[str, list[str]]:
@@ -43,9 +50,11 @@ def large_groups(expression: str) -> dict[str, list[str]]:
                 raise ValueError("large members must be exact anchored test names")
             name = parsed[1]
             if target == "unica_coder":
-                prefix = "infrastructure::source_selection_evidence::tests::"
-                if not name.startswith(prefix) or "::" in name[len(prefix):]:
-                    raise ValueError("large library tests must belong to source selection evidence")
+                if not any(
+                    name.startswith(prefix) and "::" not in name[len(prefix):]
+                    for prefix in LARGE_LIBRARY_MODULES
+                ):
+                    raise ValueError("large library tests must belong to a declared large module")
             elif "::" in name:
                 raise ValueError("large ledger tests must belong to the contract root")
             names.append(name)
@@ -154,21 +163,23 @@ class GateProfileCompositionTests(unittest.TestCase):
         large = self.config["profile"]["large"]["default-filter"]
         groups = large_groups(large)
         self.assertEqual(sum(map(len, groups.values())), large.count("test("))
-        sources = {
-            "daemon_receipt_ledger": ("tests/daemon_receipt_ledger.rs", ""),
-            "unica_coder": ("src/infrastructure/source_selection_evidence.rs", "infrastructure::source_selection_evidence::"),
-        }
-        for target, names in groups.items():
-            path, prefix = sources[target]
+        ledger = (REPO_ROOT / "crates" / "unica-coder" / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
+        declared_by_target = {"daemon_receipt_ledger": attributed_test_functions(ledger), "unica_coder": set()}
+        for prefix, path in LARGE_LIBRARY_MODULES.items():
             source = (REPO_ROOT / "crates" / "unica-coder" / path).read_text(encoding="utf-8")
-            declared = {prefix + name for name in attributed_test_functions(source)}
+            # A `tests.rs` file is the module body itself; an inline module
+            # contributes its own `tests::` segment.
+            module = prefix if path.endswith("/tests.rs") else prefix.removesuffix("tests::")
+            declared_by_target["unica_coder"] |= {module + name for name in attributed_test_functions(source)}
+        for target, names in groups.items():
+            declared = declared_by_target[target]
             for name in names:
                 with self.subTest(target=target, test=name):
                     self.assertIn(name, declared, "large member must have a test attribute in its declared module")
 
     def test_large_filter_rejects_broad_wrong_target_and_duplicate_members(self) -> None:
         expression = self.config["profile"]["large"]["default-filter"].strip()
-        name = large_groups(expression)["unica_coder"][0]
+        name = large_groups(expression)["unica_coder"][-1]
         exact = f"test(/^{name}$/)"
         for replacement in [
             f"test(/^{name}/)",

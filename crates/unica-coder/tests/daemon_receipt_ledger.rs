@@ -8872,10 +8872,12 @@ fn cancel_or_restart_before_actor_bind_terminalizes_without_callback() {
     assert_eq!(restarted.callbacks.execute, 0);
 }
 
+/// #1251: validation and admission of a promised Task have no deadline. Far
+/// past the former two-second grace the daemon keeps listening, and the
+/// released admission continues the same attempt into its Task.
 #[test]
-fn unbound_validation_and_admission_share_one_two_second_fail_stop_grace() {
-    let validation_grace_ms = 750;
-    let admission_grace_ms = CLEANUP_GRACE_MS - validation_grace_ms;
+fn unbound_validation_and_admission_continue_past_the_former_fail_stop_grace() {
+    let far_past_former_grace_ms = 600_000;
     let report = execute(Scenario::fake(vec![
         direct_provider(),
         Action::InstallBarrier {
@@ -8891,7 +8893,7 @@ fn unbound_validation_and_admission_share_one_two_second_fail_stop_grace() {
         Action::AdvanceMonotonic { millis: CUTOFF_MS },
         checkpoint_action("promised"),
         Action::AdvanceMonotonic {
-            millis: validation_grace_ms,
+            millis: far_past_former_grace_ms,
         },
         Action::ReleaseBarrier {
             point: BarrierPoint::ValidationEntered,
@@ -8899,45 +8901,38 @@ fn unbound_validation_and_admission_share_one_two_second_fail_stop_grace() {
         Action::WaitForEvent {
             event: EventKind::AdmissionEntered,
         },
-        checkpoint_action("admission-with-remainder"),
         Action::AdvanceMonotonic {
-            millis: admission_grace_ms - 1,
+            millis: far_past_former_grace_ms,
         },
-        checkpoint_action("one-ms-before-shared-deadline"),
-        Action::AdvanceMonotonic { millis: 1 },
-        checkpoint_action("fail-stop"),
+        checkpoint_action("admission-far-past-grace"),
         Action::ReleaseBarrier {
             point: BarrierPoint::AdmissionEntered,
         },
-        checkpoint_action("late-release"),
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        checkpoint_action("completed"),
     ]));
 
     let promised = checkpoint(&report, "promised");
-    let promised_epoch = only_receipt(promised).accepted_epoch_ms;
     assert_eq!(
         only_receipt(promised).state,
         SeedReceiptState::TaskPromisedUnbound
     );
-    let admission = checkpoint(&report, "admission-with-remainder");
+    let admission = checkpoint(&report, "admission-far-past-grace");
+    assert_eq!(admission.listener, ListenerState::Listening);
     assert!(admission.daemon_running);
+    assert!(!admission.restart_requested);
     assert_eq!(admission.callbacks.validation, 1);
     assert_eq!(admission.callbacks.admission, 1);
-    let before = checkpoint(&report, "one-ms-before-shared-deadline");
-    assert_eq!(before.listener, ListenerState::Listening);
-    assert!(before.daemon_running);
-    assert!(!before.restart_requested);
-    let stopped = checkpoint(&report, "fail-stop");
-    assert_eq!(stopped.listener, ListenerState::Closed);
-    assert!(stopped.restart_requested);
-    assert!(!stopped.daemon_running);
-    assert_eq!(stopped.process_exit_elapsed_ms, Some(CLEANUP_GRACE_MS));
-    assert_eq!(only_receipt(stopped).accepted_epoch_ms, promised_epoch);
-    let late = checkpoint(&report, "late-release");
-    assert_eq!(late.callbacks.validation, 1);
-    assert_eq!(late.callbacks.admission, 1);
-    assert_eq!(late.callbacks.prepare, 0);
-    assert_eq!(late.callbacks.execute, 0);
-    assert_eq!(late.actor_leases, 0);
+    let completed = checkpoint(&report, "completed");
+    assert_eq!(completed.listener, ListenerState::Listening);
+    assert!(completed.daemon_running);
+    assert!(!completed.restart_requested);
+    assert_eq!(completed.callbacks.validation, 1);
+    assert_eq!(completed.callbacks.admission, 1);
+    assert_eq!(completed.callbacks.prepare, 1);
+    assert_eq!(completed.callbacks.execute, 1);
 }
 
 #[test]
@@ -10138,7 +10133,7 @@ fn bound_task_start_rechecks_proof_after_working_readback() {
 }
 
 #[test]
-fn bound_actor_lease_is_retained_until_terminal_or_process_fail_stop() {
+fn bound_actor_lease_is_retained_until_terminal_even_past_a_cancel() {
     let report = execute(Scenario::fake(vec![
         direct_provider(),
         Action::InstallBarrier {
@@ -10187,7 +10182,7 @@ fn bound_actor_lease_is_retained_until_terminal_or_process_fail_stop() {
         Action::WaitForEvent {
             event: EventKind::PrepareEntered,
         },
-        checkpoint_action("noncooperative-before-exit"),
+        checkpoint_action("noncooperative-before-cancel"),
         Action::Cancel {
             key: KeyCase::Exact,
             lazy_session: true,
@@ -10196,22 +10191,34 @@ fn bound_actor_lease_is_retained_until_terminal_or_process_fail_stop() {
         Action::AdvanceMonotonic {
             millis: CLEANUP_GRACE_MS,
         },
-        checkpoint_action("noncooperative-after-exit"),
+        checkpoint_action("noncooperative-past-former-grace"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::PrepareEntered,
+        },
+        Action::WaitForEvent {
+            event: EventKind::ReceiptTerminalCommitted,
+        },
+        checkpoint_action("noncooperative-terminal"),
     ]));
 
     assert_eq!(checkpoint(&report, "direct-live").actor_leases, 1);
     assert_eq!(checkpoint(&report, "task-live").actor_leases, 1);
     assert_eq!(checkpoint(&report, "normal-terminal").actor_leases, 0);
     assert_eq!(checkpoint(&report, "task-terminal").actor_leases, 0);
-    let blocked = checkpoint(&report, "noncooperative-before-exit");
+    let blocked = checkpoint(&report, "noncooperative-before-cancel");
     assert_eq!(blocked.actor_leases, 1);
     assert!(blocked.daemon_running);
-    let exited = checkpoint(&report, "noncooperative-after-exit");
-    assert!(!exited.daemon_running);
-    assert_eq!(exited.actor_leases, 0);
-    assert_eq!(exited.process_exit_elapsed_ms, Some(CLEANUP_GRACE_MS));
+    // #1251: past the former two-second grace the cancelled attempt keeps
+    // its lease and the daemon keeps running; no fail-stop releases it.
+    let waiting = checkpoint(&report, "noncooperative-past-former-grace");
+    assert!(waiting.daemon_running);
+    assert!(!waiting.restart_requested);
+    assert_eq!(waiting.actor_leases, 1);
+    let settled = checkpoint(&report, "noncooperative-terminal");
+    assert!(settled.daemon_running);
+    assert_eq!(settled.actor_leases, 0);
     assert_eq!(count_event(&report, EventKind::LeaseReleased), 3);
-    assert_eq!(count_event(&report, EventKind::ListenerClosed), 1);
+    assert_eq!(count_event(&report, EventKind::ListenerClosed), 0);
 }
 
 #[test]
@@ -11447,8 +11454,11 @@ fn thirty_two_lazy_cancel_actor_batch_finishes_within_125ms() {
     assert_eq!(load.listener, ListenerState::Listening);
 }
 
+/// #1251, owner decision: an attempt that does not answer its cancel keeps
+/// only its own receipt. Far past the former two-second grace the daemon
+/// keeps listening, and the late attempt still ends as cancelled.
 #[test]
-fn noncooperative_prepare_forces_fail_stop_after_two_second_grace() {
+fn noncooperative_prepare_cancel_keeps_the_daemon_listening() {
     let report = execute(Scenario::fake(vec![
         Action::ConfigureProvider {
             execution_class: ExecutionClass::Direct,
@@ -11468,34 +11478,28 @@ fn noncooperative_prepare_forces_fail_stop_after_two_second_grace() {
             lazy_session: true,
             label: "cancel".to_string(),
         },
-        Action::AdvanceMonotonic { millis: 1_999 },
-        checkpoint_action("one-ms-before-fail-stop"),
-        Action::AdvanceMonotonic { millis: 1 },
-        checkpoint_action("process-exited"),
-        Action::Restart,
-        Action::Recover {
-            key: KeyCase::Exact,
-            label: "successor-recover".to_string(),
+        Action::AdvanceMonotonic { millis: 600_000 },
+        checkpoint_action("far-past-former-grace"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::PrepareEntered,
         },
-        checkpoint_action("successor"),
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        checkpoint_action("settled"),
     ]));
 
-    let before = checkpoint(&report, "one-ms-before-fail-stop");
-    assert_eq!(before.listener, ListenerState::Listening);
-    assert!(before.daemon_running);
-    assert!(!before.restart_requested);
-    assert_eq!(before.actor_leases, 1);
-    let exited = checkpoint(&report, "process-exited");
-    assert_eq!(exited.listener, ListenerState::Closed);
-    assert!(exited.restart_requested);
-    assert!(!exited.daemon_running);
-    assert_eq!(exited.process_exit_elapsed_ms, Some(CLEANUP_GRACE_MS));
-    assert_eq!(exited.actor_leases, 0);
-    let successor = checkpoint(&report, "successor");
-    assert_failed_terminal(
-        terminal_of_receipt(only_receipt(successor)),
-        V5SafeFailureReason::OutcomeUncertain,
-    );
+    let waiting = checkpoint(&report, "far-past-former-grace");
+    assert_eq!(waiting.listener, ListenerState::Listening);
+    assert!(waiting.daemon_running);
+    assert!(!waiting.restart_requested);
+    let settled = checkpoint(&report, "settled");
+    assert_eq!(settled.listener, ListenerState::Listening);
+    assert!(settled.daemon_running);
+    assert!(!settled.restart_requested);
+    // The cutoff passed while the attempt ignored its cancel: the attempt
+    // became its Task and still ends as cancelled.
+    assert_eq!(only_task(settled).status, TaskStatus::Cancelled);
     assert_eq!(count_event(&report, EventKind::PrepareEntered), 1);
 }
 

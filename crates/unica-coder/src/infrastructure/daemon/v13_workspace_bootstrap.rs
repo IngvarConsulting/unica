@@ -149,7 +149,6 @@ impl PreparedWorkspaceInspection {
     fn inspect(&self, cancellation: CancellationToken) -> Result<DomainResult, InvocationFailure> {
         check_cancellation(&cancellation)?;
         let context = &self.context;
-        let deadline = &self.response_deadline;
         let config_present = project_config_present(&context.workspace_root);
         let mut checkpoint = || {
             if cancellation.is_cancelled() {
@@ -223,7 +222,6 @@ impl PreparedWorkspaceInspection {
             context,
             source_map,
             infobase,
-            deadline,
             self.question,
             &cancellation,
             continuation.as_deref_mut(),
@@ -248,7 +246,6 @@ fn bootstrap_result(
     context: &crate::domain::workspace::WorkspaceContext,
     source_map: ProjectSourceMap,
     infobase: InfobaseTarget,
-    response_deadline: &InvocationResponseDeadline,
     question: RootQuestion,
     cancellation: &CancellationToken,
     mut continuation: Option<&mut ResourceContinuation>,
@@ -272,20 +269,17 @@ fn bootstrap_result(
     } else {
         #[cfg(test)]
         test_control::pause_before_health(&context.workspace_root);
-        let health_budget = response_deadline.remaining_handoff_budget();
+        // Проверка здоровья проекта идёт в задаче до конца: прежде её
+        // обрезало окно передачи в 7 с, и ответ приходил порцией (#1251).
         let inspection = if question == RootQuestion::Verdict {
             inspect_project_health_continued(
                 context,
                 cancellation,
-                ProviderDeadline::from_budget(health_budget),
+                ProviderDeadline::no_deadline(),
                 continuation.as_deref_mut(),
             )
         } else {
-            inspect_project_health(
-                context,
-                cancellation,
-                ProviderDeadline::from_budget(health_budget),
-            )
+            inspect_project_health(context, cancellation, ProviderDeadline::no_deadline())
         };
         Some(
             inspection
@@ -496,10 +490,6 @@ fn bootstrap_result(
             && continuation
                 .as_ref()
                 .is_some_and(|state| state.progress.capacity_limited);
-        let continuable_eol_timeout = readiness_state == "incomplete"
-            && continuation
-                .as_ref()
-                .is_some_and(|state| state.progress.continuable_eol_timeout);
         if capacity_limited {
             if let Value::Array(items) = &mut diagnostics {
                 items.push(object([
@@ -557,13 +547,6 @@ fn bootstrap_result(
                         );
                     }
                 }
-            }
-            if continuable_eol_timeout && !capacity_limited {
-                result.next.push(next_action(
-                    "unica.check",
-                    Value::Object(Map::new()),
-                    "continue the incomplete workspace readiness inspection with a fresh request deadline",
-                ));
             }
         }
         result.data = Some(data);
@@ -1018,7 +1001,10 @@ mod tests {
             panic!("first root check must prepare");
         };
         let first = first.execute(CancellationToken::new()).unwrap();
-        assert!(first
+        // A step stopped by the test hook leaves the inspection incomplete;
+        // without automatic deadlines the answer no longer invites a repeat
+        // with a fresh deadline (#1251), yet a repeat still resumes.
+        assert!(!first
             .next
             .iter()
             .any(|action| action["tool"] == "unica.check"));
@@ -1156,9 +1142,12 @@ mod tests {
                 .iter()
                 .any(|diagnostic| { diagnostic["code"] == "git.text_policy_missing" }));
             assert_eq!(data["repositoryReady"], false);
+            assert!(
+                !repeat,
+                "no repeat with a fresh deadline is offered after #1251"
+            );
             if step < 3 {
                 assert_eq!(data["readinessState"], "incomplete");
-                assert!(repeat);
                 let state = continuations.for_workspace(&normalized_root).unwrap();
                 assert_eq!(
                     state
@@ -1170,7 +1159,6 @@ mod tests {
                 );
             } else {
                 assert_eq!(data["readinessState"], "complete");
-                assert!(!repeat);
             }
         }
     }
@@ -1318,7 +1306,9 @@ mod tests {
                 }
                 let data = result.data.unwrap();
                 if tool == ToolIdentity::Check {
-                    assert_eq!(data["readinessState"], "incomplete");
+                    // Past the handoff moment the inspection still runs to
+                    // its end: no handoff-sized portion (#1251).
+                    assert_eq!(data["readinessState"], "complete", "{data}");
                 } else {
                     assert_eq!(data["sourceSets"][0]["name"], "main");
                     assert_eq!(

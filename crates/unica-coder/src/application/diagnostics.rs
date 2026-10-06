@@ -24,14 +24,10 @@ pub(crate) fn invoke(
     let mut request = parse_diagnostic_request(args)
         .map_err(|error| format!("{}: {}", error.code, error.message))?;
     if request.action == DiagnosticAction::Analyze {
-        request.timeout = Some(
-            operational_config
-                .ok_or_else(|| {
-                    "diagnostics analyze call is missing operational config".to_string()
-                })?
-                .code_diagnostics()
-                .analyze_timeout(),
-        );
+        request.timeout = operational_config
+            .ok_or_else(|| "diagnostics analyze call is missing operational config".to_string())?
+            .code_diagnostics()
+            .analyze_timeout();
     }
     let result = DiagnosticCoordinator::new(ports.diagnostic_provider_registry()?, ports)
         .execute(&request, workspace, cancellation)
@@ -206,8 +202,13 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
             filter: request.filter.clone(),
             range: request.range,
         };
-        let configured_budget = request.timeout.unwrap_or(DIAGNOSTIC_BUDGET_WITHOUT_CONFIG);
-        let configured_deadline = ProviderDeadline::from_budget(configured_budget);
+        // Анализ без настроенного срока идёт до конца: умолчание срок
+        // не подставляет (#1251). Явно заданный пользователем срок соблюдается.
+        let configured_deadline = match (request.timeout, request.action) {
+            (Some(timeout), _) => ProviderDeadline::from_budget(timeout),
+            (None, DiagnosticAction::Analyze) => ProviderDeadline::no_deadline(),
+            (None, _) => ProviderDeadline::from_budget(DIAGNOSTIC_BUDGET_WITHOUT_CONFIG),
+        };
         let deadline = scope.as_ref().map_or(configured_deadline, |(_, deadline)| {
             deadline.earlier(configured_deadline)
         });

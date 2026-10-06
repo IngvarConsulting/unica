@@ -69,7 +69,7 @@ kind(test)
     | test(/^infrastructure::daemon::client_v5::connections::tests::[^:]+$/)
     | test(/^infrastructure::daemon::protocol_v5::(tests)::/)
     | test(/^infrastructure::daemon::runtime_v5::tests::[^:]+$/)
-    | test(/^infrastructure::daemon::server::(actor_capacity_tests|invocation_service)::/)
+    | test(/^infrastructure::daemon::server::(actor_capacity_tests|finite_deadline_guard|invocation_service)::/)
     | test(/^infrastructure::daemon::v13_client_run::(tests)::/)
     | test(/^infrastructure::daemon::v13_service::(tests)::/)
     | test(/^infrastructure::daemon::v13_workspace_bootstrap::(tests)::/)
@@ -132,7 +132,8 @@ binary(daemon_receipt_ledger) & (
 )
 ) | (
 binary(unica_coder) & (
-    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
@@ -164,7 +165,8 @@ binary(daemon_receipt_ledger) & (
 )
 ) | (
 binary(unica_coder) & (
-    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
@@ -193,7 +195,8 @@ binary(daemon_receipt_ledger) & (
 )
 ) | (
 binary(unica_coder) & (
-    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
@@ -232,7 +235,8 @@ binary(daemon_receipt_ledger) & (
 )
 ) | (
 binary(unica_coder) & (
-    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)
@@ -277,7 +281,7 @@ kind(test)
     | test(/^infrastructure::daemon::client_v5::connections::tests::[^:]+$/)
     | test(/^infrastructure::daemon::protocol_v5::(tests)::/)
     | test(/^infrastructure::daemon::runtime_v5::tests::[^:]+$/)
-    | test(/^infrastructure::daemon::server::(actor_capacity_tests|invocation_service)::/)
+    | test(/^infrastructure::daemon::server::(actor_capacity_tests|finite_deadline_guard|invocation_service)::/)
     | test(/^infrastructure::daemon::v13_client_run::(tests)::/)
     | test(/^infrastructure::daemon::v13_service::(tests)::/)
     | test(/^infrastructure::daemon::v13_workspace_bootstrap::(tests)::/)
@@ -349,7 +353,8 @@ binary(daemon_receipt_ledger) & (
 )
 ) | (
 binary(unica_coder) & (
-    test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
+    test(/^infrastructure::daemon::runtime_v5::tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
+    | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_membership_crosses_former_16384_across_sources$/)
     | test(/^infrastructure::source_selection_evidence::tests::aggregate_selection_records_cross_former_65536_with_real_absences$/)

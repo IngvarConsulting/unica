@@ -68,7 +68,6 @@ macro_rules! assert_not_impl_production {
 /// v5: a record names the build that serves it, not the package version.
 const SERVICE_SCHEMA_VERSION: u32 = 5;
 const DEFAULT_IDLE_SECS: u64 = 7200;
-const DEFAULT_MAX_AGE_SECS: u64 = 28800;
 const SERVICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVICE_CONTROL_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
@@ -157,14 +156,12 @@ impl WorkspaceServiceRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkspaceServiceConfig {
     pub idle_secs: u64,
-    pub max_age_secs: u64,
 }
 
 impl WorkspaceServiceConfig {
     pub fn from_env() -> Self {
         Self {
             idle_secs: env_u64("UNICA_WORKSPACE_SERVICE_IDLE_SECS", DEFAULT_IDLE_SECS),
-            max_age_secs: env_u64("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS", DEFAULT_MAX_AGE_SECS),
         }
     }
 }
@@ -1209,8 +1206,6 @@ impl ServiceSpawner for SystemServiceSpawner {
             .arg(token)
             .arg("--idle-secs")
             .arg(config.idle_secs.to_string())
-            .arg("--max-age-secs")
-            .arg(config.max_age_secs.to_string())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
         if let Some(plugin_root) = find_plugin_root(Path::new(&identity.workspace_root)) {
@@ -3784,7 +3779,6 @@ pub fn run_workspace_service_from_args(args: &[String]) -> Result<(), String> {
     let token = required_arg(args, "--token")?;
     let build = required_arg(args, "--core-identity")?;
     let idle_secs = optional_u64_arg(args, "--idle-secs", DEFAULT_IDLE_SECS);
-    let max_age_secs = optional_u64_arg(args, "--max-age-secs", DEFAULT_MAX_AGE_SECS);
     let key = service_dir
         .file_name()
         .and_then(|value| value.to_str())
@@ -3796,7 +3790,7 @@ pub fn run_workspace_service_from_args(args: &[String]) -> Result<(), String> {
         source_root,
         service_dir,
     };
-    run_workspace_service(identity, token, build, idle_secs, max_age_secs)
+    run_workspace_service(identity, token, build, idle_secs)
 }
 
 fn run_workspace_service(
@@ -3804,7 +3798,6 @@ fn run_workspace_service(
     token: String,
     build: String,
     idle_secs: u64,
-    max_age_secs: u64,
 ) -> Result<(), String> {
     fs::create_dir_all(&identity.service_dir)
         .map_err(|err| format!("failed to create workspace service directory: {err}"))?;
@@ -3837,7 +3830,6 @@ fn run_workspace_service(
         runtime,
         Arc::new(SystemWorkspaceServiceOperationExecutor),
         Duration::from_secs(idle_secs.max(1)),
-        Duration::from_secs(max_age_secs.max(1)),
         SERVICE_REQUEST_HEADER_TIMEOUT,
         SERVICE_SHUTDOWN_GRACE,
     )
@@ -3848,11 +3840,9 @@ fn serve_workspace_service(
     runtime: Arc<WorkspaceServiceRuntime>,
     executor: Arc<dyn WorkspaceServiceOperationExecutor>,
     idle_timeout: Duration,
-    max_age: Duration,
     request_header_timeout: Duration,
     shutdown_grace: Duration,
 ) -> Result<(), String> {
-    let started = Instant::now();
     let mut last_access = Instant::now();
     let mut handlers: Vec<thread::JoinHandle<Result<(), String>>> = Vec::new();
     let mut result = Ok(());
@@ -3872,7 +3862,13 @@ fn serve_workspace_service(
         if runtime.shutting_down().load(Ordering::Acquire) {
             break;
         }
-        if started.elapsed() >= max_age || last_access.elapsed() >= idle_timeout {
+        // The service has no maximum age: it lives until it stays idle. A
+        // request still in flight is not idleness, so the service never
+        // stops under a running request (#1251).
+        if !handlers.is_empty() {
+            last_access = Instant::now();
+        }
+        if last_access.elapsed() >= idle_timeout {
             runtime.begin_shutdown();
             break;
         }
@@ -5445,7 +5441,6 @@ mod tests {
                 server_runtime,
                 server_executor,
                 Duration::from_secs(30),
-                Duration::from_secs(30),
                 request_header_timeout,
                 SERVICE_SHUTDOWN_GRACE,
             )
@@ -5482,7 +5477,6 @@ mod tests {
                 server_runtime,
                 executor,
                 Duration::from_secs(30),
-                Duration::from_secs(30),
                 SERVICE_REQUEST_HEADER_TIMEOUT,
                 shutdown_grace,
             )
@@ -5518,6 +5512,84 @@ mod tests {
         kind: ServiceRequestKind,
     ) -> ServiceResponse {
         read_test_response(&mut open_test_request(record, kind))
+    }
+
+    /// Answers after `delay`, unless the service stops it first.
+    struct SlowCancellableExecutor {
+        delay: Duration,
+    }
+
+    impl WorkspaceServiceOperationExecutor for SlowCancellableExecutor {
+        fn execute(
+            &self,
+            _runtime: &WorkspaceServiceRuntime,
+            _kind: ServiceRequestKind,
+            cancellation: &CancellationToken,
+        ) -> ServiceResponse {
+            let until = Instant::now() + self.delay;
+            while Instant::now() < until {
+                if cancellation.is_cancelled() {
+                    return ServiceResponse::error(cancelled_error("slow operation stopped"));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            ServiceResponse {
+                ok: true,
+                status: Some("slow-done".to_string()),
+                ..ServiceResponse::default()
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_service_never_stops_under_a_request_longer_than_its_idle_time() {
+        let context = test_context("idle-under-request");
+        let identity =
+            WorkspaceServiceIdentity::new(&context, &context.workspace_root.join("src")).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let record = test_record(
+            &identity,
+            listener.local_addr().unwrap().port(),
+            CoreIdentity::production().as_str(),
+        );
+        write_record(&identity, record.clone());
+        let runtime = Arc::new(WorkspaceServiceRuntime::new(identity, &record));
+        let server_runtime = Arc::clone(&runtime);
+        let idle_timeout = Duration::from_millis(200);
+        let server = thread::spawn(move || {
+            serve_workspace_service(
+                listener,
+                server_runtime,
+                Arc::new(SlowCancellableExecutor {
+                    delay: Duration::from_millis(1_200),
+                }),
+                idle_timeout,
+                SERVICE_REQUEST_HEADER_TIMEOUT,
+                SERVICE_SHUTDOWN_GRACE,
+            )
+        });
+        let response = send_test_request(
+            &record,
+            ServiceRequestKind::RlmReady {
+                operation_id: "slow-1".to_string(),
+                args: json!({}),
+                timeout_seconds: 5,
+                timeout_nanos: 0,
+            },
+        );
+        assert!(
+            response.ok,
+            "a request six times longer than the idle time completes: {response:?}"
+        );
+        assert_eq!(response.status.as_deref(), Some("slow-done"));
+        // Once the request is done the service is idle and leaves on its own.
+        server
+            .join()
+            .expect("service thread did not panic")
+            .expect("service exits cleanly after idling");
+        assert!(runtime.shutting_down().load(Ordering::Acquire));
+        let _ = fs::remove_dir_all(context.cache_root.parent().unwrap());
     }
 
     #[test]
@@ -9873,19 +9945,14 @@ fn main() {
     #[test]
     fn service_config_uses_defaults_and_env_overrides() {
         std::env::remove_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS");
-        std::env::remove_var("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS");
         let defaults = WorkspaceServiceConfig::from_env();
         assert_eq!(defaults.idle_secs, 7200);
-        assert_eq!(defaults.max_age_secs, 28800);
 
         std::env::set_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS", "10");
-        std::env::set_var("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS", "20");
         let configured = WorkspaceServiceConfig::from_env();
         assert_eq!(configured.idle_secs, 10);
-        assert_eq!(configured.max_age_secs, 20);
 
         std::env::remove_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS");
-        std::env::remove_var("UNICA_WORKSPACE_SERVICE_MAX_AGE_SECS");
     }
 
     #[test]

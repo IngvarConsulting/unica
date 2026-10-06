@@ -1489,7 +1489,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         context: &WorkspaceContext,
         source_root: &Path,
         module: Option<&Path>,
-        timeout: Duration,
+        timeout: Option<Duration>,
         cancellation: &CancellationToken,
     ) -> Result<AnalyzerDiagnosticsBatch, String> {
         let mut args = Map::new();
@@ -1497,7 +1497,8 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             "sourceDir".to_string(),
             Value::String(source_root.display().to_string()),
         );
-        if let Some(timeout_seconds) = analyzer_analyze_timeout_seconds(timeout) {
+        // Без заданного срока процесс анализатора идёт до конца (#1251).
+        if let Some(timeout_seconds) = timeout.map(analyzer_analyze_timeout_seconds) {
             args.insert("timeoutSeconds".to_string(), json!(timeout_seconds));
         }
         let result = self.invoke_diagnostics_analyze_scoped(
@@ -1754,7 +1755,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 env: Vec::new(),
                 env_remove: Vec::new(),
                 capture_limits: None,
-                timeout: Some(process_timeout),
+                timeout: process_timeout,
                 cancellation: cancellation.clone(),
             },
             MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
@@ -1779,7 +1780,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         if !output.status_success {
             let timeout_error = output
                 .timed_out
-                .then(|| process_timeout_error("code analysis", Some(process_timeout)));
+                .then(|| process_timeout_error("code analysis", process_timeout));
             let mut errors = timeout_error.iter().cloned().collect::<Vec<_>>();
             if !stderr.trim().is_empty() {
                 errors.push(stderr.trim().to_string());
@@ -1905,12 +1906,12 @@ fn required_string<'a>(args: &'a Map<String, Value>, key: &str) -> Result<&'a st
 /// the deadline starts before the provider worker does, so truncating would
 /// push the documented minimum of 30 seconds out of the accepted band and drop
 /// the caller budget entirely.
-fn analyzer_analyze_timeout_seconds(timeout: Duration) -> Option<u64> {
+fn analyzer_analyze_timeout_seconds(timeout: Duration) -> u64 {
     let seconds = timeout.as_secs() + u64::from(timeout.subsec_nanos() > 0);
-    Some(seconds.clamp(
+    seconds.clamp(
         DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
         DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS,
-    ))
+    )
 }
 
 fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
@@ -1924,15 +1925,14 @@ fn diagnostics_analyze_args(args: &Map<String, Value>) -> Map<String, Value> {
     filtered
 }
 
+/// `None` — срок анализа никто не задал, и процесс идёт до конечного исхода.
 fn diagnostics_analyze_timeout(
     args: &Map<String, Value>,
     operational_config: Option<&OperationalConfig>,
-) -> Result<Duration, String> {
+) -> Result<Option<Duration>, String> {
     let Some(value) = args.get("timeoutSeconds") else {
         return Ok(
-            operational_config.map_or(DEFAULT_PROCESS_TIMEOUT, |config| {
-                config.code_diagnostics().analyze_timeout()
-            }),
+            operational_config.and_then(|config| config.code_diagnostics().analyze_timeout())
         );
     };
     let Some(seconds) = value.as_u64() else {
@@ -1946,7 +1946,7 @@ fn diagnostics_analyze_timeout(
             DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS, DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS
         ));
     }
-    Ok(Duration::from_secs(seconds))
+    Ok(Some(Duration::from_secs(seconds)))
 }
 
 fn bsl_mcp_command(
@@ -3059,7 +3059,7 @@ mod tests {
             Duration::from_secs(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS) - Duration::from_millis(1);
         assert_eq!(
             analyzer_analyze_timeout_seconds(almost_minimum),
-            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS),
+            DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS,
             "the caller budget must reach the analyzer instead of being dropped"
         );
 
@@ -3067,18 +3067,18 @@ mod tests {
             Duration::from_secs(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS) - Duration::from_millis(1);
         assert_eq!(
             analyzer_analyze_timeout_seconds(almost_maximum),
-            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
+            DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS
         );
 
         // An exhausted deadline still bounds the analyzer by the smallest
         // accepted value rather than handing it its own default.
         assert_eq!(
             analyzer_analyze_timeout_seconds(Duration::from_secs(1)),
-            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS)
+            DIAGNOSTICS_ANALYZE_TIMEOUT_MIN_SECONDS
         );
         assert_eq!(
             analyzer_analyze_timeout_seconds(Duration::from_secs(7_200)),
-            Some(DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS)
+            DIAGNOSTICS_ANALYZE_TIMEOUT_MAX_SECONDS
         );
     }
 
@@ -4931,7 +4931,7 @@ source-set:
     }
 
     #[test]
-    fn diagnostics_analyze_keeps_default_timeout() {
+    fn diagnostics_analyze_without_configured_timeout_runs_without_process_timeout() {
         let context = temp_context("diagnostics-default-timeout");
         let runner = RecordingProcessRunner {
             commands: RefCell::new(Vec::new()),
@@ -4959,8 +4959,13 @@ source-set:
         assert!(outcome.ok);
         assert_eq!(
             runner.commands.borrow()[0].timeout,
-            Some(DEFAULT_PROCESS_TIMEOUT)
+            None,
+            "an unconfigured analysis must not receive a process timeout"
         );
+        assert!(runner.commands.borrow()[0]
+            .args
+            .iter()
+            .all(|arg| arg != "--timeout-seconds" && arg != "timeoutSeconds"));
         cleanup_context(&context);
     }
 
@@ -5719,7 +5724,7 @@ analyze_timeout_seconds = 900
                     &context,
                     &root,
                     Some(&module),
-                    Duration::from_secs(30),
+                    Some(Duration::from_secs(30)),
                     &CancellationToken::new(),
                 );
             let filter = runner

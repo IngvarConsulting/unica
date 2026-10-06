@@ -46,22 +46,22 @@ fn losing_daemon_does_not_rewrite_capacity_snapshot_before_receipt_authority() {
     drop(authority);
 }
 
+/// The daemon's invocation clock, moved by the test: it decides when the
+/// handler hands an unfinished attempt off to its Task.
 struct InspectionClock {
     start: Instant,
     elapsed_ms: AtomicU64,
-    listener: Mutex<Option<thread::ThreadId>>,
-    watchdog_read: mpsc::Sender<()>,
 }
 
 impl Clock for InspectionClock {
     fn now(&self) -> Instant {
-        let elapsed_ms = self.elapsed_ms.load(Ordering::SeqCst);
-        if elapsed_ms >= 9_000 && *self.listener.lock().unwrap() == Some(thread::current().id()) {
-            let _ = self.watchdog_read.send(());
-        }
-        self.start + Duration::from_millis(elapsed_ms)
+        self.start + Duration::from_millis(self.elapsed_ms.load(Ordering::SeqCst))
     }
 }
+
+/// Far past the former 120 s operation budget and the former 2 s fail-stop
+/// grace: no automatic cutoff may fire at this reading (#1251).
+const FAR_PAST_FORMER_DEADLINES_MS: u64 = 600_000;
 
 #[derive(Default)]
 struct InspectionHooks {
@@ -134,12 +134,9 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
     std::fs::write(workspace_root.join("src/Configuration.xml"), source_bytes).unwrap();
     let independent_workspace = tempfile::tempdir().unwrap();
     let pause = HealthInspectionPause::install(workspace_root.clone());
-    let (watchdog_tx, watchdog_rx) = mpsc::channel();
     let clock = Arc::new(InspectionClock {
         start: Instant::now(),
         elapsed_ms: AtomicU64::new(0),
-        listener: Mutex::new(None),
-        watchdog_read: watchdog_tx,
     });
     let service = Arc::new(SourceAdmissionProbe::default());
     let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
@@ -157,9 +154,7 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
     .with_runtime_hooks_for_test(hooks.clone());
     let stop = Arc::new(AtomicBool::new(false));
     let server_stop = stop.clone();
-    let server_clock = clock.clone();
     let server = thread::spawn(move || {
-        *server_clock.listener.lock().unwrap() = Some(thread::current().id());
         run_daemon_configured_until(
             config,
             |runtime| runtime,
@@ -209,10 +204,9 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
     assert_eq!(snapshot.task_id(), task_id);
     assert_eq!(snapshot.invocation_id(), invocation_id);
 
-    clock.elapsed_ms.store(9_000, Ordering::SeqCst);
-    watchdog_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("listener evaluated the two-second grace boundary");
+    clock
+        .elapsed_ms
+        .store(FAR_PAST_FORMER_DEADLINES_MS, Ordering::SeqCst);
     let independent = owner
         .connect_peer_before(Instant::now() + Duration::from_secs(2))
         .map_err(|error| error.to_string())
@@ -266,12 +260,13 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
     assert_eq!(completed_invocation_id, invocation_id);
     assert!(
         result.ok,
-        "expired health inspection still reports workspace facts: {result:?}"
+        "a slow health inspection still reports workspace facts: {result:?}"
     );
     let data = result.data.unwrap();
     if tool == V5ToolIdentity::Check {
-        assert_eq!(data["readinessState"], "incomplete");
-        assert_eq!(data["ready"], false);
+        // The inspection ran to its end inside the Task: no portion cut at
+        // the handoff window and no continuation to call for (#1251).
+        assert_eq!(data["readinessState"], "complete", "{data}");
     } else {
         assert_eq!(data["sourceSets"][0]["name"], "main");
     }
@@ -293,13 +288,173 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
 }
 
 #[test]
-fn root_view_keeps_the_same_task_and_daemon_past_the_admission_grace() {
+fn root_view_keeps_the_same_task_and_daemon_past_the_former_deadlines() {
     root_inspection_survives_response_cutoff(V5ToolIdentity::View);
 }
 
 #[test]
-fn root_check_keeps_the_same_task_and_original_inspection_deadline() {
+fn root_check_completes_the_whole_inspection_in_its_task() {
     root_inspection_survives_response_cutoff(V5ToolIdentity::Check);
+}
+
+#[test]
+fn cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon() {
+    let state = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(state.path()).unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let workspace_root = std::fs::canonicalize(workspace.path()).unwrap();
+    std::fs::create_dir(workspace_root.join("src")).unwrap();
+    std::fs::write(
+        workspace_root.join("v8project.yaml"),
+        b"format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace_root.join("src/Configuration.xml"),
+        br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    let independent_workspace = tempfile::tempdir().unwrap();
+    let admission =
+        crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
+            workspace_root.clone(),
+        );
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    // Its prepare panics: a cancelled admission must never reach it.
+    let service = Arc::new(SourceAdmissionProbe::default());
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        service.clone(),
+        clock.clone(),
+    ));
+    let hooks = Arc::new(InspectionHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(30),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let task_id = TaskId::new();
+    let invocation = V5InvocationRequest::new(
+        InvocationId::new(),
+        task_id,
+        V5ToolIdentity::View,
+        serde_json::Map::from_iter([(
+            "at".to_owned(),
+            serde_json::Value::String("main:Catalog.Items".to_owned()),
+        )]),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(
+            workspace_root.to_string_lossy().into_owned(),
+        ),
+        7_000,
+    )
+    .unwrap();
+    let submit = thread::spawn(move || {
+        let mut owner = owner;
+        let response = owner.submit_invocation(invocation);
+        (owner, response)
+    });
+    admission.wait_until_entered();
+    clock.elapsed_ms.store(7_000, Ordering::SeqCst);
+    let (mut owner, submitted) = submit.join().unwrap();
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Task { snapshot },
+    } = submitted.expect("an admission past the handoff moment returns its Task")
+    else {
+        panic!("slow admission did not hand off to a Task");
+    };
+    assert_eq!(snapshot.task_id(), task_id);
+
+    // The admission keeps running past every former deadline; only the
+    // explicit cancel below ends it.
+    clock
+        .elapsed_ms
+        .store(FAR_PAST_FORMER_DEADLINES_MS, Ordering::SeqCst);
+    owner
+        .cancel_task(task_id)
+        .expect("cancel the Task whose admission is still running");
+    admission.release();
+    let settled = owner
+        .wait_task(task_id, 7_000)
+        .expect("the cancelled Task stays reachable");
+    assert!(
+        matches!(
+            settled,
+            V5ServerResponse::Task {
+                snapshot: V5DaemonTaskSnapshot::Cancelled { .. }
+            }
+        ),
+        "a cancel during admission must end the Task as cancelled: {settled:?}"
+    );
+
+    let independent = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .map_err(|error| error.to_string())
+        .and_then(|mut peer| {
+            peer.submit_invocation(
+                V5InvocationRequest::new(
+                    InvocationId::new(),
+                    TaskId::new(),
+                    V5ToolIdentity::View,
+                    serde_json::Map::new(),
+                    unica_bootstrap::ResolvedWorkspace::launch_cwd(
+                        independent_workspace.path().to_string_lossy().into_owned(),
+                    ),
+                    7_000,
+                )
+                .unwrap(),
+            )
+        });
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Direct { receipt },
+    } = independent.expect("the daemon serves an independent call after the cancel")
+    else {
+        panic!("independent read did not complete directly");
+    };
+    assert!(
+        matches!(receipt.terminal(), ReceiptTerminalOutcome::Completed { result } if result.ok)
+    );
+    assert_eq!(
+        service.prepares.load(Ordering::SeqCst),
+        0,
+        "a cancelled admission must not begin the source operation"
+    );
+    // Read after the independent call, so the woken admission had time to
+    // reach its next checkpoint and stop there.
+    assert_eq!(
+        admission.entries(),
+        1,
+        "the admission walk must stop at its first checkpoint after the cancel"
+    );
+    assert!(!hooks.fail_stopped.load(Ordering::SeqCst));
+    drop(owner);
+    drop(admission);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
 }
 
 #[test]
@@ -345,116 +500,6 @@ fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
     ));
 }
 
-#[test]
-fn protected_mutation_does_not_arm_the_two_second_cancel_watchdog() {
-    let root = tempfile::tempdir().unwrap();
-    let state_root = std::fs::canonicalize(root.path()).unwrap();
-    let identity = CoreIdentity::production_v5();
-    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
-    let config = DaemonServerConfig::new(state_root, identity, Duration::from_millis(50));
-    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
-    let task_id = TaskId::new();
-    let record = V5StoredInvocationRecord {
-        schema_version: crate::application::invocation_store_v5::V5StoredInvocationSchemaVersion,
-        task_id,
-        invocation_id: InvocationId::new(),
-        receipt_key_digest: "44".repeat(32).parse().unwrap(),
-        tool: V5ToolIdentity::Run,
-        normalized_arguments_hash: normalized_arguments_hash(&serde_json::Map::new()),
-        workspace_identity_hash: SafeIdentityHash::from_sha256(Sha256::digest(b"workspace").into()),
-        created_at_epoch_ms: 1_000,
-        updated_at_epoch_ms: 1_000,
-        ttl_ms: 3_600_000,
-        poll_interval_ms: 250,
-        version: 2,
-        cancel_requested: true,
-        task: V5StoredTask::Working,
-    };
-    let (cancellation, _guard) = runtime.active_task_cancellations.register(task_id).unwrap();
-    cancellation
-        .protect_process_on_spawn()
-        .spawn_with_gate(|| Ok(()))
-        .unwrap();
-    cancellation.cancel();
-    runtime.arm_cancel_grace(&record);
-    assert!(runtime
-        .fail_stop_watchdogs
-        .due(runtime.invocation_executor.now() + FAIL_STOP_GRACE + Duration::from_secs(1))
-        .is_none());
-
-    let unprotected = V5StoredInvocationRecord {
-        task_id: TaskId::new(),
-        receipt_key_digest: "55".repeat(32).parse().unwrap(),
-        ..record
-    };
-    runtime.arm_cancel_grace(&unprotected);
-    assert!(runtime
-        .fail_stop_watchdogs
-        .due(runtime.invocation_executor.now() + FAIL_STOP_GRACE + Duration::from_secs(1))
-        .is_some());
-}
-
-#[test]
-fn inline_protected_mutation_cancel_does_not_arm_fail_stop_watchdog() {
-    let root = tempfile::tempdir().unwrap();
-    let state_root = std::fs::canonicalize(root.path()).unwrap();
-    let identity = CoreIdentity::production_v5();
-    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
-    let config = DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50));
-    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
-    let key = ReceiptKey::new(
-        InvocationId::new(),
-        TaskId::new(),
-        RequestIdentity::new(
-            identity.digest().clone(),
-            V5ToolIdentity::Run,
-            normalized_arguments_hash(&serde_json::Map::new()),
-            request_scope_hash("workspace-a").unwrap(),
-        ),
-    );
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let reserved = runtime
-        .receipt_ledger
-        .reserve(
-            key.clone(),
-            OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
-            deadline,
-        )
-        .unwrap()
-        .into_reservation()
-        .unwrap();
-    let bound = runtime
-        .receipt_ledger
-        .bind_reserved_actor(
-            key.clone(),
-            reserved.record_version(),
-            SafeIdentityHash::from_sha256(Sha256::digest(b"workspace-a").into()),
-            deadline,
-        )
-        .unwrap();
-    runtime
-        .receipt_ledger
-        .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
-        .unwrap();
-    let (cancellation, _guard) = runtime
-        .active_task_cancellations
-        .register(key.reserved_task_id())
-        .unwrap();
-    cancellation
-        .protect_process_on_spawn()
-        .spawn_with_gate(|| Ok(()))
-        .unwrap();
-
-    runtime
-        .cancel_invocation(key, 2_000, deadline)
-        .expect("cancel started inline attempt");
-
-    assert!(cancellation.is_cancelled());
-    assert!(runtime
-        .fail_stop_watchdogs
-        .due(runtime.invocation_executor.now() + FAIL_STOP_GRACE + Duration::from_secs(1))
-        .is_none());
-}
 use crate::application::invocation::normalized_arguments_hash;
 use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
 use crate::application::receipt_ledger::{
@@ -5177,4 +5222,471 @@ fn owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive() {
         current.loopback_addr().unwrap(),
         record.loopback_addr().unwrap()
     );
+}
+
+/// A workspace with one Platform XML configuration and a catalog to view.
+fn catalog_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+    let workspace = tempfile::tempdir().expect("temporary workspace");
+    let root = std::fs::canonicalize(workspace.path()).expect("physical workspace");
+    std::fs::create_dir_all(root.join("src/Catalogs")).expect("create source root");
+    std::fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .expect("write workspace descriptor");
+    std::fs::write(
+        root.join("src/Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .expect("write configuration root");
+    std::fs::write(
+        root.join("src/Catalogs/Items.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
+    )
+    .expect("write catalog");
+    (workspace, root)
+}
+
+fn view_catalog_request(task_id: TaskId, workspace: &std::path::Path) -> V5InvocationRequest {
+    V5InvocationRequest::new(
+        InvocationId::new(),
+        task_id,
+        V5ToolIdentity::View,
+        serde_json::Map::from_iter([(
+            "at".to_owned(),
+            serde_json::Value::String("main:Catalog.Items".to_owned()),
+        )]),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace.to_string_lossy().into_owned()),
+        7_000,
+    )
+    .expect("valid view invocation")
+}
+
+/// Wait for a Task terminal in short client polls, up to `limit`.
+fn wait_task_terminal(
+    owner: &mut V5DaemonProcessOwner,
+    task_id: TaskId,
+    limit: Duration,
+) -> V5DaemonTaskSnapshot {
+    let until = Instant::now() + limit;
+    loop {
+        // A fresh session per poll: a session idle across a moved daemon
+        // clock is not what this helper tests.
+        let mut peer = owner
+            .connect_peer_before(Instant::now() + Duration::from_secs(2))
+            .expect("connect a polling session");
+        let response = peer.wait_task(task_id, 1_000).expect("poll the Task");
+        let V5ServerResponse::Task { snapshot } = response else {
+            panic!("Task poll returned a non-Task response: {response:?}");
+        };
+        if !matches!(
+            snapshot,
+            V5DaemonTaskSnapshot::Queued { .. } | V5DaemonTaskSnapshot::Working { .. }
+        ) {
+            return snapshot;
+        }
+        assert!(Instant::now() < until, "Task stayed open past {limit:?}");
+    }
+}
+
+/// The real canonical read service behind a provider that answers later than
+/// every former automatic deadline: the 120 s logical read budget, the 30 s
+/// terminal publication bound and the 2 s admission grace.
+struct SlowRealReadService {
+    inner: crate::infrastructure::daemon::v13_service::CanonicalV13ReadService,
+    delay: Duration,
+    executions: AtomicUsize,
+    entered: Mutex<mpsc::Sender<()>>,
+}
+
+impl CanonicalInvocationService for SlowRealReadService {
+    fn prepare(
+        &self,
+        invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        self.inner.prepare(invocation)
+    }
+
+    fn execute(
+        &self,
+        invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        let _ = self.entered.lock().unwrap().send(());
+        let until = Instant::now() + self.delay;
+        while Instant::now() < until {
+            if cancellation.is_cancelled() {
+                return Err(InvocationFailure::new("cancelled", "slow read cancelled"));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        self.inner.execute(invocation, cancellation)
+    }
+}
+
+/// #1251: a read that answers after 125 s of real time completes through its
+/// Task on both continuation paths — an inline execution handed off at the
+/// seventh second, and an admission that outlived the handoff moment and
+/// runs prepare and execute on the promised Task's continuation. The
+/// daemon's handoff clock is moved by the test; the delay itself is real, so
+/// every former wall-clock budget of the read and of its publication passes.
+#[test]
+fn promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_inline_workspace, inline_root) = catalog_workspace();
+    let (_admitted_workspace, admitted_root) = catalog_workspace();
+    let admission =
+        crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
+            admitted_root.clone(),
+        );
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let service = Arc::new(SlowRealReadService {
+        inner: crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+        delay: Duration::from_secs(125),
+        executions: AtomicUsize::new(0),
+        entered: Mutex::new(entered_tx),
+    });
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        service.clone(),
+        clock.clone(),
+    ));
+    let hooks = Arc::new(InspectionHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(600),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+
+    // Inline: the execution starts before the handoff moment and is handed
+    // off to its Task when the daemon clock reaches the seventh second.
+    let inline_task = TaskId::new();
+    let inline_request = view_catalog_request(inline_task, &inline_root);
+    let inline_submit = thread::spawn(move || {
+        let mut owner = owner;
+        let response = owner.submit_invocation(inline_request);
+        (owner, response)
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the inline execution starts");
+    clock.elapsed_ms.store(7_000, Ordering::SeqCst);
+    let (mut owner, inline) = inline_submit.join().expect("inline submit thread");
+    assert!(
+        matches!(
+            inline.expect("the inline read answers at the handoff moment"),
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { .. }
+            }
+        ),
+        "an unfinished inline read hands off as a Task"
+    );
+
+    // Admitted: the admission itself outlives the handoff moment, and the
+    // promised Task's continuation prepares and executes the read.
+    let admitted_task = TaskId::new();
+    let admitted_request = view_catalog_request(admitted_task, &admitted_root);
+    let mut admitted_owner = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .expect("connect a second session");
+    let admitted_submit = thread::spawn(move || {
+        let response = admitted_owner.submit_invocation(admitted_request);
+        (admitted_owner, response)
+    });
+    admission.wait_until_entered();
+    clock.elapsed_ms.store(14_000, Ordering::SeqCst);
+    let (_admitted_owner, admitted) = admitted_submit.join().expect("admitted submit thread");
+    assert!(
+        matches!(
+            admitted.expect("the admission past the handoff moment answers"),
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { .. }
+            }
+        ),
+        "an admission past the handoff moment returns its promised Task"
+    );
+    clock
+        .elapsed_ms
+        .store(FAR_PAST_FORMER_DEADLINES_MS, Ordering::SeqCst);
+    admission.release();
+
+    for (label, task_id) in [("inline", inline_task), ("admitted", admitted_task)] {
+        let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(300));
+        let V5DaemonTaskSnapshot::Completed { result, .. } = terminal else {
+            panic!("{label} read did not complete: {terminal:?}");
+        };
+        assert!(result.ok, "{label} read failed after the delay: {result:?}");
+        assert!(
+            result.data.is_some(),
+            "{label} read lost its source data: {result:?}"
+        );
+    }
+    assert_eq!(service.executions.load(Ordering::SeqCst), 2);
+    assert!(!hooks.fail_stopped.load(Ordering::SeqCst));
+    drop(owner);
+    drop(admission);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+/// A known-long execution that ignores its cancellation for one address and
+/// answers every other at once.
+struct NoncooperativeStuckService {
+    entered: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl CanonicalInvocationService for NoncooperativeStuckService {
+    fn prepare(
+        &self,
+        _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+    }
+
+    fn execute(
+        &self,
+        invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+        _cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        if invocation.arguments().get("at") == Some(&json!("main:Catalog.Stuck")) {
+            self.entered.send(()).expect("report the stuck execution");
+            self.release
+                .lock()
+                .unwrap()
+                .recv()
+                .expect("release the stuck execution");
+        }
+        Ok(DomainResult::success("answered"))
+    }
+}
+
+/// #1251, owner decision: an executor that does not answer its cancel keeps
+/// only its own Task. The Task shows the requested cancel, the daemon keeps
+/// serving other calls past the former two-second fail-stop, and the late
+/// executor still ends as cancelled.
+#[test]
+fn noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, root) = catalog_workspace();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(60),
+    )
+    .with_invocation_service(Arc::new(NoncooperativeStuckService {
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+    }));
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    let stuck_task = TaskId::new();
+    let stuck = V5InvocationRequest::new(
+        InvocationId::new(),
+        stuck_task,
+        V5ToolIdentity::View,
+        serde_json::Map::from_iter([(
+            "at".to_owned(),
+            serde_json::Value::String("main:Catalog.Stuck".to_owned()),
+        )]),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd(root.to_string_lossy().into_owned()),
+        7_000,
+    )
+    .expect("valid stuck invocation");
+    owner
+        .submit_invocation(stuck)
+        .expect("submit the stuck read");
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the stuck execution starts");
+    owner
+        .cancel_task(stuck_task)
+        .expect("cancel the stuck Task");
+    // Past the former two-second grace after the cancel.
+    thread::sleep(Duration::from_millis(2_500));
+
+    let V5ServerResponse::Task { snapshot } =
+        owner.get_task(stuck_task).expect("read the stuck Task")
+    else {
+        panic!("stuck Task is unreadable");
+    };
+    assert!(
+        matches!(
+            snapshot,
+            V5DaemonTaskSnapshot::Working {
+                cancel_requested: true,
+                ..
+            }
+        ),
+        "the stuck Task stays visible with its cancel requested: {snapshot:?}"
+    );
+    let other_task = TaskId::new();
+    owner
+        .submit_invocation(view_catalog_request(other_task, &root))
+        .expect("the daemon accepts another call");
+    let other = wait_task_terminal(&mut owner, other_task, Duration::from_secs(30));
+    assert!(
+        matches!(&other, V5DaemonTaskSnapshot::Completed { result, .. } if result.ok),
+        "another Task completes while the stuck one ignores its cancel: {other:?}"
+    );
+
+    release_tx.send(()).expect("release the stuck execution");
+    let stuck_terminal = wait_task_terminal(&mut owner, stuck_task, Duration::from_secs(30));
+    assert!(
+        matches!(stuck_terminal, V5DaemonTaskSnapshot::Cancelled { .. }),
+        "the late executor still ends as cancelled: {stuck_terminal:?}"
+    );
+    drop(owner);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+/// #1251: a cancel that reaches an inline call still in admission, before
+/// the handoff moment, ends it. Without an admission deadline the token is
+/// the only stop; the attempt publishes its own cancelled terminal.
+#[test]
+fn cancel_during_inline_admission_before_handoff_publishes_cancelled() {
+    let state = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(state.path()).unwrap();
+    let (_workspace, workspace_root) = catalog_workspace();
+    let admission =
+        crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
+            workspace_root.clone(),
+        );
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let service = Arc::new(SourceAdmissionProbe::default());
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        service.clone(),
+        clock.clone(),
+    ));
+    let hooks = Arc::new(InspectionHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(30),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let invocation = view_catalog_request(TaskId::new(), &workspace_root);
+    let key = ReceiptKey::new(
+        invocation.invocation_id(),
+        invocation.reserved_task_id(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(invocation.arguments()),
+            request_scope_hash(invocation.workspace_hint()).unwrap(),
+        ),
+    );
+    let mut canceller = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+    let submit = thread::spawn(move || {
+        let mut owner = owner;
+        let response = owner.submit_invocation(invocation);
+        (owner, response)
+    });
+    admission.wait_until_entered();
+    canceller
+        .cancel_invocation(key)
+        .expect("cancel the inline call while it is admitted");
+    admission.release();
+    let (owner, submitted) = submit.join().unwrap();
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Direct { receipt },
+    } = submitted.expect("the cancelled inline call answers directly")
+    else {
+        panic!("a cancelled inline call must end directly");
+    };
+    assert!(
+        matches!(receipt.terminal(), ReceiptTerminalOutcome::Cancelled),
+        "the inline call must end as cancelled: {:?}",
+        receipt.terminal()
+    );
+    assert_eq!(
+        admission.entries(),
+        1,
+        "the admission walk must stop at its first checkpoint after the cancel"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+    assert!(!hooks.fail_stopped.load(Ordering::SeqCst));
+    drop(owner);
+    drop(canceller);
+    drop(admission);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
 }

@@ -44,6 +44,14 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+thread_local! {
+    /// A test's diagnostic provider in place of the bundled analyzer, read on
+    /// the thread that resolves the registry.
+    pub(crate) static DIAGNOSTIC_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn DiagnosticProvider>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 
 fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String> {
@@ -313,6 +321,11 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
     }
 
     fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
+        #[cfg(test)]
+        if let Some(provider) = DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| slot.borrow().clone()) {
+            return DiagnosticProviderRegistry::new(vec![provider])
+                .map_err(|error| error.to_string());
+        }
         let providers: Vec<Arc<dyn DiagnosticProvider>> =
             vec![Arc::new(BslAnalyzerDiagnosticProvider::new())];
         DiagnosticProviderRegistry::new(providers).map_err(|error| error.to_string())
