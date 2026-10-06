@@ -37,6 +37,31 @@ class CollectResultsTests(unittest.TestCase):
             "run_url": "https://github.com/IngvarConsulting/unica/actions/runs/42", "profile": "all",
         }
 
+    def test_unreached_rust_cases_preserve_explicit_size_and_legacy_classification(self) -> None:
+        plan = self.root / "plan"
+        plan.mkdir()
+        (plan / "plan.json").write_text(json.dumps([
+            {"binary": "unica-coder", "name": "private::owned", "ignored": False, "size": "medium"},
+            {"binary": "unica-coder", "name": "unrelated::legacy", "ignored": False},
+        ]))
+        output = self.root / "output"
+        self.assertEqual(self.collect.fill_gaps(plan, {**self.run, "runner": "linux"}, set(), output, {}), 2)
+        entries = [json.loads(path.read_text()) for path in output.glob("*-result.json")]
+        sizes = {entry["fullName"]: next(label["value"] for label in entry["labels"] if label["name"] == "size") for entry in entries}
+        self.assertEqual(sizes, {"unica-coder::private::owned": "medium", "unica-coder::unrelated::legacy": "small"})
+        self.assertTrue(all(entry["status"] == "skipped" for entry in entries))
+
+    def test_unreached_rust_plan_rejects_unknown_or_malformed_explicit_size(self) -> None:
+        plan = self.root / "plan"
+        plan.mkdir()
+        for size in (None, "unknown", [], {}, True):
+            with self.subTest(size=size):
+                (plan / "plan.json").write_text(json.dumps([
+                    {"binary": "unica-coder", "name": "private::owned", "size": size},
+                ]))
+                with self.assertRaisesRegex(ValueError, "unknown Rust plan size"):
+                    self.collect.fill_gaps(plan, self.run, set(), self.root / "output", {})
+
     def signed(self, name: str, runner: str, ecosystem: str, records: list[dict], **run) -> Path:
         path = self.artifacts / name
         path.mkdir(parents=True)

@@ -799,21 +799,25 @@ impl V5ReceiptRuntime {
             .control
             .as_ref()
             .ok_or_else(|| "reserved-begin scenario control is unavailable".to_owned())?;
-        if control.is_barrier_installed(ScenarioBarrierPoint::BeforeMarkReservedBegunGateAcquire) {
+        let life = self
+            .scenario_hooks()
+            .process_life
+            .as_ref()
+            .ok_or_else(|| "scenario runtime process life is unavailable".to_owned())?;
+        if life.is_barrier_installed(ScenarioBarrierPoint::BeforeMarkReservedBegunGateAcquire) {
             control.record_operation_event(operation_label, "blocked");
             self.scenario_hooks().telemetry.record_event(
                 V5ReceiptRuntimeEventKind::MarkReservedBegunBlocked,
                 self.epoch_ms(),
             );
-            control
-                .pause(
-                    ScenarioBarrierPoint::BeforeMarkReservedBegunGateAcquire,
-                    deadline,
-                )
-                .map_err(|error| format!("wait before reserved-begin lifecycle gate: {error}"))?;
+            life.pause(
+                ScenarioBarrierPoint::BeforeMarkReservedBegunGateAcquire,
+                deadline,
+            )
+            .map_err(|error| format!("wait before reserved-begin lifecycle gate: {error}"))?;
         }
         control
-            .acquire_lifecycle_gate(operation_label, deadline)
+            .acquire_lifecycle_gate_for(life, operation_label, deadline)
             .map_err(|error| format!("acquire reserved-begin lifecycle gate: {error}"))?;
         let result = (|| {
             let current = self
@@ -856,7 +860,7 @@ impl V5ReceiptRuntime {
                 .record_event(V5ReceiptRuntimeEventKind::TokenSignalled, self.epoch_ms());
             Ok(())
         })();
-        control.release_lifecycle_gate(operation_label);
+        control.release_lifecycle_gate_for(life, operation_label);
         self.scenario_hooks().telemetry.record_event(
             V5ReceiptRuntimeEventKind::OperationCompleted,
             self.epoch_ms(),
@@ -879,18 +883,22 @@ impl V5ReceiptRuntime {
             .control
             .as_ref()
             .ok_or_else(|| "cancel scenario control is unavailable".to_owned())?;
-        if control.is_barrier_installed(ScenarioBarrierPoint::BeforeCancelGateAcquire) {
+        let life = self
+            .scenario_hooks()
+            .process_life
+            .as_ref()
+            .ok_or_else(|| "scenario runtime process life is unavailable".to_owned())?;
+        if life.is_barrier_installed(ScenarioBarrierPoint::BeforeCancelGateAcquire) {
             control.record_operation_event(operation_label, "blocked");
             self.scenario_hooks().telemetry.record_event(
                 V5ReceiptRuntimeEventKind::CancelCommitBlocked,
                 self.epoch_ms(),
             );
-            control
-                .pause(ScenarioBarrierPoint::BeforeCancelGateAcquire, deadline)
+            life.pause(ScenarioBarrierPoint::BeforeCancelGateAcquire, deadline)
                 .map_err(|error| format!("wait before cancel lifecycle gate: {error}"))?;
         }
         control
-            .acquire_lifecycle_gate(operation_label, deadline)
+            .acquire_lifecycle_gate_for(life, operation_label, deadline)
             .map_err(|error| format!("acquire cancel lifecycle gate: {error}"))?;
         let result = (|| {
             self.cancel_invocation(key.clone(), self.epoch_ms(), deadline)
@@ -926,7 +934,7 @@ impl V5ReceiptRuntime {
                 .telemetry
                 .record_event(V5ReceiptRuntimeEventKind::CancelCommitted, self.epoch_ms());
         }
-        control.release_lifecycle_gate(operation_label);
+        control.release_lifecycle_gate_for(life, operation_label);
         self.scenario_hooks().telemetry.record_event(
             V5ReceiptRuntimeEventKind::OperationCompleted,
             self.epoch_ms(),
@@ -949,8 +957,13 @@ impl V5ReceiptRuntime {
             .control
             .as_ref()
             .ok_or_else(|| "Task bind scenario control is unavailable".to_owned())?;
+        let life = self
+            .scenario_hooks()
+            .process_life
+            .as_ref()
+            .ok_or_else(|| "scenario runtime process life is unavailable".to_owned())?;
         control
-            .acquire_lifecycle_gate(operation_label, deadline)
+            .acquire_lifecycle_gate_for(life, operation_label, deadline)
             .map_err(|error| format!("acquire Task bind lifecycle gate: {error}"))?;
         let result = (|| {
             let current = self
@@ -986,16 +999,15 @@ impl V5ReceiptRuntime {
                 V5ReceiptRuntimeEventKind::TaskStoreReadbackBeforeBind,
                 self.epoch_ms(),
             );
-            if control
+            if life
                 .is_barrier_installed(ScenarioBarrierPoint::AfterTaskStoreReadbackBeforeTaskBound)
             {
                 control.record_operation_event(operation_label, "blocked");
-                control
-                    .pause(
-                        ScenarioBarrierPoint::AfterTaskStoreReadbackBeforeTaskBound,
-                        deadline,
-                    )
-                    .map_err(|error| format!("wait after TaskStore readback: {error}"))?;
+                life.pause(
+                    ScenarioBarrierPoint::AfterTaskStoreReadbackBeforeTaskBound,
+                    deadline,
+                )
+                .map_err(|error| format!("wait after TaskStore readback: {error}"))?;
             }
             self.receipt_ledger
                 .complete_bound_task_handoff(
@@ -1013,7 +1025,7 @@ impl V5ReceiptRuntime {
             );
             Ok(())
         })();
-        control.release_lifecycle_gate(operation_label);
+        control.release_lifecycle_gate_for(life, operation_label);
         self.scenario_hooks().telemetry.record_event(
             V5ReceiptRuntimeEventKind::OperationCompleted,
             self.epoch_ms(),
