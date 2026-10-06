@@ -1272,7 +1272,7 @@ fn run_direct_load(
                     key.reserved_task_id(),
                     V5ToolIdentity::View,
                     arguments.clone(),
-                    workspace_hint.to_owned(),
+                    unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace_hint.to_owned()),
                     7_000,
                 )
                 .map_err(|error| format!("construct direct load invocation: {error}"))?;
@@ -1442,7 +1442,7 @@ fn run_lazy_cancel_storm(
                 key.reserved_task_id(),
                 V5ToolIdentity::View,
                 arguments.clone(),
-                workspace_hint.to_owned(),
+                unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace_hint.to_owned()),
                 7_000,
             )
             .map_err(|error| format!("construct lazy cancel invocation: {error}"))?;
@@ -4048,7 +4048,7 @@ fn build_v5_probe_request_frame(
                 TaskId::new(),
                 V5ToolIdentity::View,
                 Map::new(),
-                "workspace-a".to_owned(),
+                unica_bootstrap::ResolvedWorkspace::launch_cwd("workspace-a".to_owned()),
                 7_000,
             )?;
             jsonl_frame(&V5ClientRequest::SubmitInvocation { invocation })
@@ -7160,7 +7160,7 @@ fn compare_client_server_identity() -> Result<Value, String> {
         TaskId::new(),
         V5ToolIdentity::View,
         Map::new(),
-        "workspace-a".to_owned(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd("workspace-a".to_owned()),
         7_000,
     )?;
     let client_key = ReceiptKey::new(

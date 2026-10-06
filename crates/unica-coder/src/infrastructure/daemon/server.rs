@@ -192,6 +192,11 @@ fn reject_workspace_admission(
     let mut result = DomainResult::canonical_rejection(None, code, summary);
     result.data = Some(serde_json::Value::Object(payload));
     result.next = next;
+    super::v13_workspace_bootstrap::annotate_workspace_origin(
+        &mut result,
+        request.workspace_hint(),
+        request.workspace_origin(),
+    );
     V5CanonicalPrepareError::Rejected(Box::new(result))
 }
 
@@ -2077,7 +2082,13 @@ pub(crate) mod actor_capacity_tests {
                 crate::domain::invocation::TaskId::new(),
                 v5_tool(request.tool()),
                 request.arguments().clone(),
-                request.workspace_hint().to_owned(),
+                unica_bootstrap::ResolvedWorkspace {
+                    directory: request.workspace_hint().to_owned(),
+                    origin: request
+                        .workspace_origin()
+                        .cloned()
+                        .unwrap_or(unica_bootstrap::WorkspaceOrigin::LaunchCwd { roots: None }),
+                },
                 request.response_budget_ms(),
             )
             .unwrap();

@@ -2283,6 +2283,7 @@ impl V5InvocationExecutor {
             invocation.workspace_hint().to_owned(),
             invocation.response_budget_ms(),
         )
+        .map(|request| request.with_workspace_origin(invocation.workspace_origin().clone()))
         .map_err(|error| {
             V5CanonicalPrepareError::Rejected(Box::new(
                 crate::domain::invocation::DomainResult::canonical_rejection(

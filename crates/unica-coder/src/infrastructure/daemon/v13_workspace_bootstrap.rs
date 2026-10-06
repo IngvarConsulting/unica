@@ -50,6 +50,8 @@ enum RootQuestion {
 
 pub(super) struct PreparedWorkspaceInspection {
     context: WorkspaceContext,
+    requested_directory: String,
+    origin: Option<unica_bootstrap::WorkspaceOrigin>,
     question: RootQuestion,
     response_deadline: InvocationResponseDeadline,
     workspace_identity_hash: SafeIdentityHash,
@@ -115,6 +117,8 @@ pub(super) fn prepare(
     hasher.update(canonical_root.as_os_str().as_encoded_bytes());
     Preparation::Ready(Arc::new(PreparedWorkspaceInspection {
         context,
+        requested_directory: request.workspace_hint().to_owned(),
+        origin: request.workspace_origin().cloned(),
         question,
         response_deadline,
         workspace_identity_hash: SafeIdentityHash::from_sha256(hasher.finalize().into()),
@@ -137,6 +141,12 @@ impl PreparedWorkspaceInspection {
         &self,
         cancellation: CancellationToken,
     ) -> Result<DomainResult, InvocationFailure> {
+        let mut result = self.inspect(cancellation)?;
+        annotate_workspace_origin(&mut result, &self.requested_directory, self.origin.as_ref());
+        Ok(result)
+    }
+
+    fn inspect(&self, cancellation: CancellationToken) -> Result<DomainResult, InvocationFailure> {
         check_cancellation(&cancellation)?;
         let context = &self.context;
         let deadline = &self.response_deadline;
@@ -747,6 +757,71 @@ fn yaml_infobase_connection(
         .as_str()
         .map(|connection| Some(connection.to_string()))
         .ok_or_else(|| format!("{source} infobase.connection must be text"))
+}
+
+/// Names where `workspaceRoot` came from next to it: the host channel that
+/// chose the requested directory, that directory (the root may be one of its
+/// parents), and for a channel captured at start a way to another project.
+pub(super) fn annotate_workspace_origin(
+    result: &mut DomainResult,
+    requested_directory: &str,
+    origin: Option<&unica_bootstrap::WorkspaceOrigin>,
+) {
+    let Some(origin) = origin else {
+        return;
+    };
+    let Some(data) = result.data.as_mut().and_then(Value::as_object_mut) else {
+        return;
+    };
+    if !data.contains_key("workspaceRoot") {
+        return;
+    }
+    let Ok(Value::Object(mut described)) = serde_json::to_value(origin) else {
+        return;
+    };
+    described.insert(
+        "requestedDirectory".to_string(),
+        Value::String(requested_directory.to_string()),
+    );
+    if let Some(hint) = workspace_origin_hint(origin) {
+        described.insert("hint".to_string(), Value::String(hint));
+    }
+    data.insert("workspaceRootOrigin".to_string(), Value::Object(described));
+}
+
+fn workspace_origin_hint(origin: &unica_bootstrap::WorkspaceOrigin) -> Option<String> {
+    use unica_bootstrap::{RootsFallback, WorkspaceOrigin};
+    if !origin.can_be_stale() {
+        return None;
+    }
+    let (taken_from, roots) = match origin {
+        WorkspaceOrigin::StartupEnvironment { variable, roots } => (
+            format!("the project variable {variable} captured when the unica MCP server started"),
+            roots,
+        ),
+        WorkspaceOrigin::LaunchCwd { roots } => (
+            "the directory the unica MCP server was started in".to_string(),
+            roots,
+        ),
+        WorkspaceOrigin::RequestMetadata { .. } | WorkspaceOrigin::ClientRoots {} => return None,
+    };
+    let roots = match roots {
+        None => String::new(),
+        Some(RootsFallback::Empty) => " The client declared MCP roots but listed none.".to_string(),
+        Some(RootsFallback::Error) => {
+            " The client declared MCP roots, but roots/list returned an error.".to_string()
+        }
+        Some(RootsFallback::Timeout) => {
+            " The client declared MCP roots, but roots/list did not answer in time.".to_string()
+        }
+        Some(RootsFallback::Closed) => {
+            " The client declared MCP roots, but the connection closed during roots/list."
+                .to_string()
+        }
+    };
+    Some(format!(
+        "The directory comes from {taken_from}; it does not follow a session that later changed its project.{roots} To work in another project, reconnect the unica MCP server from it or open a new session there."
+    ))
 }
 
 fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
@@ -1399,5 +1474,48 @@ mod tests {
 
         assert!(!target.configured);
         assert_eq!(target.source, None);
+    }
+
+    /// Источник ставится рядом с корнем, где бы корень ни был назван, —
+    /// в фактах `view {}` и в отказах допуска, — и не появляется там, где
+    /// корня нет: без корня объяснять нечего.
+    #[test]
+    fn workspace_origin_is_named_next_to_every_workspace_root() {
+        use crate::domain::invocation::DomainResult;
+        use serde_json::Value;
+        use unica_bootstrap::{RootsFallback, WorkspaceOrigin};
+        let annotated = |data: Value, origin: WorkspaceOrigin| {
+            let mut result = DomainResult::success("facts");
+            result.data = Some(data);
+            super::annotate_workspace_origin(&mut result, "/requested", Some(&origin));
+            result.data.unwrap()
+        };
+
+        let stale = annotated(
+            serde_json::json!({"workspaceRoot": "/root"}),
+            WorkspaceOrigin::LaunchCwd {
+                roots: Some(RootsFallback::Closed),
+            },
+        );
+        let origin = &stale["workspaceRootOrigin"];
+        assert_eq!(origin["channel"], "launchCwd");
+        assert_eq!(origin["roots"], "closed");
+        assert_eq!(origin["requestedDirectory"], "/requested");
+        assert!(origin["hint"].as_str().unwrap().contains("roots/list"));
+
+        let current = annotated(
+            serde_json::json!({"workspaceRoot": "/root"}),
+            WorkspaceOrigin::ClientRoots {},
+        );
+        assert_eq!(
+            current["workspaceRootOrigin"],
+            serde_json::json!({"channel": "clientRoots", "requestedDirectory": "/requested"})
+        );
+
+        let without_root = annotated(
+            serde_json::json!({"ready": false}),
+            WorkspaceOrigin::ClientRoots {},
+        );
+        assert!(without_root.get("workspaceRootOrigin").is_none());
     }
 }

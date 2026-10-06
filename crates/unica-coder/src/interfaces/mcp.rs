@@ -1134,8 +1134,15 @@ async fn client_roots(
         Ok(Ok(result)) => {
             ClientRoots::Listed(result.roots.into_iter().map(|root| root.uri).collect())
         }
-        Ok(Err(error)) => ClientRoots::Unavailable(error.to_string()),
-        Err(_) => ClientRoots::Unavailable("roots/list timed out".to_owned()),
+        Ok(Err(
+            rmcp::service::ServiceError::TransportClosed
+            | rmcp::service::ServiceError::TransportSend(_),
+        )) => ClientRoots::Unavailable(unica_bootstrap::RootsFailure::Closed),
+        Ok(Err(rmcp::service::ServiceError::Timeout { .. })) => {
+            ClientRoots::Unavailable(unica_bootstrap::RootsFailure::Timeout)
+        }
+        Ok(Err(_)) => ClientRoots::Unavailable(unica_bootstrap::RootsFailure::Error),
+        Err(_) => ClientRoots::Unavailable(unica_bootstrap::RootsFailure::Timeout),
     }
 }
 

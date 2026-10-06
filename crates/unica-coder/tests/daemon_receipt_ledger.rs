@@ -5189,8 +5189,13 @@ fn assert_exact_v5_request(frame: &serde_json::Value, expected_kind: &str) {
                     "responseBudgetMs",
                     "tool",
                     "workspaceHint",
+                    "workspaceOrigin",
                 ],
             );
+            assert!(matches!(
+                invocation["workspaceOrigin"]["channel"].as_str(),
+                Some("requestMetadata" | "clientRoots" | "startupEnvironment" | "launchCwd")
+            ));
             assert_canonical_uuid_v4(json_string(invocation, "invocationId"));
             assert_canonical_uuid_v4(json_string(invocation, "reservedTaskId"));
             assert!(invocation["arguments"].is_object());
