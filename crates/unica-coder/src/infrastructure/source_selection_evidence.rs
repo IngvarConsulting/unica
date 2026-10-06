@@ -982,6 +982,7 @@ impl RetainedSelectionPass {
         Ok(RetainedDirectoryObservation::Present(ancestor))
     }
 
+    #[cfg(test)]
     pub(in crate::infrastructure) fn observe_membership(
         &mut self,
         relative: &Path,

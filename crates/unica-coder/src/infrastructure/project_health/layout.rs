@@ -487,7 +487,7 @@ mod tests {
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::project_health::{ProjectCheckId, ProjectCheckOutcome, ProjectHealthFact};
-    use crate::domain::project_sources::SourceFormat;
+    use crate::domain::project_sources::{SourceFormat, SourceSetKind};
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::testing::{
         create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_project_config_is_rejected_before_unbounded_read() {
+    fn oversized_invalid_project_config_is_a_typed_yaml_refusal() {
         let fixture = raw_layout_fixture("");
         let config = fixture.context.workspace_root.join("v8project.yaml");
         fs::File::create(&config)
@@ -553,17 +553,49 @@ mod tests {
             .set_len(8 * 1024 * 1024 + 1)
             .unwrap();
 
-        let inspection = inspect(&fixture);
+        let inspection = inspect_without_deadline(&fixture);
 
         assert!(
             matches!(
                 inspection.facts.as_slice(),
                 [ProjectHealthFact::SourceInspectionIncomplete { reason }]
-                    if reason.contains("exceeds") && reason.contains("8388608")
+                    if reason.contains("failed to parse") && !reason.contains("exceeds")
             ),
             "{:?}",
             inspection.facts
         );
+    }
+
+    #[test]
+    fn project_config_past_eight_mib_keeps_its_exact_useful_root() {
+        let fixture = useful_layout_fixture(&large_layout_config());
+        assert_exact_main_layout(&fixture, &inspect_without_deadline(&fixture));
+    }
+
+    #[test]
+    fn project_config_past_eight_mib_rejects_malformed_tail_and_extra_document() {
+        for tail in ["broken: [\n", "---\nformat: DESIGNER\nsource-set: []\n"] {
+            let fixture = useful_layout_fixture(&format!("{}{tail}", large_layout_config()));
+            let inspection = inspect_without_deadline(&fixture);
+            assert!(inspection.source_sets.is_none());
+            assert!(!inspection.source_targets_complete);
+            assert!(!inspection.repository_targets_complete);
+            assert!(inspection.roots.is_empty());
+            assert!(
+                matches!(
+                    inspection.facts.as_slice(),
+                    [ProjectHealthFact::SourceInspectionIncomplete { reason }]
+                        if reason.contains("failed to parse") && !reason.contains("exceeds")
+                ),
+                "tail={tail:?}; facts={:?}",
+                inspection.facts
+            );
+            assert!(matches!(
+                inspection.observations.as_slice(),
+                [observation] if observation.id == ProjectCheckId::SourceDiscovery
+                    && matches!(observation.outcome, ProjectCheckOutcome::NotRun { .. })
+            ));
+        }
     }
 
     #[test]
@@ -588,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn excessive_source_set_count_is_a_typed_incomplete_discovery() {
+    fn source_layout_inspects_all_1025_declared_source_roots() {
         let mut config = "format: DESIGNER\nsource-set:\n".to_string();
         for index in 0..=1024 {
             config.push_str(&format!(
@@ -596,38 +628,85 @@ mod tests {
             ));
         }
         let fixture = raw_layout_fixture(&config);
+        for index in 0..=1024 {
+            let root = fixture.context.workspace_root.join(format!("src/{index}"));
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("Configuration.xml"), "<MetaDataObject/>").unwrap();
+        }
 
-        let inspection = inspect(&fixture);
+        let inspection = inspect_without_deadline(&fixture);
 
-        assert!(!inspection.source_targets_complete);
+        assert!(inspection.source_targets_complete, "{:?}", inspection.facts);
         assert!(
-            matches!(
-                inspection.facts.as_slice(),
-                [ProjectHealthFact::SourceInspectionIncomplete { reason }]
-                    if reason.contains("source sets") && reason.contains("1024")
-            ),
+            inspection.repository_targets_complete,
             "{:?}",
             inspection.facts
         );
+        assert!(inspection.facts.is_empty(), "{:?}", inspection.facts);
+        let sets = inspection
+            .source_sets
+            .as_ref()
+            .expect("all declared source sets");
+        assert_eq!(sets.len(), 1025);
+        assert_eq!(inspection.roots.len(), 1025);
+        for (index, set) in sets.iter().enumerate() {
+            assert_eq!(set.name, format!("set{index}"));
+            assert_eq!(set.path, format!("src/{index}"));
+            assert_eq!(set.kind, SourceSetKind::Configuration);
+            assert_eq!(set.source_format, SourceFormat::PlatformXml);
+            let root = inspection
+                .roots
+                .iter()
+                .find(|root| root.source_set.name == set.name)
+                .expect("every declared source has an inspected root");
+            assert_eq!(
+                root.path,
+                fs::canonicalize(fixture.context.workspace_root.join(&set.path)).unwrap()
+            );
+        }
+        assert!(inspection
+            .observations
+            .iter()
+            .all(|observation| matches!(observation.outcome, ProjectCheckOutcome::Completed)));
     }
 
     #[test]
-    fn health_source_set_limit_aborts_before_full_yaml_ast_materialization() {
+    fn health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity() {
         let mut config = "format: DESIGNER\nsource-set:\n".to_string();
         for _ in 0..400_000 {
             config.push_str("  - {}\n");
         }
         let fixture = raw_layout_fixture(&config);
 
-        let inspection = inspect(&fixture);
+        let inspection = inspect_without_deadline(&fixture);
 
+        let sets = inspection
+            .source_sets
+            .as_ref()
+            .unwrap_or_else(|| panic!("all defaulted source rows: {:?}", inspection.facts));
+        assert_eq!(sets.len(), 400_000);
+        let wrong_row = sets.iter().find(|set| {
+            set.name != "main"
+                || !set.path.is_empty()
+                || set.kind != SourceSetKind::Configuration
+                || set.source_format != SourceFormat::PlatformXml
+        });
+        assert!(
+            wrong_row.is_none(),
+            "unexpected defaulted row: {wrong_row:?}"
+        );
         assert!(!inspection.source_targets_complete);
-        assert!(matches!(
-            inspection.facts.as_slice(),
-            [ProjectHealthFact::SourceInspectionIncomplete { reason }]
-                if (reason.contains("source sets") && reason.contains("1024"))
-                    || (reason.contains("expanded YAML") && reason.contains("health inspection"))
-        ));
+        assert!(!inspection.repository_targets_complete);
+        assert!(inspection.roots.is_empty());
+        assert!(
+            matches!(
+                inspection.facts.as_slice(),
+                [ProjectHealthFact::SourceNameAmbiguous { name, count }]
+                    if name == "main" && *count == 400_000
+            ),
+            "{:?}",
+            inspection.facts
+        );
     }
 
     #[test]
@@ -691,20 +770,36 @@ mod tests {
     }
 
     #[test]
-    fn health_yaml_parser_rejects_aliases_before_value_materialization() {
+    fn health_yaml_aliases_keep_exact_selected_values_and_real_name_ambiguity() {
+        let name = "x".repeat(4096);
         let fixture = raw_layout_fixture(&format!(
             "defaults: &large {{name: {}, type: CONFIGURATION, path: src}}\nsource-set:\n{}",
-            "x".repeat(4096),
+            name,
             "  - *large\n".repeat(1024)
         ));
 
-        let inspection = inspect(&fixture);
+        let inspection = inspect_without_deadline(&fixture);
 
-        assert!(matches!(
-            inspection.facts.as_slice(),
-            [ProjectHealthFact::SourceInspectionIncomplete { reason }]
-                if reason.contains("expanded YAML") && reason.contains("health inspection")
-        ));
+        let sets = inspection
+            .source_sets
+            .as_ref()
+            .expect("expanded alias source rows");
+        assert_eq!(sets.len(), 1024);
+        assert!(sets.iter().all(|set| set.name == name
+            && set.path == "src"
+            && set.kind == SourceSetKind::Configuration));
+        assert!(!inspection.source_targets_complete);
+        assert!(!inspection.repository_targets_complete);
+        assert!(inspection.roots.is_empty());
+        assert!(
+            matches!(
+                inspection.facts.as_slice(),
+                [ProjectHealthFact::SourceNameAmbiguous { name: ambiguous_name, count }]
+                    if ambiguous_name == &name && *count == 1024
+            ),
+            "{:?}",
+            inspection.facts
+        );
     }
 
     #[test]
@@ -733,35 +828,23 @@ mod tests {
     }
 
     #[test]
-    fn health_yaml_parser_bounds_container_nodes_before_value_materialization() {
-        let fixture = raw_layout_fixture(&format!(
+    fn health_yaml_many_selected_container_nodes_keep_the_useful_layout() {
+        let fixture = useful_layout_fixture(&format!(
             "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n    ignored: [{}]\n",
             "[],".repeat(140_000)
         ));
 
-        let inspection = inspect(&fixture);
-
-        assert!(matches!(
-            inspection.facts.as_slice(),
-            [ProjectHealthFact::SourceInspectionIncomplete { reason }]
-                if reason.contains("expanded YAML") && reason.contains("health inspection")
-        ));
+        assert_exact_main_layout(&fixture, &inspect_without_deadline(&fixture));
     }
 
     #[test]
-    fn health_yaml_parser_bounds_value_selected_by_an_aliased_root_key() {
-        let fixture = raw_layout_fixture(&format!(
-            "key: &contract source-set\n? *contract\n:\n  - name: main\n    type: CONFIGURATION\n    path: src\n    ignored: [{}]\n",
+    fn health_yaml_aliased_root_key_keeps_the_useful_layout_after_many_selected_nodes() {
+        let fixture = useful_layout_fixture(&format!(
+            "format: DESIGNER\nkey: &contract source-set\n? *contract\n:\n  - name: main\n    type: CONFIGURATION\n    path: src\n    ignored: [{}]\n",
             "[],".repeat(140_000)
         ));
 
-        let inspection = inspect(&fixture);
-
-        assert!(matches!(
-            inspection.facts.as_slice(),
-            [ProjectHealthFact::SourceInspectionIncomplete { reason }]
-                if reason.contains("expanded YAML") && reason.contains("health inspection")
-        ));
+        assert_exact_main_layout(&fixture, &inspect_without_deadline(&fixture));
     }
 
     #[test]
@@ -1194,5 +1277,61 @@ mod tests {
             ProviderDeadline::from_budget(Duration::from_secs(1)),
         )
         .unwrap()
+    }
+
+    fn inspect_without_deadline(fixture: &LayoutFixture) -> super::SourceLayoutInspection {
+        SourceLayoutInspector::inspect(
+            &fixture.context,
+            &CancellationToken::new(),
+            ProviderDeadline::no_deadline(),
+        )
+        .unwrap()
+    }
+
+    fn useful_layout_fixture(config: &str) -> LayoutFixture {
+        let fixture = raw_layout_fixture(config);
+        fs::create_dir_all(fixture.context.workspace_root.join("src")).unwrap();
+        fs::write(
+            fixture.context.workspace_root.join("src/Configuration.xml"),
+            "<MetaDataObject/>",
+        )
+        .unwrap();
+        fixture
+    }
+
+    fn large_layout_config() -> String {
+        format!(
+            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n# {}\n",
+            "x".repeat(9 * 1024 * 1024)
+        )
+    }
+
+    fn assert_exact_main_layout(
+        fixture: &LayoutFixture,
+        inspection: &super::SourceLayoutInspection,
+    ) {
+        assert!(inspection.source_targets_complete, "{:?}", inspection.facts);
+        assert!(
+            inspection.repository_targets_complete,
+            "{:?}",
+            inspection.facts
+        );
+        assert!(inspection.facts.is_empty(), "{:?}", inspection.facts);
+        let sets = inspection.source_sets.as_ref().expect("useful main source");
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].name, "main");
+        assert_eq!(sets[0].path, "src");
+        assert_eq!(sets[0].kind, SourceSetKind::Configuration);
+        assert_eq!(sets[0].source_format, SourceFormat::PlatformXml);
+        assert_eq!(inspection.roots.len(), 1);
+        assert_eq!(inspection.roots[0].source_set.name, "main");
+        assert_eq!(
+            inspection.roots[0].path,
+            fs::canonicalize(fixture.context.workspace_root.join("src")).unwrap()
+        );
+        assert!(inspection
+            .observations
+            .iter()
+            .all(|observation| matches!(observation.outcome, ProjectCheckOutcome::Completed)));
     }
 }

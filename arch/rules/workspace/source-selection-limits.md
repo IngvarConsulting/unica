@@ -1,6 +1,20 @@
 ---
 id: INV.APP.SOURCE-SELECTION-LIMITS
 check:
+  - crates/unica-coder/src/infrastructure/project_health/layout.rs::oversized_invalid_project_config_is_a_typed_yaml_refusal
+  - crates/unica-coder/src/infrastructure/project_health/layout.rs::project_config_past_eight_mib_keeps_its_exact_useful_root
+  - crates/unica-coder/src/infrastructure/project_health/layout.rs::project_config_past_eight_mib_rejects_malformed_tail_and_extra_document
+  - crates/unica-coder/src/infrastructure/project_health/layout.rs::source_layout_inspects_all_1025_declared_source_roots
+  - crates/unica-coder/src/infrastructure/project_health/layout.rs::health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity
+  - crates/unica-coder/src/infrastructure/project_health/layout.rs::health_yaml_aliases_keep_exact_selected_values_and_real_name_ambiguity
+  - crates/unica-coder/src/infrastructure/project_health/layout.rs::health_yaml_many_selected_container_nodes_keep_the_useful_layout
+  - crates/unica-coder/src/infrastructure/project_health/layout.rs::health_yaml_aliased_root_key_keeps_the_useful_layout_after_many_selected_nodes
+  - crates/unica-coder/src/infrastructure/project_sources.rs::controlled_health_keeps_format_evidence_past_four_mib_below_the_old_entry_limit
+  - crates/unica-coder/src/infrastructure/project_sources.rs::actor_health_keeps_format_evidence_past_four_mib_below_the_old_entry_limit
+  - crates/unica-coder/src/infrastructure/project_sources.rs::controlled_health_external_descriptor_survives_more_than_16384_siblings
+  - crates/unica-coder/src/infrastructure/project_sources.rs::actor_health_external_descriptor_survives_more_than_16384_siblings_and_binds_membership
+  - crates/unica-coder/src/infrastructure/project_sources.rs::injected_health_evidence_entry_allowance_refuses_without_partial_results
+  - crates/unica-coder/src/infrastructure/project_sources.rs::injected_health_evidence_byte_allowance_refuses_without_partial_results
   - crates/unica-coder/src/infrastructure/project_sources.rs::controlled_health_accepts_yaml_input_past_eight_mib
   - crates/unica-coder/src/infrastructure/project_sources.rs::actor_health_accepts_yaml_input_past_eight_mib_and_binds_late_bytes
   - crates/unica-coder/src/infrastructure/project_sources.rs::controlled_health_accepts_1025_declared_source_sets
@@ -45,16 +59,25 @@ check:
 отказа. Известные поля сохраняют прежние правила типов и дублей. Неразрешённые
 алиасы и незавершённый документ по-прежнему дают отказ.
 
+Свидетельства формата каждого набора сохраняются без суммарной квоты
+числа записей и байтов. Поиск XML-дескриптора внешней обработки или отчёта
+перечисляет все непосредственные элементы каталога, включая соседей,
+которые не являются XML. При отсутствии квоты перечисление также не получает
+числового потолка. Небезопасные пути не обходятся, а действительная ошибка
+доступа сохраняет причину отказа. Неоднозначные имена наборов остаются
+неоднозначными независимо от их количества.
+
 Подсчёт проверяет арифметическое переполнение. Ошибки доступа, диска и
 открытия дескрипторов ОС сохраняют отказ с причиной. Обнаруженное изменение
 карты также даёт отказ по [правилу финальной проверки](source-selection-finality.md).
 Это входы выбора источника, а не снимок всего BSL-кода проекта.
 
-Подготовка по-прежнему сохраняет точные байты читаемых входов и метаданные
-в памяти и использует два прохода. Значения известных полей разбираются
+Подготовка по-прежнему сохраняет точные байты читаемых входов и метаданные,
+в том числе весь список свидетельств формата, в памяти и использует два прохода.
+Значения известных полей разбираются
 существующей библиотекой YAML; её ограничения рекурсивного построения
 значения и раскрытия алиасов остаются. Полное чтение конфигурации для runtime
-и квоты обнаружения формата источника также пока снимаются в
+также пока исправляется в
 https://github.com/IngvarConsulting/unica/issues/1119. Конечный срок, переданный
 существующим вызывающим кодом, пока также проверяется; отсутствие автоматического
 срока проводится через весь runtime в той же задаче.

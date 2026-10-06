@@ -8,6 +8,10 @@
 `UnixStream`, `UnixListener`, `CARGO_BIN_EXE_`. Ни одного нашего имени: их
 переименование молча лишало бы стража покрытия.
 
+Отдельные объёмные проверки с фактическим замером объявлены точным именем
+и владельцем библиотеки. Генератор проверяет их присутствие и единственность
+в списке Cargo, поэтому переименование требует обновить объявление.
+
 `--write` переписывает выражение в `.config/nextest.toml` между метками, беря
 имена тестов из `cargo nextest list --message-format json` (нужен `cargo`);
 страж размера в `tests/ci` читает то же выражение без `cargo` и проверяет, что
@@ -36,6 +40,15 @@ BLOCKS = {
     "deadline": ("# >>> размер medium (срок): пишет scripts/ci/size-filters.py --write", "# <<< размер medium (срок)"),
 }
 TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
+# 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
+# Это размер конкретной проверки; соседние layout-проверки остаются small.
+MEASURED_MEDIUM_CASES = (
+    (
+        "unica-coder",
+        "unica_coder",
+        "infrastructure::project_health::layout::tests::health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity",
+    ),
+)
 
 
 def module_of(path: Path, src: Path) -> tuple[str, ...]:
@@ -139,9 +152,26 @@ def medium_terms(listed: dict, modules_by_crate: dict) -> list[str]:
         crate, module = key
         prefix = "::".join(module)
         if key in inline:
-            terms.append(f"test(/^{re.escape(prefix)}::({'|'.join(sorted(inline[key]))})::/)")
+            terms.append((crate, f"test(/^{re.escape(prefix)}::({'|'.join(sorted(inline[key]))})::/)"))
         if key in direct:
-            terms.append(f"test(/^{re.escape(prefix)}::[^:]+$/)")
+            terms.append((crate, f"test(/^{re.escape(prefix)}::[^:]+$/)"))
+    for (binary_id, _, _), term in zip(MEASURED_MEDIUM_CASES, measured_medium_terms(listed), strict=True):
+        terms.append((binary_id, term))
+    return [term for _, term in sorted(set(terms))]
+
+
+def measured_medium_terms(listed: dict) -> list[str]:
+    terms = []
+    for binary_id, binary_name, name in MEASURED_MEDIUM_CASES:
+        matches = [suite for suite in listed["rust-suites"].values() if name in suite["testcases"]]
+        if len(matches) != 1:
+            raise ValueError(f"measured medium test must exist once: {binary_id}::{name}")
+        suite = matches[0]
+        if (suite.get("kind"), suite.get("binary-id"), suite.get("binary-name")) != (
+            "lib", binary_id, binary_name
+        ):
+            raise ValueError(f"measured medium test belongs to another binary: {binary_id}::{name}")
+        terms.append(f"test(/^{re.escape(name)}$/)")
     return terms
 
 

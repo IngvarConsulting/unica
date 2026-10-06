@@ -10,8 +10,8 @@ use crate::infrastructure::native_operations::compile_transaction::{
 use crate::infrastructure::platform::filesystem::{
     host_path_text, is_link_loop_error, open_absolute_directory_path_nofollow,
     open_any_child_nofollow, open_child_for_secure_tree_use, open_directory_child_nofollow,
-    open_regular_child_nofollow, read_directory_names_bounded, read_directory_names_with_limit,
-    OpenedChildKind, RetainedDirectoryCapability,
+    open_regular_child_nofollow, read_directory_names_with_limit, OpenedChildKind,
+    RetainedDirectoryCapability,
 };
 use crate::infrastructure::source_roots::{
     inspect_declared_source_root_route, normalize_contained_source_root, normalize_path_identity,
@@ -36,8 +36,6 @@ use unsafe_libyaml::{
 };
 
 const PROJECT_SOURCE_MAP_READ_CHUNK_BYTES: usize = 64 * 1024;
-const MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES: usize = 16 * 1024;
-const MAX_HEALTH_FORMAT_EVIDENCE_BYTES: usize = 4 * 1024 * 1024;
 /// The source-set name the base configuration owns. `INV-SOURCE-SINGLE-RESOLVED-ROOT`
 /// makes it the deterministic winner of default selection, so exactly one entry may
 /// carry it.
@@ -289,10 +287,10 @@ impl SourceMapDiscoveryState {
             read_grammar: ProjectMapReadGrammar::Health,
             max_source_sets: None,
             max_input_bytes: None,
-            format_evidence_entry_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
-            format_evidence_byte_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
-            remaining_format_evidence_entries: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
-            remaining_format_evidence_bytes: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
+            format_evidence_entry_limit: None,
+            format_evidence_byte_limit: None,
+            remaining_format_evidence_entries: None,
+            remaining_format_evidence_bytes: None,
             require_nofollow_source_probe_route: true,
             actor_pass: None,
         }
@@ -319,22 +317,22 @@ impl SourceMapDiscoveryState {
             read_grammar: ProjectMapReadGrammar::Health,
             max_source_sets: None,
             max_input_bytes: None,
-            format_evidence_entry_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
-            format_evidence_byte_limit: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
-            remaining_format_evidence_entries: Some(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES),
-            remaining_format_evidence_bytes: Some(MAX_HEALTH_FORMAT_EVIDENCE_BYTES),
+            format_evidence_entry_limit: None,
+            format_evidence_byte_limit: None,
+            remaining_format_evidence_entries: None,
+            remaining_format_evidence_bytes: None,
             require_nofollow_source_probe_route: true,
             actor_pass: Some(RetainedSelectionPass::new(workspace)?),
         })
     }
 
     #[cfg(test)]
-    fn health_with_evidence_limits(entries: usize, bytes: usize) -> Self {
+    fn health_with_evidence_limits(entries: Option<usize>, bytes: Option<usize>) -> Self {
         Self {
-            format_evidence_entry_limit: Some(entries),
-            format_evidence_byte_limit: Some(bytes),
-            remaining_format_evidence_entries: Some(entries),
-            remaining_format_evidence_bytes: Some(bytes),
+            format_evidence_entry_limit: entries,
+            format_evidence_byte_limit: bytes,
+            remaining_format_evidence_entries: entries,
+            remaining_format_evidence_bytes: bytes,
             ..Self::health()
         }
     }
@@ -1752,20 +1750,24 @@ fn actor_format_evidence(
         kind,
         SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
     ) {
-        let limit = state
-            .remaining_format_evidence_entries
-            .unwrap_or(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES);
+        let evidence_limit = state.remaining_format_evidence_entries;
         let pass = state
             .actor_pass
             .as_mut()
             .expect("actor format discovery has retained evidence state");
         // Non-marker entries consume actor work too, so the remaining format
         // evidence allowance can exceed the remaining enumeration capacity.
-        let limit = pass
-            .remaining_member_budget()
-            .map_or(limit, |remaining| limit.min(remaining));
-        let entries =
-            pass.observe_membership(&configured_path, &source_directory, limit, checkpoint)?;
+        let limit = match (evidence_limit, pass.remaining_member_budget()) {
+            (Some(evidence), Some(members)) => Some(evidence.min(members)),
+            (Some(limit), None) | (None, Some(limit)) => Some(limit),
+            (None, None) => None,
+        };
+        let entries = pass.observe_membership_with_limit(
+            &configured_path,
+            &source_directory,
+            limit,
+            checkpoint,
+        )?;
         for entry in entries {
             checkpoint()?;
             let path = Path::new(&entry.name);
@@ -1867,19 +1869,24 @@ fn health_format_evidence(
     ) {
         let limit = state
             .remaining_format_evidence_entries
-            .unwrap_or(MAX_HEALTH_FORMAT_EVIDENCE_ENTRIES)
-            .saturating_add(1);
+            .map(|remaining| {
+                remaining.checked_add(1).ok_or_else(|| {
+                    "project source-map format evidence allowance overflow".to_owned()
+                })
+            })
+            .transpose()?;
         let mut checkpoint_failure = None;
-        let names = read_directory_names_bounded(&source_directory, limit, || match checkpoint() {
-            Ok(()) => Ok(()),
-            Err(reason) => {
-                checkpoint_failure = Some(reason);
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "project source discovery checkpoint stopped enumeration",
-                ))
-            }
-        });
+        let names =
+            read_directory_names_with_limit(&source_directory, limit, || match checkpoint() {
+                Ok(()) => Ok(()),
+                Err(reason) => {
+                    checkpoint_failure = Some(reason);
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "project source discovery checkpoint stopped enumeration",
+                    ))
+                }
+            });
         if let Some(reason) = checkpoint_failure {
             return Err(reason);
         }
@@ -2375,6 +2382,123 @@ pub(crate) mod tests {
         config.push_str("'\n");
         assert!(config.len() > 8 * 1024 * 1024);
         health_leaf_fixture(&config)
+    }
+
+    fn health_format_bytes_fixture() -> (tempfile::TempDir, String) {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = format!("{}/{}/src", "a".repeat(180), "b".repeat(180));
+        let marker = format!("{path}/Configuration.xml");
+        write(&fixture.path().join(&marker), "<MetaDataObject/>");
+        let mut config = String::from("format: DESIGNER\nsource-set:\n");
+        for index in 0..12_000 {
+            config.push_str(&format!(
+                "  - name: set{index:05}\n    type: CONFIGURATION\n    path: {path}\n"
+            ));
+        }
+        assert!(config.len() < 8 * 1024 * 1024);
+        assert!(marker.len() * 12_000 > 4 * 1024 * 1024);
+        write(&fixture.path().join("v8project.yaml"), &config);
+        (fixture, path)
+    }
+
+    fn assert_health_format_bytes(map: &ProjectSourceMap, path: &str) {
+        assert_eq!(map.source_sets.len(), 12_000);
+        assert!(map.source_sets.len() < 16 * 1024);
+        for (index, set) in map.source_sets.iter().enumerate() {
+            assert_eq!(set.name, format!("set{index:05}"));
+            assert_eq!(set.path, path);
+            assert_eq!(set.kind, SourceSetKind::Configuration);
+            assert_eq!(set.source_format, SourceFormat::PlatformXml);
+            assert_eq!(set.source_state, SourceSetState::Supported);
+            assert_eq!(set.format_probe_error, None);
+            assert_eq!(
+                set.format_evidence,
+                vec![format!("{path}/Configuration.xml")]
+            );
+        }
+    }
+
+    #[test]
+    fn controlled_health_keeps_format_evidence_past_four_mib_below_the_old_entry_limit() {
+        let (fixture, path) = health_format_bytes_fixture();
+        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+            .expect("valid format evidence beyond four MiB must keep every source");
+        assert_health_format_bytes(&map, &path);
+    }
+
+    #[test]
+    fn actor_health_keeps_format_evidence_past_four_mib_below_the_old_entry_limit() {
+        let (fixture, path) = health_format_bytes_fixture();
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                fixture.path(),
+                &mut || Ok(()),
+            )
+            .expect("actor format evidence beyond four MiB must keep every source");
+        assert_health_format_bytes(admission.map(), &path);
+    }
+
+    fn health_external_membership_fixture() -> tempfile::TempDir {
+        let fixture = tempfile::tempdir().unwrap();
+        write(&fixture.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n");
+        write(
+            &fixture.path().join("epf/zz-final.xml"),
+            "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+        );
+        for index in 0..16_385 {
+            fs::File::create(fixture.path().join(format!("epf/noise-{index:05}.txt"))).unwrap();
+        }
+        fixture
+    }
+
+    fn assert_health_external_membership(map: &ProjectSourceMap) {
+        assert_eq!(map.source_sets.len(), 1);
+        assert_eq!(map.source_sets[0].path, "epf");
+        assert_eq!(
+            map.source_sets[0].source_state,
+            SourceSetState::Supported,
+            "external source: {:?}",
+            map.source_sets[0]
+        );
+        assert_eq!(map.source_sets[0].format_probe_error, None);
+        assert_source_set(
+            map,
+            "external",
+            SourceSetKind::ExternalProcessor,
+            SourceFormat::PlatformXml,
+            &["epf/zz-final.xml"],
+        );
+    }
+
+    #[test]
+    fn controlled_health_external_descriptor_survives_more_than_16384_siblings() {
+        let fixture = health_external_membership_fixture();
+        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
+            .expect("external descriptor discovery must inspect all siblings without a quota");
+        assert_health_external_membership(&map);
+    }
+
+    #[test]
+    fn actor_health_external_descriptor_survives_more_than_16384_siblings_and_binds_membership() {
+        let fixture = health_external_membership_fixture();
+        let admission =
+            crate::infrastructure::source_selection_evidence::discover_project_source_admission(
+                fixture.path(),
+                &mut || Ok(()),
+            )
+            .expect("actor external discovery must inspect all siblings without a quota");
+        assert_health_external_membership(admission.map());
+        let evidence = admission.into_evidence();
+        let deadline = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
+        let cancellation = crate::domain::cancellation::CancellationToken::new();
+        evidence.validate(deadline, &cancellation).unwrap();
+        fs::File::create(fixture.path().join("epf/noise-after-admission.txt")).unwrap();
+        let unchanged_projection =
+            discover_project_source_map_controlled(fixture.path(), &mut || Ok(())).unwrap();
+        assert_health_external_membership(&unchanged_projection);
+        assert_eq!(evidence.validate(deadline, &cancellation).unwrap_err().kind(),
+            crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind::Changed);
     }
 
     #[test]
@@ -2949,7 +3073,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn health_source_map_bounds_aggregate_format_evidence() {
+    fn injected_health_evidence_entry_allowance_refuses_without_partial_results() {
         let root = temp_workspace("unica-source-map-health-evidence-budget");
         write(
             &root.join("v8project.yaml"),
@@ -2962,14 +3086,34 @@ pub(crate) mod tests {
             );
         }
         let mut checkpoint = || Ok(());
-        let mut state = SourceMapDiscoveryState::health_with_evidence_limits(2, usize::MAX);
+        let mut state = SourceMapDiscoveryState::health_with_evidence_limits(Some(2), None);
 
         let error = discover_project_source_map_internal(&root, &mut checkpoint, &mut state)
-            .expect_err("health evidence must stay within its aggregate budget");
+            .expect_err("the explicitly injected evidence-entry allowance must refuse");
 
         assert!(error.contains("format evidence"), "{error}");
         assert!(error.contains("2 entries"), "{error}");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn injected_health_evidence_byte_allowance_refuses_without_partial_results() {
+        let fixture = tempfile::tempdir().unwrap();
+        write(&fixture.path().join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: external\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n");
+        for name in ["A.xml", "B.xml"] {
+            write(
+                &fixture.path().join("epf").join(name),
+                "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+            );
+        }
+        let mut state =
+            SourceMapDiscoveryState::health_with_evidence_limits(None, Some("epf/A.xml".len()));
+        let error =
+            discover_project_source_map_internal(fixture.path(), &mut || Ok(()), &mut state)
+                .expect_err("the explicitly injected evidence-byte allowance must refuse");
+        assert!(error.contains("format evidence"), "{error}");
+        assert!(error.contains("9 bytes"), "{error}");
     }
 
     #[test]
