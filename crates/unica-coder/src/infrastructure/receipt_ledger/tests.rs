@@ -3469,6 +3469,182 @@ fn direct_batch_compacts_superseded_envelopes_and_reopens_exact_tombstones() {
 }
 
 #[test]
+fn retained_batch_content_change_is_rejected_before_materialization_or_cleanup() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical root")
+        .join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+    let key = receipt_key(INVOCATION_A, TASK_A, "batch-content-change");
+    store
+        .reserve_batch(
+            vec![(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+            )],
+            reserve_deadline(),
+        )
+        .expect("publish actual reservation batch");
+    let batch = fs::read_dir(receipts.join(ACTIVE_DIRECTORY_NAME))
+        .expect("list batch fixture")
+        .map(|entry| entry.expect("batch entry").path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("receipt-batch.")
+        })
+        .expect("published batch file");
+    let original = fs::read(&batch).expect("read actual batch");
+    let mut decoded = decode_receipt_batch(&original).expect("decode actual canonical batch");
+    decoded.rows[0].record.lifecycle = StoredActiveLifecycleV1::ReservedUnbound {
+        reserved_at_epoch_ms: 1_001,
+        original_cutoff: OriginalCutoffDescriptor::new(1_001, 6_999).unwrap(),
+        cancel_requested: false,
+    };
+    let (record, encoded) = serialize_reserved_record(
+        decoded.rows[0].record.clone(),
+        MAX_TASK_RECORD_ENVELOPE_BYTES as u64,
+    )
+    .expect("encode changed valid row");
+    decoded.rows[0] = ReceiptBatchRow { record, encoded };
+    let changed =
+        encode_receipt_batch_envelope(&decoded.rows).expect("encode changed canonical batch");
+    assert_eq!(
+        original.len(),
+        changed.len(),
+        "length alone must not prove exact backing bytes"
+    );
+    assert_ne!(original, changed);
+    decode_receipt_batch(&changed).expect("changed batch is still canonical and valid");
+    // An independent owner changes valid bytes in place, preserving identity and size.
+    fs::write(&batch, &changed).expect("change retained batch bytes in place");
+    assert!(matches!(
+        store.recover_exact(&key, reserve_deadline()),
+        Err(ReceiptLedgerError::Corrupt(_))
+    ));
+    assert_eq!(
+        fs::read(&batch).expect("changed batch is preserved"),
+        changed
+    );
+    assert!(!receipts
+        .join(ACTIVE_DIRECTORY_NAME)
+        .join(format!("{}.json", receipt_key_digest(&key).as_str()))
+        .exists());
+}
+
+#[test]
+fn tombstone_catalog_arithmetic_overflow_rejects_mutations_before_commit() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical root")
+        .join("receipts");
+    let (store, key, terminal_digest) = direct_terminal_fixture(&receipts);
+    let base = store.writer.lock().expect("read actual catalog").clone();
+    let existing = base.records.get(&receipt_key_digest(&key)).unwrap().clone();
+    let mut replacement_record = existing.record.clone();
+    replacement_record.record_version = replacement_record.record_version.checked_next().unwrap();
+    replacement_record.mutation_sequence += 1;
+    replacement_record.lifecycle = StoredActiveLifecycleV1::AcknowledgedTombstone {
+        terminal_digest,
+        acknowledged_at_epoch_ms: 2_100,
+    };
+    let (record, encoded) =
+        serialize_reserved_record(replacement_record, MAX_ACKNOWLEDGED_TOMBSTONE_BYTES)
+            .expect("canonical compact row");
+    let replacement = CatalogEntry {
+        record,
+        encoded_bytes: encoded.len() as u64,
+    };
+    let mut fresh = replacement.clone();
+    fresh.record.key = receipt_key(INVOCATION_B, TASK_B, "overflow-fresh-tombstone");
+    fresh.record.key_digest = receipt_key_digest(&fresh.record.key);
+    fresh.record.mutation_sequence += 1;
+    // Contradictory counters model corruption. Removing arbitrary limits must
+    // still refuse arithmetic overflow before records or indexes are changed.
+    for (count, bytes) in [(usize::MAX, 0), (0, u64::MAX)] {
+        let mut catalog = base.clone();
+        catalog.tombstone_records = count;
+        catalog.tombstone_bytes = bytes;
+        let records = catalog.records.clone();
+        let invocations = catalog.invocation_index.clone();
+        let tasks = catalog.reserved_task_index.clone();
+        for recovering in [false, true] {
+            assert!(validate_catalog_insert(&catalog, &fresh, recovering).is_err());
+        }
+        assert!(validate_catalog_insert_batch(&catalog, std::slice::from_ref(&fresh)).is_err());
+        assert!(validate_catalog_replace(&catalog, &existing, &replacement).is_err());
+        assert!(validate_catalog_replace_batch(
+            &catalog,
+            &[(existing.clone(), replacement.clone())]
+        )
+        .is_err());
+        assert!(insert_catalog_entry(&mut catalog, fresh.clone(), false).is_err());
+        assert_eq!(catalog.records, records);
+        assert_eq!(catalog.invocation_index, invocations);
+        assert_eq!(catalog.reserved_task_index, tasks);
+        assert_eq!(catalog.tombstone_count(), count);
+        assert_eq!(catalog.tombstone_bytes, bytes);
+    }
+    assert_eq!(store.generation().unwrap(), 2);
+}
+
+#[test]
+fn corrupt_committed_batch_preserves_active_and_generation_orphans() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical root")
+        .join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+    let key = receipt_key(INVOCATION_A, TASK_A, "corrupt-batch-orphans");
+    store
+        .reserve_batch(
+            vec![(key, OriginalCutoffDescriptor::new(1_000, 7_000).unwrap())],
+            reserve_deadline(),
+        )
+        .expect("publish reservation batch");
+    let batch = fs::read_dir(receipts.join(ACTIVE_DIRECTORY_NAME))
+        .expect("list batch fixture")
+        .map(|entry| entry.expect("batch entry").path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("receipt-batch.")
+        })
+        .expect("published batch file");
+    let active_name = OsStr::new(".receipt.77777777-7777-4777-8777-777777777777.tmp");
+    let generation_name = OsStr::new(".generation.88888888-8888-4888-8888-888888888888.tmp");
+    let mut active_orphan = create_owner_only_file_child(&store.active_file, active_name)
+        .expect("create owned active orphan");
+    active_orphan
+        .write_all(b"active-uncommitted")
+        .expect("write active orphan");
+    let mut generation_orphan = create_owner_only_file_child(&store.receipts_file, generation_name)
+        .expect("create owned generation orphan");
+    generation_orphan
+        .write_all(b"2\n")
+        .expect("write generation orphan");
+    drop(active_orphan);
+    drop(generation_orphan);
+    drop(store);
+    let malformed = b"{\"schemaVersion\":1,\"rows\":[]}";
+    fs::write(&batch, malformed).expect("corrupt committed batch");
+    assert!(matches!(
+        ReceiptLedgerStore::open(&receipts),
+        Err(ReceiptLedgerError::Corrupt(_))
+    ));
+    assert_eq!(fs::read(&batch).unwrap(), malformed);
+    assert_eq!(
+        fs::read(receipts.join(ACTIVE_DIRECTORY_NAME).join(active_name)).unwrap(),
+        b"active-uncommitted"
+    );
+    assert_eq!(fs::read(receipts.join(generation_name)).unwrap(), b"2\n");
+}
+
+#[test]
 fn cancelled_direct_batch_reopens_all_exact_winners_from_one_durable_envelope() {
     let root = tempfile::tempdir().expect("temporary root");
     let receipts = fs::canonicalize(root.path())
@@ -6689,4 +6865,103 @@ fn live_catalog_arithmetic_overflow_rejects_single_and_batch_mutations_before_co
         assert_eq!(catalog.reserved_result_bytes, reserved_bytes);
     }
     assert_eq!(store.generation().unwrap(), 1);
+}
+#[test]
+fn recovery_cleanup_preserves_replacements_of_validated_active_and_generation_orphans() {
+    for generation in [false, true] {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let (directory, path, name) = if generation {
+            (
+                &store.receipts_file,
+                receipts.clone(),
+                ".generation.77777777-7777-4777-8777-777777777777.tmp",
+            )
+        } else {
+            (
+                &store.active_file,
+                receipts.join(ACTIVE_DIRECTORY_NAME),
+                ".receipt.77777777-7777-4777-8777-777777777777.tmp",
+            )
+        };
+        let name = OsStr::new(name);
+        let mut original =
+            create_owner_only_file_child(directory, name).expect("create owned orphan");
+        original
+            .write_all(b"first-pass-orphan")
+            .expect("write owned orphan");
+        let first_identity = file_identity(&original).expect("first-pass identity");
+        drop(original);
+        let displaced = path.join("displaced-first-pass-orphan");
+        fs::rename(path.join(name), &displaced).expect("replace after first-pass handle closes");
+        let mut replacement =
+            create_owner_only_file_child(directory, name).expect("create same-name replacement");
+        replacement
+            .write_all(b"replacement-owned-by-other-operation")
+            .expect("write replacement");
+        drop(replacement);
+        assert!(matches!(
+            store.remove_verified_recovery_staging(directory, name, first_identity),
+            Err(ReceiptLedgerError::Corrupt(_))
+        ));
+        assert_eq!(
+            fs::read(path.join(name)).unwrap(),
+            b"replacement-owned-by-other-operation"
+        );
+        assert_eq!(fs::read(displaced).unwrap(), b"first-pass-orphan");
+    }
+}
+
+#[test]
+fn recovery_cleanup_preserves_external_targets_of_replaced_active_and_generation_orphans() {
+    use crate::infrastructure::platform::filesystem::create_file_symlink_for_test;
+    for generation in [false, true] {
+        let root = tempfile::tempdir().expect("temporary root");
+        let receipts = fs::canonicalize(root.path())
+            .expect("physical root")
+            .join("receipts");
+        let store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
+        let (directory, path, name) = if generation {
+            (
+                &store.receipts_file,
+                receipts.clone(),
+                ".generation.88888888-8888-4888-8888-888888888888.tmp",
+            )
+        } else {
+            (
+                &store.active_file,
+                receipts.join(ACTIVE_DIRECTORY_NAME),
+                ".receipt.88888888-8888-4888-8888-888888888888.tmp",
+            )
+        };
+        let name = OsStr::new(name);
+        let mut original =
+            create_owner_only_file_child(directory, name).expect("create owned orphan");
+        original
+            .write_all(b"first-pass-orphan")
+            .expect("write owned orphan");
+        let first_identity = file_identity(&original).expect("first-pass identity");
+        drop(original);
+        let displaced = path.join("displaced-first-pass-orphan");
+        fs::rename(path.join(name), &displaced)
+            .expect("move original after validation handle closes");
+        let external = root.path().join("external-target");
+        fs::write(&external, b"external-operation-bytes").expect("write external target");
+        let Some(created) = create_file_symlink_for_test(&external, path.join(name)) else {
+            return; // No symlink backend exists on this OS.
+        };
+        created.expect("supported symlink backend must actually create the link");
+        assert!(store
+            .remove_verified_recovery_staging(directory, name, first_identity)
+            .is_err());
+        assert!(fs::symlink_metadata(path.join(name))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(external).unwrap(), b"external-operation-bytes");
+        assert_eq!(fs::read(displaced).unwrap(), b"first-pass-orphan");
+    }
 }

@@ -32,11 +32,10 @@ const MAX_RESPONSE_LINE_BYTES: u64 = 8_454_144;
 const FORMER_LIVE_RECEIPT_LIMIT: u64 = 64;
 const FORMER_LIVE_RECEIPT_BYTES_LIMIT: u64 = 541_065_216;
 const FORMER_TASK_LINK_LIMIT: u64 = 4_096;
-const TOMBSTONE_LIMIT: u64 = 28_864;
-const TOMBSTONE_BYTES_LIMIT: u64 = 14_778_368;
+const FORMER_TOMBSTONE_COUNT: u64 = 28_864;
+const FORMER_TOMBSTONE_POOL_BYTES: u64 = 14_778_368;
 const MAX_CANONICAL_RESULT_BYTES: u64 = 8 * 1_024 * 1_024;
 const MAX_PROTOCOL_FRAME_BYTES: usize = 8 * 1_024 * 1_024 + 64 * 1_024;
-const MAX_SCENARIO_REPORT_BYTES: usize = 64 * 1_024 * 1_024;
 const SUCCESS_SUMMARY: &str = "canonical-success";
 
 #[derive(Debug, Clone, Serialize)]
@@ -2238,11 +2237,6 @@ fn execute(scenario: Scenario) -> ScenarioReport {
         .unwrap_or_else(|_| panic!("HARNESS FAILURE: scenario_encode"));
     let response = execute_scenario_json(&request)
         .unwrap_or_else(|error| panic!("HARNESS FAILURE: bridge_transport: {error}"));
-    assert!(
-        response.len() <= MAX_SCENARIO_REPORT_BYTES,
-        "HARNESS FAILURE: facade_envelope_too_large bytes={}",
-        response.len()
-    );
     let envelope: FacadeEnvelope = serde_json::from_str(&response)
         .unwrap_or_else(|error| panic!("HARNESS FAILURE: malformed_facade_envelope: {error}"));
     let envelope = match envelope {
@@ -3794,7 +3788,6 @@ fn assert_snapshot_accounting(snapshot: &Snapshot) {
         })
         .sum();
     assert_eq!(snapshot.tombstone_bytes, tombstone_bytes);
-    assert!(tombstone_bytes <= TOMBSTONE_BYTES_LIMIT);
     assert_eq!(snapshot.task_link_count, snapshot.task_links.len() as u64);
     let task_link_bytes: u64 = snapshot
         .task_links
@@ -12457,8 +12450,7 @@ fn retained_receipt_and_task_catalogs_are_independent_after_restart() {
             62 * MAX_RESPONSE_LINE_BYTES + cancel_bytes
         );
         assert_exact_linked_task_pool(snapshot, FORMER_TASK_LINK_LIMIT);
-        assert_eq!(snapshot.tombstone_count, TOMBSTONE_LIMIT);
-        assert!(snapshot.tombstone_bytes <= TOMBSTONE_BYTES_LIMIT);
+        assert_eq!(snapshot.tombstone_count, FORMER_TOMBSTONE_COUNT);
     }
     let before_restart = checkpoint(&report, "before-restart");
     let after_restart = checkpoint(&report, "after-restart");
@@ -12466,7 +12458,10 @@ fn retained_receipt_and_task_catalogs_are_independent_after_restart() {
         before_restart.receipts.len() as u64,
         FORMER_LIVE_RECEIPT_LIMIT
     );
-    assert_eq!(before_restart.tombstones.len() as u64, TOMBSTONE_LIMIT);
+    assert_eq!(
+        before_restart.tombstones.len() as u64,
+        FORMER_TOMBSTONE_COUNT
+    );
     assert_eq!(before_restart.receipts, after_restart.receipts);
     assert_eq!(before_restart.tombstones, after_restart.tombstones);
     assert_eq!(before_restart.tasks, after_restart.tasks);
@@ -12514,7 +12509,7 @@ fn retained_receipt_and_task_catalogs_are_independent_after_restart() {
     let converted = checkpoint(&report, "after-conversion");
     assert_eq!(converted.receipt_live_count, FORMER_LIVE_RECEIPT_LIMIT);
     assert_eq!(converted.task_link_count, FORMER_TASK_LINK_LIMIT);
-    assert_eq!(converted.tombstone_count, TOMBSTONE_LIMIT);
+    assert_eq!(converted.tombstone_count, FORMER_TOMBSTONE_COUNT);
     assert_eq!(converted.task_links, after_restart.task_links);
     assert_eq!(converted.tombstones, after_restart.tombstones);
     assert_eq!(converted.tasks, after_restart.tasks);
@@ -12671,7 +12666,7 @@ fn deterministic_horizon_load_does_not_saturate() {
         Action::RotateReceiptSegments,
         Action::Acknowledge {
             key: KeyCase::Exact,
-            digest: DigestCase::ExactTerminal,
+            digest: DigestCase::WellFormedCandidate,
             disconnect: AckDisconnectPoint::Never,
             label: "tombstone-ack-after-reclaim".to_string(),
         },
@@ -12739,33 +12734,37 @@ fn deterministic_horizon_load_does_not_saturate() {
         65
     );
     let tombstone_full = checkpoint(&report, "tombstone-full");
-    assert_eq!(tombstone_full.tombstone_count, TOMBSTONE_LIMIT);
+    assert_eq!(tombstone_full.tombstone_count, FORMER_TOMBSTONE_COUNT);
     let before_overflow = checkpoint(&report, "before-tombstone-overflow-ack");
     let after_overflow = checkpoint(&report, "after-tombstone-overflow-ack");
-    assert_eq!(after_overflow.tombstones, tombstone_full.tombstones);
-    assert_eq!(after_overflow.receipts, before_overflow.receipts);
-    assert_eq!(
-        after_overflow.store_generation,
-        before_overflow.store_generation
-    );
-    assert_eq!(
-        response(&report, "tombstone-overflow-ack").error,
-        Some(ErrorCode::TombstoneCapacity)
-    );
+    assert_eq!(after_overflow.tombstone_count, FORMER_TOMBSTONE_COUNT + 1);
+    assert!(after_overflow.receipts.is_empty());
+    assert!(after_overflow.store_generation > before_overflow.store_generation);
+    let acknowledged_by_digest = after_overflow
+        .tombstones
+        .iter()
+        .map(|tombstone| (&tombstone.key.key_digest, tombstone))
+        .collect::<BTreeMap<_, _>>();
+    for retained in &tombstone_full.tombstones {
+        assert_eq!(
+            acknowledged_by_digest.get(&retained.key.key_digest),
+            Some(&retained)
+        );
+    }
     assert_eq!(
         response(&report, "tombstone-overflow-ack").kind,
-        ResponseKind::Rejected
+        ResponseKind::Acknowledged
     );
     assert_eq!(
         checkpoint(&report, "tombstone-pool-one-ms-before-expiry").tombstones,
-        tombstone_full.tombstones
+        after_overflow.tombstones
     );
     let reclaimed = checkpoint(&report, "tombstone-pool-reclaimed");
-    assert_eq!(reclaimed.tombstone_count, 1);
+    assert_eq!(reclaimed.tombstone_count, 0);
     assert!(reclaimed.receipts.is_empty());
     assert_eq!(
-        response(&report, "tombstone-ack-after-reclaim").kind,
-        ResponseKind::Acknowledged
+        response(&report, "tombstone-ack-after-reclaim").error,
+        Some(ErrorCode::ReceiptNotFound)
     );
 }
 
@@ -12847,40 +12846,93 @@ fn restart_releases_a_retained_receipt_actor_without_a_live_listener() {
 }
 
 #[test]
-fn tombstone_capacity_rejection_keeps_the_live_owner_usable() {
+fn acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay() {
     let report = execute(Scenario::fake(vec![
         Action::FillTombstones,
-        direct_provider(),
+        Action::ConfigureProvider {
+            execution_class: ExecutionClass::Direct,
+            terminal: success_payload(),
+            cooperative_cancel: true,
+            side_effect_marker: true,
+        },
         submit("terminal"),
         Action::Acknowledge {
             key: KeyCase::Exact,
             digest: DigestCase::ExactTerminal,
             disconnect: AckDisconnectPoint::Never,
-            label: "overflow-ack".to_string(),
+            label: "past-former-count-ack".to_string(),
         },
-        Action::AdvanceEpoch {
-            millis: TOMBSTONE_TTL_MS,
+        checkpoint_action("acknowledged"),
+        Action::Restart,
+        Action::Recover {
+            key: KeyCase::Exact,
+            label: "recovered".to_string(),
         },
-        Action::ReclaimExpiredEvidence,
-        Action::RotateReceiptSegments,
+        Action::AdvanceEpoch { millis: 1_000 },
         Action::Acknowledge {
             key: KeyCase::Exact,
             digest: DigestCase::ExactTerminal,
             disconnect: AckDisconnectPoint::Never,
-            label: "post-reclaim-ack".to_string(),
+            label: "repeated-ack".to_string(),
         },
-        checkpoint_action("after-reclaim"),
+        Action::Submit {
+            request: RequestCase::SameIdentity,
+            response_budget_ms: CUTOFF_MS,
+            disconnect: DisconnectPoint::Never,
+            label: "duplicate".to_string(),
+        },
+        checkpoint_action("reopened"),
     ]));
 
     assert_eq!(
-        response(&report, "overflow-ack").error,
-        Some(ErrorCode::TombstoneCapacity)
+        response(&report, "past-former-count-ack").kind,
+        ResponseKind::Acknowledged,
+        "actual production ACK must accept the 28,865th retained tombstone; error={:?}",
+        response(&report, "past-former-count-ack").error
     );
+    let acknowledged = checkpoint(&report, "acknowledged");
+    let reopened = checkpoint(&report, "reopened");
+    assert!(
+        !reopened.restart_requested,
+        "fresh runtime must reopen successfully"
+    );
+    assert_eq!(response(&report, "recovered").kind, ResponseKind::Tombstone);
     assert_eq!(
-        response(&report, "post-reclaim-ack").kind,
+        response(&report, "repeated-ack").kind,
         ResponseKind::Acknowledged
     );
-    assert_eq!(checkpoint(&report, "after-reclaim").tombstone_count, 1);
+    assert_eq!(response(&report, "duplicate").kind, ResponseKind::Tombstone);
+    for snapshot in [acknowledged, reopened] {
+        assert_eq!(snapshot.tombstone_count, FORMER_TOMBSTONE_COUNT + 1);
+        assert_eq!(snapshot.tombstones.len() as u64, FORMER_TOMBSTONE_COUNT + 1);
+        assert_eq!(
+            snapshot.invocation_index.len() as u64,
+            FORMER_TOMBSTONE_COUNT + 1
+        );
+        assert_eq!(
+            snapshot.reserved_task_index.len() as u64,
+            FORMER_TOMBSTONE_COUNT + 1
+        );
+        assert_eq!(snapshot.receipt_live_count, 0);
+        assert_eq!(snapshot.receipt_actual_bytes, 0);
+        assert_eq!(snapshot.receipt_reserved_bytes, 0);
+        assert_eq!(snapshot.callbacks.execute, 1);
+        assert_eq!(snapshot.side_effect_markers, 1);
+    }
+    assert_eq!(acknowledged.tombstones, reopened.tombstones);
+    assert_eq!(acknowledged.store_generation, reopened.store_generation);
+    let original = response(&report, "past-former-count-ack")
+        .acknowledgement
+        .as_ref()
+        .expect("first ACK evidence");
+    for label in ["recovered", "repeated-ack", "duplicate"] {
+        let repeated = response(&report, label)
+            .acknowledgement
+            .as_ref()
+            .expect("exact retained ACK evidence");
+        assert_eq!(repeated.terminal_digest, original.terminal_digest);
+        assert_eq!(repeated.ack_epoch_ms, original.ack_epoch_ms);
+    }
 }
 
 #[test]
@@ -13454,4 +13506,89 @@ fn oversized_result_and_uncertain_store_commit_fail_closed() {
         ),
         0
     );
+}
+#[test]
+fn acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly() {
+    let report = execute(Scenario::fake(vec![
+        Action::SeedTombstoneCatalog { count: 50_000 },
+        Action::ConfigureProvider {
+            execution_class: ExecutionClass::Direct,
+            terminal: success_payload(),
+            cooperative_cancel: true,
+            side_effect_marker: true,
+        },
+        submit("terminal"),
+        Action::Acknowledge {
+            key: KeyCase::Exact,
+            digest: DigestCase::ExactTerminal,
+            disconnect: AckDisconnectPoint::Never,
+            label: "past-former-count-ack".to_string(),
+        },
+        checkpoint_action("acknowledged"),
+        Action::Restart,
+        Action::Recover {
+            key: KeyCase::Exact,
+            label: "recovered".to_string(),
+        },
+        Action::AdvanceEpoch { millis: 1_000 },
+        Action::Acknowledge {
+            key: KeyCase::Exact,
+            digest: DigestCase::ExactTerminal,
+            disconnect: AckDisconnectPoint::Never,
+            label: "repeated-ack".to_string(),
+        },
+        Action::Submit {
+            request: RequestCase::SameIdentity,
+            response_budget_ms: CUTOFF_MS,
+            disconnect: DisconnectPoint::Never,
+            label: "duplicate".to_string(),
+        },
+        checkpoint_action("reopened"),
+    ]));
+
+    assert_eq!(
+        response(&report, "past-former-count-ack").kind,
+        ResponseKind::Acknowledged
+    );
+    assert_eq!(response(&report, "recovered").kind, ResponseKind::Tombstone);
+    assert_eq!(
+        response(&report, "repeated-ack").kind,
+        ResponseKind::Acknowledged
+    );
+    assert_eq!(response(&report, "duplicate").kind, ResponseKind::Tombstone);
+    let acknowledged = checkpoint(&report, "acknowledged");
+    let reopened = checkpoint(&report, "reopened");
+    assert!(
+        !reopened.restart_requested,
+        "fresh runtime must reopen successfully"
+    );
+    for snapshot in [acknowledged, reopened] {
+        assert_eq!(snapshot.tombstone_count, 50_001);
+        assert!(
+            snapshot.tombstone_bytes > FORMER_TOMBSTONE_POOL_BYTES,
+            "actual canonical retained bytes must cross the former aggregate pool"
+        );
+        assert_eq!(snapshot.tombstones.len() as u64, 50_001);
+        assert_eq!(snapshot.invocation_index.len() as u64, 50_001);
+        assert_eq!(snapshot.reserved_task_index.len() as u64, 50_001);
+        assert_eq!(snapshot.receipt_live_count, 0);
+        assert_eq!(snapshot.receipt_actual_bytes, 0);
+        assert_eq!(snapshot.receipt_reserved_bytes, 0);
+        assert_eq!(snapshot.callbacks.execute, 1);
+        assert_eq!(snapshot.side_effect_markers, 1);
+    }
+    assert_eq!(acknowledged.tombstones, reopened.tombstones);
+    assert_eq!(acknowledged.store_generation, reopened.store_generation);
+    let original = response(&report, "past-former-count-ack")
+        .acknowledgement
+        .as_ref()
+        .expect("first ACK evidence");
+    for label in ["recovered", "repeated-ack", "duplicate"] {
+        let repeated = response(&report, label)
+            .acknowledgement
+            .as_ref()
+            .expect("exact retained ACK evidence");
+        assert_eq!(repeated.terminal_digest, original.terminal_digest);
+        assert_eq!(repeated.ack_epoch_ms, original.ack_epoch_ms);
+    }
 }

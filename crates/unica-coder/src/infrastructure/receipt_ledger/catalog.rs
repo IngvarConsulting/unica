@@ -14,13 +14,12 @@ pub(super) fn validate_catalog_insert(
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt catalog live count overflowed",
         ))?;
-    if entry.is_tombstone() && catalog.tombstone_count() >= MAX_ACKNOWLEDGED_TOMBSTONES {
-        return Err(if recovering {
-            ReceiptLedgerError::Corrupt("receipt catalog exceeds the tombstone-record limit")
-        } else {
-            ReceiptLedgerError::TombstoneCapacityExceeded
-        });
-    }
+    catalog
+        .tombstone_count()
+        .checked_add(usize::from(entry.is_tombstone()))
+        .ok_or(ReceiptLedgerError::Corrupt(
+            "receipt catalog tombstone count overflowed",
+        ))?;
     if catalog.records.contains_key(&entry.record.key_digest) {
         return Err(if recovering {
             ReceiptLedgerError::Corrupt("receipt catalog contains a duplicate key digest")
@@ -74,17 +73,10 @@ pub(super) fn validate_catalog_insert(
             ReceiptLedgerError::CapacityExceeded
         });
     }
-    let next_tombstone_bytes = catalog
+    catalog
         .tombstone_bytes
         .checked_add(entry.tombstone_bytes())
         .ok_or(ReceiptLedgerError::TombstoneCapacityExceeded)?;
-    if next_tombstone_bytes > MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES {
-        return Err(if recovering {
-            ReceiptLedgerError::Corrupt("receipt catalog exceeds the tombstone byte limit")
-        } else {
-            ReceiptLedgerError::TombstoneCapacityExceeded
-        });
-    }
     Ok(())
 }
 
@@ -140,11 +132,6 @@ pub(super) fn validate_catalog_insert_batch(
     }
     if actual_bytes.checked_add(reserved_result_bytes).is_none() {
         return Err(ReceiptLedgerError::CapacityExceeded);
-    }
-    if tombstone_count > MAX_ACKNOWLEDGED_TOMBSTONES
-        || tombstone_bytes > MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES
-    {
-        return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
     }
     Ok(())
 }
@@ -237,20 +224,6 @@ pub(super) fn entry_is_expired_task_receipt_terminal(
             .checked_add(*ttl_ms)
             .is_some_and(|expires_at_epoch_ms| observed_at_epoch_ms >= expires_at_epoch_ms)
     )
-}
-
-pub(super) fn ack_tombstone_has_capacity(
-    catalog: &ReceiptCatalog,
-    replacement: &CatalogEntry,
-) -> bool {
-    catalog
-        .tombstone_count()
-        .checked_add(usize::from(replacement.is_tombstone()))
-        .is_some_and(|count| count <= MAX_ACKNOWLEDGED_TOMBSTONES)
-        && catalog
-            .tombstone_bytes
-            .checked_add(replacement.tombstone_bytes())
-            .is_some_and(|bytes| bytes <= MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES)
 }
 
 pub(super) fn validate_catalog_remove(
@@ -373,26 +346,20 @@ pub(super) fn validate_catalog_replace(
     if next_actual_bytes.checked_add(next_reserved_bytes).is_none() {
         return Err(ReceiptLedgerError::CapacityExceeded);
     }
-    let next_tombstone_count = catalog
+    catalog
         .tombstone_count()
         .checked_sub(usize::from(expected.is_tombstone()))
         .and_then(|count| count.checked_add(usize::from(replacement.is_tombstone())))
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt catalog tombstone count underflowed",
         ))?;
-    if next_tombstone_count > MAX_ACKNOWLEDGED_TOMBSTONES {
-        return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
-    }
-    let next_tombstone_bytes = catalog
+    catalog
         .tombstone_bytes
         .checked_sub(expected.tombstone_bytes())
         .and_then(|bytes| bytes.checked_add(replacement.tombstone_bytes()))
         .ok_or(ReceiptLedgerError::Corrupt(
             "receipt catalog tombstone-byte accounting underflowed",
         ))?;
-    if next_tombstone_bytes > MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES {
-        return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
-    }
     Ok(())
 }
 
@@ -459,11 +426,6 @@ pub(super) fn validate_catalog_replace_batch(
     }
     if actual_bytes.checked_add(reserved_result_bytes).is_none() {
         return Err(ReceiptLedgerError::CapacityExceeded);
-    }
-    if tombstone_count > MAX_ACKNOWLEDGED_TOMBSTONES
-        || tombstone_bytes > MAX_ACKNOWLEDGED_TOMBSTONE_POOL_BYTES
-    {
-        return Err(ReceiptLedgerError::TombstoneCapacityExceeded);
     }
     Ok(())
 }
