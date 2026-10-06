@@ -255,7 +255,7 @@ impl ActorReadSourceCapability {
             if cancellation.is_cancelled() {
                 return Err("canonical search was cancelled".to_string());
             }
-            if self.deadline.remaining().is_zero() {
+            if self.deadline.is_elapsed() {
                 return Err("canonical search operation deadline elapsed".to_string());
             }
             match directory.validate_named_identity() {
@@ -335,7 +335,7 @@ impl ActorReadSourceCapability {
                                             std::io::ErrorKind::Interrupted,
                                             "canonical search was cancelled",
                                         ))
-                                    } else if self.deadline.remaining().is_zero() {
+                                    } else if self.deadline.is_elapsed() {
                                         Err(std::io::Error::new(
                                             std::io::ErrorKind::TimedOut,
                                             "canonical search operation deadline elapsed",
@@ -390,7 +390,7 @@ impl ActorReadSourceCapability {
                                 if cancellation.is_cancelled() {
                                     return Err("canonical search was cancelled".to_string());
                                 }
-                                if self.deadline.remaining().is_zero() {
+                                if self.deadline.is_elapsed() {
                                     return Err(
                                         "canonical search operation deadline elapsed".to_string()
                                     );
@@ -1174,7 +1174,7 @@ impl ActorBoundExecution {
                             "Source layout read was cancelled before publication.",
                         )));
                     }
-                    if lease.deadline.remaining().is_zero() {
+                    if lease.deadline.is_elapsed() {
                         return Ok(Ok(logical_read_deadline_result()));
                     }
                 }
@@ -1218,7 +1218,7 @@ impl ActorBoundExecution {
                         "Logical source read was cancelled before publishing its result.",
                     )));
                 }
-                if lease.deadline.remaining().is_zero() {
+                if lease.deadline.is_elapsed() {
                     return Ok(Ok(logical_read_deadline_result()));
                 }
                 Ok(staged)

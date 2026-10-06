@@ -326,7 +326,7 @@ impl FileInvocationStoreV5 {
                     return Ok(poisoned.into_inner());
                 }
                 Err(TryLockError::WouldBlock) => {
-                    std::thread::sleep(deadline.remaining().min(STORE_WRITER_WAIT_SLICE));
+                    std::thread::sleep(deadline.wait_slice(STORE_WRITER_WAIT_SLICE));
                 }
             }
         }
@@ -1067,7 +1067,7 @@ fn serialize_record_bounded(
 }
 
 fn check_deadline(deadline: ProviderDeadline) -> Result<(), V5TaskStoreError> {
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         Err(V5TaskStoreError::DeadlineExceeded)
     } else {
         Ok(())
@@ -1665,6 +1665,88 @@ mod tests {
             store.get(task_id("12121212-1212-4212-8212-121212121212"), deadline()),
             Err(V5TaskStoreError::NotFound { .. })
         ));
+    }
+
+    #[test]
+    fn no_deadline_task_commit_preserves_exact_terminal_cas_and_reopens() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let clock = Arc::new(ManualEpochClock::at(6_000));
+        let unlimited = ProviderDeadline::no_deadline();
+        let (store, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock.clone(), unlimited).unwrap();
+        let created = store
+            .create_exact(
+                new_record(
+                    task_id("35353535-3535-4535-8535-353535353535"),
+                    invocation_id("36363636-3636-4636-8636-363636363636"),
+                    0x2a,
+                ),
+                unlimited,
+            )
+            .unwrap();
+        let identity = created.identity();
+        let V5StartWorkingOutcome::Started(working) = store
+            .start_working_if_not_cancel_requested(&identity, created.version, unlimited)
+            .unwrap()
+        else {
+            panic!("task did not enter Working");
+        };
+        let publication = V5TerminalPublication::Completed {
+            terminal_epoch_ms: 6_100,
+            terminal_digest: terminal_digest(0x2b),
+            result: Box::new(DomainResult::success("no deadline winner")),
+        };
+        let foreign = V5TaskIdentity::new(
+            created.task_id,
+            invocation_id("37373737-3737-4737-8737-373737373737"),
+            receipt_digest(0x2a),
+        );
+        assert!(matches!(
+            store.publish_terminal_exact(&foreign, working.version, publication.clone(), unlimited),
+            Err(V5TaskStoreError::Mismatch { .. })
+        ));
+        assert_eq!(store.get(created.task_id, unlimited).unwrap(), working);
+        let winner = store
+            .publish_terminal_exact(&identity, working.version, publication.clone(), unlimited)
+            .unwrap();
+        assert_eq!(
+            store
+                .publish_terminal_exact(&identity, working.version, publication, unlimited,)
+                .unwrap(),
+            winner
+        );
+        drop(store);
+        let (reopened, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock, unlimited).unwrap();
+        assert_eq!(reopened.get(created.task_id, unlimited).unwrap(), winner);
+    }
+
+    #[test]
+    fn no_deadline_task_visible_io_failure_is_still_commit_uncertain() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let clock = Arc::new(ManualEpochClock::at(5_000));
+        let unlimited = ProviderDeadline::no_deadline();
+        let (store, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock.clone(), unlimited).unwrap();
+        let id = task_id("38383838-3838-4838-8838-383838383838");
+        store.inject_next_publication_failure(PublicationFailure::AfterRenameBeforeSync);
+        assert!(matches!(
+            store.create_exact(new_record(
+                id,
+                invocation_id("39393939-3939-4939-8939-393939393939"),
+                0x2c,
+            ), unlimited),
+            Err(V5TaskStoreError::CommitUncertain {
+                task_id, operation: V5CommitOperation::Create,
+            }) if task_id == id
+        ));
+        let visible = store.get(id, unlimited).unwrap();
+        drop(store);
+        let (reopened, _) =
+            FileInvocationStoreV5::open_inspect_only(&root_path, clock, unlimited).unwrap();
+        assert_eq!(reopened.get(id, unlimited).unwrap(), visible);
     }
 
     #[test]

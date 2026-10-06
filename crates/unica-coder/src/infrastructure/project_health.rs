@@ -295,7 +295,7 @@ fn eligible_resource_roots_from_staged_index(
     let mut checkpoint = || {
         if cancellation.is_cancelled() {
             Err(ResourceRootEligibilityError::Cancelled)
-        } else if deadline.remaining().is_zero() {
+        } else if deadline.is_elapsed() {
             Err(ResourceRootEligibilityError::TimedOut)
         } else {
             Ok(())

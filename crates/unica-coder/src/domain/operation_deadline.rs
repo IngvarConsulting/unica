@@ -3,12 +3,12 @@ use std::time::{Duration, Instant};
 /// An operation either has an explicit monotonic deadline or has no time limit.
 /// Absence is not an expired deadline and is never encoded as a large duration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OperationDeadline {
+pub(crate) enum OperationDeadline<T = Instant> {
     NoDeadline,
-    Finite(Instant),
+    Finite(T),
 }
 
-impl OperationDeadline {
+impl OperationDeadline<Instant> {
     pub(crate) fn remaining_at(self, now: Instant) -> Option<Duration> {
         match self {
             Self::NoDeadline => None,

@@ -711,7 +711,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             &mut || {
                 if cancellation.is_cancelled() {
                     Err(ResourceClassificationError::Cancelled)
-                } else if deadline.remaining().is_zero() {
+                } else if deadline.is_elapsed() {
                     Err(ResourceClassificationError::TimedOut)
                 } else {
                     Ok(())
@@ -773,7 +773,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 if cancellation.is_cancelled() {
                     return Err(ProjectHealthInspectionError::Cancelled);
                 }
-                if deadline.remaining().is_zero() {
+                if deadline.is_elapsed() {
                     return Ok(timeout_policy(
                         observations,
                         ProjectCheckId::RepositoryAttributes,
@@ -786,7 +786,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                     if cancellation.is_cancelled() {
                         return Err(ProjectHealthInspectionError::Cancelled);
                     }
-                    if deadline.remaining().is_zero() {
+                    if deadline.is_elapsed() {
                         return Ok(timeout_policy(
                             observations,
                             ProjectCheckId::RepositoryAttributes,
@@ -806,7 +806,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         if cancellation.is_cancelled() {
             return Err(ProjectHealthInspectionError::Cancelled);
         }
-        if deadline.remaining().is_zero() {
+        if deadline.is_elapsed() {
             return Ok(timeout_policy(
                 observations,
                 ProjectCheckId::RepositoryAttributes,
@@ -858,7 +858,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 if cancellation.is_cancelled() {
                     return Err(ProjectHealthInspectionError::Cancelled);
                 }
-                if deadline.remaining().is_zero() {
+                if deadline.is_elapsed() {
                     return Ok(timeout_policy(
                         observations,
                         ProjectCheckId::RepositoryAttributes,
@@ -1382,7 +1382,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             if cancellation.is_cancelled() {
                 return Err(ProjectHealthInspectionError::Cancelled);
             }
-            if deadline.remaining().is_zero() {
+            if deadline.is_elapsed() {
                 match resource.kind {
                     RepositoryResourceKind::Text => working_timed_out = true,
                     RepositoryResourceKind::Binary => lfs_timed_out = true,
@@ -1497,7 +1497,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         }
         let working_revalidation_error = if continuation.is_some() && !working_timed_out {
             working_witnesses.iter().find_map(|(path, expected)| {
-                if cancellation.is_cancelled() || deadline.remaining().is_zero() {
+                if cancellation.is_cancelled() || deadline.is_elapsed() {
                     return None;
                 }
                 let current =
@@ -1528,7 +1528,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 source_set: None,
                 reason,
             });
-        } else if working_timed_out || (continuation.is_some() && deadline.remaining().is_zero()) {
+        } else if working_timed_out || (continuation.is_some() && deadline.is_elapsed()) {
             if let Some(state) = continuation.as_deref_mut() {
                 state.progress.continuable_eol_timeout = true;
             }
@@ -1626,7 +1626,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             // A failed final fence cannot substantiate any earlier resource
             // finding. The helpers restart NotRun at RepositoryAttributes and
             // intentionally discard the facts from the old index snapshot.
-            if deadline.remaining().is_zero() {
+            if deadline.is_elapsed() {
                 return Ok(timeout_policy(
                     observations,
                     ProjectCheckId::RepositoryAttributes,
@@ -1971,7 +1971,9 @@ impl<'a> SourceResourcePolicyInspector<'a> {
                 // A later batch normally inherits only the tail of this call's
                 // deadline. Only a first batch given at least half of the
                 // seven-second handoff window can indicate an oversized group.
-                if first_batch && budget_at_start >= INVOCATION_HANDOFF_WINDOW / 2 {
+                if first_batch
+                    && budget_at_start.is_some_and(|budget| budget >= INVOCATION_HANDOFF_WINDOW / 2)
+                {
                     continuation.reduce_index_eol_batch(batch.len());
                 }
                 return Err(ResourceProtocolParseError::TimedOut);
@@ -2025,7 +2027,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
         if output.cancelled || cancellation.is_cancelled() {
             return Err(ResourceProtocolParseError::Cancelled);
         }
-        if output.timed_out || deadline.remaining().is_zero() {
+        if output.timed_out || deadline.is_elapsed() {
             return Err(ResourceProtocolParseError::TimedOut);
         }
         if !semantic_success(&output) {
@@ -2102,7 +2104,7 @@ impl<'a> SourceResourcePolicyInspector<'a> {
             if cancellation.is_cancelled() {
                 return Err(format!("{label} inspection was cancelled"));
             }
-            if deadline.remaining().is_zero() {
+            if deadline.is_elapsed() {
                 return Err(format!("{label} inspection timed out"));
             }
             let oid = entry.blob_oid.as_deref().ok_or_else(|| {
@@ -2505,7 +2507,7 @@ fn resource_protocol_checkpoint(
 ) -> Result<(), ResourceProtocolParseError> {
     if cancellation.is_cancelled() {
         Err(ResourceProtocolParseError::Cancelled)
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(ResourceProtocolParseError::TimedOut)
     } else {
         Ok(())
@@ -2519,7 +2521,7 @@ fn resource_process_error(
 ) -> ResourceProtocolParseError {
     if cancellation.is_cancelled() {
         ResourceProtocolParseError::Cancelled
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         ResourceProtocolParseError::TimedOut
     } else {
         ResourceProtocolParseError::Malformed(reason)
@@ -2791,7 +2793,7 @@ fn process_command(
             super::PROJECT_HEALTH_STDOUT_CAPTURE_LIMIT,
             crate::infrastructure::platform::STDERR_CAPTURE_LIMIT,
         )),
-        timeout: Some(deadline.remaining()),
+        timeout: deadline.remaining(),
         cancellation: cancellation.clone(),
     }
 }
@@ -3235,7 +3237,7 @@ fn working_eol_checkpoint(
     if cancellation.is_cancelled() {
         return Err(WorkingEolInspectionError::Cancelled);
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Err(WorkingEolInspectionError::TimedOut);
     }
     Ok(())

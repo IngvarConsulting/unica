@@ -69,7 +69,7 @@ impl<'a> GitGrepProvider<'a> {
                 Err(cancelled_error(
                     "git-grep search stopped before process start",
                 ))
-            } else if deadline.remaining().is_zero() {
+            } else if deadline.is_elapsed() {
                 Err("git-grep provider deadline exceeded".to_string())
             } else {
                 Ok(())
@@ -125,7 +125,7 @@ impl<'a> GitGrepProvider<'a> {
             env: Vec::new(),
             env_remove: Vec::new(),
             capture_limits: None,
-            timeout: Some(timeout),
+            timeout,
             cancellation: cancellation.clone(),
         };
         let mut hits = Vec::new();
@@ -417,13 +417,17 @@ impl<'a> BslAnalyzerProvider<'a> {
             stderr: None,
             data: None,
         };
-        let output = match self.client.call(
-            "graph",
-            context,
-            arguments,
-            deadline.remaining(),
-            cancellation,
-        ) {
+        let output = match if cancellation.is_cancelled() {
+            Err(cancelled_error("bsl-analyzer graph stopped before request"))
+        } else {
+            deadline
+                .finite_remaining()
+                .map_err(|error| error.to_string())
+                .and_then(|timeout| {
+                    self.client
+                        .call("graph", context, arguments, timeout, cancellation)
+                })
+        } {
             Ok(output) => output,
             // Движок не поставлен или не ответил. Это названное состояние, а не
             // нулевой счёт: читателю важно знать, что графа нет, а не что
@@ -574,7 +578,10 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
         if has_targeted_search_scope(context) {
             return unavailable_targeted_scope_section(ProviderId::BslAnalyzer);
         }
-        let timeout = deadline.remaining();
+        let timeout = match deadline.finite_remaining() {
+            Ok(timeout) => timeout,
+            Err(error) => return unavailable_section(ProviderId::BslAnalyzer, error.to_string()),
+        };
         if timeout.is_zero() {
             return failed_section(
                 ProviderId::BslAnalyzer,
@@ -817,7 +824,10 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             detail_code: Some("reconcilingSources".to_string()),
             results_found: 0,
         });
-        let timeout = deadline.remaining();
+        let timeout = match deadline.finite_remaining() {
+            Ok(timeout) => timeout,
+            Err(error) => return unavailable_section(ProviderId::Rlm, error.to_string()),
+        };
         if timeout.is_zero() {
             return failed_section(
                 ProviderId::Rlm,
@@ -2374,6 +2384,29 @@ mod tests {
     }
 
     #[test]
+    fn git_grep_without_deadline_passes_absence_to_the_process_runner() {
+        let runner = FakeRunner {
+            output: output("CommonModules/Sales/Ext/Module.bsl\x004\x00Post();\n"),
+            commands: Mutex::new(Vec::new()),
+        };
+        let provider = GitGrepProvider::with_runner(&runner);
+        let section = provider.search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Ok);
+        let commands = runner.commands.lock().unwrap();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].timeout, None);
+        assert!(!commands[0].cancellation.is_cancelled());
+    }
+
+    #[test]
     fn git_grep_is_literal_source_scoped_and_uses_the_upstream_deadline() {
         let runner = FakeRunner {
             output: output("CommonModules/Sales/Ext/Module.bsl\x004\x00Post();\n"),
@@ -3251,6 +3284,68 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bsl_search_without_deadline_refuses_before_legacy_service_dispatch() {
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text: "[]".to_string(),
+                stderr: String::new(),
+            },
+        };
+        let section = BslAnalyzerProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        let termination = section.termination.as_ref().unwrap();
+        assert_eq!(
+            termination.code,
+            crate::domain::code_intelligence::SearchTerminationCode::ProviderUnavailable
+        );
+        assert!(!termination.retryable);
+        assert_eq!(termination.detail_code, None);
+        assert_eq!(
+            section.diagnostics,
+            vec![crate::domain::code_intelligence::ProviderDeadlineError::Unsupported.to_string()]
+        );
+        assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bsl_graph_without_deadline_refuses_before_legacy_service_dispatch() {
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: WorkspaceServiceBslOutput {
+                result_text: "[]".to_string(),
+                stderr: String::new(),
+            },
+        };
+        let outcome = BslAnalyzerProvider::with_client(&client)
+            .read(
+                &CodeIntelligenceReadRequest::CallGraph {
+                    id: "method/common/Module/Post".to_string(),
+                    direction: CallGraphDirection::Callers,
+                    limit: 20,
+                },
+                &context(),
+                ProviderDeadline::no_deadline(),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(!outcome.ok);
+        assert_eq!(
+            outcome.errors,
+            vec![crate::domain::code_intelligence::ProviderDeadlineError::Unsupported.to_string()]
+        );
+        assert!(client.calls.lock().unwrap().is_empty());
+    }
+
     /// Порт отвечает графом, а не только объявляет возможность.
     ///
     /// Канал подменён двойником, который отдаёт замеренный ответ анализатора:
@@ -3902,6 +3997,39 @@ mod tests {
 
         assert_eq!(section.status, ProviderSectionStatus::Unavailable);
         assert!(section.diagnostics.join(" ").contains("metadataPath"));
+        assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn rlm_search_without_deadline_refuses_before_legacy_service_dispatch() {
+        let client = FakeRlmClient {
+            readiness: IndexReadiness::Ready {
+                db_path: PathBuf::from("/cache/index.db"),
+            },
+            calls: Mutex::new(Vec::new()),
+            result: "[]".to_string(),
+        };
+        let section = RlmProvider::with_client(&client).search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 20,
+            },
+            &context(),
+            ProviderDeadline::no_deadline(),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Unavailable);
+        let termination = section.termination.as_ref().unwrap();
+        assert_eq!(
+            termination.code,
+            crate::domain::code_intelligence::SearchTerminationCode::ProviderUnavailable
+        );
+        assert!(!termination.retryable);
+        assert_eq!(termination.detail_code, None);
+        assert_eq!(
+            section.diagnostics,
+            vec![crate::domain::code_intelligence::ProviderDeadlineError::Unsupported.to_string()]
+        );
         assert!(client.calls.lock().unwrap().is_empty());
     }
 

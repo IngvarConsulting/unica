@@ -3137,7 +3137,7 @@ pub(crate) mod tests {
             _cancellation: &CancellationToken,
         ) -> crate::domain::diagnostics::DiagnosticProviderOutcome {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            *self.observed_budget.lock().unwrap() = Some(deadline.remaining());
+            *self.observed_budget.lock().unwrap() = deadline.remaining();
             if self.fail {
                 return crate::domain::diagnostics::DiagnosticProviderOutcome {
                     status: crate::domain::diagnostics::DiagnosticProviderStatus::Failed,

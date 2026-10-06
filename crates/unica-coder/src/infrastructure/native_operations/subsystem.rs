@@ -2274,7 +2274,7 @@ fn subsystem_info_checkpoint(
             cancelled_error("unica.subsystem.info stopped during registered topology read"),
         ));
     }
-    if deadline.remaining().is_zero() {
+    if deadline.is_elapsed() {
         return Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "unica.subsystem.info provider deadline exceeded",

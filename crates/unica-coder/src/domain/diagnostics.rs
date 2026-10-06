@@ -885,6 +885,6 @@ mod tests {
     #[test]
     fn provider_deadline_type_remains_shared_with_other_provider_domains() {
         let deadline = ProviderDeadline::new(Instant::now() + Duration::from_secs(1));
-        assert!(deadline.remaining() <= Duration::from_secs(1));
+        assert!(deadline.remaining().unwrap() <= Duration::from_secs(1));
     }
 }

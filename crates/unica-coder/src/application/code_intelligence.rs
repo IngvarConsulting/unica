@@ -1237,7 +1237,7 @@ mod tests {
             deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> ProviderSearchSection {
-            assert!(deadline.remaining() <= self.maximum);
+            assert!(deadline.remaining().unwrap() <= self.maximum);
             test_section(self.id, ProviderSectionStatus::Empty, Vec::new(), "")
         }
     }

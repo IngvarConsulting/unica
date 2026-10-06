@@ -3598,11 +3598,20 @@ fn main() {
             #[derive(Default)]
             struct SearchCalls {
                 names: std::collections::BTreeSet<String>,
+                closed_deadline_checked: bool,
+                foreign_deadline_checked: bool,
             }
 
             impl<'ast> Visit<'ast> for SearchCalls {
                 fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
                     self.names.insert(call.method.to_string());
+                    if call.method == "is_elapsed" {
+                        if expression_is(&call.receiver, "self.deadline") && call.args.is_empty() {
+                            self.closed_deadline_checked = true;
+                        } else {
+                            self.foreign_deadline_checked = true;
+                        }
+                    }
                     syn::visit::visit_expr_method_call(self, call);
                 }
             }
@@ -3615,7 +3624,7 @@ fn main() {
                 "read_immediate_names_bounded",
                 "retain_immediate_child_nofollow",
                 "open_named_identity_for_read",
-                "remaining",
+                "is_elapsed",
                 "is_cancelled",
                 "match_starts",
             ] {
@@ -3625,6 +3634,12 @@ fn main() {
                         calls.names
                     ));
                 }
+            }
+            if !calls.closed_deadline_checked || calls.foreign_deadline_checked {
+                return Err(
+                    "literal search must check only its exact closed self.deadline authority"
+                        .to_string(),
+                );
             }
             for ambient in [
                 "canonicalize",
@@ -5525,6 +5540,32 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_foreign_search_deadline() {
+        let source = include_str!("invocation_service.rs");
+        let replenished_search = source.replacen(
+            "self.deadline.is_elapsed()",
+            "ProviderDeadline::from_budget(LOGICAL_READ_OPERATION_BUDGET).is_elapsed()",
+            1,
+        );
+        assert_ne!(replenished_search, source, "the hostile search must change");
+        assert!(
+            audit_actor_read_source_capability_api(&replenished_search).is_err(),
+            "a fresh search deadline escaped the closed receiver audit while other checks remained"
+        );
+    }
+
+    #[test]
+    fn actor_read_source_capability_ast_audit_rejects_missing_search_deadline() {
+        let source = include_str!("invocation_service.rs");
+        let unchecked_search = source.replace("self.deadline.is_elapsed()", "false");
+        assert_ne!(unchecked_search, source, "the unchecked search must change");
+        assert!(
+            audit_actor_read_source_capability_api(&unchecked_search).is_err(),
+            "literal search lost all checks of its closed deadline authority"
+        );
+    }
+
     fn actor_issued_read_capability(
         kind: SourceSetKind,
         profile: SourceProfile,
@@ -5625,7 +5666,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(authority.deadline_for_test(), deadline);
         assert_eq!(
             authority.deadline_for_test().remaining(),
-            Duration::from_secs(19),
+            Some(Duration::from_secs(19)),
             "the authority builder replenished the captured operation deadline"
         );
     }
@@ -9227,7 +9268,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(sources.len(), 1);
         assert_eq!(
             sources[0].deadline().remaining(),
-            LOGICAL_READ_OPERATION_BUDGET - Duration::from_secs(8),
+            Some(LOGICAL_READ_OPERATION_BUDGET - Duration::from_secs(8)),
             "the handoff window must not replenish or cap the logical-read deadline"
         );
         let service =
@@ -9693,7 +9734,7 @@ struct ActorLogicalReadLease {"#,
             let operation = ProviderDeadline::from_budget(self.operation_budget);
             self.started.send(()).unwrap();
             self.release.lock().unwrap().recv().unwrap();
-            if operation.remaining().is_zero() {
+            if operation.is_elapsed() {
                 return Err(InvocationFailure::new(
                     "deadline_exceeded",
                     "operation budget elapsed at Task handoff",

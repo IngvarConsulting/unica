@@ -817,7 +817,7 @@ pub(super) fn registrar_scan_checkpoint(
             io::ErrorKind::Interrupted,
             "registrar evidence scan was cancelled",
         ))
-    } else if deadline.remaining().is_zero() {
+    } else if deadline.is_elapsed() {
         Err(io::Error::new(
             io::ErrorKind::TimedOut,
             "registrar evidence scan deadline elapsed",
