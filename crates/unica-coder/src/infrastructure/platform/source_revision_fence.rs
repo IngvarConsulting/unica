@@ -775,19 +775,30 @@ mod tests {
         let cache = tempdir().unwrap();
         let fence =
             platform_fence(root.path(), &cache.path().join("revision-fence-cache")).unwrap();
-        assert_eq!(fence.capability(), FenceCapability::ProvenFast);
-        fence
+        let capability = fence.capability();
+        let initial = fence
             .flush(ProviderDeadline::no_deadline(), &CancellationToken::new())
             .unwrap();
         fs::write(&module, "Procedure B()\nEndProcedure\n").unwrap();
-        assert_eq!(
-            fence
-                .flush(ProviderDeadline::no_deadline(), &CancellationToken::new())
-                .unwrap(),
-            FenceOutcome::Proven {
-                changed_paths: vec![PathBuf::from("Module.bsl")]
+        let after_write = fence
+            .flush(ProviderDeadline::no_deadline(), &CancellationToken::new())
+            .unwrap();
+        match capability {
+            FenceCapability::ProvenFast => {
+                assert!(matches!(initial, FenceOutcome::Proven { .. }));
+                assert_eq!(
+                    after_write,
+                    FenceOutcome::Proven {
+                        changed_paths: vec![PathBuf::from("Module.bsl")]
+                    }
+                );
             }
-        );
+            FenceCapability::Unsupported => {
+                let expected = FenceOutcome::TrustLost(SourceRevisionTrustLoss::UnsupportedFence);
+                assert_eq!(initial, expected);
+                assert_eq!(after_write, expected);
+            }
+        }
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         assert!(matches!(
