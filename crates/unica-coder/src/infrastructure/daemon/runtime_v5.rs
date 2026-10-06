@@ -2710,11 +2710,7 @@ impl V5ReceiptRuntime {
                 let expected = match state {
                     ReceiptState::TaskPromisedUnbound(receipt) => {
                         let task_id = receipt.task().task_id();
-                        // The admission of this promised Task may still be
-                        // running: its checkpoint observes this token and
-                        // stops before the actor bind (#1251).
-                        self.active_task_cancellations
-                            .cancel(receipt.key().reserved_task_id());
+                        let reserved_task_id = receipt.key().reserved_task_id();
                         let cancelled = self.receipt_ledger.request_task_cancel(
                             receipt.key().clone(),
                             TaskCancellationReceipt::PromisedUnbound(receipt),
@@ -2731,6 +2727,11 @@ impl V5ReceiptRuntime {
                             terminal,
                             deadline,
                         )?;
+                        // The admission of this promised Task may still be
+                        // running: once the terminal is durable its
+                        // checkpoint observes this token and stops before
+                        // the actor bind (#1251).
+                        self.active_task_cancellations.cancel(reserved_task_id);
                         self.hooks.receipt_backed_terminal(&committed)?;
                         self.hooks.release_pre_actor_pauses();
                         self.hooks.event(
@@ -2762,6 +2763,17 @@ impl V5ReceiptRuntime {
                     {
                         // A running inline attempt: signal its token. One that
                         // ignores it keeps only its own attempt (#1251).
+                        self.active_task_cancellations
+                            .cancel(reserved.key().reserved_task_id());
+                        return self
+                            .reply_for_existing_state(ReceiptState::Reserved(reserved), deadline);
+                    }
+                    ReceiptState::Reserved(reserved)
+                        if matches!(reserved.phase(), ReservedPhase::Unbound) =>
+                    {
+                        // An inline attempt still in validation or admission:
+                        // without a deadline only this token ends it. The
+                        // attempt publishes its own cancelled terminal (#1251).
                         self.active_task_cancellations
                             .cancel(reserved.key().reserved_task_id());
                         return self
@@ -2864,13 +2876,16 @@ impl V5ReceiptRuntime {
                 .name("unica-v5-invocation-pipeline".to_owned())
                 .spawn(move || {
                     let outcome = runtime.run_reserved_pipeline(
-                        reservation,
+                        reservation.clone(),
                         invocation,
                         response_deadline,
                         &slot,
                         epoch_ms,
                         deadline,
                     );
+                    if outcome.is_err() && slot.promoted_by_owner() {
+                        runtime.settle_abandoned_promotion(&reservation, epoch_ms);
+                    }
                     slot.report(match outcome {
                         Ok(reply) => PipelineReport::Reply(reply),
                         Err(error) => PipelineReport::Failed(error),
@@ -3116,6 +3131,60 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// A promoted attempt failed after the handler answered with its Task:
+    /// no reply carries the error any more. A still-unbound promise gets a
+    /// failed terminal; an actor-bound intermediate state stops the process
+    /// so its successor terminalizes it, as the former watchdog did. Formerly
+    /// that watchdog also caught this case; without it the Task would stay
+    /// queued forever (#1251).
+    fn settle_abandoned_promotion(
+        &self,
+        reservation: &crate::application::receipt_ledger::ReservedReceipt,
+        epoch_ms: u64,
+    ) {
+        // A process that is already stopping leaves the attempt to its
+        // successor's recovery, exactly like any interrupted attempt.
+        if self.attempt_is_dead() {
+            return;
+        }
+        let deadline = Self::continuation_deadline();
+        let Ok(current) = self
+            .receipt_ledger
+            .recover(reservation.key().clone(), deadline)
+        else {
+            self.external_store_fail_stop.store(true, Ordering::Release);
+            self.hooks.restart_requested();
+            return;
+        };
+        match current {
+            ReceiptState::TaskPromisedUnbound(_) => {
+                let published = canonical_v5_terminal(&ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::InvocationFailed,
+                })
+                .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))
+                .and_then(|terminal| {
+                    self.publish_pre_actor_terminal(
+                        reservation.clone(),
+                        epoch_ms,
+                        terminal,
+                        deadline,
+                    )
+                });
+                if published.is_err() {
+                    self.external_store_fail_stop.store(true, Ordering::Release);
+                    self.hooks.restart_requested();
+                }
+            }
+            ReceiptState::TaskPromisedActorBound(_)
+            | ReceiptState::TaskHandoffActorBound(_)
+            | ReceiptState::TaskReceiptOwnedActorBound(_) => {
+                self.external_store_fail_stop.store(true, Ordering::Release);
+                self.hooks.restart_requested();
+            }
+            _ => {}
+        }
+    }
+
     /// The epoch a continuation binds its Task at. The handler created the
     /// Task at the handoff moment, after the submit was accepted; a bind
     /// stamped with the submit epoch would precede the Task it binds, which
@@ -3217,12 +3286,18 @@ impl V5ReceiptRuntime {
                 .bind(invocation, response_deadline, &admission_cancellation);
         drop(admission_cancellation_guard);
         if admission_cancellation.is_cancelled() {
-            // The cancel already published this Task's terminal; nothing of
-            // the attempt may begin or publish after it.
+            // Nothing of a cancelled attempt may begin. A Task cancel has
+            // already published its terminal; an inline attempt cancelled
+            // before the handoff, or promoted while it stopped, is ended here.
             let deadline = Self::continuation_deadline();
             let current = self
                 .receipt_ledger
                 .recover(reservation.key().clone(), deadline)?;
+            if reservation_is_still_unbound(&current) {
+                let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                    .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+                return self.publish_pre_actor_terminal(reservation, epoch_ms, terminal, deadline);
+            }
             return self.reply_for_existing_state(current, deadline);
         }
         let deadline = if slot.promoted_by_owner() {
@@ -5369,9 +5444,6 @@ impl V5ReceiptRuntime {
             }
             _ => return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported),
         };
-        // An admission still running for this Task observes the token at its
-        // next checkpoint and stops before the actor bind (#1251).
-        self.active_task_cancellations.cancel(task_id);
         let cancelled =
             self.receipt_ledger
                 .request_task_cancel(expected.key().clone(), expected, deadline)?;
@@ -5385,6 +5457,10 @@ impl V5ReceiptRuntime {
                 terminal,
                 deadline,
             )?;
+            // An admission still running for this Task observes the token
+            // at its next checkpoint, after the terminal is durable, and
+            // stops before the actor bind (#1251).
+            self.active_task_cancellations.cancel(task_id);
             self.hooks.receipt_backed_terminal(&committed)?;
             self.hooks.release_pre_actor_pauses();
             self.hooks.event(

@@ -10133,7 +10133,7 @@ fn bound_task_start_rechecks_proof_after_working_readback() {
 }
 
 #[test]
-fn bound_actor_lease_is_retained_until_terminal_or_process_fail_stop() {
+fn bound_actor_lease_is_retained_until_terminal_even_past_a_cancel() {
     let report = execute(Scenario::fake(vec![
         direct_provider(),
         Action::InstallBarrier {
@@ -10182,7 +10182,7 @@ fn bound_actor_lease_is_retained_until_terminal_or_process_fail_stop() {
         Action::WaitForEvent {
             event: EventKind::PrepareEntered,
         },
-        checkpoint_action("noncooperative-before-exit"),
+        checkpoint_action("noncooperative-before-cancel"),
         Action::Cancel {
             key: KeyCase::Exact,
             lazy_session: true,
@@ -10191,22 +10191,34 @@ fn bound_actor_lease_is_retained_until_terminal_or_process_fail_stop() {
         Action::AdvanceMonotonic {
             millis: CLEANUP_GRACE_MS,
         },
-        checkpoint_action("noncooperative-after-exit"),
+        checkpoint_action("noncooperative-past-former-grace"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::PrepareEntered,
+        },
+        Action::WaitForEvent {
+            event: EventKind::ReceiptTerminalCommitted,
+        },
+        checkpoint_action("noncooperative-terminal"),
     ]));
 
     assert_eq!(checkpoint(&report, "direct-live").actor_leases, 1);
     assert_eq!(checkpoint(&report, "task-live").actor_leases, 1);
     assert_eq!(checkpoint(&report, "normal-terminal").actor_leases, 0);
     assert_eq!(checkpoint(&report, "task-terminal").actor_leases, 0);
-    let blocked = checkpoint(&report, "noncooperative-before-exit");
+    let blocked = checkpoint(&report, "noncooperative-before-cancel");
     assert_eq!(blocked.actor_leases, 1);
     assert!(blocked.daemon_running);
-    let exited = checkpoint(&report, "noncooperative-after-exit");
-    assert!(!exited.daemon_running);
-    assert_eq!(exited.actor_leases, 0);
-    assert_eq!(exited.process_exit_elapsed_ms, Some(CLEANUP_GRACE_MS));
+    // #1251: past the former two-second grace the cancelled attempt keeps
+    // its lease and the daemon keeps running; no fail-stop releases it.
+    let waiting = checkpoint(&report, "noncooperative-past-former-grace");
+    assert!(waiting.daemon_running);
+    assert!(!waiting.restart_requested);
+    assert_eq!(waiting.actor_leases, 1);
+    let settled = checkpoint(&report, "noncooperative-terminal");
+    assert!(settled.daemon_running);
+    assert_eq!(settled.actor_leases, 0);
     assert_eq!(count_event(&report, EventKind::LeaseReleased), 3);
-    assert_eq!(count_event(&report, EventKind::ListenerClosed), 1);
+    assert_eq!(count_event(&report, EventKind::ListenerClosed), 0);
 }
 
 #[test]

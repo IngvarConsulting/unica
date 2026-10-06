@@ -407,11 +407,6 @@ fn cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon
         ),
         "a cancel during admission must end the Task as cancelled: {settled:?}"
     );
-    assert_eq!(
-        admission.entries(),
-        1,
-        "the admission walk must stop at its first checkpoint after the cancel"
-    );
 
     let independent = owner
         .connect_peer_before(Instant::now() + Duration::from_secs(2))
@@ -444,6 +439,13 @@ fn cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon
         service.prepares.load(Ordering::SeqCst),
         0,
         "a cancelled admission must not begin the source operation"
+    );
+    // Read after the independent call, so the woken admission had time to
+    // reach its next checkpoint and stop there.
+    assert_eq!(
+        admission.entries(),
+        1,
+        "the admission walk must stop at its first checkpoint after the cancel"
     );
     assert!(!hooks.fail_stopped.load(Ordering::SeqCst));
     drop(owner);
@@ -5582,6 +5584,106 @@ fn noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others() {
         "the late executor still ends as cancelled: {stuck_terminal:?}"
     );
     drop(owner);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+/// #1251: a cancel that reaches an inline call still in admission, before
+/// the handoff moment, ends it. Without an admission deadline the token is
+/// the only stop; the attempt publishes its own cancelled terminal.
+#[test]
+fn cancel_during_inline_admission_before_handoff_publishes_cancelled() {
+    let state = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(state.path()).unwrap();
+    let (_workspace, workspace_root) = catalog_workspace();
+    let admission =
+        crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
+            workspace_root.clone(),
+        );
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let service = Arc::new(SourceAdmissionProbe::default());
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        service.clone(),
+        clock.clone(),
+    ));
+    let hooks = Arc::new(InspectionHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(30),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let invocation = view_catalog_request(TaskId::new(), &workspace_root);
+    let key = ReceiptKey::new(
+        invocation.invocation_id(),
+        invocation.reserved_task_id(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(invocation.arguments()),
+            request_scope_hash(invocation.workspace_hint()).unwrap(),
+        ),
+    );
+    let mut canceller = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+    let submit = thread::spawn(move || {
+        let mut owner = owner;
+        let response = owner.submit_invocation(invocation);
+        (owner, response)
+    });
+    admission.wait_until_entered();
+    canceller
+        .cancel_invocation(key)
+        .expect("cancel the inline call while it is admitted");
+    admission.release();
+    let (owner, submitted) = submit.join().unwrap();
+    let V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Direct { receipt },
+    } = submitted.expect("the cancelled inline call answers directly")
+    else {
+        panic!("a cancelled inline call must end directly");
+    };
+    assert!(
+        matches!(receipt.terminal(), ReceiptTerminalOutcome::Cancelled),
+        "the inline call must end as cancelled: {:?}",
+        receipt.terminal()
+    );
+    assert_eq!(
+        admission.entries(),
+        1,
+        "the admission walk must stop at its first checkpoint after the cancel"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+    assert!(!hooks.fail_stopped.load(Ordering::SeqCst));
+    drop(owner);
+    drop(canceller);
+    drop(admission);
     stop.store(true, Ordering::SeqCst);
     server
         .join()

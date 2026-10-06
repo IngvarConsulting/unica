@@ -31,9 +31,6 @@ pub(crate) struct InvocationResponseDeadline {
     receipt_at: Instant,
     handoff_at: Instant,
     response_at: Instant,
-    /// How far past the handoff moment the actor admission may still run:
-    /// the grace of a Task the daemon promised at that moment.
-    admission_grace: Duration,
 }
 
 impl std::fmt::Debug for InvocationResponseDeadline {
@@ -56,16 +53,7 @@ impl InvocationResponseDeadline {
             receipt_at,
             handoff_at,
             response_at: handoff_at + RESPONSE_SERIALIZATION_MARGIN,
-            admission_grace: Duration::ZERO,
         }
-    }
-
-    /// The actor admission of a promised Task runs past the handoff moment
-    /// under the fail-stop grace of that promise: the daemon's watchdog, not
-    /// this checkpoint, bounds it there.
-    pub(crate) fn with_actor_admission_grace(mut self, grace: Duration) -> Self {
-        self.admission_grace = grace;
-        self
     }
 
     pub(crate) fn restrict_to_frontend_budget(mut self, remaining: Duration) -> Self {
@@ -93,30 +81,8 @@ impl InvocationResponseDeadline {
         self.clock.now()
     }
 
-    fn actor_admission_at(&self) -> Instant {
-        let boundary = if self.handoff_at == self.receipt_at {
-            self.response_at
-        } else {
-            self.handoff_at
-        };
-        boundary + self.admission_grace
-    }
-
-    pub(crate) fn remaining_actor_admission_budget(&self) -> Duration {
-        self.actor_admission_at()
-            .saturating_duration_since(self.now())
-    }
-
     pub(crate) fn remaining_handoff_budget(&self) -> Duration {
         self.handoff_at.saturating_duration_since(self.now())
-    }
-
-    pub(crate) fn checkpoint_actor_admission(&self) -> Result<(), &'static str> {
-        if self.now() >= self.actor_admission_at() {
-            Err("daemon actor admission deadline exceeded")
-        } else {
-            Ok(())
-        }
     }
 
     pub(crate) fn checkpoint_handoff(&self) -> Result<(), &'static str> {
@@ -212,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_admission_checkpoint_uses_only_zero_budget_response_margin() {
+    fn zero_frontend_budget_leaves_no_handoff_budget() {
         let started = Instant::now();
         let zero_clock = Arc::new(ManualClock::new(started));
         let zero = response_deadline_from_clock(&zero_clock, Duration::ZERO);
@@ -221,32 +187,11 @@ mod tests {
             Duration::ZERO,
             "direct bootstrap work must not borrow the serialization reserve"
         );
-        assert_eq!(
-            zero.remaining_actor_admission_budget(),
-            super::RESPONSE_SERIALIZATION_MARGIN
-        );
-        assert!(
-            zero.checkpoint_actor_admission().is_ok(),
-            "zero-budget actor admission must be allowed at receipt"
-        );
-        zero_clock.advance(super::RESPONSE_SERIALIZATION_MARGIN);
-        assert!(
-            zero.checkpoint_actor_admission().is_err(),
-            "zero-budget actor admission exceeded the existing response boundary"
-        );
-
         let nonzero_clock = Arc::new(ManualClock::new(started));
         let nonzero = response_deadline_from_clock(&nonzero_clock, Duration::from_secs(7));
-        assert_eq!(
-            nonzero.remaining_actor_admission_budget(),
-            Duration::from_secs(7),
-            "nonzero work must reserve the response serialization margin"
-        );
+        assert_eq!(nonzero.remaining_handoff_budget(), Duration::from_secs(7));
         nonzero_clock.advance(Duration::from_secs(7));
-        assert!(
-            nonzero.checkpoint_actor_admission().is_err(),
-            "nonzero actor admission borrowed the serialization margin"
-        );
+        assert_eq!(nonzero.remaining_handoff_budget(), Duration::ZERO);
     }
 
     #[test]
