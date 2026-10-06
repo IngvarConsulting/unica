@@ -50,6 +50,11 @@ impl Frontend {
         command
             .current_dir(cwd)
             .env("UNICA_PROVIDER_STATE_DIR", state)
+            // Демон переживает MCP: без назначенной паузы он держит четверть
+            // часа `unica` из `target`, и Windows не даёт следующей сборке
+            // заменить этот файл. Тест может назначить свою паузу через
+            // `environment`.
+            .env("UNICA_DAEMON_IDLE_GRACE_MS", "5000")
             .env_remove("UNICA_RUNTIME_MANIFEST")
             .env_remove("UNICA_HOST_CONTEXT_REQUIRED")
             .stdin(Stdio::piped())

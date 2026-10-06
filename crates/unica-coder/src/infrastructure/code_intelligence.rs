@@ -195,17 +195,31 @@ fn git_grep_bsl_pathspecs(
                 .map(|_| format!(":(literal){}", path.to_string_lossy().replace('\\', "/"))),
             RelativeSearchFilter::Subtree(path) => {
                 let prefix = path.to_string_lossy().replace('\\', "/");
-                let mut escaped = String::new();
-                for character in prefix.chars() {
-                    if matches!(character, '*' | '?' | '[' | ']' | '\\') {
-                        escaped.push('\\');
-                    }
-                    escaped.push(character);
-                }
-                Some(format!(":(glob){escaped}/{BSL_GLOB}"))
+                Some(format!(
+                    ":(glob){}/{BSL_GLOB}",
+                    git_glob_literal_prefix(&prefix)
+                ))
             }
         })
         .collect()
+}
+
+/// Quotes a literal path for a `:(glob)` pathspec with one-character classes.
+/// A backslash escape is not portable: Git for Windows reads `\` in a
+/// pathspec as a directory separator, so `Ignored\[1\]` names the absent
+/// directory `Ignored/` and the selected module reads as empty.
+fn git_glob_literal_prefix(prefix: &str) -> String {
+    let mut quoted = String::with_capacity(prefix.len());
+    for character in prefix.chars() {
+        if matches!(character, '*' | '?' | '[' | ']') {
+            quoted.push('[');
+            quoted.push(character);
+            quoted.push(']');
+        } else {
+            quoted.push(character);
+        }
+    }
+    quoted
 }
 
 /// Git warns about an absent pathspec parent even when it finds no matches.
@@ -1805,8 +1819,9 @@ pub(crate) fn parse_call_graph_answer(
 #[cfg(test)]
 mod tests {
     use super::{
-        location_path, parse_call_graph_answer, rlm_search_unready_error, BslAnalyzerProvider,
-        BslToolClient, GitGrepProvider, RlmProvider, RlmSearchAttempt, RlmSearchClient,
+        git_grep_bsl_pathspecs, location_path, parse_call_graph_answer, rlm_search_unready_error,
+        BslAnalyzerProvider, BslToolClient, GitGrepProvider, RlmProvider, RlmSearchAttempt,
+        RlmSearchClient,
     };
     use crate::domain::cancellation::CancellationToken;
     use crate::domain::cancellation::CANCELLED_PREFIX;
@@ -2459,6 +2474,34 @@ mod tests {
         let timeout = commands[0].timeout.unwrap();
         assert!(timeout > Duration::from_secs(15), "{timeout:?}");
         assert!(timeout <= Duration::from_secs(60), "{timeout:?}");
+    }
+
+    /// Git for Windows turns every `\` of a pathspec into `/`, so a backslash
+    /// escape splits `Ignored[1]` into the directory `Ignored/`. The subtree
+    /// prefix is quoted with one-character classes that mean the same on
+    /// every platform; the real `git grep` run below proves they match.
+    #[test]
+    fn git_grep_subtree_pathspec_quotes_glob_characters_without_backslashes() {
+        let mut scope =
+            CodeSearchScope::all("main".to_string(), PathBuf::from("/workspace/src"), false);
+        scope.filters = vec![
+            RelativeSearchFilter::Subtree(PathBuf::from("CommonModules/Ignored[1]")),
+            RelativeSearchFilter::Subtree(PathBuf::from("Odd/a*b?c]")),
+        ];
+
+        let pathspecs = git_grep_bsl_pathspecs(Some(&scope));
+
+        assert_eq!(
+            pathspecs,
+            [
+                ":(glob)CommonModules/Ignored[[]1[]]/**/*.[bB][sS][lL]",
+                ":(glob)Odd/a[*]b[?]c[]]/**/*.[bB][sS][lL]",
+            ]
+        );
+        assert!(
+            pathspecs.iter().all(|pathspec| !pathspec.contains('\\')),
+            "{pathspecs:?}"
+        );
     }
 
     /// The generated cache is not source. `source_roots` and `source_revision`

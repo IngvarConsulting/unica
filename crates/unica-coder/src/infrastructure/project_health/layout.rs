@@ -492,6 +492,7 @@ mod tests {
     use crate::infrastructure::platform::testing::{
         create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
     };
+    use crate::test_support::canonical_path;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::OnceLock;
@@ -661,7 +662,7 @@ mod tests {
                 .expect("every declared source has an inspected root");
             assert_eq!(
                 root.path,
-                fs::canonicalize(fixture.context.workspace_root.join(&set.path)).unwrap()
+                canonical_path(&fixture.context.workspace_root.join(&set.path))
             );
         }
         assert!(inspection
@@ -1327,7 +1328,7 @@ mod tests {
         assert_eq!(inspection.roots[0].source_set.name, "main");
         assert_eq!(
             inspection.roots[0].path,
-            fs::canonicalize(fixture.context.workspace_root.join("src")).unwrap()
+            canonical_path(&fixture.context.workspace_root.join("src"))
         );
         assert!(inspection
             .observations

@@ -17,10 +17,15 @@ use std::io::Write;
 use std::io::{self, BufReader};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest socket wait of an interruptible observation read between checks
+/// of its stop flag.
+const OBSERVATION_INTERRUPT_POLL: Duration = Duration::from_millis(25);
 const OWNER_RESPONSE_SAFETY_TIMEOUT: Duration = Duration::from_secs(10);
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
@@ -39,6 +44,31 @@ pub(crate) struct V5DaemonProcessOwner {
     reader: BufReader<TcpStream>,
     record: V5EndpointRecord,
     poisoned: bool,
+    /// Present once an observation interrupt handle exists: reads then poll
+    /// this flag between short socket waits.
+    observation_stop: Option<Arc<AtomicBool>>,
+}
+
+/// Stops the blocked observation read of one peer connection and nothing
+/// else: no cancellation reaches the task or the producer being observed.
+///
+/// Shutting the socket down wakes a blocked read on Linux and macOS, but
+/// Windows leaves a pending `recv` blocked until data arrives. The flag
+/// covers that case: the owner rechecks it after every bounded socket wait.
+pub(crate) struct V5ObservationInterrupt {
+    stream: TcpStream,
+    stop: Arc<AtomicBool>,
+}
+
+impl V5ObservationInterrupt {
+    pub(crate) fn interrupt(&self) -> io::Result<()> {
+        self.stop.store(true, Ordering::Release);
+        match self.stream.shutdown(std::net::Shutdown::Both) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotConnected => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 /// Why an exchange produced no strict response, phrased by its consequence for
@@ -413,6 +443,7 @@ impl V5DaemonProcessOwner {
             reader: BufReader::new(reader_stream),
             record,
             poisoned: false,
+            observation_stop: None,
         };
         let hello = V5ClientRequest::Hello {
             protocol_version: super::protocol_v5::DAEMON_PROTOCOL_VERSION,
@@ -489,6 +520,7 @@ impl V5DaemonProcessOwner {
             reader: BufReader::new(reader_stream),
             record,
             poisoned: false,
+            observation_stop: None,
         };
         let hello = V5ClientRequest::Hello {
             protocol_version,
@@ -631,8 +663,13 @@ impl V5DaemonProcessOwner {
 
     /// An owned handle can interrupt this observation connection only; it
     /// sends no cancellation of the task or the producer being observed.
-    pub(crate) fn observation_interrupt_handle(&self) -> std::io::Result<TcpStream> {
-        self.writer.try_clone()
+    pub(crate) fn observation_interrupt_handle(&mut self) -> io::Result<V5ObservationInterrupt> {
+        let stream = self.writer.try_clone()?;
+        let stop = Arc::clone(
+            self.observation_stop
+                .get_or_insert_with(|| Arc::new(AtomicBool::new(false))),
+        );
+        Ok(V5ObservationInterrupt { stream, stop })
     }
 
     pub(crate) fn wait_task_before(
@@ -940,11 +977,24 @@ impl V5DaemonProcessOwner {
         deadline: Option<Instant>,
         stage: &'static str,
     ) -> Result<Vec<u8>, String> {
+        let stop = self.observation_stop.clone();
         let frame = read_bounded_v5_probe_response_frame_before(&mut self.reader, |reader| {
             let budget = deadline
                 .map(|deadline| remaining(deadline, stage))
                 .transpose()
                 .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?;
+            let budget = match &stop {
+                None => budget,
+                Some(stop) if stop.load(Ordering::Acquire) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ConnectionAborted,
+                        "observation interrupted",
+                    ));
+                }
+                Some(_) => Some(budget.map_or(OBSERVATION_INTERRUPT_POLL, |budget| {
+                    budget.min(OBSERVATION_INTERRUPT_POLL)
+                })),
+            };
             reader.get_ref().set_read_timeout(budget)
         })
         .map_err(|error| format!("read protocol-v5 {stage}: {error}"))?;
@@ -1034,6 +1084,7 @@ mod tests {
                 reader,
                 record,
                 poisoned: false,
+                observation_stop: None,
             },
             peer,
         )
@@ -1045,6 +1096,57 @@ mod tests {
         let state =
             DaemonStateDirectory::open(&physical_root, &CoreIdentity::production_v5()).unwrap();
         (root, state)
+    }
+
+    /// Windows does not wake a blocked `recv` when another handle shuts the
+    /// socket down. Raising only the stop flag reproduces that platform on
+    /// every OS: the read must still end promptly and leave the peer
+    /// connection without any further request.
+    #[test]
+    fn observation_interrupt_ends_a_blocked_read_without_socket_shutdown() {
+        let (mut owner, mut peer) = connected_owner();
+        let interrupt = owner.observation_interrupt_handle().unwrap();
+        let stop = Arc::clone(&interrupt.stop);
+        let raiser = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            stop.store(true, Ordering::Release);
+        });
+
+        let started = Instant::now();
+        let result = owner.read_before(Instant::now() + Duration::from_secs(10), "wait task");
+        let elapsed = started.elapsed();
+        raiser.join().unwrap();
+
+        let error = result.unwrap_err();
+        assert!(error.contains("observation interrupted"), "{error}");
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the stop flag was not observed for {elapsed:?}"
+        );
+        drop(owner);
+        drop(interrupt);
+        let mut sent = Vec::new();
+        peer.read_to_end(&mut sent).unwrap();
+        assert!(sent.is_empty(), "interrupt wrote to the daemon: {sent:?}");
+    }
+
+    #[test]
+    fn interruptible_observation_keeps_waiting_across_poll_intervals_until_the_answer() {
+        let (mut owner, mut peer) = connected_owner();
+        let _interrupt = owner.observation_interrupt_handle().unwrap();
+        let answer = thread::spawn(move || {
+            peer.write_all(b"{\"kind\"").unwrap();
+            thread::sleep(OBSERVATION_INTERRUPT_POLL * 6);
+            peer.write_all(b":\"pong\"}\n").unwrap();
+            peer
+        });
+
+        let frame = owner
+            .read_before(Instant::now() + Duration::from_secs(10), "wait task")
+            .unwrap();
+        drop(answer.join().unwrap());
+
+        assert_eq!(frame, b"{\"kind\":\"pong\"}");
     }
 
     #[test]

@@ -94,6 +94,7 @@ fn client_with_anchor(root: &Path, record: V5EndpointRecord) -> (V5DaemonClient,
         writer,
         record,
         poisoned: false,
+        observation_stop: None,
     };
     (
         V5DaemonClient {
