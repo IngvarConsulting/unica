@@ -9,9 +9,10 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_autodetected_extension_membership_change
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_unselected_declared_parent_appearance
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_unselected_non_platform_map_input_change
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_repaired_oversized_unselected_external_descriptor
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_repaired_large_unselected_external_descriptor
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_rejects_autodetection_container_identity_replacement
   - crates/unica-coder/src/infrastructure/project_sources.rs::actor_admission_external_config_dump_info_content_change_invalidates_evidence
+  - crates/unica-coder/src/infrastructure/project_sources.rs::actor_admission_recognizes_large_reserved_descriptor_and_binds_exact_content
   - crates/unica-coder/src/infrastructure/project_sources.rs::actor_admission_external_descriptor_absence_to_appearance_invalidates_evidence
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_dry_run_rejects_late_map_change_without_receipt
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::apply_selection_late_change_rolls_back_source_cache_revision_and_receipt
@@ -27,8 +28,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/987
 Учитываются все входы карты, включая невыбранные и неподдерживаемые источники.
 Сохраняются точные байты `v8project.yaml` и содержательно разобранных
 `ConfigDumpInfo.xml`, отсутствие или вид ожидаемых объектов, физическая
-идентичность и состав просмотренных каталогов. Слишком большой дескриптор
-повторно проверяется как тот же файл, всё ещё превышающий допустимый размер.
+идентичность и состав просмотренных каталогов. Размер дескриптора XML сам по
+себе не меняет его классификацию: разбирается весь документ, а для повторной
+проверки сохраняются точные байты независимо от размера.
 
 `apply` повторно проверяет эти сведения двумя проходами перед записью,
 перед результатом планирования и после записи. Постороннее изменение даёт отказ;

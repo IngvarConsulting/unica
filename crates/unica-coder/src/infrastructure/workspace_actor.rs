@@ -8487,9 +8487,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn apply_selection_rejects_repaired_oversized_unselected_external_descriptor() {
+    fn apply_selection_rejects_repaired_large_unselected_external_descriptor() {
         let fixture =
-            actor_fixture_without_source_map("selection-repaired-oversized-external", "src/cf");
+            actor_fixture_without_source_map("selection-repaired-large-external", "src/cf");
         std::fs::write(
             fixture.roots[0].join("Configuration.xml"),
             b"<MetaDataObject/>",
@@ -8551,9 +8551,10 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        let error = fixture.actor.publish_prepared_apply(prepared).expect_err(
-            "repaired oversized unselected descriptor published and returned a receipt",
-        );
+        let error = fixture
+            .actor
+            .publish_prepared_apply(prepared)
+            .expect_err("repaired large unselected descriptor published and returned a receipt");
 
         assert_eq!(
             error.kind(),
