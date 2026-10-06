@@ -90,6 +90,10 @@ impl ScenarioProcessLife {
         self.fail_stop_requested.load(Ordering::Acquire) || self.exited.load(Ordering::Acquire)
     }
 
+    fn needs_successor(&self) -> bool {
+        self.permission_closed.load(Ordering::Acquire) || self.requires_stop()
+    }
+
     /// End scenario permissions without claiming that the Runtime has exited.
     /// Notify under each waiter's mutex so closure cannot lose a wake-up.
     pub(super) fn close_permissions(&self) {
@@ -178,14 +182,6 @@ impl ScenarioProcessLife {
             .any(|barrier| barrier.reached && !barrier.released)
     }
 
-    pub(super) fn is_installed(&self) -> bool {
-        self.barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned")
-            .values()
-            .any(|barrier| !barrier.released)
-    }
-
     pub(super) fn is_barrier_installed(&self, point: ScenarioBarrierPoint) -> bool {
         self.barriers
             .lock()
@@ -271,14 +267,6 @@ impl ScenarioProcessLife {
             barrier.released = true;
         }
         self.changed.notify_all();
-    }
-
-    pub(super) fn has_unreleased_barriers(&self) -> bool {
-        self.barriers
-            .lock()
-            .expect("scenario barrier mutex poisoned")
-            .values()
-            .any(|barrier| !barrier.released)
     }
 }
 
@@ -1577,7 +1565,7 @@ impl ReceiptScenarioControl {
     /// still prevent rotation; installing hooks never revives an old life.
     pub(super) fn prepare_process_open(&self) -> Result<(), String> {
         let current = self.process_life();
-        if current.permission_closed.load(Ordering::Acquire) || current.requires_stop() {
+        if current.needs_successor() {
             self.begin_successor_process()?;
         }
         Ok(())
@@ -1598,27 +1586,37 @@ impl ReceiptScenarioControl {
             .swap(false, Ordering::AcqRel)
     }
 
-    pub(super) fn install(&self, point: ScenarioBarrierPoint) {
+    /// Configuration for the next actual open is separate from a stopped
+    /// owner's barriers. Submit must see it before choosing its worker path.
+    fn with_configured_barriers<T>(
+        &self,
+        operation: impl FnOnce(&mut BTreeMap<ScenarioBarrierPoint, ScenarioBarrierState>) -> T,
+    ) -> T {
         let life = self.process_life();
-        if life.exited.load(Ordering::Acquire) {
+        let mut barriers = if life.needs_successor() {
             self.next_process_barriers
                 .lock()
                 .expect("future scenario barrier mutex poisoned")
-                .insert(point, ScenarioBarrierState::default());
         } else {
             life.barriers
                 .lock()
                 .expect("scenario barrier mutex poisoned")
-                .insert(point, ScenarioBarrierState::default());
-        }
+        };
+        operation(&mut barriers)
+    }
+
+    pub(super) fn install(&self, point: ScenarioBarrierPoint) {
+        self.with_configured_barriers(|barriers| {
+            barriers.insert(point, ScenarioBarrierState::default());
+        });
     }
 
     pub(super) fn is_installed(&self) -> bool {
-        self.process_life().is_installed()
+        self.with_configured_barriers(|barriers| barriers.values().any(|barrier| !barrier.released))
     }
 
     pub(super) fn is_barrier_installed(&self, point: ScenarioBarrierPoint) -> bool {
-        self.process_life().is_barrier_installed(point)
+        self.with_configured_barriers(|barriers| barriers.contains_key(&point))
     }
 
     pub(super) fn wait_until_reached(
@@ -1693,6 +1691,6 @@ impl ReceiptScenarioControl {
     }
 
     pub(super) fn has_unreleased_barriers(&self) -> bool {
-        self.process_life().has_unreleased_barriers()
+        self.is_installed()
     }
 }

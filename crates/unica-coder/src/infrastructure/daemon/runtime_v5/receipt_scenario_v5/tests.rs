@@ -812,7 +812,7 @@ fn genuine_no_elapsed_fail_stop_releases_its_owner_before_a_fresh_native_success
         outcome: V5InvocationResponse::Direct { receipt },
     } = &failed
     else {
-        panic!("native admission failure did not preserve its direct receipt: {failed:?}");
+        panic!("native admission failure did not preserve its direct receipt");
     };
     assert_eq!(receipt.receipt_key(), &old_key);
     assert_eq!(
@@ -1042,6 +1042,78 @@ fn restart_gives_a_fresh_submit_live_process_and_preserves_its_future_barrier() 
 }
 
 #[test]
+fn implicit_successor_submit_after_joined_owner_quiescence_preserves_its_future_barrier() {
+    let request = json!({
+        "clock": "fake",
+        "actions": [
+            {"action": "configure_provider", "execution_class": "direct",
+             "terminal": {"terminal": "success", "payload": "fresh-process-result"},
+             "cooperative_cancel": true, "side_effect_marker": true},
+            {"action": "install_barrier", "point": "before_prepare"},
+            {"action": "submit", "request": "canonical", "response_budget_ms": 6000,
+             "disconnect": "never", "label": "old-submit"},
+            {"action": "wait_for_event", "event": "receipt_begun_committed"},
+            {"action": "checkpoint", "label": "old-held"},
+            {"action": "crash", "point": "reserved_begun"},
+            // The real joined old owner is quiesced before the fresh wire open.
+            // This existing event checkpoint does not rotate the process life.
+            {"action": "wait_for_event", "event": "receipt_begun_committed"},
+            // This configuration must choose a pending worker before implicit open.
+            {"action": "install_barrier", "point": "before_prepare"},
+            {"action": "submit", "request": {"fresh": 1}, "response_budget_ms": 6000,
+             "disconnect": "never", "label": "new-submit"},
+            {"action": "wait_for_event_count", "event": "receipt_begun_committed", "count": 2},
+            {"action": "checkpoint", "label": "new-held"},
+            {"action": "release_barrier", "point": "before_prepare"},
+            {"action": "checkpoint", "label": "new-completed"}
+        ]
+    });
+    let encoded = run_supported_receipt_scenario_for_test(&request.to_string())
+        .expect("implicit open must select a pending worker for the future barrier");
+    let report: Value = serde_json::from_str(&encoded).expect("decode process-life report");
+    let payload = &report["payload"];
+    let held = &payload["checkpoints"]["new-held"];
+    assert_eq!(
+        held["callbacks"]["prepare"], 0,
+        "future barrier was released by old cleanup"
+    );
+    assert_eq!(held["callbacks"]["execute"], 0);
+    assert_eq!(held["sideEffectMarkers"], 0);
+    let completed = &payload["checkpoints"]["new-completed"];
+    assert_eq!(completed["callbacks"]["prepare"], 1);
+    assert_eq!(completed["callbacks"]["execute"], 1);
+    assert_eq!(completed["sideEffectMarkers"], 1);
+    let old_rows = payload["checkpoints"]["old-held"]["receipts"]
+        .as_array()
+        .expect("original held receipt rows");
+    assert_eq!(old_rows.len(), 1);
+    let original = &old_rows[0];
+    assert_eq!(original["state"], "reserved_begun");
+    let retained = completed["receipts"]
+        .as_array()
+        .expect("completed receipt rows")
+        .iter()
+        .find(|row| row["key"] == original["key"])
+        .expect("the exact original receipt remains present");
+    assert_eq!(
+        retained, original,
+        "the crashed attempt was replayed or rewritten"
+    );
+    assert_ne!(payload["responses"]["new-submit"]["key"], original["key"]);
+    assert_eq!(
+        payload["responses"]["new-submit"]["terminal"]["result"],
+        serde_json::to_value(DomainResult::success("fresh-process-result")).unwrap()
+    );
+    assert_eq!(payload["responses"]["new-submit"]["kind"], "direct");
+    assert!(payload["responses"]["new-submit"]["error"].is_null());
+    assert_eq!(
+        held["processExitElapsedMs"], 1,
+        "historical exit was cleared"
+    );
+    assert_eq!(completed["processExitElapsedMs"], 1);
+}
+
+#[test]
 fn fresh_task_listener_after_restart_survives_its_prepare_barrier_release() {
     let request = json!({
         "clock": "fake",
@@ -1116,6 +1188,79 @@ fn fresh_task_listener_after_restart_survives_its_prepare_barrier_release() {
         payload["checkpoints"]["fresh-completed"]["processExitElapsedMs"],
         1
     );
+}
+
+fn assert_successor_barrier_configuration(
+    control: &Arc<ReceiptScenarioControl>,
+    old: &Arc<dyn super::super::hooks::V5RuntimeHooks>,
+    telemetry: &Arc<V5ReceiptRuntimeTelemetry>,
+) {
+    let point = ScenarioBarrierPoint::BeforePrepare;
+    let old_life = control.process_life();
+    control.install(point);
+    assert!(
+        control.is_installed(),
+        "Submit must select the pending worker for future barriers"
+    );
+    assert!(control.is_barrier_installed(point));
+    assert!(control.has_unreleased_barriers());
+    assert!(
+        !old.holds(point),
+        "a future barrier was installed into the stopped owner"
+    );
+    control.release_all_barriers();
+    assert!(
+        control.has_unreleased_barriers(),
+        "old cleanup released future configuration"
+    );
+    assert!(
+        !control.any_barrier_awaiting_release(),
+        "future configuration is not a paused old worker"
+    );
+    control
+        .prepare_process_open()
+        .expect("no retained Runtime owner");
+    assert!(!Arc::ptr_eq(&old_life, &control.process_life()));
+    let fresh = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    assert!(fresh.holds(point));
+    assert!(!old.holds(point));
+    assert_eq!(
+        fresh.pause(point, Instant::now()),
+        Err(ReceiptLedgerError::DeadlineExceeded)
+    );
+    control.release(point);
+    assert_eq!(fresh.pause(point, Instant::now()), Ok(()));
+    assert!(!control.has_unreleased_barriers());
+}
+
+#[test]
+fn future_barriers_after_no_elapsed_fail_stop_belong_to_the_next_process() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    old.forced_process_exit(None);
+    assert!(!control.process_exited());
+    assert_successor_barrier_configuration(&control, &old, &telemetry);
+}
+
+#[test]
+fn future_barriers_after_permission_close_belong_to_the_next_process() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    control.process_life().close_permissions();
+    assert!(!control.process_exited());
+    assert_successor_barrier_configuration(&control, &old, &telemetry);
+}
+
+#[test]
+fn future_barrier_queries_after_exit_select_the_next_process_configuration() {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::new());
+    let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
+    old.forced_process_exit(Some(Duration::from_millis(1)));
+    assert!(control.process_exited());
+    assert_successor_barrier_configuration(&control, &old, &telemetry);
 }
 
 #[test]
