@@ -232,22 +232,17 @@ fn page_documentation(
         None => None,
         Some(token) => match cursors.read(token, &binding) {
             Ok(stored) => Some((token, stored)),
-            Err(error) => {
-                return DomainResult::canonical_rejection(
-                    None,
-                    error.code(),
-                    "docs cursor is invalid or stale",
-                )
-            }
+            Err(error) => return error.into_result(None),
         },
     };
+    let cursor_probe = SearchCursorStore::token_probe();
     let probe = |selected: &[(usize, Value)]| {
         serde_json::to_vec(&docs_page_result(
             &result,
             &section_metadata,
             selected,
             "limit",
-            Some("sc1.00000000000000000000000000000000"),
+            Some(cursor_probe.as_str()),
         ))
         .expect("docs page is serializable")
         .len()
@@ -299,7 +294,10 @@ fn page_documentation(
         }
         page_hits.push(hit.clone());
     }
-    let next_offset = offset.saturating_add(page_hits.len());
+    let next_offset = match SearchCursorStore::next_offset(offset, page_hits.len()) {
+        Ok(offset) => offset,
+        Err(error) => return error.into_result(None),
+    };
     let more = next_offset < hits.len();
     let stopped_by = if !more {
         "complete"
@@ -318,15 +316,12 @@ fn page_documentation(
     let mut page = docs_page_result(&result, &section_metadata, &page_hits, stopped_by, None);
     if more {
         let issued = match cursor {
-            Some((token, stored)) => cursors.insert_next(&stored, next_offset, token),
+            Some((_, stored)) => cursors.insert_next(&stored, next_offset),
             None => cursors.insert_first(binding, next_offset),
         };
-        let Some(issued) = issued else {
-            return DomainResult::canonical_rejection(
-                None,
-                RefusalCode::ResultTooLarge,
-                "docs continuation could not be retained",
-            );
+        let issued = match issued {
+            Ok(token) => token,
+            Err(error) => return error.into_result(None),
         };
         page.cursor = Some(issued);
     }
@@ -360,7 +355,6 @@ fn docs_page_result(
 }
 
 const DOCUMENT_TEXT_FRAGMENT_BYTES: usize = 16 * 1024;
-const DOCUMENT_CURSOR_PROBE: &str = "sc1.00000000000000000000000000000000";
 
 #[derive(Clone, Copy)]
 struct DocumentTextRange {
@@ -439,6 +433,7 @@ fn page_document_text(
     binding.result_fingerprint = Some(format!("docs-document-sha256-v1:{:x}", hasher.finalize()));
 
     let total = text.len();
+    let cursor_probe = SearchCursorStore::token_probe();
     let probe = |start: usize, end: usize, stopped_by: &str| {
         serde_json::to_vec(&document_text_page_result(
             &result,
@@ -450,13 +445,13 @@ fn page_document_text(
                 fragments: binding.page_limit,
             },
             stopped_by,
-            Some(DOCUMENT_CURSOR_PROBE),
+            Some(cursor_probe.as_str()),
         ))
         .expect("document page is serializable")
         .len()
     };
     // Maximum decimal widths and the longest stoppedBy value make this a
-    // conservative bound for every later page with a real 36-byte token.
+    // conservative bound for every later page with the actual token format.
     let metadata_bytes = probe(total, total, "complete");
     if metadata_bytes > MAX_CANONICAL_RESULT_BYTES {
         return refuse(
@@ -495,7 +490,7 @@ fn page_document_text(
         None => None,
         Some(token) => match cursors.read(token, &binding) {
             Ok(stored) => Some((token, stored)),
-            Err(error) => return refuse(error.code(), "docs document cursor is invalid or stale"),
+            Err(error) => return error.into_result(None),
         },
     };
     let start = cursor.as_ref().map_or(0, |(_, stored)| stored.offset);
@@ -556,14 +551,12 @@ fn page_document_text(
     }
     if more {
         let issued = match cursor {
-            Some((token, stored)) => cursors.insert_next(&stored, end, token),
+            Some((_, stored)) => cursors.insert_next(&stored, end),
             None => cursors.insert_first(binding, end),
         };
-        let Some(issued) = issued else {
-            return refuse(
-                RefusalCode::ResultTooLarge,
-                "docs document continuation could not be retained",
-            );
+        let issued = match issued {
+            Ok(token) => token,
+            Err(error) => return error.into_result(None),
         };
         page.cursor = Some(issued);
     }

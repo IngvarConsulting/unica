@@ -1149,9 +1149,7 @@ impl CanonicalV13ReadService {
             None => None,
             Some(Value::String(token)) => match self.search_cursors.read(token, &binding) {
                 Ok(cursor) => Some((token.as_str(), cursor)),
-                Err(error) => {
-                    return error_result(None, error.code(), "search cursor is invalid or stale")
-                }
+                Err(error) => return error.into_result(None),
             },
             Some(_) => {
                 return error_result(
@@ -1314,19 +1312,17 @@ impl CanonicalV13ReadService {
         result.page = Some(json!({"stoppedBy": stopped_by}));
         result.rev = revision;
         if more {
-            let next_offset = offset.saturating_add(consumed);
+            let next_offset = match SearchCursorStore::next_offset(offset, consumed) {
+                Ok(offset) => offset,
+                Err(error) => return error.into_result(None),
+            };
             let issued = match cursor {
-                Some((token, stored)) => {
-                    self.search_cursors.insert_next(&stored, next_offset, token)
-                }
+                Some((_, stored)) => self.search_cursors.insert_next(&stored, next_offset),
                 None => self.search_cursors.insert_first(binding, next_offset),
             };
-            let Some(issued) = issued else {
-                return error_result(
-                    None,
-                    RefusalCode::ResultTooLarge,
-                    "search continuation could not be retained",
-                );
+            let issued = match issued {
+                Ok(token) => token,
+                Err(error) => return error.into_result(None),
             };
             result.cursor = Some(issued);
         }
@@ -1843,13 +1839,7 @@ impl CanonicalV13ReadService {
             None => None,
             Some(Value::String(token)) => match self.search_cursors.read(token, &binding) {
                 Ok(cursor) => Some((token.as_str(), cursor)),
-                Err(error) => {
-                    return error_result(
-                        None,
-                        error.code(),
-                        "name search cursor is invalid or stale",
-                    )
-                }
+                Err(error) => return error.into_result(None),
             },
             Some(_) => {
                 return error_result(
@@ -2714,16 +2704,10 @@ fn provider_search_page(
         None => None,
         Some(token) => match cursors.read(token, &binding) {
             Ok(cursor) => Some((token, cursor)),
-            Err(error) => {
-                return error_result(
-                    None,
-                    error.code(),
-                    "provider search cursor is invalid or stale",
-                )
-            }
+            Err(error) => return error.into_result(None),
         },
     };
-    let cursor_placeholder = "sc1.00000000000000000000000000000000";
+    let cursor_placeholder = SearchCursorStore::token_probe();
     let probe = |page_hits: &[Value]| {
         serde_json::to_vec(&provider_search_page_result(
             role,
@@ -2732,7 +2716,7 @@ fn provider_search_page(
             &warnings,
             &summary,
             "limit",
-            Some(cursor_placeholder),
+            Some(cursor_placeholder.as_str()),
         ))
         .expect("provider search page is serializable")
         .len()
@@ -2784,7 +2768,10 @@ fn provider_search_page(
         }
         page_hits.push(hit.clone());
     }
-    let next_offset = offset.saturating_add(page_hits.len());
+    let next_offset = match SearchCursorStore::next_offset(offset, page_hits.len()) {
+        Ok(offset) => offset,
+        Err(error) => return error.into_result(None),
+    };
     let more = next_offset < hits.len();
     let stopped_by = if !more {
         "complete"
@@ -2811,15 +2798,12 @@ fn provider_search_page(
     );
     if more {
         let issued = match cursor {
-            Some((token, stored)) => cursors.insert_next(&stored, next_offset, token),
+            Some((_, stored)) => cursors.insert_next(&stored, next_offset),
             None => cursors.insert_first(binding, next_offset),
         };
-        let Some(issued) = issued else {
-            return error_result(
-                None,
-                RefusalCode::ResultTooLarge,
-                "provider search continuation could not be retained",
-            );
+        let issued = match issued {
+            Ok(token) => token,
+            Err(error) => return error.into_result(None),
         };
         result.cursor = Some(issued);
     }
@@ -2990,7 +2974,7 @@ fn search_page_probe_bytes(
     // "complete" is the longest terminal reason; a cursor also reserves
     // space even when this turns out to be the final page.
     probe.page = Some(json!({"stoppedBy": "complete"}));
-    probe.cursor = Some("sc1.00000000000000000000000000000000".to_owned());
+    probe.cursor = Some(SearchCursorStore::token_probe());
     probe.rev = revision.map(str::to_owned);
     serde_json::to_vec(&probe).map_or(usize::MAX, |value| value.len())
 }
