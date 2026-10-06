@@ -22,7 +22,14 @@ fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
     );
     let provider_state = root.join("private-provider-state");
 
-    verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2)).unwrap();
+    verify_mcp_runtime(
+        &runtime,
+        &root,
+        None,
+        &provider_state,
+        Duration::from_secs(2),
+    )
+    .unwrap();
 
     assert_eq!(
         fs::read_to_string(record).unwrap(),
@@ -79,6 +86,7 @@ fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
             let error = verify_mcp_runtime(
                 &runtime,
                 &root,
+                None,
                 &root.join("private-provider-state"),
                 Duration::from_secs(2),
             )
@@ -112,6 +120,7 @@ fn verify_rejects_legacy_names_mixed_into_the_v13_surface() {
     let error = verify_mcp_runtime(
         &runtime,
         &root,
+        None,
         &root.join("private-provider-state"),
         Duration::from_secs(2),
     )
@@ -140,6 +149,7 @@ fn verify_rejects_duplicate_names_in_the_v13_surface() {
     let error = verify_mcp_runtime(
         &runtime,
         &root,
+        None,
         &root.join("private-provider-state"),
         Duration::from_secs(2),
     )
@@ -162,8 +172,14 @@ fn verify_rejects_discover_without_the_guaranteed_versions() {
         let runtime = write_fake_runtime(&root, &record, None, None, &[], &supported);
         let provider_state = root.join("private-provider-state");
 
-        let error = verify_mcp_runtime(&runtime, &root, &provider_state, Duration::from_secs(2))
-            .unwrap_err();
+        let error = verify_mcp_runtime(
+            &runtime,
+            &root,
+            None,
+            &provider_state,
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
 
         assert!(
             error.to_string().contains(missing),
@@ -269,6 +285,7 @@ fn a_runtime_that_never_answers_is_a_timeout_not_a_defect() {
     let error = verify_mcp_runtime(
         &runtime,
         &root,
+        None,
         &root.join("private-provider-state"),
         Duration::from_millis(300),
     )

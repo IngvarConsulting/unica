@@ -73,3 +73,9 @@ windows-sys = { version = "0.59", features = [
 ] }
 cap-primitives = "4.0.2"
 cap-fs-ext = "4.0.2"
+
+# The daemon identity hashes the running executable at every frontend and
+# daemon start; an unoptimized SHA-256 spends seconds of the connect budget
+# on a debug binary.
+[profile.dev.package.sha2]
+opt-level = 3

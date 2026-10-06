@@ -10,8 +10,13 @@ fn task_restart_daemon_process_fixture() {
         return;
     };
     let control = std::env::var_os("UNICA_TASK_RESTART_CONTROL").unwrap();
-    unica_coder::frontend_restart_test_support::run_daemon(Path::new(&state), Path::new(&control))
-        .unwrap();
+    let identity = std::env::var("UNICA_TASK_RESTART_IDENTITY").unwrap();
+    unica_coder::frontend_restart_test_support::run_daemon(
+        Path::new(&state),
+        &identity,
+        Path::new(&control),
+    )
+    .unwrap();
 }
 
 fn spawn_task_daemon(state: &Path, control: &Path) -> OwnedProcess {
@@ -25,6 +30,7 @@ fn spawn_task_daemon(state: &Path, control: &Path) -> OwnedProcess {
             ])
             .env("UNICA_TASK_RESTART_STATE", state)
             .env("UNICA_TASK_RESTART_CONTROL", control)
+            .env("UNICA_TASK_RESTART_IDENTITY", production_identity())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -34,7 +40,7 @@ fn spawn_task_daemon(state: &Path, control: &Path) -> OwnedProcess {
     wait_until(
         Duration::from_secs(10),
         || {
-            std::fs::read(endpoint_path(state, PRODUCTION_V5_IDENTITY))
+            std::fs::read(endpoint_path(state, production_identity()))
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .is_some_and(|record| record["pid"] == process.0.id())

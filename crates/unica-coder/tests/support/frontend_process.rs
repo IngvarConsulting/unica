@@ -9,8 +9,24 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub const PRODUCTION_V5_IDENTITY: &str =
-    "884b76181583ce34907a2a9758e2b493e5b40883e7cbb0d7f88dcec0e468cfa0";
+/// The daemon identity of the built `unica`: the binary names its own build.
+pub fn production_identity() -> &'static str {
+    static IDENTITY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    IDENTITY.get_or_init(|| {
+        let output = Command::new(env!("CARGO_BIN_EXE_unica"))
+            .arg("--print-core-identity")
+            .env_remove("UNICA_RUNTIME_MANIFEST")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    })
+}
+
 pub struct OwnedProcess(pub Child);
 
 impl OwnedProcess {
@@ -37,7 +53,7 @@ pub fn spawn_owned_daemon(state: &Path) -> OwnedProcess {
             .arg(state)
             .args([
                 "--core-identity",
-                PRODUCTION_V5_IDENTITY,
+                production_identity(),
                 "--idle-grace-ms",
                 "20000",
             ])
@@ -50,7 +66,7 @@ pub fn spawn_owned_daemon(state: &Path) -> OwnedProcess {
     wait_until(
         Duration::from_secs(10),
         || {
-            std::fs::read(endpoint_path(state, PRODUCTION_V5_IDENTITY))
+            std::fs::read(endpoint_path(state, production_identity()))
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .is_some_and(|record| record["pid"] == process.0.id())
