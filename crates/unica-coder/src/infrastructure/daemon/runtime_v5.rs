@@ -60,8 +60,8 @@ use uuid::Uuid;
 
 mod hooks;
 pub(crate) use hooks::{
-    NoHooks, V5AdmissionRejection, V5PausePoint, V5ReceiptRuntimeEventKind, V5RuntimeHooks,
-    V5Stage, V5StoreFaultPoint,
+    NoHooks, V5AdmissionRejection, V5PausePoint, V5ReceiptRuntimeEventKind, V5RetirementStep,
+    V5RuntimeHooks, V5Stage, V5StoreFaultPoint,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 mod receipt_scenario_v5;
@@ -83,6 +83,11 @@ const INLINE_CUTOFF_POLL_INTERVAL: Duration = Duration::from_millis(5);
 const CUTOFF_HANDOFF_COMMIT_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
 const V5_TASK_POLL_INTERVAL_MS: u64 = 100;
 static NEXT_RETIREMENT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(1);
+/// Pause before an expired Task whose retirement failed is tried again. Each
+/// further failure of the same record doubles it up to the maximum, so a
+/// record that cannot be retired costs one attempt per pause, not one per poll.
+const RETIREMENT_RETRY_INITIAL_DELAY_MS: u64 = 60_000;
+const RETIREMENT_RETRY_MAX_DELAY_MS: u64 = 3_600_000;
 
 pub(crate) struct V5ReceiptRuntime {
     core_identity: CoreIdentity,
@@ -443,7 +448,39 @@ struct V5TaskProjection {
     retirement_process_instance_id: Uuid,
     retirement_process_generation: u64,
     retirement_issued_sequence: AtomicU64,
-    retirement_coordinator: Mutex<()>,
+    /// Serializes retirement inside the process and remembers the expired
+    /// records whose last retirement attempt failed.
+    retirement_coordinator: Mutex<HashMap<crate::domain::invocation::TaskId, RetirementDeferral>>,
+}
+
+/// An expired terminal Task whose retirement failed: it keeps its committed
+/// state and is tried again after the pause.
+struct RetirementDeferral {
+    failures: u32,
+    retry_at_epoch_ms: u64,
+}
+
+fn retirement_retry_delay_ms(failures: u32) -> u64 {
+    let doublings = failures.saturating_sub(1).min(16);
+    RETIREMENT_RETRY_INITIAL_DELAY_MS
+        .saturating_mul(1_u64 << doublings)
+        .min(RETIREMENT_RETRY_MAX_DELAY_MS)
+}
+
+/// An expired terminal Task the retirement pass found: either still
+/// terminal-bound, or with an intent to retire committed by an earlier pass.
+enum RetirementCandidate {
+    Expired(TaskTerminalBoundReceipt),
+    Pending(TaskRetirementPendingReceipt),
+}
+
+impl RetirementCandidate {
+    fn task_id(&self) -> crate::domain::invocation::TaskId {
+        match self {
+            Self::Expired(terminal) => terminal.task().task_id(),
+            Self::Pending(pending) => pending.task().task_id(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -513,7 +550,7 @@ impl V5TaskProjection {
             retirement_process_generation: NEXT_RETIREMENT_PROCESS_GENERATION
                 .fetch_add(1, Ordering::AcqRel),
             retirement_issued_sequence: AtomicU64::new(1),
-            retirement_coordinator: Mutex::new(()),
+            retirement_coordinator: Mutex::new(HashMap::new()),
         })
     }
 
@@ -788,6 +825,14 @@ impl V5TaskProjection {
         Ok(())
     }
 
+    /// Retires the expired terminal Tasks before a Task read or cancel.
+    ///
+    /// Retirement is housekeeping, not a precondition of the read: a record
+    /// that cannot be retired keeps its committed state, is reported on stderr
+    /// and waits for its retry pause, while the pass goes on with the other
+    /// records and the caller answers its own Task. Only a failure of the
+    /// stores themselves — the lifecycle-link catalog cannot be read back or a
+    /// store root lost its authority — is returned, as before.
     fn retire_expired_terminal_tasks(
         &self,
         deadline: Instant,
@@ -800,24 +845,22 @@ impl V5TaskProjection {
         // terminal retirement a single-owner operation inside that process.
         // A concurrent observation waits and then takes a fresh catalog snapshot
         // instead of treating an ordinary optimistic-version race as corruption.
-        let _retirement_owner = self.retirement_coordinator.lock().map_err(|_| {
+        let mut deferrals = self.retirement_coordinator.lock().map_err(|_| {
             V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::Corrupt(
                 "protocol-v5 task retirement coordinator is poisoned",
             ))
         })?;
         if Instant::now() >= deadline {
-            return Err(V5TaskProjectionFailure {
-                error: ReceiptLedgerError::DeadlineExceeded,
-                fail_stop: false,
-            });
+            return Ok(());
         }
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let observed_at_epoch_ms = self.epoch_clock.now_epoch_millis();
-        let snapshot = self
-            .lifecycle_links
-            .catalog_snapshot(provider_deadline)
-            .map_err(V5TaskProjectionFailure::from_link_store)?;
-        let mut pending = Vec::new();
+        let snapshot = match self.lifecycle_links.catalog_snapshot(provider_deadline) {
+            Ok(snapshot) => snapshot,
+            Err(TaskLifecycleLinkStoreError::DeadlineExceeded) => return Ok(()),
+            Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
+        };
+        let mut candidates = Vec::new();
         for entry in snapshot.entries() {
             let TaskLifecycleLinkCatalogEntry::Record(record) = entry else {
                 continue;
@@ -826,25 +869,125 @@ impl V5TaskProjection {
                 TaskLifecycleLinkRecord::TaskTerminalBound(terminal)
                     if observed_at_epoch_ms >= terminal.expires_at_epoch_ms() =>
                 {
-                    pending.push(
-                        self.lifecycle_links
-                            .begin_task_retirement(terminal, 64, 64, provider_deadline)
-                            .map_err(V5TaskProjectionFailure::from_link_store)?,
-                    );
+                    candidates.push(RetirementCandidate::Expired(terminal.clone()));
                 }
                 TaskLifecycleLinkRecord::TaskRetirementPending(existing) => {
-                    pending.push(existing.clone());
+                    candidates.push(RetirementCandidate::Pending(existing.clone()));
                 }
                 TaskLifecycleLinkRecord::TaskBound(_)
                 | TaskLifecycleLinkRecord::TaskTerminalBound(_) => {}
             }
         }
-        for pending in pending {
-            let authorization = self.authorize_task_retirement(&pending, deadline)?;
-            self.delete_terminal_authorized(&authorization, observed_at_epoch_ms, deadline)?;
-            self.finalize_task_retirement(&authorization, deadline)?;
+        // A record that left the catalog no longer needs its retry pause.
+        let awaiting = candidates
+            .iter()
+            .map(RetirementCandidate::task_id)
+            .collect::<HashSet<_>>();
+        deferrals.retain(|task_id, _| awaiting.contains(task_id));
+        for candidate in candidates {
+            let task_id = candidate.task_id();
+            if deferrals
+                .get(&task_id)
+                .is_some_and(|deferral| observed_at_epoch_ms < deferral.retry_at_epoch_ms)
+            {
+                continue;
+            }
+            let failure = match self.retire_expired_terminal_task(
+                candidate,
+                observed_at_epoch_ms,
+                deadline,
+                provider_deadline,
+                hooks,
+            ) {
+                Ok(()) => {
+                    deferrals.remove(&task_id);
+                    continue;
+                }
+                // The read spent its budget before this step changed
+                // anything: the remaining records wait for the next read.
+                Err(failure)
+                    if !failure.fail_stop
+                        && matches!(failure.error, ReceiptLedgerError::DeadlineExceeded) =>
+                {
+                    return Ok(());
+                }
+                Err(failure) => failure,
+            };
+            // A failed step may have left the durable link catalog ahead of
+            // the copy in memory (its commit is uncertain). Adopt the durable
+            // catalog before any other Task is served from it.
+            self.reload_after_retirement_failure()?;
+            let failures = deferrals
+                .get(&task_id)
+                .map_or(1, |deferral| deferral.failures.saturating_add(1));
+            let delay_ms = retirement_retry_delay_ms(failures);
+            deferrals.insert(
+                task_id,
+                RetirementDeferral {
+                    failures,
+                    retry_at_epoch_ms: observed_at_epoch_ms.saturating_add(delay_ms),
+                },
+            );
+            eprintln!(
+                "protocol-v5 retirement of expired Task {task_id} failed ({}); \
+                 the Task keeps its committed state, next attempt in {delay_ms} ms",
+                failure.error
+            );
         }
         Ok(())
+    }
+
+    /// Runs the four retirement steps for one expired terminal Task, resuming
+    /// at authorization when an earlier pass already committed the intent.
+    fn retire_expired_terminal_task(
+        &self,
+        candidate: RetirementCandidate,
+        observed_at_epoch_ms: u64,
+        deadline: Instant,
+        provider_deadline: crate::domain::code_intelligence::ProviderDeadline,
+        hooks: &dyn V5RuntimeHooks,
+    ) -> Result<(), V5TaskProjectionFailure> {
+        let task_id = candidate.task_id();
+        let injected = |step| {
+            if hooks.retirement_step_fault(step, task_id) {
+                Err(V5TaskProjectionFailure::fail_stop(
+                    ReceiptLedgerError::StoreUnavailable,
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        let pending = match candidate {
+            RetirementCandidate::Expired(terminal) => {
+                injected(V5RetirementStep::Begin)?;
+                self.lifecycle_links
+                    .begin_task_retirement(&terminal, 64, 64, provider_deadline)
+                    .map_err(V5TaskProjectionFailure::from_link_store)?
+            }
+            RetirementCandidate::Pending(pending) => pending,
+        };
+        injected(V5RetirementStep::Authorize)?;
+        let authorization = self.authorize_task_retirement(&pending, deadline)?;
+        injected(V5RetirementStep::Delete)?;
+        self.delete_terminal_authorized(&authorization, observed_at_epoch_ms, deadline)?;
+        injected(V5RetirementStep::Finalize)?;
+        self.finalize_task_retirement(&authorization, deadline)
+    }
+
+    /// After a failed retirement step the process keeps serving other Tasks
+    /// only from durable state: the link catalog is re-read from disk and both
+    /// store roots must still be the ones this process owns. If either check
+    /// fails, the stores themselves are unusable and the process fail-stops.
+    fn reload_after_retirement_failure(&self) -> Result<(), V5TaskProjectionFailure> {
+        let unbounded = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
+        self.lifecycle_links
+            .reload_durable_catalog(unbounded)
+            .map_err(|_| {
+                V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::StoreUnavailable)
+            })?;
+        self.task_store
+            .verify_store_authority()
+            .map_err(|_| V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::StoreUnavailable))
     }
 
     fn preflight_task_bound_startup(
@@ -1723,6 +1866,7 @@ impl V5TaskProjection {
             Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(None),
             Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
         };
+        let retiring = matches!(link, TaskLifecycleLinkRecord::TaskRetirementPending(_));
         let mask_working_as_queued = matches!(
             &link,
             TaskLifecycleLinkRecord::TaskBound(record)
@@ -1735,6 +1879,9 @@ impl V5TaskProjection {
         };
         let record = match self.task_store.get(task_id, provider_deadline) {
             Ok(record) => record,
+            // A committed retirement intent permits an absent Task: its
+            // retirement deleted the record and has not yet removed the link.
+            Err(V5TaskStoreError::NotFound { .. }) if retiring => return Ok(None),
             Err(V5TaskStoreError::NotFound { .. }) => {
                 return Err(V5TaskProjectionFailure::fail_stop(
                     ReceiptLedgerError::Corrupt(

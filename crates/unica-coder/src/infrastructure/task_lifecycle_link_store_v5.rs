@@ -286,6 +286,9 @@ impl TaskLifecycleLinkCapacitySnapshot {
     }
 }
 
+#[cfg(test)]
+pub(crate) struct TaskLifecycleLinkMemoryForTest(StoreCatalog);
+
 #[derive(Debug, Clone, Copy)]
 struct StoreLimits {
     max_record_bytes: usize,
@@ -1369,6 +1372,42 @@ impl TaskLifecycleLinkStoreV5 {
         let committed = self.publish_and_readback(&next, expected.key_digest(), deadline)?;
         *writer = committed;
         Ok(())
+    }
+
+    /// Replaces the catalog in memory with the durable snapshot. A mutation
+    /// that failed after its rename leaves memory at the last confirmed
+    /// catalog while the disk may already hold the new one; a caller that
+    /// keeps serving after such a failure adopts the durable catalog first.
+    pub(crate) fn reload_durable_catalog(
+        &self,
+        deadline: ProviderDeadline,
+    ) -> Result<(), TaskLifecycleLinkStoreError> {
+        let mut writer = self.lock_writer(deadline)?;
+        self.verify_root_authority()?;
+        *writer = self.read_catalog_from_disk(deadline)?;
+        Ok(())
+    }
+
+    /// The catalog this store serves from memory, kept opaque for a test that
+    /// later puts it back to reproduce a commit whose outcome was uncertain.
+    #[cfg(test)]
+    pub(crate) fn memory_catalog_for_test(&self) -> TaskLifecycleLinkMemoryForTest {
+        TaskLifecycleLinkMemoryForTest(
+            self.writer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone(),
+        )
+    }
+
+    /// Puts back an earlier memory catalog without touching the disk: the
+    /// state a failed publication leaves after its rename reached the disk.
+    #[cfg(test)]
+    pub(crate) fn restore_memory_catalog_for_test(&self, memory: TaskLifecycleLinkMemoryForTest) {
+        *self
+            .writer
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = memory.0;
     }
 
     pub(crate) fn read_by_task_id(

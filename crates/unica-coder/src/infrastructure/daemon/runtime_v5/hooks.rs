@@ -121,6 +121,16 @@ pub(crate) enum V5StoreFaultPoint {
     AfterTaskCreateRenameBeforeDirectorySync,
 }
 
+/// One step of retiring an expired terminal Task; the hooks may fail any of
+/// them for one record to show that the failure stays with that record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum V5RetirementStep {
+    Begin,
+    Authorize,
+    Delete,
+    Finalize,
+}
+
 /// Everything the runtime reports or asks. Every method has a production default:
 /// an implementation overrides only what it observes or decides.
 #[allow(unused_variables)]
@@ -325,6 +335,16 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
     }
 
     fn store_fault(&self, point: V5StoreFaultPoint) -> bool {
+        false
+    }
+
+    /// Fails `step` of retiring the expired Task `task_id` before it touches
+    /// either store, as a store failure that would otherwise fail-stop.
+    fn retirement_step_fault(
+        &self,
+        step: V5RetirementStep,
+        task_id: crate::domain::invocation::TaskId,
+    ) -> bool {
         false
     }
 
