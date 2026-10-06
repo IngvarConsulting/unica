@@ -13,7 +13,10 @@
 //!
 //! Execution keeps its own checks of the same arguments. The question binding
 //! built here must equal the one execution builds, or a valid cursor would be
-//! refused; the continuation tests of every search mode guard that equality.
+//! refused. Continuations through this admission are exercised for scoped
+//! and unscoped literal text, scoped lexical, names with a kind and unscoped
+//! symbol search; a change to how execution binds a question must change
+//! this module in the same edit.
 
 use super::server::ActorBoundInvocation;
 use crate::application::result_store::{SearchCursorBinding, SearchCursorStore};
@@ -44,9 +47,10 @@ pub(super) fn admit_search_call(
         Some(Value::String(token)) => token,
         Some(_) => return Err(refusal("search cursor must be a string")),
     };
-    // No question binding means the source selection itself is refused by
-    // execution (an unadmitted scope, no admitted source set): that refusal
-    // names the real cause, a cursor refusal would hide it.
+    // No question binding means execution refuses the source selection
+    // itself: text and names with a scope outside the admitted sets, or any
+    // mode without an admitted source set. That refusal names the real
+    // cause; a cursor refusal would hide it.
     let Some(question) = question else {
         return Ok(());
     };
