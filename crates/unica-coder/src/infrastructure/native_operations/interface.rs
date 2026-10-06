@@ -506,17 +506,7 @@ pub(crate) fn interface_text_do_order(
 
     counters.removed += interface_text_count_commands_for_group(text, "CommandsOrder", &group_name);
     counters.added += commands.len();
-    let fragments = commands
-        .iter()
-        .map(|cmd_name| {
-            format!(
-                "<Command name=\"{}\"><CommandGroup>{}</CommandGroup></Command>",
-                escape_xml(cmd_name),
-                escape_xml(&group_name)
-            )
-        })
-        .collect::<Vec<_>>();
-    interface_text_replace_section_items(text, "CommandsOrder", &fragments)?;
+    interface_text_replace_group_commands(text, &group_name, &commands)?;
     stdout.push_str(&format!(
         "[INFO] Set order for {group_name} : {} commands\n",
         commands.len()
@@ -571,6 +561,221 @@ pub(crate) fn interface_text_do_group_order(
         "[INFO] Set group order: {} entries\n",
         groups.len()
     ));
+    Ok(())
+}
+
+/// Элемент `<Command>` секции `CommandsOrder`: команда, её группа и
+/// абсолютные границы элемента в тексте.
+struct InterfaceOrderedCommand {
+    name: String,
+    group: String,
+    start: usize,
+    end: usize,
+}
+
+fn interface_text_ordered_commands(text: &str) -> Vec<InterfaceOrderedCommand> {
+    let Some((_, content_start, close_start, _, _, _)) =
+        find_element_bounds(text, "CommandsOrder", 0)
+    else {
+        return Vec::new();
+    };
+    let body = &text[content_start..close_start];
+    let mut commands = Vec::new();
+    let mut offset = 0usize;
+    while let Some(rel_start) = body[offset..].find("<Command") {
+        let start = offset + rel_start;
+        let after = start + "<Command".len();
+        if !body[after..].starts_with(|ch: char| ch.is_whitespace() || ch == '>') {
+            offset = after;
+            continue;
+        }
+        let Some(gt_rel) = body[start..].find('>') else {
+            break;
+        };
+        let gt = start + gt_rel;
+        let Some(close_rel) = body[gt + 1..].find("</Command>") else {
+            break;
+        };
+        let end = gt + 1 + close_rel + "</Command>".len();
+        let open_tag = &body[start..=gt];
+        let name = open_tag
+            .split_once("name=\"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(name, _)| unescape_xml(name))
+            .unwrap_or_default();
+        let group = interface_text_element_value(&body[start..end], "CommandGroup")
+            .map(|group| unescape_xml(group.trim()))
+            .unwrap_or_default();
+        commands.push(InterfaceOrderedCommand {
+            name,
+            group,
+            start: content_start + start,
+            end: content_start + end,
+        });
+        offset = end;
+    }
+    commands
+}
+
+/// Сохранённый порядок команд одной группы.
+pub(crate) fn interface_text_group_command_order(text: &str, group: &str) -> Vec<String> {
+    interface_text_ordered_commands(text)
+        .into_iter()
+        .filter(|command| command.group == group)
+        .map(|command| command.name)
+        .collect()
+}
+
+/// Значения прямых элементов секции: `Group` у `GroupsOrder`, `Subsystem`
+/// у `SubsystemsOrder`.
+pub(crate) fn interface_text_direct_item_values(
+    text: &str,
+    section: &str,
+    item: &str,
+) -> Vec<String> {
+    let Some((_, content_start, close_start, _, _, _)) = find_element_bounds(text, section, 0)
+    else {
+        return Vec::new();
+    };
+    let body = &text[content_start..close_start];
+    let open = format!("<{item}>");
+    let close = format!("</{item}>");
+    let mut values = Vec::new();
+    let mut offset = 0usize;
+    while let Some(rel_start) = body[offset..].find(&open) {
+        let value_start = offset + rel_start + open.len();
+        let Some(rel_end) = body[value_start..].find(&close) else {
+            break;
+        };
+        values.push(unescape_xml(
+            body[value_start..value_start + rel_end].trim(),
+        ));
+        offset = value_start + rel_end + close.len();
+    }
+    values
+}
+
+/// Изменение порядка — перестановка уже сохранённого состава.
+///
+/// Список, где элемент пропущен, повторён или добавлен, не порядок прежних
+/// элементов: пропуск не означает удаления настройки, а добавка — её
+/// расширения. Пока порядок не сохранён, список задаёт его впервые; повтор
+/// недопустим и тогда.
+pub(crate) fn interface_order_membership(
+    stored: &[String],
+    requested: &[String],
+    scope: &str,
+) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    if let Some(repeated) = requested.iter().find(|name| !seen.insert(name.as_str())) {
+        return Err(format!(
+            "`{repeated}` is listed more than once; an order names each entry once"
+        ));
+    }
+    if stored.is_empty() {
+        return Ok(());
+    }
+    let quoted = |names: Vec<&String>| {
+        names
+            .into_iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let missing = stored
+        .iter()
+        .filter(|name| !requested.contains(name))
+        .collect::<Vec<_>>();
+    let foreign = requested
+        .iter()
+        .filter(|name| !stored.contains(name))
+        .collect::<Vec<_>>();
+    let mut differences = Vec::new();
+    if !missing.is_empty() {
+        differences.push(format!("missing {}", quoted(missing)));
+    }
+    if !foreign.is_empty() {
+        differences.push(format!("not stored {}", quoted(foreign)));
+    }
+    if differences.is_empty() && stored.len() != requested.len() {
+        differences.push("the stored order repeats an entry".to_string());
+    }
+    if differences.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "not a permutation of the stored {scope}: {}",
+        differences.join("; ")
+    ))
+}
+
+/// Переписывает порядок одной группы на месте её прежних элементов.
+///
+/// Элементы других групп и их взаимное расположение не меняются. Переставленная
+/// команда переносит свой прежний элемент без переформатирования; новая
+/// получает элемент той же формы, что пишет платформа. Если у группы порядка
+/// ещё нет, её команды дописываются в конец секции.
+pub(crate) fn interface_text_replace_group_commands(
+    text: &mut String,
+    group: &str,
+    commands: &[String],
+) -> Result<(), String> {
+    let slots = interface_text_ordered_commands(text)
+        .into_iter()
+        .filter(|command| command.group == group)
+        .collect::<Vec<_>>();
+    let elements = commands
+        .iter()
+        .map(|name| {
+            slots
+                .iter()
+                .find(|slot| slot.name == *name)
+                .map(|slot| text[slot.start..slot.end].to_string())
+                .unwrap_or_else(|| {
+                    format!(
+                        "<Command name=\"{}\"><CommandGroup>{}</CommandGroup></Command>",
+                        escape_xml(name),
+                        escape_xml(group)
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    let Some(last) = slots.last() else {
+        for element in &elements {
+            interface_text_append_to_section(text, "CommandsOrder", element)?;
+        }
+        return Ok(());
+    };
+    let (_, content_start, _, _, _, _) = find_element_bounds(text, "CommandsOrder", 0)
+        .ok_or_else(|| "No <CommandsOrder> element found".to_string())?;
+    let mut edits = Vec::with_capacity(slots.len() + 1);
+    for (index, slot) in slots.iter().enumerate() {
+        match elements.get(index) {
+            Some(element) => edits.push((slot.start, slot.end, element.clone())),
+            None => {
+                let lead = interface_trailing_ws_start(text, content_start, slot.start);
+                edits.push((lead, slot.end, String::new()));
+            }
+        }
+    }
+    if elements.len() > slots.len() {
+        let lead = &text[interface_trailing_ws_start(text, content_start, last.start)..last.start];
+        let separator = if lead.contains('\n') && !lead.contains("\r\n") {
+            "\n"
+        } else {
+            "\r\n"
+        };
+        let indent = lead.rsplit('\n').next().unwrap_or_default();
+        let tail = elements[slots.len()..]
+            .iter()
+            .map(|element| format!("{separator}{indent}{element}"))
+            .collect::<String>();
+        edits.push((last.end, last.end, tail));
+    }
+    edits.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    for (start, end, replacement) in edits {
+        text.replace_range(start..end, &replacement);
+    }
     Ok(())
 }
 
@@ -1543,6 +1748,81 @@ pub(crate) mod tests {
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use serde_json::{Map, Value};
     use std::fs;
+
+    const TWO_GROUP_ORDER: &str = concat!(
+        "<CommandInterface>\r\n\t<CommandsOrder>\r\n",
+        "\t\t<Command name=\"A\">\r\n\t\t\t<CommandGroup>First</CommandGroup>\r\n\t\t</Command>\r\n",
+        "\t\t<Command name=\"X\">\r\n\t\t\t<CommandGroup>Second</CommandGroup>\r\n\t\t</Command>\r\n",
+        "\t\t<Command name=\"B\">\r\n\t\t\t<CommandGroup>First</CommandGroup>\r\n\t\t</Command>\r\n",
+        "\t\t<Command name=\"Y\">\r\n\t\t\t<CommandGroup>Second</CommandGroup>\r\n\t\t</Command>\r\n",
+        "\t</CommandsOrder>\r\n\t<GroupsOrder>\r\n\t\t<Group>First</Group>\r\n\t</GroupsOrder>\r\n</CommandInterface>",
+    );
+
+    fn names(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    /// Писатель группы не знает о проверке состава: он же обслуживает
+    /// прежний `interface-edit`, где список может быть короче или длиннее.
+    /// В любом случае элементы второй группы остаются на своих местах.
+    #[test]
+    fn group_order_writer_rewrites_only_the_named_group_in_place() {
+        let second = |text: &str| interface_text_group_command_order(text, "Second");
+        for (requested, expected) in [
+            (names(&["B", "A"]), names(&["B", "A"])),
+            (names(&["B"]), names(&["B"])),
+            (names(&["B", "A", "C"]), names(&["B", "A", "C"])),
+        ] {
+            let mut text = TWO_GROUP_ORDER.to_string();
+            interface_text_replace_group_commands(&mut text, "First", &requested).unwrap();
+            assert_eq!(interface_text_group_command_order(&text, "First"), expected);
+            assert_eq!(second(&text), names(&["X", "Y"]), "{text}");
+            assert!(text.contains("<Group>First</Group>"), "{text}");
+            Document::parse(&text).unwrap();
+        }
+        // Перестановка переносит элементы платформы без переформатирования.
+        let mut text = TWO_GROUP_ORDER.to_string();
+        interface_text_replace_group_commands(&mut text, "First", &names(&["B", "A"])).unwrap();
+        assert_eq!(
+            text,
+            TWO_GROUP_ORDER
+                .replace("\"A\"", "\"@\"")
+                .replace("\"B\"", "\"A\"")
+                .replace("\"@\"", "\"B\"")
+        );
+
+        // У группы ещё нет порядка — он дописывается, чужие группы не трогаются.
+        let mut text = TWO_GROUP_ORDER.to_string();
+        interface_text_replace_group_commands(&mut text, "Third", &names(&["Z"])).unwrap();
+        assert_eq!(
+            interface_text_group_command_order(&text, "Third"),
+            names(&["Z"])
+        );
+        assert_eq!(
+            interface_text_group_command_order(&text, "First"),
+            names(&["A", "B"])
+        );
+        assert_eq!(second(&text), names(&["X", "Y"]));
+    }
+
+    #[test]
+    fn order_membership_accepts_a_permutation_or_a_first_order_only() {
+        let stored = names(&["A", "B", "C"]);
+        interface_order_membership(&stored, &names(&["B", "A", "C"]), "groups").unwrap();
+        interface_order_membership(&[], &names(&["B", "A"]), "groups").unwrap();
+        for (requested, needle) in [
+            (names(&["B", "A"]), "missing `C`"),
+            (names(&["B", "A", "C", "D"]), "not stored `D`"),
+            (names(&["B", "A", "D"]), "missing `C`; not stored `D`"),
+            (names(&["B", "A", "A", "C"]), "`A` is listed more than once"),
+            (names(&["B", "B", "C"]), "`B` is listed more than once"),
+        ] {
+            let error = interface_order_membership(&stored, &requested, "groups").unwrap_err();
+            assert!(error.contains(needle), "{error}");
+        }
+        let error = interface_order_membership(&[], &names(&["A", "A"]), "groups").unwrap_err();
+        assert!(error.contains("more than once"), "{error}");
+    }
 
     fn temp_context(name: &str) -> WorkspaceContext {
         let nanos = SystemTime::now()

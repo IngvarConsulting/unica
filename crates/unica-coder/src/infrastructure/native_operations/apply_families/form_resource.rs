@@ -13,9 +13,10 @@ use crate::infrastructure::native_operations::apply_families::request::{
     IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use crate::infrastructure::native_operations::interface::{
-    interface_text_do_group_order, interface_text_do_hide, interface_text_do_order,
-    interface_text_do_place, interface_text_do_show, interface_text_do_subsystem_order,
-    InterfaceEditCounters,
+    interface_order_membership, interface_text_direct_item_values, interface_text_do_group_order,
+    interface_text_do_hide, interface_text_do_order, interface_text_do_place,
+    interface_text_do_show, interface_text_do_subsystem_order, interface_text_group_command_order,
+    normalize_interface_command_name, InterfaceEditCounters,
 };
 use crate::infrastructure::native_operations::support::{SupportCapability, SupportObjectRule};
 use crate::infrastructure::workspace_actor::{FormResourceApplyAuthority, ProviderRootBinding};
@@ -40,7 +41,7 @@ enum InterfaceEdit {
     Visibility(Vec<(String, bool)>),
     Placement(Vec<(String, Option<String>, Option<String>)>),
     CommandOrder {
-        group: Option<String>,
+        group: String,
         commands: Vec<String>,
     },
     GroupOrder(Vec<String>),
@@ -180,7 +181,6 @@ fn parse_command_interface_operation(
     target: &QualifiedAddress,
     args: &Map<String, Value>,
     op_index: usize,
-    binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let segments = target.segments();
     let (address, relative) = match segments {
@@ -198,32 +198,40 @@ fn parse_command_interface_operation(
                 PathBuf::from("Ext").join("CommandInterface.xml"),
             )
         }
-        [.., owner, facet]
-            if facet.kind() == NodeKind::Interface && owner.kind() == NodeKind::Subsystem =>
+        // Владелец — вся цепочка подсистем: `Subsystem.A.Subsystem.B.Interface`
+        // живёт в `Subsystems/A/Subsystems/B/Ext`, и одноимённая корневая `B`
+        // целью не становится.
+        [owners @ .., facet]
+            if facet.kind() == NodeKind::Interface
+                && !owners.is_empty()
+                && owners
+                    .iter()
+                    .all(|owner| owner.kind() == NodeKind::Subsystem) =>
         {
-            let owner_name = owner
-                .name()
-                .ok_or_else(|| bad(op_index, "at", "the subsystem must be named"))?;
-            let owner_address = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("Subsystem.{owner_name}"),
-            )
-            .map_err(|error| bad(op_index, "at", error.to_string()))?;
-            let relative = attached_resource_relative(
-                &owner_address,
-                "CommandInterface.xml",
-                binding.source_kind(),
-            )
-            .map_err(|error| bad(op_index, "at", error))?;
+            if section == "subsystemOrder" {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    "`subsystemOrder.set` targets the configuration root: `<set>:Configuration`",
+                ));
+            }
+            let mut relative = PathBuf::new();
+            for owner in owners {
+                let name = owner
+                    .name()
+                    .ok_or_else(|| bad(op_index, "at", "the subsystem must be named"))?;
+                relative.push("Subsystems");
+                relative.push(name);
+            }
+            relative.push("Ext");
+            relative.push("CommandInterface.xml");
             (target.to_string(), relative)
         }
-        _ => {
-            return Err(bad(
-                op_index,
-                "at",
-                "a command-interface operation targets `Subsystem.Name.Interface`",
-            ))
-        }
+        _ => return Err(bad(
+            op_index,
+            "at",
+            "a command-interface operation targets `Subsystem.Name[.Subsystem.Child].Interface`",
+        )),
     };
     let edit = match section {
         "commandVisibility" => {
@@ -287,11 +295,10 @@ fn parse_command_interface_operation(
         }
         "commandOrder" => {
             let values = required_values(args, op_index, &["group", "commands"])?;
+            // Порядок команд принадлежит группе: без неё нечего сравнивать
+            // с сохранённым составом.
             InterfaceEdit::CommandOrder {
-                group: values
-                    .get("group")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                group: required_string(values, "group", op_index, "values")?.to_string(),
                 commands: listed_strings(values, "commands", op_index)?,
             }
         }
@@ -603,7 +610,7 @@ fn parse_subsystem_operation(
             "commandVisibility" | "commandPlacement" | "commandOrder" | "groupOrder"
         ) || (*section == "subsystemOrder")
     }) {
-        return parse_command_interface_operation(section, &target, args, op_index, binding);
+        return parse_command_interface_operation(section, &target, args, op_index);
     }
     if operation == "subsystem.create" {
         let values = required_values(args, op_index, &["name"])?;
@@ -2178,6 +2185,10 @@ pub(crate) fn plan_form_resource_batch(
                     ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
                         .at_path(at_path.clone())
                 };
+                let order_refusal = |message: String, key: &str| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                        .at_path(format!("ops[{op_index}].args.values.{key}"))
+                };
                 match edit {
                     InterfaceEdit::Visibility(values) => {
                         // Правится только `Common`; значения по ролям —
@@ -2221,20 +2232,31 @@ pub(crate) fn plan_form_resource_batch(
                         }
                     }
                     InterfaceEdit::CommandOrder { group, commands } => {
-                        let mut request = Map::new();
-                        if let Some(group) = group {
-                            request.insert("group".to_string(), json!(group));
-                        }
-                        request.insert("commands".to_string(), json!(commands));
+                        let commands = commands
+                            .iter()
+                            .map(|command| normalize_interface_command_name(command, &mut log))
+                            .collect::<Vec<_>>();
+                        interface_order_membership(
+                            &interface_text_group_command_order(&text, group),
+                            &commands,
+                            &format!("commands of group `{group}`"),
+                        )
+                        .map_err(|message| order_refusal(message, "commands"))?;
                         interface_text_do_order(
                             &mut text,
-                            &Value::Object(request),
+                            &json!({"group": group, "commands": commands}),
                             &mut counters,
                             &mut log,
                         )
                         .map_err(fail)?;
                     }
                     InterfaceEdit::GroupOrder(groups) => {
+                        interface_order_membership(
+                            &interface_text_direct_item_values(&text, "GroupsOrder", "Group"),
+                            groups,
+                            "groups",
+                        )
+                        .map_err(|message| order_refusal(message, "groups"))?;
                         interface_text_do_group_order(
                             &mut text,
                             &json!(groups),
@@ -2244,6 +2266,16 @@ pub(crate) fn plan_form_resource_batch(
                         .map_err(fail)?;
                     }
                     InterfaceEdit::SubsystemOrder(subsystems) => {
+                        interface_order_membership(
+                            &interface_text_direct_item_values(
+                                &text,
+                                "SubsystemsOrder",
+                                "Subsystem",
+                            ),
+                            subsystems,
+                            "subsystems",
+                        )
+                        .map_err(|message| order_refusal(message, "subsystems"))?;
                         interface_text_do_subsystem_order(
                             &mut text,
                             &json!(subsystems),
@@ -2801,6 +2833,7 @@ mod tests {
                 "\t</CommandsVisibility>\n",
                 "\t<GroupsOrder>\n",
                 "\t\t<Group>NavigationPanelImportant</Group>\n",
+                "\t\t<Group>NavigationPanelSeeAlso</Group>\n",
                 "\t</GroupsOrder>\n",
                 "</CommandInterface>\n"
             ),
@@ -2852,7 +2885,7 @@ mod tests {
         let important = text
             .find("<Group>NavigationPanelImportant</Group>")
             .expect("group");
-        assert!(seen < important, "порядок групп задаётся целиком: {text}");
+        assert!(seen < important, "группы переставлены: {text}");
     }
 
     #[test]
