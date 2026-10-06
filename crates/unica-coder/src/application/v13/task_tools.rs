@@ -1,3 +1,4 @@
+use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{json, Map, Value};
@@ -68,8 +69,8 @@ pub(crate) struct CompatibilityTaskSnapshot {
     pub(crate) task_id: TaskId,
     pub(crate) status: InvocationStatus,
     pub(crate) result: Option<DomainResult>,
-    /// Closed presence only: failure code/message remains on the daemon side.
-    pub(crate) has_failure: bool,
+    /// Failure prose is fixed locally; the daemon supplies only its closed reason.
+    pub(crate) failure_reason: Option<V5SafeFailureReason>,
     pub(crate) cancel_requested: bool,
     pub(crate) created_at_epoch_ms: u64,
     pub(crate) updated_at_epoch_ms: u64,
@@ -83,7 +84,7 @@ impl CompatibilityTaskSnapshot {
         task_id: TaskId,
         status: InvocationStatus,
         result: Option<DomainResult>,
-        has_failure: bool,
+        failure_reason: Option<V5SafeFailureReason>,
         cancel_requested: bool,
         created_at_epoch_ms: u64,
         updated_at_epoch_ms: u64,
@@ -94,7 +95,7 @@ impl CompatibilityTaskSnapshot {
             task_id,
             status,
             result,
-            has_failure,
+            failure_reason,
             cancel_requested,
             created_at_epoch_ms,
             updated_at_epoch_ms,
@@ -211,7 +212,7 @@ pub(crate) fn project_task_snapshot(
         (
             snapshot.status,
             snapshot.result.is_some(),
-            snapshot.has_failure
+            snapshot.failure_reason.is_some()
         ),
         (InvocationStatus::Queued, false, false)
             | (InvocationStatus::Working, false, false)
@@ -268,7 +269,13 @@ pub(crate) fn project_task_snapshot(
     // The error code travels in `diagnostics[]` like everywhere else on the
     // canonical surface; `data` stays a pure task snapshot.
     if let Some(code) = code {
-        result.diagnostics = vec![json!({"code": code, "message": summary})];
+        let mut diagnostic = json!({"code": code, "message": summary});
+        if let Some(reason) = snapshot.failure_reason {
+            let (wire_name, message) = closed_task_failure(reason);
+            diagnostic["failureReason"] = json!(wire_name);
+            diagnostic["message"] = json!(message);
+        }
+        result.diagnostics = vec![diagnostic];
     }
     if matches!(
         snapshot.status,
@@ -308,6 +315,43 @@ pub(crate) fn task_tool_error_result(error: TaskToolError) -> DomainResult {
     }
 }
 
+/// The closed failure vocabulary of the v5 daemon and its fixed host-facing
+/// text. The daemon never sends prose for a failure, so this table is the only
+/// place a failed invocation gets words.
+pub(crate) fn closed_task_failure(reason: V5SafeFailureReason) -> (&'static str, &'static str) {
+    match reason {
+        V5SafeFailureReason::InvocationFailed => ("invocation_failed", "daemon invocation failed"),
+        V5SafeFailureReason::ResultTooLarge => (
+            "result_too_large",
+            "daemon invocation result exceeded the canonical byte limit",
+        ),
+        V5SafeFailureReason::Interrupted => ("interrupted", "daemon invocation was interrupted"),
+        V5SafeFailureReason::ResumeUnsupported => (
+            "resume_unsupported",
+            "daemon invocation cannot be resumed after restart",
+        ),
+        V5SafeFailureReason::PersistenceFailed => (
+            "persistence_failed",
+            "daemon invocation terminal state could not be persisted",
+        ),
+        V5SafeFailureReason::OutcomeUncertain => (
+            "outcome_uncertain",
+            "daemon invocation outcome is uncertain",
+        ),
+        V5SafeFailureReason::TaskCapacity => (
+            "task_capacity",
+            "daemon Task capacity was exhausted before execution",
+        ),
+        V5SafeFailureReason::WorkspaceCapacity => {
+            ("workspace_capacity", "workspace capacity was exhausted")
+        }
+        V5SafeFailureReason::WorkspaceRegistryFailed => (
+            "workspace_registry_failed",
+            "workspace registry is unavailable",
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -315,6 +359,7 @@ mod tests {
         task_tool_error_result, CompatibilityProjection, CompatibilityTaskSnapshot, TaskToolAction,
         TaskToolError,
     };
+    use crate::application::invocation_store_v5::V5SafeFailureReason;
     use crate::domain::invocation::{DomainResult, InvocationStatus, TaskId};
     use crate::domain::refusal::RefusalDetail;
     use serde_json::{json, Map, Value};
@@ -330,7 +375,7 @@ mod tests {
                 .unwrap(),
             status,
             None,
-            status == InvocationStatus::Failed,
+            (status == InvocationStatus::Failed).then_some(V5SafeFailureReason::InvocationFailed),
             false,
             1_777_012_345_678,
             1_777_012_346_789,
@@ -593,7 +638,8 @@ mod tests {
                     );
                     let mut candidate = snapshot(status);
                     candidate.result = has_result.then(|| hostile.clone());
-                    candidate.has_failure = has_failure;
+                    candidate.failure_reason =
+                        has_failure.then_some(V5SafeFailureReason::InvocationFailed);
                     for projection in [
                         CompatibilityProjection::State,
                         CompatibilityProjection::TerminalResult,

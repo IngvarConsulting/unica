@@ -544,7 +544,7 @@ fn project_compatibility_snapshot(
         snapshot.task_id(),
         snapshot.status(),
         snapshot.completed_result().cloned(),
-        snapshot.failure_reason().is_some(),
+        snapshot.failure_reason(),
         snapshot.cancel_requested(),
         snapshot.created_at_epoch_ms(),
         snapshot.updated_at_epoch_ms(),
@@ -3655,10 +3655,12 @@ mod tests {
                         assert!(!serialized.contains(forbidden), "leaked {forbidden}");
                     }
                 }
-                assert!(
-                    !serialized.contains("invocation_failed"),
-                    "the closed failure reason stays on the daemon side: {serialized}"
-                );
+                let diagnostic = &response["result"]["structuredContent"]["diagnostics"][0];
+                if status == InvocationStatus::Failed {
+                    assert_eq!(diagnostic["failureReason"], "invocation_failed");
+                } else {
+                    assert!(diagnostic.get("failureReason").is_none());
+                }
             }
             client.shutdown().await;
         }
@@ -3668,6 +3670,54 @@ mod tests {
     async fn compatibility_adapter_rejects_every_hostile_status_payload_shape_without_leaking_failure(
     ) {
         compatibility_hostile_status_payload_case().await;
+    }
+
+    #[tokio::test]
+    async fn compatibility_task_get_and_result_preserve_each_closed_failure_reason() {
+        use crate::application::invocation_store_v5::V5SafeFailureReason;
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        for reason in V5SafeFailureReason::ALL {
+            let task_id = TaskId::new();
+            let mut snapshot = canonical_snapshot(task_id, InvocationStatus::Failed, None);
+            let V5DaemonTaskSnapshot::Failed {
+                reason: stored_reason,
+                ..
+            } = &mut snapshot
+            else {
+                panic!("failed fixture required");
+            };
+            *stored_reason = reason;
+            let get_snapshot = snapshot.clone();
+            let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| Ok(get_snapshot.clone()));
+            let wait_snapshot = snapshot.clone();
+            let wait: Arc<CanonicalTaskWaitHandler> =
+                Arc::new(move |_, _, _, _| Ok(wait_snapshot.clone()));
+            let cancel = Arc::clone(&get);
+            let call: Arc<CanonicalCallHandler> = Arc::new(move |_, _, _, _, _| {
+                panic!("observation must never invoke a subject tool");
+            });
+            let (mut client, _) = spawn_unica_server(
+                UnicaServer::with_canonical_v13_task_handlers(call, get, wait, cancel),
+            );
+            for (id, name) in [(1, "unica.task.get"), (2, "unica.task.result")] {
+                client.send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":{"taskId":task_id.to_string()},"_meta":modern_meta()}})).await;
+                let response = client.receive().await;
+                let result = &response["result"]["structuredContent"];
+                assert_eq!(result["ok"], false, "{response}");
+                assert_eq!(result["data"]["task"]["status"], "failed", "{response}");
+                assert_eq!(result["data"]["task"]["taskId"], task_id.to_string());
+                assert_eq!(result["diagnostics"][0]["code"], "task_failed");
+                assert_eq!(
+                    result["diagnostics"][0]["failureReason"],
+                    reason.wire_name(),
+                    "{name}: {response}"
+                );
+                assert!(result["diagnostics"][0].get("detailCode").is_none());
+                assert!(result["next"].as_array().is_none_or(Vec::is_empty));
+            }
+            client.shutdown().await;
+        }
     }
 
     #[tokio::test]
