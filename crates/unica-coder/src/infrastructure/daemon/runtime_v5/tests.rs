@@ -4071,6 +4071,123 @@ fn complete_v5_frame_near_cutoff_cannot_receive_a_fresh_response_budget() {
     assert!(response.is_empty(), "late response escaped: {response:?}");
 }
 
+fn probe_peer_cannot_reply(stream: &TcpStream) -> io::Result<bool> {
+    if let Some(error) = stream.take_error()? {
+        return match error.kind() {
+            io::ErrorKind::ConnectionReset | io::ErrorKind::NotConnected => Ok(true),
+            _ => Err(error),
+        };
+    }
+    stream.set_nonblocking(true)?;
+    match stream.peek(&mut [0u8; 1]) {
+        Ok(0) => Ok(true),
+        Ok(_) => Ok(false),
+        Err(error) => match error.kind() {
+            io::ErrorKind::ConnectionReset | io::ErrorKind::NotConnected => Ok(true),
+            io::ErrorKind::WouldBlock => Ok(false),
+            _ => Err(error),
+        },
+    }
+}
+
+fn displaced_owner_probe(mut stream: TcpStream, hello: &serde_json::Value) -> io::Result<bool> {
+    if let Err(setup_error) = stream.set_read_timeout(Some(Duration::from_secs(1))) {
+        // Darwin can reject SO_RCVTIMEO after a real reset. Observe the
+        // transport; this does not establish process death or release authority.
+        return match probe_peer_cannot_reply(&stream) {
+            Ok(true) => Ok(false),
+            Ok(false) => Err(setup_error),
+            Err(observation_error) => Err(io::Error::new(
+                setup_error.kind(),
+                format!("probe timeout setup failed: {setup_error}; closure observation failed: {observation_error}"),
+            )),
+        };
+    }
+    if serde_json::to_writer(&mut stream, hello).is_ok() && stream.write_all(b"\n").is_ok() {
+        let mut reader = BufReader::new(stream.try_clone()?);
+        Ok(read_bounded_v5_probe_response_frame(&mut reader).is_ok())
+    } else {
+        Ok(false)
+    }
+}
+
+#[test]
+fn displaced_owner_probe_rejects_a_connection_reset_by_listener_shutdown() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind backlog probe fixture");
+    let stream = TcpStream::connect(listener.local_addr().unwrap()).expect("connect pending probe");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("bound closure observation");
+    drop(listener);
+    match stream.peek(&mut [0u8; 1]) {
+        Ok(0) => {}
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionReset | io::ErrorKind::NotConnected
+            ) => {}
+        other => panic!("listener shutdown must actually close this pending connection: {other:?}"),
+    }
+    assert!(
+        !displaced_owner_probe(stream, &json!({"kind":"hello"})).expect("probe actual reset"),
+        "a physically reset peer cannot become ready"
+    );
+}
+
+#[test]
+fn displaced_owner_probe_observes_a_live_peer_response() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind live probe fixture");
+    let stream = TcpStream::connect(listener.local_addr().unwrap()).expect("connect live probe");
+    let (accepted, _) = listener.accept().expect("accept live probe");
+    let server = thread::spawn(move || {
+        let mut reader = BufReader::new(accepted);
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bound fixture hello");
+        let mut hello = String::new();
+        reader
+            .read_line(&mut hello)
+            .expect("read actual probe hello");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&hello).unwrap(),
+            json!({"kind":"hello"})
+        );
+        reader
+            .get_mut()
+            .write_all(b"{\"kind\":\"ready\"}\n")
+            .expect("send actual probe response");
+    });
+    let ready = displaced_owner_probe(stream, &json!({"kind":"hello"}));
+    server.join().expect("join actual live probe");
+    assert!(
+        ready.expect("probe live peer"),
+        "live response must not be classified as a closed peer"
+    );
+}
+
+#[test]
+fn probe_peer_without_a_response_or_with_payload_is_not_observed_closed() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind live closure observation");
+    let stream = TcpStream::connect(listener.local_addr().unwrap()).expect("connect live peer");
+    let (mut accepted, _) = listener.accept().expect("accept live peer");
+    assert!(!probe_peer_cannot_reply(&stream).expect("observe idle live peer"));
+    stream
+        .set_nonblocking(false)
+        .expect("restore fixture observation");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .expect("bound payload observation");
+    accepted.write_all(b"x").expect("send actual peer payload");
+    assert_eq!(
+        stream
+            .peek(&mut [0u8; 1])
+            .expect("observe delivered payload"),
+        1
+    );
+    assert!(!probe_peer_cannot_reply(&stream).expect("observe live peer payload"));
+}
+
 #[test]
 fn displaced_receipt_authority_fail_stops_until_process_death() {
     let root = tempfile::tempdir().expect("temporary state root");
@@ -4096,31 +4213,20 @@ fn displaced_receipt_authority_fail_stops_until_process_death() {
         RetainedDirectoryReplacementOutcome::Replaced => {
             let displaced_still_ready =
                 match TcpStream::connect(record.loopback_addr().expect("old v5 address")) {
-                    Ok(mut stream) => {
-                        stream
-                            .set_read_timeout(Some(Duration::from_secs(1)))
-                            .expect("bound displaced-daemon read");
-                        let hello = json!({
+                    Ok(stream) => displaced_owner_probe(
+                        stream,
+                        &json!({
                             "kind": "hello",
                             "protocolVersion": 5,
                             "token": record.token(),
                             "coreIdentity": identity.as_str(),
                             "ownerLease": "33333333-3333-4333-8333-333333333333"
-                        });
-                        if serde_json::to_writer(&mut stream, &hello).is_ok()
-                            && stream.write_all(b"\n").is_ok()
-                        {
-                            let mut reader = BufReader::new(
-                                stream.try_clone().expect("clone displaced v5 stream"),
-                            );
-                            read_bounded_v5_probe_response_frame(&mut reader).is_ok()
-                        } else {
-                            false
-                        }
-                    }
-                    Err(_) => false,
+                        }),
+                    ),
+                    Err(_) => Ok(false),
                 };
             let server_result = server.join().expect("join displaced v5 runtime");
+            let displaced_still_ready = displaced_still_ready.expect("probe displaced daemon");
             assert!(
                 !displaced_still_ready,
                 "displaced receipt owner still accepted a handshake"
