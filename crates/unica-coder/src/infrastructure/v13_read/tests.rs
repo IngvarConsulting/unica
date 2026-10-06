@@ -2529,7 +2529,7 @@ fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
     );
     let children =
         view_items(&service.view(ViewRequest::new("main:Subsystem.Sales.Subsystem").unwrap()));
-    assert_eq!(children.len(), 1, "{children:?}");
+    assert_eq!(children.len(), 1);
     assert_eq!(children[0]["at"], "main:Subsystem.Sales.Subsystem.Orders");
     assert_eq!(children[0]["kind"], "Subsystem");
 
@@ -2560,7 +2560,7 @@ fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
     let limits = content.data.as_ref().unwrap()["limits"].to_string();
     assert!(
         limits.contains("0:78b4152e-0000-0000-0000-000000000000"),
-        "{limits}"
+        "content limits must name the dangling reference"
     );
 
     // Интерфейс вложенной подсистемы читается из её собственного файла, а
@@ -2595,7 +2595,10 @@ fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
             .unwrap(),
     );
     assert_eq!(view_items(&first).len(), 1);
-    assert!(first.cursor.is_some(), "{first:?}");
+    assert!(
+        first.cursor.is_some(),
+        "a one-item page must leave a cursor"
+    );
 
     for missing in [
         "main:Subsystem.Sales.Subsystem.Ghost",
@@ -2603,7 +2606,7 @@ fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
         "main:Subsystem.Sales.Relation.Catalog",
     ] {
         let result = service.view(ViewRequest::new(missing).unwrap());
-        assert!(!result.ok, "{missing}: {result:?}");
+        assert!(!result.ok, "{missing} must be refused");
         assert_eq!(result.diagnostics[0]["code"], "not_found", "{missing}");
     }
 }
@@ -2637,7 +2640,7 @@ fn a_nested_subsystem_read_rejects_a_descriptor_that_names_another_subsystem() {
         "main:Subsystem.Sales.Subsystem.Orders.Subsystem.Returns",
     ] {
         let result = service.view(ViewRequest::new(at).unwrap());
-        assert!(!result.ok, "{at}: {result:?}");
+        assert!(!result.ok, "{at} must be refused");
         assert_ne!(result.diagnostics[0]["code"], "not_found", "{at}");
     }
 }
