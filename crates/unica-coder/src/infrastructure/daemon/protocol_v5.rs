@@ -204,6 +204,9 @@ pub(crate) struct V5InvocationRequest {
     tool: V5ToolIdentity,
     arguments: Map<String, Value>,
     workspace_hint: String,
+    /// Which host channel chose `workspace_hint`. It explains the directory to
+    /// the caller and is not part of the request identity.
+    workspace_origin: unica_bootstrap::WorkspaceOrigin,
     response_budget_ms: u64,
 }
 
@@ -213,7 +216,7 @@ impl V5InvocationRequest {
         reserved_task_id: TaskId,
         tool: V5ToolIdentity,
         arguments: Map<String, Value>,
-        workspace_hint: String,
+        workspace: unica_bootstrap::ResolvedWorkspace,
         response_budget_ms: u64,
     ) -> Result<Self, String> {
         let request = Self {
@@ -221,7 +224,8 @@ impl V5InvocationRequest {
             reserved_task_id,
             tool,
             arguments,
-            workspace_hint,
+            workspace_hint: workspace.directory,
+            workspace_origin: workspace.origin,
             response_budget_ms,
         };
         request.validate()?;
@@ -248,6 +252,10 @@ impl V5InvocationRequest {
         &self.workspace_hint
     }
 
+    pub(crate) fn workspace_origin(&self) -> &unica_bootstrap::WorkspaceOrigin {
+        &self.workspace_origin
+    }
+
     pub(crate) fn response_budget_ms(&self) -> u64 {
         self.response_budget_ms
     }
@@ -258,6 +266,18 @@ impl V5InvocationRequest {
         }
         if self.workspace_hint.is_empty() || self.workspace_hint.chars().any(char::is_control) {
             return Err("v5 invocation workspace hint must be non-empty text".to_string());
+        }
+        // The origin names a host capability or a project variable; both are
+        // short identifiers that a result quotes verbatim.
+        let name = match &self.workspace_origin {
+            unica_bootstrap::WorkspaceOrigin::RequestMetadata { capability } => Some(capability),
+            unica_bootstrap::WorkspaceOrigin::StartupEnvironment { variable, .. } => Some(variable),
+            _ => None,
+        };
+        if name.is_some_and(|name| {
+            name.is_empty() || name.len() > 128 || name.chars().any(char::is_control)
+        }) {
+            return Err("v5 invocation workspace origin must name a short identifier".to_string());
         }
         Ok(())
     }
@@ -1281,6 +1301,7 @@ pub(crate) fn strict_envelope_case_frame(case: StrictV5EnvelopeCase) -> Result<V
             "tool": "unica.view",
             "arguments": {},
             "workspaceHint": "workspace-a",
+            "workspaceOrigin": {"channel": "launchCwd"},
             "responseBudgetMs": 7_000
         }
     });
@@ -1476,7 +1497,7 @@ mod tests {
             (
                 V5ClientRequestKind::SubmitInvocation,
                 format!(
-                    "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"responseBudgetMs\":7000}}}}"
+                    "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":7000}}}}"
                 ),
             ),
             (
@@ -1576,7 +1597,7 @@ mod tests {
         .expect("strict hello fixture");
         let submit = decode_v5_client_request(
             format!(
-                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{\"secret\":\"raw-argument-secret\"}},\"workspaceHint\":\"private/workspace\",\"responseBudgetMs\":7000}}}}"
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{\"secret\":\"raw-argument-secret\"}},\"workspaceHint\":\"private/workspace\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":7000}}}}"
             )
             .as_bytes(),
         )
@@ -1778,10 +1799,39 @@ mod tests {
         }
     }
 
+    /// Источник каталога объясняет его вызывающему и в идентичность запроса
+    /// не входит: тот же каталог из другого канала — тот же ключ квитанции.
+    #[test]
+    fn workspace_origin_is_not_part_of_the_strict_submit_receipt_identity() {
+        let frame = |origin: &str| {
+            format!(
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{origin},\"responseBudgetMs\":7000}}}}"
+            )
+        };
+        let digests = [
+            r#"{"channel":"launchCwd"}"#,
+            r#"{"channel":"clientRoots"}"#,
+            r#"{"channel":"startupEnvironment","variable":"PROJECT_DIR","roots":"timeout"}"#,
+            r#"{"channel":"requestMetadata","capability":"host/meta"}"#,
+        ]
+        .map(|origin| {
+            read_and_decode_v5_request(&mut BufReader::new(Cursor::new(frame(origin) + "\n")))
+                .expect("strict submit with a workspace origin")
+                .into_strict_submit(&CoreIdentity::production_v5())
+                .expect("derive strict submit")
+                .receipt_key_digest
+        });
+
+        assert!(
+            digests.windows(2).all(|pair| pair[0] == pair[1]),
+            "{digests:?}"
+        );
+    }
+
     #[test]
     fn strict_decoded_submit_derives_the_frozen_application_receipt_key() {
         let frame = format!(
-            "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"responseBudgetMs\":7000}}}}\n"
+            "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":7000}}}}\n"
         );
         let decoded = read_and_decode_v5_request(&mut BufReader::new(Cursor::new(frame)))
             .expect("bounded strict submit frame");
@@ -1800,7 +1850,7 @@ mod tests {
     fn response_budget_is_not_part_of_the_strict_submit_receipt_identity() {
         let decode = |budget| {
             let frame = format!(
-                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"responseBudgetMs\":{budget}}}}}\n"
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":{budget}}}}}\n"
             );
             read_and_decode_v5_request(&mut BufReader::new(Cursor::new(frame)))
                 .expect("bounded strict submit frame")
@@ -1850,19 +1900,36 @@ mod tests {
                 "{{\"kind\":\"wait_task\",\"taskId\":\"{TASK_ID}\",\"waitMs\":7001}}"
             ),
             format!(
-                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"not-a-uuid\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"responseBudgetMs\":1}}}}"
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"not-a-uuid\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":1}}}}"
             ),
             format!(
-                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.unknown\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"responseBudgetMs\":1}}}}"
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.unknown\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":1}}}}"
             ),
             format!(
-                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"\",\"responseBudgetMs\":1}}}}"
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":1}}}}"
             ),
             format!(
-                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace\\u0000a\",\"responseBudgetMs\":1}}}}"
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace\\u0000a\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":1}}}}"
             ),
             format!(
-                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"responseBudgetMs\":7001}}}}"
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":7001}}}}"
+            ),
+            // The workspace origin is required: a frontend that does not say
+            // which host channel chose the directory is refused, not guessed.
+            format!(
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"responseBudgetMs\":1}}}}"
+            ),
+            format!(
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"launchDirectory\"}},\"responseBudgetMs\":1}}}}"
+            ),
+            format!(
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\",\"roots\":\"clientText\"}},\"responseBudgetMs\":1}}}}"
+            ),
+            format!(
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"clientRoots\",\"roots\":\"timeout\"}},\"responseBudgetMs\":1}}}}"
+            ),
+            format!(
+                "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"workspace-a\",\"workspaceOrigin\":{{\"channel\":\"startupEnvironment\",\"variable\":\"PROJECT\\u0000DIR\"}},\"responseBudgetMs\":1}}}}"
             ),
             format!(
                 "{{\"kind\":\"recover_invocation_receipt\",\"receiptKey\":{{\"invocationId\":\"{INVOCATION_ID}\"}}}}"
@@ -1881,7 +1948,7 @@ mod tests {
         }
 
         let oversized_workspace = format!(
-            "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"{}\",\"responseBudgetMs\":1}}}}",
+            "{{\"kind\":\"submit_invocation\",\"invocation\":{{\"invocationId\":\"{INVOCATION_ID}\",\"reservedTaskId\":\"{TASK_ID}\",\"tool\":\"unica.view\",\"arguments\":{{}},\"workspaceHint\":\"{}\",\"workspaceOrigin\":{{\"channel\":\"launchCwd\"}},\"responseBudgetMs\":1}}}}",
             "x".repeat(MAX_V5_REQUEST_LINE_BYTES)
         );
         assert!(decode_v5_client_request(oversized_workspace.as_bytes()).is_err());

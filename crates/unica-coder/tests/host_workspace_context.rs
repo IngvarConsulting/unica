@@ -616,3 +616,111 @@ fn client_roots_override_stale_startup_environment_on_every_call() {
     assert_workspace(&second.view(11, None), &extra);
     assert_workspace(&frontend.view(12, None), &current);
 }
+
+fn origin(response: &Value) -> Value {
+    let data = &response["result"]["structuredContent"]["data"];
+    assert!(data["workspaceRoot"].is_string(), "{response:#}");
+    data["workspaceRootOrigin"].clone()
+}
+
+/// #1237: ответ называет канал, выбравший каталог, и сам запрошенный
+/// каталог. Подсказка о переходе есть только у каналов, захваченных при
+/// запуске: метаданные вызова и roots уже следуют за проектом сессии.
+#[test]
+fn view_names_the_channel_that_chose_the_workspace_and_hints_only_for_stale_ones() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let plugin = workspace(root_dir.path(), "plugin");
+    let started = workspace(root_dir.path(), "проект запуска");
+    let current = workspace(root_dir.path(), "проект сессии");
+    let state = workspace(root_dir.path(), "state");
+    let _daemon = spawn_owned_daemon(&state);
+    let fixture = contract();
+    let variable = fixture["projectEnvironment"][0].as_str().unwrap();
+    let environment = [(variable, started.to_str().unwrap())];
+
+    let mut plain = Frontend::start(&plugin, &state, &environment);
+    let from_environment = origin(&plain.view(2, None));
+    assert_eq!(from_environment["channel"], "startupEnvironment");
+    assert_eq!(from_environment["variable"], variable);
+    assert!(
+        from_environment.get("roots").is_none(),
+        "{from_environment:#}"
+    );
+    assert_eq!(
+        Path::new(from_environment["requestedDirectory"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        started
+    );
+    assert!(
+        from_environment["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains(variable)),
+        "{from_environment:#}"
+    );
+
+    let from_metadata = origin(&plain.view(3, Some(json!(root(&current)))));
+    assert_eq!(from_metadata["channel"], "requestMetadata");
+    assert_eq!(from_metadata["capability"], fixture["metadataKey"]);
+    assert!(from_metadata.get("hint").is_none(), "{from_metadata:#}");
+
+    // Refusals that still name a root name its origin too: an invalid
+    // project file, and a tool refused before any source set is admitted.
+    let invalid = workspace(root_dir.path(), "битая настройка");
+    std::fs::write(invalid.join("v8project.yaml"), "source-set: [").unwrap();
+    let refused = plain.view(8, Some(json!(root(&invalid))));
+    assert_eq!(refused["result"]["isError"], true, "{refused:#}");
+    assert_eq!(
+        refused["result"]["structuredContent"]["data"]["workspaceRootOrigin"]["channel"],
+        "requestMetadata",
+        "{refused:#}"
+    );
+    plain.send(
+        9,
+        "tools/call",
+        json!({"name": "unica.search", "arguments": {"query": "Run"}}),
+    );
+    let unadmitted = plain.receive(9);
+    assert_eq!(unadmitted["result"]["isError"], true, "{unadmitted:#}");
+    let unadmitted_origin =
+        &unadmitted["result"]["structuredContent"]["data"]["workspaceRootOrigin"];
+    assert_eq!(
+        unadmitted_origin["channel"], "startupEnvironment",
+        "{unadmitted:#}"
+    );
+    assert!(unadmitted_origin["hint"].is_string(), "{unadmitted:#}");
+    drop(plain);
+
+    let mut with_roots = Frontend::start_with_roots(
+        &plugin,
+        &state,
+        &environment,
+        Some(RootsAnswer::Roots(vec![root(&current)])),
+    );
+    let from_roots = origin(&with_roots.view(4, None));
+    assert_eq!(from_roots["channel"], "clientRoots");
+    assert!(from_roots.get("hint").is_none(), "{from_roots:#}");
+    assert_eq!(
+        Path::new(from_roots["requestedDirectory"].as_str().unwrap())
+            .canonicalize()
+            .unwrap(),
+        current
+    );
+
+    for (answer, fallback, id) in [
+        (RootsAnswer::Roots(Vec::new()), "empty", 5),
+        (RootsAnswer::Error, "error", 6),
+        (RootsAnswer::Silent, "timeout", 7),
+    ] {
+        with_roots.roots = Some(answer);
+        let fell_back = origin(&with_roots.view(id, None));
+        assert_eq!(fell_back["channel"], "startupEnvironment", "{fell_back:#}");
+        assert_eq!(fell_back["roots"], fallback, "{fell_back:#}");
+        assert!(
+            fell_back["hint"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("roots")),
+            "{fell_back:#}"
+        );
+    }
+}

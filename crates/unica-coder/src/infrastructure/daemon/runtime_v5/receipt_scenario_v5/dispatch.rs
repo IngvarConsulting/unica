@@ -982,7 +982,7 @@ fn run_receipt_scenario_with_control_observer(
                     submit_key.reserved_task_id(),
                     V5ToolIdentity::View,
                     arguments.clone(),
-                    workspace_hint.clone(),
+                    unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace_hint.clone()),
                     response_budget_ms,
                 )
                 .map_err(|error| format!("construct spawned receipt scenario submit: {error}"))?;
@@ -1071,7 +1071,7 @@ fn run_receipt_scenario_with_control_observer(
                     submit_key.reserved_task_id(),
                     V5ToolIdentity::View,
                     arguments.clone(),
-                    workspace_hint.clone(),
+                    unica_bootstrap::ResolvedWorkspace::launch_cwd(workspace_hint.clone()),
                     response_budget_ms,
                 )
                 .map_err(|error| format!("construct receipt scenario submit: {error}"))?;

@@ -175,8 +175,8 @@ fn build_router(
         Arc::new(move |tool, arguments, host, deadline, cancellation| {
             // Resolve once per invocation. Never publish this choice back into
             // shared frontend state: another call may belong to another tree.
-            let workspace_hint = match workspace.resolve_request(host) {
-                Ok(directory) => directory,
+            let resolved = match workspace.resolve_request(host) {
+                Ok(resolved) => resolved,
                 Err(message) => {
                     let refusal = crate::domain::invocation::DomainResult::canonical_rejection(
                         None,
@@ -190,7 +190,7 @@ fn build_router(
             };
             submit_and_settle(
                 &call_client,
-                &workspace_hint,
+                resolved,
                 tool,
                 arguments,
                 deadline,
@@ -277,7 +277,7 @@ fn bounded_wait_ms(requested_wait_ms: u64, cutoff: Instant, now: Instant) -> u64
 
 fn submit_and_settle(
     client: &V5DaemonClient,
-    workspace_hint: &str,
+    workspace: unica_bootstrap::ResolvedWorkspace,
     tool: V5ToolIdentity,
     arguments: &Map<String, Value>,
     deadline: FrontendInvocationDeadline,
@@ -303,7 +303,7 @@ fn submit_and_settle(
         TaskId::new(),
         tool,
         arguments.clone(),
-        workspace_hint.to_owned(),
+        workspace,
         response_budget_ms,
     )
     .map_err(|message| ErrorData::invalid_params(message, None))?;

@@ -15,6 +15,8 @@ pub(crate) struct InvocationRequest {
     tool: ToolIdentity,
     arguments: Map<String, Value>,
     workspace_hint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_origin: Option<unica_bootstrap::WorkspaceOrigin>,
     response_budget_ms: u64,
 }
 
@@ -45,6 +47,7 @@ impl InvocationRequest {
             tool,
             arguments,
             workspace_hint: workspace_hint.into(),
+            workspace_origin: None,
             response_budget_ms,
         };
         request.validate()?;
@@ -67,6 +70,19 @@ impl InvocationRequest {
                 !matches!(name.as_str(), "at" | "limit" | "cursor") || !value.is_null()
             });
         }
+    }
+
+    /// The host channel that chose the workspace hint, when the wire carried it.
+    pub(crate) fn with_workspace_origin(
+        mut self,
+        origin: unica_bootstrap::WorkspaceOrigin,
+    ) -> Self {
+        self.workspace_origin = Some(origin);
+        self
+    }
+
+    pub(crate) fn workspace_origin(&self) -> Option<&unica_bootstrap::WorkspaceOrigin> {
+        self.workspace_origin.as_ref()
     }
 
     pub(crate) fn workspace_hint(&self) -> &str {
