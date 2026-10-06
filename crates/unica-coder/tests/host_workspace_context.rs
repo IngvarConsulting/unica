@@ -17,15 +17,35 @@ fn contract() -> Value {
     .unwrap()
 }
 
+/// What the test client answers to `roots/list`.
+enum RootsAnswer {
+    Roots(Vec<String>),
+    Error,
+    Silent,
+}
+
 struct Frontend {
     _process: OwnedProcess,
     input: ChildStdin,
     responses: Receiver<Value>,
     initialized: Value,
+    roots: Option<RootsAnswer>,
+    roots_requests: usize,
 }
 
 impl Frontend {
     fn start(cwd: &Path, state: &Path, environment: &[(&str, &str)]) -> Self {
+        Self::start_with_roots(cwd, state, environment, None)
+    }
+
+    /// A client that declares `roots` answers `roots/list` with its current
+    /// project on every request.
+    fn start_with_roots(
+        cwd: &Path,
+        state: &Path,
+        environment: &[(&str, &str)],
+        roots: Option<RootsAnswer>,
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_unica"));
         command
             .current_dir(cwd)
@@ -54,17 +74,24 @@ impl Frontend {
                 }
             }
         });
+        let capabilities = if roots.is_some() {
+            json!({"roots": {"listChanged": true}})
+        } else {
+            json!({})
+        };
         let mut frontend = Self {
             _process: process,
             input,
             responses,
             initialized: Value::Null,
+            roots,
+            roots_requests: 0,
         };
         frontend.send(
             1,
             "initialize",
             json!({
-                "protocolVersion": "2025-11-25", "capabilities": {},
+                "protocolVersion": "2025-11-25", "capabilities": capabilities,
                 "clientInfo": {"name": "host-context-integration", "version": "1"}
             }),
         );
@@ -94,17 +121,41 @@ impl Frontend {
         self.input.flush().unwrap();
     }
 
-    fn receive(&self, id: u64) -> Value {
+    fn receive(&mut self, id: u64) -> Value {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            let response = self
+            let message = self
                 .responses
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .expect("bounded stdio response");
-            if response["id"] == id {
-                return response;
+            // A server request shares the id space with responses: tell them
+            // apart by `method`, never by the id alone.
+            if message["method"] == "roots/list" {
+                self.answer_roots(&message["id"]);
+                continue;
+            }
+            if message.get("method").is_some() {
+                continue;
+            }
+            if message["id"] == id {
+                return message;
             }
         }
+    }
+
+    fn answer_roots(&mut self, id: &Value) {
+        self.roots_requests += 1;
+        let answer = match self.roots.as_ref().expect("roots were not declared") {
+            RootsAnswer::Roots(uris) => json!({"jsonrpc":"2.0", "id": id, "result": {
+                "roots": uris.iter().map(|uri| json!({"uri": uri})).collect::<Vec<_>>()
+            }}),
+            RootsAnswer::Error => json!({"jsonrpc":"2.0", "id": id, "error": {
+                "code": -32603, "message": "roots are unavailable"
+            }}),
+            RootsAnswer::Silent => return,
+        };
+        writeln!(self.input, "{answer}").unwrap();
+        self.input.flush().unwrap();
     }
 
     fn view(&mut self, id: u64, location: Option<Value>) -> Value {
@@ -485,4 +536,83 @@ fn each_build_gets_its_own_daemon_and_a_replaced_build_is_refused() {
         "{refused:#}"
     );
     assert_eq!(daemon_directories(&state).len(), 2);
+}
+
+fn root(path: &Path) -> String {
+    url::Url::from_directory_path(path).unwrap().to_string()
+}
+
+/// #1208: окружение проекта фиксируется при запуске frontend, а сессия
+/// хоста может сменить каталог позже (а в worktree-сессии окружение
+/// и вовсе называет основной checkout). Первый root клиента, запрошенный на
+/// этот вызов, перекрывает устаревшее окружение; метаданные вызова — выше.
+#[test]
+fn client_roots_override_stale_startup_environment_on_every_call() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let plugin = workspace(root_dir.path(), "plugin");
+    let stale = workspace(root_dir.path(), "старый проект");
+    let current = workspace(root_dir.path(), "текущий проект");
+    let moved = workspace(root_dir.path(), "новый каталог");
+    let extra = workspace(root_dir.path(), "дополнительный");
+    let state = workspace(root_dir.path(), "state");
+    let _daemon = spawn_owned_daemon(&state);
+    // The variable the host captures at launch; the contract names it.
+    let fixture = contract();
+    let project_environment = fixture["projectEnvironment"][0].as_str().unwrap();
+    let mut frontend = Frontend::start_with_roots(
+        &plugin,
+        &state,
+        &[(project_environment, stale.to_str().unwrap())],
+        Some(RootsAnswer::Roots(vec![root(&current), root(&extra)])),
+    );
+
+    assert_workspace(&frontend.view(2, None), &current);
+    // The client changed its project: the next call follows without restart.
+    frontend.roots = Some(RootsAnswer::Roots(vec![root(&moved)]));
+    assert_workspace(&frontend.view(3, None), &moved);
+    // Request metadata still outranks roots, and is not asked for them.
+    let asked = frontend.roots_requests;
+    assert_workspace(&frontend.view(4, Some(json!(root(&current)))), &current);
+    assert_eq!(frontend.roots_requests, asked);
+    // A supplied but malformed root is refused, never replaced by the env.
+    frontend.roots = Some(RootsAnswer::Roots(vec![moved.to_str().unwrap().to_owned()]));
+    assert_refusal(&frontend.view(5, None));
+    // A failed exchange supplies nothing: the launch context still applies.
+    frontend.roots = Some(RootsAnswer::Error);
+    assert_workspace(&frontend.view(6, None), &stale);
+    // No roots listed: likewise the launch context.
+    frontend.roots = Some(RootsAnswer::Roots(Vec::new()));
+    assert_workspace(&frontend.view(7, None), &stale);
+    // A client that never answers costs a bounded wait, not the call.
+    frontend.roots = Some(RootsAnswer::Silent);
+    let started = Instant::now();
+    assert_workspace(&frontend.view(8, None), &stale);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+
+    // Task controls own no workspace and do not ask for roots.
+    frontend.roots = Some(RootsAnswer::Roots(vec![root(&current)]));
+    let asked = frontend.roots_requests;
+    frontend.send(
+        9,
+        "tools/call",
+        json!({"name": "unica.task.get", "arguments": {"taskId": "unknown"}}),
+    );
+    frontend.receive(9);
+    assert_eq!(frontend.roots_requests, asked);
+
+    // Roots belong to one connection: a second frontend on the same daemon
+    // keeps its own project between the first one's calls.
+    let mut second = Frontend::start_with_roots(
+        &plugin,
+        &state,
+        &[(project_environment, stale.to_str().unwrap())],
+        Some(RootsAnswer::Roots(vec![root(&extra)])),
+    );
+    assert_workspace(&frontend.view(10, None), &current);
+    assert_workspace(&second.view(11, None), &extra);
+    assert_workspace(&frontend.view(12, None), &current);
 }

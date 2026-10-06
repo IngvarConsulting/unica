@@ -498,6 +498,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         }
                         LogicalReader::Mxl => mxl_content_requested(route)
                             .then(|| NodeKind::Body.as_str().to_string()),
+                        // Вложенная подсистема — другой файл под той же
+                        // корневой целью.
+                        LogicalReader::Subsystem | LogicalReader::Interface => {
+                            (!route.nested_subsystems().is_empty())
+                                .then(|| route.nested_subsystems().join("."))
+                        }
                         _ => None,
                     },
                 };
@@ -575,6 +581,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         "subsystem route has no typed target",
                     )
                 })?,
+                route.nested_subsystems(),
                 &mut || self.read_checkpoint(),
             );
         }
@@ -663,7 +670,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             )
         })?;
         self.ensure_owner_registered(target, admitted)?;
-        if let Some(payload) = self.read.external_metadata_payload(target)? {
+        if let Some(payload) = self
+            .read
+            .external_metadata_payload(target, &mut || self.read_checkpoint())?
+        {
             self.verify_payload_physical_children(target, &payload, admitted)?;
             return Ok(payload);
         }
@@ -835,7 +845,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 })?;
         let evidence = self
             .read
-            .metadata_owner_evidence(&target)
+            .metadata_owner_evidence(&target, &mut || self.read_checkpoint())
             .map_err(|error| {
                 if error.code() == RefusalCode::NotFound {
                     ViewError::detailed(
@@ -1261,7 +1271,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if let Some(evidence) = cache.get(&key) {
             return Ok(Arc::clone(evidence));
         }
-        let evidence = Arc::new(self.read.metadata_owner_evidence(target)?);
+        let evidence = Arc::new(
+            self.read
+                .metadata_owner_evidence(target, &mut || self.read_checkpoint())?,
+        );
         cache.insert(key, Arc::clone(&evidence));
         Ok(evidence)
     }
@@ -1500,6 +1513,14 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         };
         if target.as_str().split('.').next() == Some(NodeKind::WebSocketClient.as_str()) {
             return Ok(None);
+        }
+        if !route.nested_subsystems().is_empty() {
+            let resource =
+                (route.reader() == LogicalReader::Interface).then_some("CommandInterface.xml");
+            return self
+                .read
+                .nested_subsystem_export_path(target, route.nested_subsystems(), resource)
+                .map(Some);
         }
         let target_depth = target.as_str().split('.').count().div_ceil(2);
         let is_detail = at.segments().len() > target_depth;

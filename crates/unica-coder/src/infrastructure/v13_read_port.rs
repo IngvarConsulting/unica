@@ -88,7 +88,6 @@ pub(crate) struct DcsValidationInput {
 }
 
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
-const MAX_EXTERNAL_OWNER_ENTRIES: usize = 256;
 
 /// One actor-issued read authority for one admitted source set. Hidden v0.13
 /// reads are descriptor-relative to this retained directory and revisions come
@@ -295,44 +294,74 @@ impl ProviderReadAuthority {
         relative: &Path,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ViewError> {
-        self.read_relative_with_checkpoint(relative, max_bytes, &mut || Ok(()))
+        self.read_relative_with_checkpoint(relative, Some(max_bytes), &mut || Ok(()))
     }
 
     fn read_relative_with_checkpoint(
         &self,
         relative: &Path,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Vec<u8>, ViewError> {
+        self.read_optional_relative_with_checkpoint(relative, max_bytes, checkpoint)?
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!("relative source `{}` is absent", relative.display()),
+                )
+            })
+    }
+
+    fn read_optional_relative_with_checkpoint(
+        &self,
+        relative: &Path,
+        max_bytes: Option<usize>,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<Vec<u8>>, ViewError> {
         let mut bytes = Vec::new();
         let mut interrupted = None;
-        self.root
-            .visit_relative_regular_chunks(
-                relative,
-                || {
-                    checkpoint().map_err(|error| {
-                        interrupted = Some(error);
-                        std::io::Error::other("source read interrupted")
-                    })
-                },
-                |chunk| {
-                    if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("relative file exceeds the {max_bytes}-byte read limit"),
-                        ));
-                    }
-                    bytes.extend_from_slice(chunk);
-                    Ok(())
-                },
-            )
-            .map_err(|error| {
-                interrupted.unwrap_or_else(|| {
-                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        let visited = self.root.visit_relative_regular_chunks(
+            relative,
+            || {
+                checkpoint().map_err(|error| {
+                    interrupted = Some(error);
+                    std::io::Error::other("source read interrupted")
                 })
-            })?;
-        checkpoint()?;
-        Ok(bytes)
+            },
+            |chunk| {
+                let total = bytes.len().checked_add(chunk.len()).ok_or_else(|| {
+                    std::io::Error::other("relative source length is not representable")
+                })?;
+                if let Some(limit) = max_bytes.filter(|limit| total > *limit) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("relative file exceeds the {limit}-byte read limit"),
+                    ));
+                }
+                bytes
+                    .try_reserve(chunk.len())
+                    .map_err(std::io::Error::other)?;
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            },
+        );
+        if let Some(error) = interrupted {
+            return Err(error);
+        }
+        match visited {
+            Ok(_) => {
+                checkpoint()?;
+                Ok(Some(bytes))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                checkpoint()?;
+                Ok(None)
+            }
+            Err(error) => Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                error.to_string(),
+            )),
+        }
     }
 
     pub(crate) fn read_optional_relative(
@@ -518,7 +547,7 @@ impl ProviderReadAuthority {
         };
         let names = self
             .root
-            .read_immediate_names_bounded(MAX_EXTERNAL_OWNER_ENTRIES, || {
+            .read_immediate_names_with_limit(None, || {
                 checkpoint().map_err(|error| {
                     std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
                 })
@@ -540,8 +569,7 @@ impl ProviderReadAuthority {
                 continue;
             }
             let relative = PathBuf::from(&name);
-            let bytes =
-                self.read_relative_with_checkpoint(&relative, MAX_CONFIGURATION_BYTES, checkpoint)?;
+            let bytes = self.read_relative_with_checkpoint(&relative, None, checkpoint)?;
             checkpoint()?;
             if path
                 .file_name()
@@ -702,7 +730,7 @@ impl ProviderReadAuthority {
         // The previous format guard read the complete owner without a size cap.
         // Retaining its authority must not add an 8 MiB rejection for large roots.
         let source_bytes =
-            self.read_relative_with_checkpoint(&source_relative, usize::MAX, checkpoint)?;
+            self.read_relative_with_checkpoint(&source_relative, None, checkpoint)?;
         let format_guard = crate::infrastructure::format_guard::evaluate_retained_dcs_format_guard(
             &artifact,
             &text,
@@ -844,6 +872,7 @@ impl ProviderReadAuthority {
     pub(crate) fn external_metadata_payload(
         &self,
         target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Option<Value>, ViewError> {
         if !self.is_external_source_set() {
             return Ok(None);
@@ -855,7 +884,7 @@ impl ProviderReadAuthority {
                 "external typed metadata target must name its root owner",
             ));
         };
-        let descriptor = self.metadata_descriptor(target)?;
+        let descriptor = self.metadata_descriptor_with_checkpoint(target, None, checkpoint)?;
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence =
             prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
@@ -890,10 +919,18 @@ impl ProviderReadAuthority {
     pub(crate) fn metadata_owner_evidence(
         &self,
         target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<PlatformXmlSourceSetOwnerEvidence, ViewError> {
-        let descriptor = self.metadata_descriptor(target)?;
+        let external_root =
+            self.is_external_source_set() && target.as_str().split('.').count() == 2;
+        let limit = if external_root {
+            None
+        } else {
+            Some(MAX_CONFIGURATION_BYTES)
+        };
+        let descriptor = self.metadata_descriptor_with_checkpoint(target, limit, checkpoint)?;
         let relative = self.metadata_descriptor_relative(target)?;
-        if self.is_external_source_set() && target.as_str().split('.').count() == 2 {
+        if external_root {
             prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
                 .map_err(|error| {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.message)
@@ -950,16 +987,22 @@ impl ProviderReadAuthority {
     pub(crate) fn subsystem_payload(
         &self,
         target: &MetadataAddress,
+        nested: &[String],
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
-        let descriptor = self.metadata_descriptor(target)?;
-        let descriptor = std::str::from_utf8(&descriptor).map_err(|_| {
+        let (descriptor_relative, descriptor_bytes) =
+            self.registered_subsystem_descriptor(target, nested, checkpoint)?;
+        let descriptor = std::str::from_utf8(&descriptor_bytes).map_err(|_| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
                 "subsystem descriptor is not UTF-8",
             )
         })?;
-        let ci_relative = self.attached_resource_relative(target, "CommandInterface.xml")?;
+        let ci_relative = if nested.is_empty() {
+            self.attached_resource_relative(target, "CommandInterface.xml")?
+        } else {
+            nested_subsystem_resource(&descriptor_relative, "CommandInterface.xml")
+        };
         let command_interface = self
             .read_optional_relative(&ci_relative, MAX_CONFIGURATION_BYTES)?
             .map(|bytes| {
@@ -974,24 +1017,124 @@ impl ProviderReadAuthority {
             })
             .transpose()?;
         let (data, _) = parse_subsystem_info_xml(
-            Path::new(target.as_str()),
+            if nested.is_empty() {
+                Path::new(target.as_str())
+            } else {
+                descriptor_relative.as_path()
+            },
             descriptor,
             command_interface.is_some(),
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        let result = build_subsystem_info_result(
-            data,
-            None,
-            command_interface,
-            self.object_support(target, checkpoint)?,
-        );
+        if let Some(expected) = nested.last() {
+            if &data.name != expected {
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!(
+                        "subsystem descriptor `{}` names `{}` instead of `{expected}`",
+                        descriptor_relative.display(),
+                        data.name
+                    ),
+                ));
+            }
+        }
+        // Признак поддержки берётся из дескриптора читаемой подсистемы: у
+        // вложенной он свой, а не корня.
+        let support =
+            self.object_support_with_descriptor(target, Some(&descriptor_bytes), checkpoint)?;
+        let result = build_subsystem_info_result(data, None, command_interface, support);
         serde_json::to_value(result)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+    }
+
+    /// Спускается от корневой подсистемы к вложенной только по регистрации:
+    /// каждое следующее имя должно стоять в `ChildObjects` родителя. Файл,
+    /// лежащий на месте незарегистрированной подсистемы, подсистемой не
+    /// является. Читаются только дескрипторы цепочки, а не вся структура.
+    fn registered_subsystem_descriptor(
+        &self,
+        target: &MetadataAddress,
+        nested: &[String],
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<(PathBuf, Vec<u8>), ViewError> {
+        let mut relative = self.metadata_descriptor_relative(target)?;
+        let mut descriptor = self.metadata_descriptor(target)?;
+        for (depth, name) in nested.iter().enumerate() {
+            checkpoint()?;
+            let text = std::str::from_utf8(&descriptor).map_err(|_| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "subsystem descriptor is not UTF-8",
+                )
+            })?;
+            let (parent, _) = parse_subsystem_info_xml(&relative, text, false)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            // Промежуточный дескриптор обязан называть ту подсистему, по
+            // регистрации которой к нему пришли; корень сверен владельцем.
+            if let Some(expected) = depth.checked_sub(1).map(|index| &nested[index]) {
+                if &parent.name != expected {
+                    return Err(ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
+                        format!(
+                            "subsystem descriptor `{}` names `{}` instead of `{expected}`",
+                            relative.display(),
+                            parent.name
+                        ),
+                    ));
+                }
+            }
+            if !parent.child_names.iter().any(|child| child == name) {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    format!(
+                        "subsystem `{name}` is not registered in `{}`",
+                        relative.display()
+                    ),
+                ));
+            }
+            relative = nested_subsystem_descriptor(&relative, name);
+            descriptor = self
+                .read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
+                .ok_or_else(|| {
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        format!("subsystem descriptor `{}` is absent", relative.display()),
+                    )
+                })?;
+        }
+        Ok((relative, descriptor))
+    }
+
+    pub(crate) fn nested_subsystem_export_path(
+        &self,
+        target: &MetadataAddress,
+        nested: &[String],
+        resource: Option<&str>,
+    ) -> Result<String, ViewError> {
+        let mut relative = self.metadata_descriptor_relative(target)?;
+        for name in nested {
+            relative = nested_subsystem_descriptor(&relative, name);
+        }
+        path_text(match resource {
+            Some(resource) => nested_subsystem_resource(&relative, resource),
+            None => relative,
+        })
     }
 
     pub(crate) fn metadata_descriptor(
         &self,
         target: &MetadataAddress,
+    ) -> Result<Vec<u8>, ViewError> {
+        self.metadata_descriptor_with_checkpoint(target, Some(MAX_CONFIGURATION_BYTES), &mut || {
+            Ok(())
+        })
+    }
+
+    fn metadata_descriptor_with_checkpoint(
+        &self,
+        target: &MetadataAddress,
+        max_bytes: Option<usize>,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Vec<u8>, ViewError> {
         #[cfg(test)]
         {
@@ -1003,7 +1146,7 @@ impl ProviderReadAuthority {
                 .or_default() += 1;
         }
         let relative = self.metadata_descriptor_relative(target)?;
-        self.read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
+        self.read_optional_relative_with_checkpoint(&relative, max_bytes, checkpoint)?
             .ok_or_else(|| {
                 ViewError::new(
                     RefusalCode::NotFound,
@@ -1412,6 +1555,19 @@ impl ProviderReadAuthority {
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         )
     }
+}
+
+/// `Subsystems/A.xml` → `Subsystems/A/Subsystems/B.xml`.
+fn nested_subsystem_descriptor(parent: &Path, name: &str) -> PathBuf {
+    parent
+        .with_extension("")
+        .join("Subsystems")
+        .join(format!("{name}.xml"))
+}
+
+/// `Subsystems/A/Subsystems/B.xml` → `Subsystems/A/Subsystems/B/Ext/<resource>`.
+fn nested_subsystem_resource(descriptor: &Path, resource: &str) -> PathBuf {
+    descriptor.with_extension("").join("Ext").join(resource)
 }
 
 fn identity_metadata_payload_from_evidence(

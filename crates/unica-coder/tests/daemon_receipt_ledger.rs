@@ -10433,6 +10433,111 @@ fn task_terminal_receipt_crash_reconciles_without_replay() {
 }
 
 #[test]
+fn begun_staged_post_store_crash_recovers_exact_winner_without_replay() {
+    let report = execute(Scenario::fake(vec![
+        Action::ConfigureProvider {
+            execution_class: ExecutionClass::KnownLong,
+            terminal: TerminalFixture::NearLimitWithMaximumMetadata {
+                canonical_result_bytes: 16 * 1_024,
+            },
+            cooperative_cancel: true,
+            side_effect_marker: true,
+        },
+        Action::InstallBarrier {
+            point: BarrierPoint::BeforeTaskStoreCreate,
+        },
+        submit("submit"),
+        Action::WaitForEvent {
+            event: EventKind::BoundHandoffCommitted,
+        },
+        checkpoint_action("before-stage"),
+        Action::StagePendingHandoffTerminal,
+        checkpoint_action("staged"),
+        Action::ReleaseBarrier {
+            point: BarrierPoint::BeforeTaskStoreCreate,
+        },
+        Action::WaitForEvent {
+            event: EventKind::TaskStoreTerminalCommitted,
+        },
+        Action::Crash {
+            point: CrashPoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
+        },
+        checkpoint_action("crashed"),
+        Action::Restart,
+        checkpoint_action("reconciled"),
+        Action::Recover {
+            key: KeyCase::Exact,
+            label: "recovered".into(),
+        },
+        Action::ReadTask {
+            api: TaskApi::NativeGet,
+            label: "task".into(),
+        },
+        Action::Restart,
+        Action::ReadTask {
+            api: TaskApi::NativeGet,
+            label: "task-after-second-restart".into(),
+        },
+        checkpoint_action("reopened"),
+    ]));
+    let before = checkpoint(&report, "before-stage");
+    assert_eq!(
+        only_receipt(before).state,
+        SeedReceiptState::TaskHandoffActorBoundBegun
+    );
+    assert_eq!(before.callbacks.prepare, 1);
+    assert_eq!(before.callbacks.execute, 0);
+    let staged = checkpoint(&report, "staged");
+    let receipt = only_receipt(staged);
+    let winner = receipt
+        .staged_terminal
+        .as_ref()
+        .expect("saved second-owner winner");
+    assert_eq!(terminal_epoch_ms(winner), before.epoch_ms);
+    // One execution belongs to the explicitly staged second-owner fixture.
+    assert_eq!(staged.callbacks.execute, 1);
+    let crashed = checkpoint(&report, "crashed");
+    assert_eq!(only_receipt(crashed).staged_terminal.as_ref(), Some(winner));
+    assert_eq!(
+        task_link_state(only_task_link(crashed)),
+        SeedReceiptState::TaskBoundBegun
+    );
+    let stored = only_task(crashed);
+    assert_eq!(stored.status, TaskStatus::Completed);
+    assert_eq!(stored.terminal.as_ref(), Some(winner));
+    assert_eq!(stored.updated_epoch_ms, terminal_epoch_ms(winner));
+    assert_eq!(crashed.side_effect_markers, 0);
+    for label in ["reconciled", "reopened"] {
+        let snapshot = checkpoint(&report, label);
+        assert!(
+            snapshot.receipts.is_empty(),
+            "startup kept the unfinished staged owner"
+        );
+        assert_eq!(only_task(snapshot), stored);
+        assert_terminal_bound_link(only_task_link(snapshot), stored, winner);
+        assert_eq!(snapshot.task_link_reserved_count, 0);
+        assert_eq!(
+            snapshot.callbacks.total_domain(),
+            staged.callbacks.total_domain()
+        );
+        assert_eq!(snapshot.side_effect_markers, 0);
+        // Current startup status is separate from this retained crash history.
+        assert_eq!(snapshot.process_exit_elapsed_ms, Some(1));
+    }
+    let recovered = response(&report, "recovered");
+    assert_eq!(recovered.kind, ResponseKind::Task);
+    assert!(recovered.error.is_none());
+    // Recover's wire snapshot omits the scenario's projection and workspace fields.
+    let mut expected_recovered = stored.clone();
+    expected_recovered.projection_source = ProjectionSource::ReceiptLedger;
+    expected_recovered.workspace_identity_hash = None;
+    assert_eq!(recovered.task.as_ref().unwrap(), &expected_recovered);
+    assert_eq!(task_read(&report, "task"), stored);
+    assert_eq!(task_read(&report, "task-after-second-restart"), stored);
+    assert_eq!(count_event(&report, EventKind::TaskStoreCreated), 1);
+}
+
+#[test]
 fn late_submit_preserves_early_cancellation_after_delay_and_restart() {
     for (delay, restart) in [(7_125, false), (37_125, true), (3_600_000, true)] {
         let mut actions = vec![

@@ -47,12 +47,14 @@ fn project_typed_payload_inner(
                             .is_some_and(|segment| segment.name().is_some())),
             )
         });
+    let root_depth = root_depth + route.nested_subsystems().len();
     let suffix = &route.at().segments()[root_depth.min(route.at().segments().len())..];
     match route.reader() {
         LogicalReader::Configuration => return project_configuration(route.at(), &payload, suffix),
         LogicalReader::Metadata => return project_metadata(route.at(), &payload, suffix),
         LogicalReader::Form => return project_form(route.at(), &payload, suffix, form_events),
         LogicalReader::Role => return project_role(route.at(), &payload, suffix),
+        LogicalReader::Subsystem => return project_subsystem(route.at(), &payload, suffix),
         LogicalReader::Interface => {
             return project_subsystem_interface(route.at(), &payload, suffix)
         }
@@ -1392,6 +1394,158 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
     .with_branches(branches)
 }
 
+fn project_subsystem(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    let (content, dangling) = subsystem_content(address, payload);
+    let children = subsystem_children(address, payload, suffix);
+    if suffix.is_empty() {
+        let mut branches = Vec::new();
+        if !content.is_empty() {
+            branches.push(BranchRef::new(
+                format!("{address}.{}", NodeKind::Relation.as_str()),
+                content.len(),
+            ));
+        }
+        if !children.is_empty() {
+            branches.push(BranchRef::new(
+                format!("{address}.{}", NodeKind::Subsystem.as_str()),
+                children.len(),
+            ));
+        }
+        if payload
+            .get("commandInterface")
+            .is_some_and(|value| !value.is_null())
+        {
+            branches.push(BranchRef::new(
+                format!("{address}.{}", NodeKind::Interface.as_str()),
+                1,
+            ));
+        }
+        return Ok(NodeViewData::Node(
+            node_from_value(
+                LogicalReader::Subsystem,
+                address,
+                NodeKind::Subsystem,
+                payload,
+            )
+            .with_branches(branches)
+            .with_limits(content_limits(&dangling)),
+        ));
+    }
+    let first = &suffix[0];
+    match first.kind() {
+        // Состав — ссылки на чужие объекты, а не потомки подсистемы:
+        // они живут в общей ветви ссылок, и цель читается по своему адресу.
+        NodeKind::Relation => {
+            if suffix.len() > 1 || first.name().is_some() {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the relation branch lists targets; read the target at its own address",
+                ));
+            }
+            Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(
+                    address.to_string(),
+                    NodeKind::Relation.as_str(),
+                    "Relations",
+                    Map::new(),
+                )
+                .with_limits(content_limits(&dangling)),
+                content,
+            )))
+        }
+        NodeKind::Subsystem if suffix.len() == 1 && first.name().is_none() => {
+            Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(address.to_string(), "Subsystem", "Subsystems", Map::new()),
+                children
+                    .iter()
+                    .filter_map(|(child, name)| {
+                        serde_json::to_value(NodeView::new(
+                            child.to_string(),
+                            NodeKind::Subsystem.as_str(),
+                            name,
+                            Map::new(),
+                        ))
+                        .ok()
+                    })
+                    .collect(),
+            )))
+        }
+        kind => Err(ViewError::new(
+            RefusalCode::NotFound,
+            format!("subsystem has no {} branch", kind.as_str()),
+        )),
+    }
+}
+
+/// Разводит состав подсистемы на адресуемые ссылки и повисшие.
+///
+/// `Catalog.Товары` читается как адрес в том же наборе исходников. Ссылка
+/// по идентификатору или строка, которой грамматика адресов не знает, адреса
+/// не имеет; её называет слот `limits`, а чтение подсистемы продолжается.
+fn subsystem_content(address: &QualifiedAddress, payload: &Value) -> (Vec<Value>, Vec<String>) {
+    let mut content = Vec::new();
+    let mut dangling = Vec::new();
+    let items = payload.get("content").and_then(Value::as_array);
+    for reference in items.into_iter().flatten().filter_map(Value::as_str) {
+        let target = QualifiedAddress::parse(&format!("{}:{reference}", address.source_set()))
+            .ok()
+            .and_then(|at| {
+                let kind = at.segments().last()?.kind();
+                Some((at, kind))
+            });
+        match target {
+            Some((at, kind)) => content.push(json!({
+                "relation": "content",
+                "at": at.to_string(),
+                "kind": kind.as_str(),
+            })),
+            None => dangling.push(reference.to_string()),
+        }
+    }
+    (content, dangling)
+}
+
+/// Дочерние подсистемы с адресами. Счёт ветви и страница строятся из одного
+/// списка, поэтому имя, которому не собрать адрес, не попадает ни туда, ни туда.
+fn subsystem_children(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Vec<(QualifiedAddress, String)> {
+    // Узел подсистемы или её ветвь `Subsystem`: адрес ветви — префикс детей.
+    let branch = if suffix.is_empty() {
+        format!("{address}.{}", NodeKind::Subsystem.as_str())
+    } else {
+        address.to_string()
+    };
+    payload
+        .get("children")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|name| {
+            let child = QualifiedAddress::parse(&format!("{branch}.{name}")).ok()?;
+            Some((child, name.to_string()))
+        })
+        .collect()
+}
+
+fn content_limits(dangling: &[String]) -> Vec<String> {
+    if dangling.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "{} элементов состава не имеют логического адреса: {}",
+        dangling.len(),
+        dangling.join(", ")
+    )]
+}
+
 fn project_subsystem_interface(
     address: &QualifiedAddress,
     payload: &Value,
@@ -2102,7 +2256,6 @@ fn known_reader_branches(
             NodeKind::Setting,
         ],
         LogicalReader::Mxl => &[NodeKind::Area],
-        LogicalReader::Subsystem => &[NodeKind::Subsystem, NodeKind::Interface],
         _ => &[],
     };
     kinds

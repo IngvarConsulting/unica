@@ -211,7 +211,11 @@ is migrated or deleted.
 
 The plugin-data directory is not a workspace identity. ZCode supplies
 `ZCODE_PROJECT_DIR` and the compatible `CLAUDE_PROJECT_DIR`; conflicting project
-paths are rejected. The existing canonical workspace/profile keys continue to
+paths are rejected. These variables are captured when the host starts the
+server. When a client declares MCP `roots` in a session before protocol
+2026-07-28, each workspace tool call without host request metadata asks for
+them afresh, and the first root outranks the captured variables. A new session
+project is therefore picked up without restarting the server. The existing canonical workspace/profile keys continue to
 isolate project state.
 
 Each installed artifact lives below

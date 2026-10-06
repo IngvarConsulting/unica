@@ -6,6 +6,9 @@ check:
   - crates/unica-coder/tests/host_workspace_context.rs::startup_project_environment_and_request_override_are_forwarded
   - crates/unica-coder/tests/host_workspace_context.rs::required_or_malformed_context_never_falls_back_to_process_cwd
   - crates/unica-coder/tests/host_workspace_context.rs::conflicting_startup_project_environments_refuse_workspace_selection
+  - crates/unica-coder/tests/host_workspace_context.rs::client_roots_override_stale_startup_environment_on_every_call
+  - crates/unica-bootstrap/src/host/workspace_context.rs::first_client_root_outranks_stale_launch_environment_but_not_request_metadata
+  - crates/unica-bootstrap/src/host/workspace_context.rs::a_supplied_root_satisfies_required_context_and_a_malformed_one_never_falls_back
 ---
 
 # Рабочую папку вызова передаёт приложение-хост
@@ -16,10 +19,21 @@ check:
 вызова не изменяет папку следующих вызовов или других frontend общего демона.
 
 Адаптер запрашивает у Codex `codex/sandbox-state-meta` и читает `sandboxCwd`
-из `_meta` вызова: абсолютный путь либо локальный `file://` URI. Claude Code
-передаёт `CLAUDE_PROJECT_DIR`, ZCode — `ZCODE_PROJECT_DIR` или совместимый
-`CLAUDE_PROJECT_DIR`. Если обе переменные заданы, они должны указывать на одну
-папку. Переданная хостом папка должна существовать.
+из `_meta` вызова: абсолютный путь либо локальный `file://` URI. Клиент,
+объявивший MCP `roots` в сессии до протокола 2026-07-28, на каждый вызов без
+таких метаданных отвечает на `roots/list`; рабочей папкой становится первый
+root — локальный `file://` URI. Порядок roots спецификация MCP не задаёт:
+первым Claude Code ставит каталог проекта сессии, а не каталог оболочки после
+`cd`. Roots спрашиваются заново на каждый предметный вызов, поэтому новый
+проект сессии подхватывается без перезапуска frontend; управление заданиями
+рабочей папки не требует и roots не спрашивает. Пустой список или сорванный обмен —
+ошибка, таймаут, закрытый транспорт — контекста не передают.
+
+Переменные окружения захватываются при запуске frontend и стоят ниже roots:
+Claude Code передаёт `CLAUDE_PROJECT_DIR`, ZCode — `ZCODE_PROJECT_DIR` или
+совместимый `CLAUDE_PROJECT_DIR`. Если обе переменные заданы, они должны
+указывать на одну папку. Расхождение roots с переменной ошибкой не считается.
+Переданная хостом папка должна существовать.
 
 Некорректный переданный контекст даёт отказ `invalid_state` без подстановки
 другого проекта. Упакованный плагин требует контекст хоста; его технический

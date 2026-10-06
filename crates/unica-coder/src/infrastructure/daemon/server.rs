@@ -1843,6 +1843,68 @@ pub(crate) mod actor_capacity_tests {
             .is_symlink());
     }
 
+    #[test]
+    fn canonical_external_named_owner_accepts_large_inventory_and_descriptor() {
+        for kind in ["ExternalDataProcessor", "ExternalReport"] {
+            let (workspace, _, _) = dcs_check_workspace(kind);
+            let descriptor = workspace.path().join("src/Sales.xml");
+            let original = std::fs::read_to_string(&descriptor).unwrap();
+            let large = original.replace(
+                "</MetaDataObject>",
+                &format!("<!--{}--></MetaDataObject>", "x".repeat(9 * 1024 * 1024)),
+            );
+            std::fs::write(&descriptor, &large).unwrap();
+            let at = format!("main:{kind}.Sales");
+            let result = call_dcs_check(workspace.path(), ToolIdentity::View, &at);
+            assert!(
+                result.ok,
+                "actual canonical actor named owner refused beyond former8MiB: {result:?}"
+            );
+            let node = result.data.unwrap();
+            assert_eq!(node["at"], at);
+            assert_eq!(node["kind"], kind);
+            assert_eq!(node["title"], "Sales");
+            assert_eq!(std::fs::read_to_string(descriptor).unwrap(), large);
+        }
+    }
+
+    #[test]
+    fn canonical_external_inventory_reports_all_257_owners_and_reaches_the_last() {
+        let (workspace, _, _) = dcs_check_workspace("ExternalDataProcessor");
+        // Existing fixture Sales.xml + Sales directory =2 immediate members.
+        // Add256 actual independent owners; useful count257 exceeds former256.
+        for index in 0..256 {
+            let name = format!("Owner{index:03}");
+            let descriptor = format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ExternalDataProcessor uuid="10000000-0000-4000-8000-{index:012}"><Properties><Name>{name}</Name></Properties><ChildObjects/></ExternalDataProcessor></MetaDataObject>"#
+            );
+            std::fs::write(workspace.path().join(format!("src/{name}.xml")), descriptor).unwrap();
+        }
+        let root = call_dcs_check(workspace.path(), ToolIdentity::View, "main:Configuration");
+        assert!(
+            root.ok,
+            "actual canonical actor inventory refused former count limit: {root:?}"
+        );
+        let root = root.data.unwrap();
+        let branch = root["branches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["at"] == "main:ExternalDataProcessor")
+            .unwrap();
+        assert_eq!(branch["count"], 257);
+        let named = call_dcs_check(
+            workspace.path(),
+            ToolIdentity::View,
+            "main:ExternalDataProcessor.Owner255",
+        );
+        assert!(named.ok, "late actual canonical owner missing: {named:?}");
+        assert_eq!(
+            named.data.as_ref().unwrap()["at"],
+            "main:ExternalDataProcessor.Owner255"
+        );
+        assert_eq!(named.data.as_ref().unwrap()["title"], "Owner255");
+    }
     fn bootstrap_runtime() -> V5CanonicalInvocationRuntime {
         V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock))
     }

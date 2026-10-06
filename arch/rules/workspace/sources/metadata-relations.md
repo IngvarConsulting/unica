@@ -2,6 +2,7 @@
 id: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::every_reference_of_an_object_answers_in_one_relation_branch
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::a_subsystem_shows_its_content_and_reads_registered_children_at_depth
 ---
 
 # Ссылки объекта собраны в одной ветви Relation
@@ -9,7 +10,8 @@ check:
 Ссылки объекта метаданных на другие объекты возвращаются в ветви `Relation`.
 Каждый элемент содержит имя связи `relation`, логический адрес цели `at`
 и её вид `kind`. Владельцы, движения, основания и остальные виды ссылок
-различаются именем связи, а не отдельными ветвями.
+различаются именем связи, а не отдельными ветвями. Состав подсистемы —
+связь `content` той же ветви.
 
 Цель читается по собственному адресу. Спуск внутрь элемента `Relation`
 завершается `not_found`. Класс объектов и пространство имён без адреса
