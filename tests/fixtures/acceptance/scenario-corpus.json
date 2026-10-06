@@ -8048,6 +8048,312 @@
     }
    ],
    "id": "S311"
+  },
+  {
+   "id": "S312",
+   "area": "Формы",
+   "task": "Повторно добавить существующую форму элемента — отказ без дубля регистрации",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаЭлемента",
+           "type": "ObjectForm"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_state: form `ФормаЭлемента` already exists on `Catalog.Валюты`"
+    }
+   ]
+  },
+  {
+   "id": "S313",
+   "area": "Расширения конфигурации",
+   "task": "Заимствовать общий модуль в расширение и проверить расширение",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:Configuration",
+      "ops": [
+       {
+        "op": "object.borrow",
+        "args": {
+         "from": "nosupport:CommonModule.GoogleПереводчик"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "cfe"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S314",
+   "area": "Расширения конфигурации",
+   "task": "Создать и удалить собственный общий модуль расширения",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "CommonModule",
+          "name": "ПР_Временный"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonModule.ПР_Временный",
+      "ops": [
+       {
+        "op": "object.remove"
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "cfe"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S315",
+   "area": "XDTO и обмены",
+   "task": "Открыть один тип большого XDTO-пакета без находок по остальным типам",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S316",
+   "area": "Код BSL",
+   "task": "После правки функции проверить анализатором только изменённый модуль",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции",
+         "selector": {
+          "method": "МаксимальныйРазмерПорции"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Body"
+     },
+     "expect": [
+      "ok",
+      "provider"
+     ],
+     "validators": [
+      "bsl"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S317",
+   "area": "Код BSL",
+   "task": "Найти определение функции по смыслу",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "ПеревестиТекст",
+      "role": "semantic"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S318",
+   "area": "Код BSL",
+   "task": "Найти определение функции по символу",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "ПеревестиТекст",
+      "role": "symbol"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S319",
+   "area": "Расширения конфигурации",
+   "task": "Вставить код в заимствованный общий модуль расширения",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:Configuration",
+      "ops": [
+       {
+        "op": "object.borrow",
+        "args": {
+         "from": "nosupport:CommonModule.GoogleПереводчик"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "ext:CommonModule.GoogleПереводчик.Body",
+         "text": "Процедура ПриёмочнаяВставка() Экспорт\nКонецПроцедуры"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "gap"
+     ],
+     "gap": "У заимствованного модуля ещё нет файла BSL, а первая запись модуля через `apply` не материализует его: превью отвечает `provider_unavailable` «staged source evidence is unavailable» (#955, #1245)."
+    }
+   ]
   }
  ]
 }
