@@ -45,14 +45,13 @@ impl CanonicalInvocationService for BlockingProvider {
     }
 }
 
-pub fn run_daemon(state_root: &Path, control: &Path) -> Result<(), String> {
-    let config = DaemonServerConfig::new(
-        state_root.to_owned(),
-        CoreIdentity::production_v5(),
-        Duration::from_secs(20),
-    )
-    .with_invocation_service(Arc::new(BlockingProvider {
-        control: control.to_owned(),
-    }));
+/// Serves as the daemon of the built binary whose identity `core_identity` names.
+pub fn run_daemon(state_root: &Path, core_identity: &str, control: &Path) -> Result<(), String> {
+    use std::str::FromStr;
+    let identity = CoreIdentity::install(CoreIdentity::from_str(core_identity)?)?;
+    let config = DaemonServerConfig::new(state_root.to_owned(), identity, Duration::from_secs(20))
+        .with_invocation_service(Arc::new(BlockingProvider {
+            control: control.to_owned(),
+        }));
     runtime_v5::run_daemon(config)
 }

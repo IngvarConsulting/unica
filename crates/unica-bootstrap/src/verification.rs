@@ -27,14 +27,31 @@ const EXPECTED_COMPATIBILITY_TOOLS: [&str; 11] = [
 /// #490: every launch verifies both guaranteed lifecycles on fresh processes —
 /// a legacy `initialize` session (the 2025-06-18 offer real hosts still send)
 /// and the modern 2026-07-28 direct-first path opened by `server/discover`.
+///
+/// The probe receives the runtime manifest a host launch hands over, so the
+/// runtime derives the same build identity and reaches the host's daemon.
 pub fn verify_mcp_runtime(
     entrypoint: &Path,
     runtime_root: &Path,
+    runtime_manifest: Option<&Path>,
     provider_state_root: &Path,
     timeout: Duration,
 ) -> Result<()> {
-    verify_legacy_session(entrypoint, runtime_root, provider_state_root, timeout)?;
-    verify_modern_direct(entrypoint, runtime_root, provider_state_root, timeout)
+    let probe = ProbeLaunch {
+        entrypoint,
+        runtime_root,
+        runtime_manifest,
+        provider_state_root,
+    };
+    verify_legacy_session(&probe, timeout)?;
+    verify_modern_direct(&probe, timeout)
+}
+
+struct ProbeLaunch<'a> {
+    entrypoint: &'a Path,
+    runtime_root: &'a Path,
+    runtime_manifest: Option<&'a Path>,
+    provider_state_root: &'a Path,
 }
 
 struct RuntimeProbe {
@@ -45,10 +62,17 @@ struct RuntimeProbe {
 }
 
 impl RuntimeProbe {
-    fn spawn(entrypoint: &Path, runtime_root: &Path, provider_state_root: &Path) -> Result<Self> {
-        let mut child = Command::new(entrypoint)
-            .env("UNICA_PLUGIN_ROOT", runtime_root)
-            .env("UNICA_PROVIDER_STATE_DIR", provider_state_root)
+    fn spawn(launch: &ProbeLaunch<'_>) -> Result<Self> {
+        let entrypoint = launch.entrypoint;
+        let mut command = Command::new(entrypoint);
+        command
+            .env("UNICA_PLUGIN_ROOT", launch.runtime_root)
+            .env("UNICA_PROVIDER_STATE_DIR", launch.provider_state_root);
+        match launch.runtime_manifest {
+            Some(manifest) => command.env("UNICA_RUNTIME_MANIFEST", manifest),
+            None => command.env_remove("UNICA_RUNTIME_MANIFEST"),
+        };
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -97,13 +121,8 @@ impl Drop for RuntimeProbe {
     }
 }
 
-fn verify_legacy_session(
-    entrypoint: &Path,
-    runtime_root: &Path,
-    provider_state_root: &Path,
-    timeout: Duration,
-) -> Result<()> {
-    let mut probe = RuntimeProbe::spawn(entrypoint, runtime_root, provider_state_root)?;
+fn verify_legacy_session(probe_launch: &ProbeLaunch<'_>, timeout: Duration) -> Result<()> {
+    let mut probe = RuntimeProbe::spawn(probe_launch)?;
     send_json(
         &mut probe.stdin,
         &json!({
@@ -135,13 +154,8 @@ fn verify_legacy_session(
     check_compatibility_surface(&tools_response)
 }
 
-fn verify_modern_direct(
-    entrypoint: &Path,
-    runtime_root: &Path,
-    provider_state_root: &Path,
-    timeout: Duration,
-) -> Result<()> {
-    let mut probe = RuntimeProbe::spawn(entrypoint, runtime_root, provider_state_root)?;
+fn verify_modern_direct(probe_launch: &ProbeLaunch<'_>, timeout: Duration) -> Result<()> {
+    let mut probe = RuntimeProbe::spawn(probe_launch)?;
     let meta = json!({
         "io.modelcontextprotocol/protocolVersion": "2026-07-28",
         "io.modelcontextprotocol/clientCapabilities": {}

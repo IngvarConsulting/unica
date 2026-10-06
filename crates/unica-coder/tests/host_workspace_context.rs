@@ -2,7 +2,7 @@
 #[path = "support/frontend_process.rs"]
 mod frontend_process;
 
-use frontend_process::{read_endpoint, spawn_owned_daemon, OwnedProcess, PRODUCTION_V5_IDENTITY};
+use frontend_process::{production_identity, read_endpoint, spawn_owned_daemon, OwnedProcess};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -314,7 +314,7 @@ fn two_frontends_and_interleaved_calls_keep_their_workspace_on_one_daemon() {
     drop(first);
     assert_workspace(&second.view(5, Some(locations[1].clone())), &project_b);
     assert_eq!(
-        read_endpoint(&state, PRODUCTION_V5_IDENTITY)["pid"],
+        read_endpoint(&state, production_identity())["pid"],
         daemon.0.id(),
         "both frontends must use the owned shared daemon"
     );
@@ -418,6 +418,124 @@ fn conflicting_startup_project_environments_refuse_workspace_selection() {
         ],
     );
     assert_refusal(&frontend.view(2, None));
+}
+
+/// A packaged core's build: the runtime manifest names its core archive.
+fn write_core_manifest(path: &Path, archive_sha256: &str) {
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin-arm64",
+        ("linux", "x86_64") => "linux-x64",
+        ("windows", "x86_64") => "win-x64",
+        other => panic!("unsupported test host {other:?}"),
+    };
+    let manifest = json!({
+        "schemaVersion": 2,
+        "pluginVersion": "0.0.0",
+        "source": {"repository": "test", "commit": "workspace"},
+        "release": {"repository": "test", "tag": "workspace"},
+        "artifacts": {"unica": {"version": "0.0.0", "role": "core", "targets": {target: {
+            "asset": {"name": "unica.tar.gz", "url": "https://example.invalid/unica.tar.gz",
+                      "mediaType": "application/gzip", "sha256": archive_sha256},
+            "files": []
+        }}}}
+    });
+    std::fs::write(path, manifest.to_string()).unwrap();
+}
+
+fn daemon_directories(state: &Path) -> Vec<String> {
+    let mut names = std::fs::read_dir(state)
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.starts_with("daemon-p5-"))
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+/// The frontend-to-daemon protocol keeps no backward compatibility, so a
+/// daemon is keyed by the build: two builds on one state root never share a
+/// daemon, and a frontend whose executable was replaced does not start the
+/// new build under its own identity.
+#[test]
+fn each_build_gets_its_own_daemon_and_a_replaced_build_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let plugin = workspace(root.path(), "plugin");
+    let project = workspace(root.path(), "project");
+    let state = workspace(root.path(), "state");
+    let fixture = contract();
+    let project_environment = fixture["projectEnvironment"][0].as_str().unwrap();
+    let manifest_a = root.path().join("build-a.json");
+    let manifest_b = root.path().join("build-b.json");
+    write_core_manifest(&manifest_a, &"a".repeat(64));
+    write_core_manifest(&manifest_b, &"b".repeat(64));
+    let start = |manifest: &Path| {
+        Frontend::start(
+            &plugin,
+            &state,
+            &[
+                (project_environment, project.to_str().unwrap()),
+                ("UNICA_RUNTIME_MANIFEST", manifest.to_str().unwrap()),
+                ("UNICA_DAEMON_IDLE_GRACE_MS", "300"),
+            ],
+        )
+    };
+
+    // Build A's daemon is owned here so the test can stop it the way an
+    // idle exit or a crash would.
+    let identity_a = {
+        let output = Command::new(env!("CARGO_BIN_EXE_unica"))
+            .arg("--print-core-identity")
+            .env("UNICA_RUNTIME_MANIFEST", &manifest_a)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    assert_ne!(
+        identity_a,
+        production_identity(),
+        "the manifest names the build"
+    );
+    let mut daemon_a = OwnedProcess(
+        Command::new(env!("CARGO_BIN_EXE_unica"))
+            .args(["--daemon", "--state-root"])
+            .arg(&state)
+            .args(["--core-identity", &identity_a, "--idle-grace-ms", "20000"])
+            .env("UNICA_RUNTIME_MANIFEST", &manifest_a)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let endpoint_a = state
+        .join(format!("daemon-p5-{identity_a}"))
+        .join("endpoint.json");
+    let ready_until = Instant::now() + Duration::from_secs(10);
+    while !endpoint_a.exists() {
+        assert!(Instant::now() < ready_until, "build A daemon did not start");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let mut build_a = start(&manifest_a);
+    assert_workspace(&build_a.view(2, None), &project);
+    let mut build_b = start(&manifest_b);
+    assert_workspace(&build_b.view(3, None), &project);
+    let directories = daemon_directories(&state);
+    assert_eq!(directories.len(), 2, "{directories:?}");
+    assert!(directories.contains(&format!("daemon-p5-{identity_a}")));
+    drop(build_b);
+
+    // The daemon of build A is gone and the file it would restart from is
+    // now another build.
+    daemon_a.stop();
+    write_core_manifest(&manifest_a, &"c".repeat(64));
+    let refused = build_a.view(4, None);
+    assert!(
+        refused.to_string().contains("restart the host"),
+        "{refused:#}"
+    );
+    assert_eq!(daemon_directories(&state).len(), 2);
 }
 
 fn root(path: &Path) -> String {

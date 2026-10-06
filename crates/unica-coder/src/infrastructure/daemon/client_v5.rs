@@ -258,6 +258,9 @@ impl V5DaemonProcessOwner {
             }
         }
 
+        // Proving the build reads the executable; spend that before the
+        // readiness window is measured, not out of it.
+        super::identity::verify_executable_build(&executable, &core_identity)?;
         // Readiness and failure cleanup share the caller's deadline. Reserve
         // part of even a short recovery window instead of adding a new grace.
         let startup_budget = remaining(deadline, "spawn")?;

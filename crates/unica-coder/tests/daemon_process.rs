@@ -32,7 +32,7 @@ fn same_stdio_frontend_reconnects_to_external_successor() {
     assert_eq!(frontend.process.0.id(), frontend_pid);
     assert!(frontend.process.0.try_wait().unwrap().is_none());
     assert_eq!(
-        read_endpoint(&state, PRODUCTION_V5_IDENTITY)["pid"],
+        read_endpoint(&state, production_identity())["pid"],
         successor.0.id()
     );
 }
@@ -45,21 +45,21 @@ fn same_stdio_frontend_spawns_and_retains_successor_anchor() {
     let mut initial = spawn_owned_daemon(&state);
     let mut frontend = StdioFrontend::spawn(&state, &workspace);
     frontend.check(2);
-    let old = read_endpoint(&state, PRODUCTION_V5_IDENTITY);
+    let old = read_endpoint(&state, production_identity());
     initial.stop();
     frontend.check(3);
-    let successor = read_endpoint(&state, PRODUCTION_V5_IDENTITY);
+    let successor = read_endpoint(&state, production_identity());
     assert_ne!(successor["instanceId"], old["instanceId"]);
     // This is an observation window, not a readiness delay: the request session
     // has closed and only the frontend's retained anchor can prevent idle exit.
     thread::sleep(Duration::from_millis(1_200));
-    assert_eq!(read_endpoint(&state, PRODUCTION_V5_IDENTITY), successor);
+    assert_eq!(read_endpoint(&state, production_identity()), successor);
     frontend.check(4);
-    assert_eq!(read_endpoint(&state, PRODUCTION_V5_IDENTITY), successor);
+    assert_eq!(read_endpoint(&state, production_identity()), successor);
     drop(frontend);
     wait_until(
         Duration::from_secs(5),
-        || !endpoint_path(&state, PRODUCTION_V5_IDENTITY).exists(),
+        || !endpoint_path(&state, production_identity()).exists(),
         "self-spawned successor shutdown after frontend exit",
     );
 }
@@ -126,7 +126,7 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_unica"));
     let mut first = spawn_frontend(
         &state_root,
-        PRODUCTION_V5_IDENTITY,
+        production_identity(),
         &executable,
         "first",
         &go,
@@ -134,7 +134,7 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
     );
     let mut second = spawn_frontend(
         &state_root,
-        PRODUCTION_V5_IDENTITY,
+        production_identity(),
         &executable,
         "second",
         &go,
@@ -147,7 +147,7 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
     let first_pid = read_pid(state_root.join("first.result"));
     let second_pid = read_pid(state_root.join("second.result"));
     assert_eq!(first_pid, second_pid);
-    let endpoint = read_endpoint(&state_root, PRODUCTION_V5_IDENTITY);
+    let endpoint = read_endpoint(&state_root, production_identity());
     assert_eq!(endpoint["pid"], first_pid);
     assert_eq!(endpoint["host"], "127.0.0.1");
     assert!(endpoint["port"].as_u64().is_some_and(|port| port > 0));
@@ -157,7 +157,7 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
             "--state-root",
             state_root.to_str().unwrap(),
             "--core-identity",
-            PRODUCTION_V5_IDENTITY,
+            production_identity(),
             "--idle-grace-ms",
             "350",
         ])
@@ -170,14 +170,14 @@ fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
         "{}",
         String::from_utf8_lossy(&competing.stderr)
     );
-    assert_eq!(read_endpoint(&state_root, PRODUCTION_V5_IDENTITY), endpoint);
+    assert_eq!(read_endpoint(&state_root, production_identity()), endpoint);
 
     std::fs::write(&release, b"release").unwrap();
     assert_child_success(&mut first);
     assert_child_success(&mut second);
     wait_until(
         Duration::from_secs(5),
-        || !endpoint_path(&state_root, PRODUCTION_V5_IDENTITY).exists(),
+        || !endpoint_path(&state_root, production_identity()).exists(),
         "owned endpoint removal",
     );
 }
@@ -190,21 +190,21 @@ fn v5_frontend_process_spawns_the_same_binary_and_pings_the_v5_runtime() {
 
     let mut owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
         &state_root,
-        PRODUCTION_V5_IDENTITY,
+        production_identity(),
         &executable,
         PROCESS_FIXTURE_IDLE_GRACE_MS,
     )
     .expect("spawn and connect exact protocol-v5 daemon");
     owner.ping().expect("ping exact protocol-v5 daemon");
-    let endpoint = read_endpoint(&state_root, PRODUCTION_V5_IDENTITY);
+    let endpoint = read_endpoint(&state_root, production_identity());
     assert_eq!(endpoint["protocolVersion"], 5);
-    assert_eq!(endpoint["coreIdentity"], PRODUCTION_V5_IDENTITY);
+    assert_eq!(endpoint["coreIdentity"], production_identity());
     assert_eq!(endpoint["pid"], owner.daemon_pid());
     drop(owner);
 
     wait_until(
         Duration::from_secs(5),
-        || !endpoint_path(&state_root, PRODUCTION_V5_IDENTITY).exists(),
+        || !endpoint_path(&state_root, production_identity()).exists(),
         "v5 owned endpoint removal",
     );
 }
@@ -217,17 +217,17 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
 
     let owner = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
         &state_root,
-        PRODUCTION_V5_IDENTITY,
+        production_identity(),
         &executable,
         STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS,
     )
     .expect("spawn the initial exact protocol-v5 daemon");
     let initial_pid = owner.daemon_pid();
     let blackhole = TcpListener::bind(("127.0.0.1", 0)).expect("bind stale endpoint blackhole");
-    let mut stale_endpoint = read_endpoint(&state_root, PRODUCTION_V5_IDENTITY);
+    let mut stale_endpoint = read_endpoint(&state_root, production_identity());
     let stale_instance = stale_endpoint["instanceId"].clone();
     stale_endpoint["port"] = Value::from(blackhole.local_addr().expect("blackhole address").port());
-    let endpoint_record_path = endpoint_path(&state_root, PRODUCTION_V5_IDENTITY);
+    let endpoint_record_path = endpoint_path(&state_root, production_identity());
     let mut stale_bytes = serde_json::to_vec(&stale_endpoint).expect("serialize stale endpoint");
     stale_bytes.push(b'\n');
     let mut endpoint_file = OpenOptions::new()
@@ -245,7 +245,7 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
         STALE_ENDPOINT_INITIAL_IDLE_GRACE_MS + 250,
     ));
     assert_eq!(
-        read_endpoint(&state_root, PRODUCTION_V5_IDENTITY),
+        read_endpoint(&state_root, production_identity()),
         stale_endpoint,
         "the original daemon removed a stale endpoint record it no longer owned"
     );
@@ -253,7 +253,7 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
     let started = Instant::now();
     let replacement = unica_coder::interfaces::daemon::connect_owner_for_protocol_test(
         &state_root,
-        PRODUCTION_V5_IDENTITY,
+        production_identity(),
         &executable,
         PROCESS_FIXTURE_IDLE_GRACE_MS,
     );
@@ -267,7 +267,7 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
         .ping()
         .expect("ping the replacement exact protocol-v5 daemon");
     assert_ne!(replacement.daemon_pid(), initial_pid);
-    let replacement_endpoint = read_endpoint(&state_root, PRODUCTION_V5_IDENTITY);
+    let replacement_endpoint = read_endpoint(&state_root, production_identity());
     assert_ne!(replacement_endpoint["instanceId"], stale_instance);
     assert_ne!(replacement_endpoint["port"], stale_endpoint["port"]);
     assert!(
@@ -278,7 +278,7 @@ fn stale_v5_endpoint_probe_preserves_budget_to_spawn_a_replacement() {
 
     wait_until(
         Duration::from_secs(5),
-        || !endpoint_path(&state_root, PRODUCTION_V5_IDENTITY).exists(),
+        || !endpoint_path(&state_root, production_identity()).exists(),
         "replacement v5 endpoint removal",
     );
 }

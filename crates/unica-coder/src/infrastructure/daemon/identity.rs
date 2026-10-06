@@ -19,6 +19,7 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -33,23 +34,71 @@ const RECEIPT_AUTHORITY_LOCK_NAME: &str = ".receipt-authority.lock";
 /// directory (`daemon-p5-…`) and the identity digest.
 pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 5;
 
+/// Environment through which the bootstrap hands the verified runtime
+/// manifest to the core it launched.
+const RUNTIME_MANIFEST_ENV: &str = "UNICA_RUNTIME_MANIFEST";
+
+/// The build identity of this process, installed once by its entry point.
+static BUILD_IDENTITY: OnceLock<CoreIdentity> = OnceLock::new();
+
+/// Refusal when the executable a frontend would start its daemon from is no
+/// longer the build the frontend runs.
+pub(crate) const EXECUTABLE_CHANGED: &str = "the unica executable changed after this process started; restart the host to use the new build";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CoreIdentity(CoreIdentityDigest);
 
 impl CoreIdentity {
-    /// The identity the production frontend connects to: the exact protocol-v5
-    /// daemon of this core ABI.
+    /// The identity this process's daemon is keyed by.
+    ///
+    /// The frontend-to-daemon protocol is internal and keeps no backward
+    /// compatibility, so a daemon is keyed by the build, not by a release
+    /// version: a frontend never meets a daemon of another build. The entry
+    /// point installs the build identity before any daemon exchange; a process
+    /// that installed none (an in-process test) uses the ABI identity alone.
     pub(crate) fn production() -> Self {
-        Self::production_v5()
+        BUILD_IDENTITY.get().cloned().unwrap_or_else(Self::abi_v5)
     }
 
     pub(crate) fn production_v5() -> Self {
+        Self::production()
+    }
+
+    /// The frozen ABI part: core ABI and daemon protocol, without the build.
+    pub(crate) fn abi_v5() -> Self {
         let mut digest = Sha256::new();
         digest.update(CORE_ABI_IDENTITY.as_bytes());
         digest.update(b"\0");
         digest.update(DAEMON_PROTOCOL_IDENTITY_PREFIX.as_bytes());
         digest.update(DAEMON_PROTOCOL_VERSION.to_string().as_bytes());
         Self(CoreIdentityDigest::from_sha256(digest.finalize().into()))
+    }
+
+    /// The ABI identity bound to one build fingerprint.
+    fn for_build(fingerprint: &str) -> Self {
+        let mut digest = Sha256::new();
+        digest.update(Self::abi_v5().as_str().as_bytes());
+        digest.update(b"\0build\0");
+        digest.update(fingerprint.as_bytes());
+        Self(CoreIdentityDigest::from_sha256(digest.finalize().into()))
+    }
+
+    /// Compute this executable's build identity and install it for the
+    /// process. Called once, at start, before the binary can be replaced.
+    pub(crate) fn install_build() -> Result<Self, String> {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("failed to locate the unica executable: {error}"))?;
+        Self::install(build_identity_of(&executable)?)
+    }
+
+    /// Install an identity computed elsewhere: a test fixture that serves or
+    /// connects on behalf of a built binary.
+    pub(crate) fn install(identity: Self) -> Result<Self, String> {
+        let installed = BUILD_IDENTITY.get_or_init(|| identity.clone());
+        if installed != &identity {
+            return Err("a different build identity is already installed".to_string());
+        }
+        Ok(identity)
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -65,6 +114,52 @@ impl fmt::Display for CoreIdentity {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
+}
+
+/// The build identity of `executable`: the archive digest the bootstrap
+/// verified for this target when it launched a packaged core, otherwise the
+/// SHA-256 of the executable bytes.
+pub(crate) fn build_identity_of(executable: &Path) -> Result<CoreIdentity, String> {
+    if let Some(digest) = packaged_core_digest() {
+        return Ok(CoreIdentity::for_build(&format!("release:{digest}")));
+    }
+    build_identity_of_executable(executable)
+}
+
+fn build_identity_of_executable(executable: &Path) -> Result<CoreIdentity, String> {
+    let mut file = File::open(executable)
+        .map_err(|error| format!("failed to read the unica executable: {error}"))?;
+    let mut digest = Sha256::new();
+    io::copy(&mut file, &mut digest)
+        .map_err(|error| format!("failed to read the unica executable: {error}"))?;
+    let digest = CoreIdentityDigest::from_sha256(digest.finalize().into());
+    Ok(CoreIdentity::for_build(&format!(
+        "executable:{}",
+        digest.as_str()
+    )))
+}
+
+/// A frontend about to start its daemon from `executable` proves that the file
+/// is still the build it runs: otherwise the daemon would serve another build
+/// under this build's identity.
+pub(crate) fn verify_executable_build(
+    executable: &Path,
+    identity: &CoreIdentity,
+) -> Result<(), String> {
+    if BUILD_IDENTITY.get() != Some(identity) {
+        return Ok(());
+    }
+    if &build_identity_of(executable)? != identity {
+        return Err(EXECUTABLE_CHANGED.to_string());
+    }
+    Ok(())
+}
+
+fn packaged_core_digest() -> Option<String> {
+    let path = std::env::var_os(RUNTIME_MANIFEST_ENV).filter(|value| !value.is_empty())?;
+    let manifest = unica_bootstrap::RuntimeManifest::load(Path::new(&path)).ok()?;
+    let target = unica_bootstrap::HostTarget::current().ok()?;
+    Some(manifest.target(target).ok()?.asset.sha256.clone())
 }
 
 impl FromStr for CoreIdentity {
@@ -505,6 +600,30 @@ mod tests {
             "the retired protocol-v3 digest is not an identity of this core"
         );
         assert_eq!(DAEMON_PROTOCOL_VERSION, 5);
+    }
+
+    /// Сборка определяется байтами исполняемого файла: та же сборка под
+    /// другим путём делит демон, любая пересборка получает свой.
+    #[test]
+    fn executable_bytes_name_the_build_and_its_daemon_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = root.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let original = write("a", b"build one");
+        let copy = write("b", b"build one");
+        let rebuilt = write("c", b"build two");
+        let identity = |path: &Path| build_identity_of_executable(path).unwrap();
+
+        assert_eq!(identity(&original), identity(&copy));
+        assert_ne!(identity(&original), identity(&rebuilt));
+        assert_ne!(identity(&original), CoreIdentity::abi_v5());
+        assert_ne!(
+            DaemonStateDirectory::path_for(Path::new("/state"), &identity(&original)),
+            DaemonStateDirectory::path_for(Path::new("/state"), &identity(&rebuilt))
+        );
     }
 
     #[test]

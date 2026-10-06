@@ -171,6 +171,7 @@ fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) ->
     verify_mcp_runtime(
         &installed.entrypoint,
         &installed.root,
+        Some(&plugin_root.join("runtime-manifest.json")),
         provider_state_root,
         Duration::from_secs(20),
     )?;

@@ -11,6 +11,13 @@ fn run() {
         }
         return;
     }
+    if args.iter().any(|arg| arg == "--print-core-identity") {
+        if let Err(error) = unica_coder::interfaces::daemon::print_core_identity() {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.iter().any(|arg| arg == "--capacity-report") {
         if let Err(error) = unica_coder::interfaces::daemon::print_capacity_report_from_args(&args)
         {

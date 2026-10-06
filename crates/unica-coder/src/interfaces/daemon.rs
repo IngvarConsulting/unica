@@ -23,6 +23,11 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let parsed = parse_daemon_args(args)?;
     let state_root = PathBuf::from(parsed.state_root);
     let core_identity = CoreIdentity::from_str(&parsed.core_identity)?;
+    // The frontend passed its own build identity. A daemon started from a
+    // replaced executable is another build and must not serve that identity.
+    if CoreIdentity::install_build()? != core_identity {
+        return Err(crate::infrastructure::daemon::identity::EXECUTABLE_CHANGED.to_string());
+    }
     let idle_grace = parsed.idle_grace;
     let config = DaemonServerConfig::new(state_root, core_identity, idle_grace);
     crate::infrastructure::daemon::runtime_v5::run_daemon(config)
@@ -34,6 +39,7 @@ pub fn print_capacity_report_from_args(args: &[String]) -> Result<(), String> {
         return Err("usage: unica --capacity-report".to_string());
     }
     let root = default_user_daemon_state_root()?;
+    CoreIdentity::install_build()?;
     match capacity_report_at_root(&root)? {
         Some(report) => print!("{report}"),
         None => println!("{{\"status\":\"not-recorded\"}}"),
@@ -106,6 +112,7 @@ pub(crate) fn connect_default_user_daemon(state_root: &Path) -> Result<V5DaemonC
     let executable = std::env::current_exe()
         .map_err(|error| format!("failed to locate current unica executable: {error}"))?;
     let idle_grace = configured_idle_grace(&|name| std::env::var_os(name))?;
+    CoreIdentity::install_build()?;
     V5DaemonClient::connect(
         state_root.to_path_buf(),
         CoreIdentity::production(),
@@ -124,7 +131,8 @@ pub fn connect_owner_for_protocol_test(
     executable: &Path,
     idle_grace_ms: u64,
 ) -> Result<DaemonOwnerLease, String> {
-    let identity = CoreIdentity::from_str(core_identity)?;
+    // The fixture connects on behalf of the built binary it names.
+    let identity = CoreIdentity::install(CoreIdentity::from_str(core_identity)?)?;
     let idle_grace = Duration::from_millis(idle_grace_ms);
     if idle_grace.is_zero() || idle_grace.as_millis() > MAX_IDLE_GRACE_MS {
         return Err("daemon idle grace is outside the supported range".to_string());
@@ -136,6 +144,14 @@ pub fn connect_owner_for_protocol_test(
         idle_grace,
     )?;
     Ok(DaemonOwnerLease { inner })
+}
+
+/// The build identity of this binary, for process-level fixtures that start or
+/// serve a daemon on its behalf.
+#[doc(hidden)]
+pub fn print_core_identity() -> Result<(), String> {
+    println!("{}", CoreIdentity::install_build()?);
+    Ok(())
 }
 
 /// Resolve the versioned daemon endpoint used by process-level protocol fixtures without
