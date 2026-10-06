@@ -7,6 +7,11 @@ check:
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::every_cross_store_crash_point_reconciles_without_split_brain
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::unstaged_task_bind_is_refused_against_a_staged_handoff_predecessor
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::prepared_handoff_preserves_staged_epoch_across_clock_jumps
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::promised_queued_staged_transfer_preserves_exact_winner_at_same_epoch
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::promised_queued_staged_transfer_preserves_exact_winner_across_clock_jumps
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::staged_terminal_retry_refuses_foreign_successor_without_rewriting_bytes
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::staged_terminal_retry_refuses_changed_successor_metadata_without_rewriting_bytes
+  - crates/unica-coder/src/infrastructure/task_store_v5.rs::staged_terminal_cas_reconciles_uncertain_commit_by_exact_successor
 ---
 
 # Сохранённый результат задачи восстанавливается без повторного исполнения
@@ -15,6 +20,13 @@ check:
 может подтвердить уже сохранённый результат чтением. Он не создаёт новую
 версию записи. При новом переходе требуются ожидаемые идентичность, версия
 и исходное состояние; чужая запись или другой конечный результат отклоняются.
+
+Перенос подготовленного результата из квитанции проверяет сохранённое
+доказательство передачи и полную исходную запись TaskStore. Этот переход
+допустим из `Queued` и `Working`; обычное завершение исполняемой задачи
+сохраняет требование `Working`. Точный повтор переноса принимает только
+полную ожидаемую запись после перехода: конечное состояние, следующую
+версию, сохранённое время результата и все неизменяемые поля исходной записи.
 
 Сбой между сохранением результата и обновлением связи с квитанцией
 не теряет результат. При восстановлении записи сводятся к одному

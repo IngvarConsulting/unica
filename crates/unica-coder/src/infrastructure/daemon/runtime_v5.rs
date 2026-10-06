@@ -1388,18 +1388,12 @@ impl V5TaskProjection {
         Ok(bound)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn publish_bound_task_terminal(
-        &self,
-        expected: &TaskBoundReceipt,
-        record: &V5StoredInvocationRecord,
+    fn terminal_publication(
         terminal: &crate::application::receipt_ledger::V5CanonicalTerminal,
         terminal_epoch_ms: u64,
-        deadline: Instant,
-        hooks: &dyn V5RuntimeHooks,
-    ) -> Result<(V5StoredInvocationRecord, TaskTerminalBoundReceipt), V5TaskProjectionFailure> {
+    ) -> (V5TerminalPublication, ClosedTerminalStatus) {
         let terminal_digest = terminal.digest().clone();
-        let (publication, terminal_status) = match terminal.outcome() {
+        match terminal.outcome() {
             ReceiptTerminalOutcome::Completed { result } => (
                 V5TerminalPublication::Completed {
                     terminal_epoch_ms,
@@ -1423,7 +1417,20 @@ impl V5TaskProjection {
                 },
                 ClosedTerminalStatus::Cancelled,
             ),
-        };
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_bound_task_terminal(
+        &self,
+        expected: &TaskBoundReceipt,
+        record: &V5StoredInvocationRecord,
+        terminal: &crate::application::receipt_ledger::V5CanonicalTerminal,
+        terminal_epoch_ms: u64,
+        deadline: Instant,
+        hooks: &dyn V5RuntimeHooks,
+    ) -> Result<(V5StoredInvocationRecord, TaskTerminalBoundReceipt), V5TaskProjectionFailure> {
+        let (publication, _) = Self::terminal_publication(terminal, terminal_epoch_ms);
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let identity = record.identity();
         let receipt_key_digest = record.receipt_key_digest.clone();
@@ -1433,6 +1440,126 @@ impl V5TaskProjection {
             .map_err(|error| {
                 V5TaskProjectionFailure::from_task_store(error, receipt_key_digest, true)
             })?;
+        self.finish_task_terminal_publication(expected, terminal_record, deadline, hooks)
+    }
+
+    fn publish_staged_bound_task_terminal(
+        &self,
+        staged: &TaskHandoffActorBoundReceipt,
+        expected: &TaskBoundReceipt,
+        record: &V5StoredInvocationRecord,
+        deadline: Instant,
+        hooks: &dyn V5RuntimeHooks,
+    ) -> Result<(V5StoredInvocationRecord, TaskTerminalBoundReceipt), V5TaskProjectionFailure> {
+        let HandoffTerminalStage::Staged {
+            terminal,
+            terminal_epoch_ms,
+            certificate,
+        } = staged.terminal_stage()
+        else {
+            return Err(V5TaskProjectionFailure::fail_stop(
+                ReceiptLedgerError::TaskBoundMismatch,
+            ));
+        };
+        if !certificate.matches_staged_terminal(
+            staged.key(),
+            staged.key_digest(),
+            staged.link(),
+            *terminal_epoch_ms,
+            terminal,
+        ) || expected.key() != staged.key()
+            || expected.key_digest() != staged.key_digest()
+            || expected.link() != staged.link()
+            || expected.phase() != staged.phase()
+            || expected.task_record_version() != record.version
+            || expected.task() != &receipt_task_projection_from_store(record)?
+            || record.task_id != staged.key().reserved_task_id()
+            || record.invocation_id != staged.key().invocation_id()
+            || &record.receipt_key_digest != staged.key_digest()
+            || record.tool != staged.key().tool()
+            || &record.normalized_arguments_hash != staged.key().normalized_arguments_hash()
+            || &record.workspace_identity_hash != staged.workspace_identity_hash()
+            || record.created_at_epoch_ms != staged.task().created_at_epoch_ms()
+            || record.ttl_ms != staged.task().ttl_ms()
+            || record.poll_interval_ms != staged.task().poll_interval_ms()
+            || record.cancel_requested != staged.cancel_requested()
+        {
+            return Err(V5TaskProjectionFailure::fail_stop(
+                ReceiptLedgerError::TaskBoundMismatch,
+            ));
+        }
+        let (publication, _) = Self::terminal_publication(terminal, *terminal_epoch_ms);
+        let terminal_record = self
+            .task_store
+            .publish_staged_terminal_against_exact_provisional(
+                record,
+                publication,
+                crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+            )
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(error, staged.key_digest().clone(), true)
+            })?;
+        self.finish_task_terminal_publication(expected, terminal_record, deadline, hooks)
+    }
+
+    fn finish_task_terminal_publication(
+        &self,
+        expected: &TaskBoundReceipt,
+        terminal_record: V5StoredInvocationRecord,
+        deadline: Instant,
+        hooks: &dyn V5RuntimeHooks,
+    ) -> Result<(V5StoredInvocationRecord, TaskTerminalBoundReceipt), V5TaskProjectionFailure> {
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let readback = self
+            .task_store
+            .get(terminal_record.task_id, provider_deadline)
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(
+                    error,
+                    terminal_record.receipt_key_digest.clone(),
+                    true,
+                )
+            })?;
+        if readback != terminal_record {
+            return Err(V5TaskProjectionFailure::fail_stop(
+                ReceiptLedgerError::CommitUncertain {
+                    receipt_key_digest: terminal_record.receipt_key_digest.clone(),
+                },
+            ));
+        }
+        let (terminal_status, terminal_digest, terminal_epoch_ms) = match &terminal_record.task {
+            V5StoredTask::Completed {
+                terminal_digest,
+                terminal_epoch_ms,
+                ..
+            } => (
+                ClosedTerminalStatus::Completed,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+            ),
+            V5StoredTask::Failed {
+                terminal_digest,
+                terminal_epoch_ms,
+                ..
+            } => (
+                ClosedTerminalStatus::Failed,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+            ),
+            V5StoredTask::Cancelled {
+                terminal_digest,
+                terminal_epoch_ms,
+            } => (
+                ClosedTerminalStatus::Cancelled,
+                terminal_digest.clone(),
+                *terminal_epoch_ms,
+            ),
+            V5StoredTask::Queued | V5StoredTask::Working => {
+                return Err(V5TaskProjectionFailure::fail_stop(
+                    ReceiptLedgerError::TaskBoundMismatch,
+                ))
+            }
+        };
         if hooks.holds(V5PausePoint::AfterTaskStoreTerminalBeforeLifecycleLinkTerminal) {
             hooks.event(
                 V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
@@ -3176,19 +3303,16 @@ impl V5ReceiptRuntime {
                     self.hooks.as_ref(),
                 )
                 .map_err(|failure| self.project_task_failure(failure))?;
-            if let HandoffTerminalStage::Staged {
-                terminal,
-                terminal_epoch_ms,
-                ..
-            } = handoff.terminal_stage()
-            {
+            if matches!(
+                handoff.terminal_stage(),
+                HandoffTerminalStage::Staged { .. }
+            ) {
                 let (terminal_record, terminal_link) = self
                     .task_projection
-                    .publish_bound_task_terminal(
+                    .publish_staged_bound_task_terminal(
+                        &handoff,
                         &bound,
                         &task_record,
-                        terminal,
-                        *terminal_epoch_ms,
                         deadline,
                         self.hooks.as_ref(),
                     )
@@ -3785,14 +3909,16 @@ impl V5ReceiptRuntime {
             .map_err(|failure| self.project_task_failure(failure))?;
         self.hooks
             .promised_actor_binding(&promised, &actor_promised, &bound);
-        if let HandoffTerminalStage::Staged { terminal, .. } = handoff.terminal_stage() {
+        if matches!(
+            handoff.terminal_stage(),
+            HandoffTerminalStage::Staged { .. }
+        ) {
             let (terminal_record, terminal_link) = self
                 .task_projection
-                .publish_bound_task_terminal(
+                .publish_staged_bound_task_terminal(
+                    &handoff,
                     &bound,
                     &task_record,
-                    terminal,
-                    epoch_ms,
                     deadline,
                     self.hooks.as_ref(),
                 )
@@ -4485,11 +4611,10 @@ impl V5ReceiptRuntime {
             .map_err(|failure| self.project_task_failure(failure))?;
         let (terminal_record, terminal_link) = self
             .task_projection
-            .publish_bound_task_terminal(
+            .publish_staged_bound_task_terminal(
+                &staged,
                 &task_bound,
                 &task_record,
-                &terminal,
-                epoch_ms,
                 deadline,
                 self.hooks.as_ref(),
             )
