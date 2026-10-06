@@ -3176,14 +3176,19 @@ impl V5ReceiptRuntime {
                     self.hooks.as_ref(),
                 )
                 .map_err(|failure| self.project_task_failure(failure))?;
-            if let HandoffTerminalStage::Staged { terminal, .. } = handoff.terminal_stage() {
+            if let HandoffTerminalStage::Staged {
+                terminal,
+                terminal_epoch_ms,
+                ..
+            } = handoff.terminal_stage()
+            {
                 let (terminal_record, terminal_link) = self
                     .task_projection
                     .publish_bound_task_terminal(
                         &bound,
                         &task_record,
                         terminal,
-                        epoch_ms,
+                        *terminal_epoch_ms,
                         deadline,
                         self.hooks.as_ref(),
                     )

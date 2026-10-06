@@ -6,6 +6,7 @@ check:
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::task_terminal_receipt_crash_reconciles_without_replay
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::every_cross_store_crash_point_reconciles_without_split_brain
   - crates/unica-coder/tests/daemon_receipt_ledger.rs::unstaged_task_bind_is_refused_against_a_staged_handoff_predecessor
+  - crates/unica-coder/tests/daemon_receipt_ledger.rs::prepared_handoff_preserves_staged_epoch_across_clock_jumps
 ---
 
 # Сохранённый результат задачи восстанавливается без повторного исполнения

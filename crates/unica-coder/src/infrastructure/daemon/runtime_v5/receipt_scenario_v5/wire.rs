@@ -66,6 +66,7 @@ pub(super) enum ReceiptScenarioAction {
         terminal: ScenarioTerminalFixture,
         label: String,
     },
+    StagePendingHandoffTerminal,
     WaitForOperation {
         label: String,
         state: ScenarioOperationState,
