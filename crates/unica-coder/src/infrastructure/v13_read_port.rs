@@ -88,7 +88,6 @@ pub(crate) struct DcsValidationInput {
 }
 
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
-const MAX_EXTERNAL_OWNER_ENTRIES: usize = 256;
 
 /// One actor-issued read authority for one admitted source set. Hidden v0.13
 /// reads are descriptor-relative to this retained directory and revisions come
@@ -295,44 +294,74 @@ impl ProviderReadAuthority {
         relative: &Path,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ViewError> {
-        self.read_relative_with_checkpoint(relative, max_bytes, &mut || Ok(()))
+        self.read_relative_with_checkpoint(relative, Some(max_bytes), &mut || Ok(()))
     }
 
     fn read_relative_with_checkpoint(
         &self,
         relative: &Path,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Vec<u8>, ViewError> {
+        self.read_optional_relative_with_checkpoint(relative, max_bytes, checkpoint)?
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!("relative source `{}` is absent", relative.display()),
+                )
+            })
+    }
+
+    fn read_optional_relative_with_checkpoint(
+        &self,
+        relative: &Path,
+        max_bytes: Option<usize>,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<Vec<u8>>, ViewError> {
         let mut bytes = Vec::new();
         let mut interrupted = None;
-        self.root
-            .visit_relative_regular_chunks(
-                relative,
-                || {
-                    checkpoint().map_err(|error| {
-                        interrupted = Some(error);
-                        std::io::Error::other("source read interrupted")
-                    })
-                },
-                |chunk| {
-                    if chunk.len() > max_bytes.saturating_sub(bytes.len()) {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("relative file exceeds the {max_bytes}-byte read limit"),
-                        ));
-                    }
-                    bytes.extend_from_slice(chunk);
-                    Ok(())
-                },
-            )
-            .map_err(|error| {
-                interrupted.unwrap_or_else(|| {
-                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        let visited = self.root.visit_relative_regular_chunks(
+            relative,
+            || {
+                checkpoint().map_err(|error| {
+                    interrupted = Some(error);
+                    std::io::Error::other("source read interrupted")
                 })
-            })?;
-        checkpoint()?;
-        Ok(bytes)
+            },
+            |chunk| {
+                let total = bytes.len().checked_add(chunk.len()).ok_or_else(|| {
+                    std::io::Error::other("relative source length is not representable")
+                })?;
+                if let Some(limit) = max_bytes.filter(|limit| total > *limit) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("relative file exceeds the {limit}-byte read limit"),
+                    ));
+                }
+                bytes
+                    .try_reserve(chunk.len())
+                    .map_err(std::io::Error::other)?;
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            },
+        );
+        if let Some(error) = interrupted {
+            return Err(error);
+        }
+        match visited {
+            Ok(_) => {
+                checkpoint()?;
+                Ok(Some(bytes))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                checkpoint()?;
+                Ok(None)
+            }
+            Err(error) => Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                error.to_string(),
+            )),
+        }
     }
 
     pub(crate) fn read_optional_relative(
@@ -518,7 +547,7 @@ impl ProviderReadAuthority {
         };
         let names = self
             .root
-            .read_immediate_names_bounded(MAX_EXTERNAL_OWNER_ENTRIES, || {
+            .read_immediate_names_with_limit(None, || {
                 checkpoint().map_err(|error| {
                     std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
                 })
@@ -540,8 +569,7 @@ impl ProviderReadAuthority {
                 continue;
             }
             let relative = PathBuf::from(&name);
-            let bytes =
-                self.read_relative_with_checkpoint(&relative, MAX_CONFIGURATION_BYTES, checkpoint)?;
+            let bytes = self.read_relative_with_checkpoint(&relative, None, checkpoint)?;
             checkpoint()?;
             if path
                 .file_name()
@@ -702,7 +730,7 @@ impl ProviderReadAuthority {
         // The previous format guard read the complete owner without a size cap.
         // Retaining its authority must not add an 8 MiB rejection for large roots.
         let source_bytes =
-            self.read_relative_with_checkpoint(&source_relative, usize::MAX, checkpoint)?;
+            self.read_relative_with_checkpoint(&source_relative, None, checkpoint)?;
         let format_guard = crate::infrastructure::format_guard::evaluate_retained_dcs_format_guard(
             &artifact,
             &text,
@@ -844,6 +872,7 @@ impl ProviderReadAuthority {
     pub(crate) fn external_metadata_payload(
         &self,
         target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Option<Value>, ViewError> {
         if !self.is_external_source_set() {
             return Ok(None);
@@ -855,7 +884,7 @@ impl ProviderReadAuthority {
                 "external typed metadata target must name its root owner",
             ));
         };
-        let descriptor = self.metadata_descriptor(target)?;
+        let descriptor = self.metadata_descriptor_with_checkpoint(target, None, checkpoint)?;
         let relative = self.metadata_descriptor_relative(target)?;
         let evidence =
             prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
@@ -890,10 +919,18 @@ impl ProviderReadAuthority {
     pub(crate) fn metadata_owner_evidence(
         &self,
         target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<PlatformXmlSourceSetOwnerEvidence, ViewError> {
-        let descriptor = self.metadata_descriptor(target)?;
+        let external_root =
+            self.is_external_source_set() && target.as_str().split('.').count() == 2;
+        let limit = if external_root {
+            None
+        } else {
+            Some(MAX_CONFIGURATION_BYTES)
+        };
+        let descriptor = self.metadata_descriptor_with_checkpoint(target, limit, checkpoint)?;
         let relative = self.metadata_descriptor_relative(target)?;
-        if self.is_external_source_set() && target.as_str().split('.').count() == 2 {
+        if external_root {
             prove_already_read_source_set_owner(&relative, &descriptor, self.source_set_kind)
                 .map_err(|error| {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.message)
@@ -993,6 +1030,17 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
     ) -> Result<Vec<u8>, ViewError> {
+        self.metadata_descriptor_with_checkpoint(target, Some(MAX_CONFIGURATION_BYTES), &mut || {
+            Ok(())
+        })
+    }
+
+    fn metadata_descriptor_with_checkpoint(
+        &self,
+        target: &MetadataAddress,
+        max_bytes: Option<usize>,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Vec<u8>, ViewError> {
         #[cfg(test)]
         {
             *self
@@ -1003,7 +1051,7 @@ impl ProviderReadAuthority {
                 .or_default() += 1;
         }
         let relative = self.metadata_descriptor_relative(target)?;
-        self.read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
+        self.read_optional_relative_with_checkpoint(&relative, max_bytes, checkpoint)?
             .ok_or_else(|| {
                 ViewError::new(
                     RefusalCode::NotFound,

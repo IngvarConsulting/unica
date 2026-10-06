@@ -663,7 +663,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             )
         })?;
         self.ensure_owner_registered(target, admitted)?;
-        if let Some(payload) = self.read.external_metadata_payload(target)? {
+        if let Some(payload) = self
+            .read
+            .external_metadata_payload(target, &mut || self.read_checkpoint())?
+        {
             self.verify_payload_physical_children(target, &payload, admitted)?;
             return Ok(payload);
         }
@@ -835,7 +838,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 })?;
         let evidence = self
             .read
-            .metadata_owner_evidence(&target)
+            .metadata_owner_evidence(&target, &mut || self.read_checkpoint())
             .map_err(|error| {
                 if error.code() == RefusalCode::NotFound {
                     ViewError::detailed(
@@ -1261,7 +1264,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
         if let Some(evidence) = cache.get(&key) {
             return Ok(Arc::clone(evidence));
         }
-        let evidence = Arc::new(self.read.metadata_owner_evidence(target)?);
+        let evidence = Arc::new(
+            self.read
+                .metadata_owner_evidence(target, &mut || self.read_checkpoint())?,
+        );
         cache.insert(key, Arc::clone(&evidence));
         Ok(evidence)
     }
