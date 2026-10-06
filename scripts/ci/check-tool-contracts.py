@@ -38,7 +38,9 @@ TOOL_HELP_CHECKS = [
         ["--transport", "stdio", "streamable-http"],
     ),
     ("v8-runner version", "v8-runner", ["--version"], ["v8-runner"]),
-    ("v8-runner push", "v8-runner", ["push", "--help"], ["Usage: v8-runner push"]),
+    # На Windows справка называет программу `v8-runner.exe`: строка использования
+    # сверяется по частям, а не целиком.
+    ("v8-runner push", "v8-runner", ["push", "--help"], ["Usage: v8-runner", " push"]),
 ]
 
 V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
