@@ -22,6 +22,7 @@ use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshotParts,
 };
 use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
+use crate::domain::operation_deadline::OperationDeadline;
 use crate::infrastructure::daemon::terminal_codec_v5::{
     prepare_committed_direct_wire, prepare_direct_terminal, restore_canonical_terminal,
     validate_persisted_direct_record_bytes, DirectReceiptWriteSlot,
@@ -1117,9 +1118,10 @@ impl ReceiptLedgerStore {
     #[cfg(test)]
     pub(crate) fn open_before(
         receipts_path: impl AsRef<Path>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Self, ReceiptLedgerError> {
-        Self::open_with_recovery_deadline(receipts_path, Some(deadline))
+        let deadline = deadline.into();
+        Self::open_with_recovery_deadline(receipts_path, deadline.as_instant())
     }
 
     fn open_with_recovery_deadline(
@@ -1152,9 +1154,10 @@ impl ReceiptLedgerStore {
     #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     pub(crate) fn open_retained_directory_before(
         receipts: RetainedDirectoryCapability,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Self, ReceiptLedgerError> {
-        Self::open_retained_directory_with_recovery_deadline(receipts, Some(deadline))
+        let deadline = deadline.into();
+        Self::open_retained_directory_with_recovery_deadline(receipts, deadline.as_instant())
     }
 
     fn open_retained_directory_with_recovery_deadline(
@@ -1388,8 +1391,9 @@ impl ReceiptLedgerStore {
 
     pub(crate) fn rotate_generation_for_test(
         &self,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<u64, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let mut catalog = self
             .writer
@@ -1406,7 +1410,7 @@ impl ReceiptLedgerStore {
             ))?;
         latch_catalog_result(
             &mut catalog,
-            self.publish_generation(next, None, Some(deadline)),
+            self.publish_generation(next, None, deadline.as_instant()),
         )?;
         Ok(next)
     }
@@ -1518,8 +1522,9 @@ impl ReceiptLedgerStore {
     pub(crate) fn snapshot_catalog(
         &self,
         authority: ReceiptLedgerCatalogSnapshotAuthority,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let mut catalog = self
             .writer
@@ -1527,7 +1532,7 @@ impl ReceiptLedgerStore {
             .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
         let observed = self.inspect_catalog_with_generation_under_stable_fence(
             &mut catalog,
-            Some(deadline),
+            deadline.as_instant(),
             |catalog, generation| {
                 let mut records = catalog.records.iter().collect::<Vec<_>>();
                 records.sort_unstable_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
@@ -1640,8 +1645,9 @@ impl ReceiptLedgerStore {
         &self,
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<CancelResolution, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(&key);
         let mut catalog = self
@@ -1663,7 +1669,7 @@ impl ReceiptLedgerStore {
                 );
             }
             let persisted = self
-                .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+                .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
                 .ok_or(ReceiptLedgerError::Corrupt(
                     "catalogued receipt row is missing",
                 ))?;
@@ -1773,7 +1779,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -1818,8 +1824,9 @@ impl ReceiptLedgerStore {
     pub(crate) fn reserve_batch(
         &self,
         requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         if requests.is_empty() || requests.len() > MAX_RECEIPT_MUTATION_BATCH_ROWS {
             return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
         }
@@ -1896,16 +1903,18 @@ impl ReceiptLedgerStore {
     pub(crate) fn bind_reserved_actor_batch(
         &self,
         requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         self.transition_reserved_batch(requests, false, deadline)
     }
 
     pub(crate) fn mark_reserved_begun_batch(
         &self,
         requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         self.transition_reserved_batch(requests, true, deadline)
     }
 
@@ -1913,7 +1922,7 @@ impl ReceiptLedgerStore {
         &self,
         requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
         begun: bool,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
         if requests.is_empty() || requests.len() > MAX_RECEIPT_MUTATION_BATCH_ROWS {
             return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
@@ -2008,8 +2017,9 @@ impl ReceiptLedgerStore {
     pub(crate) fn publish_direct_terminal_batch(
         &self,
         requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         if requests.is_empty() || requests.len() > MAX_RECEIPT_MUTATION_BATCH_ROWS {
             return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
         }
@@ -2122,8 +2132,9 @@ impl ReceiptLedgerStore {
     pub(crate) fn acknowledge_direct_batch(
         &self,
         requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         if requests.is_empty() || requests.len() > MAX_RECEIPT_MUTATION_BATCH_ROWS {
             return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
         }
@@ -2232,8 +2243,9 @@ impl ReceiptLedgerStore {
         requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         if requests.is_empty() || requests.len() > 32 {
             return Err(ReceiptLedgerError::ReceiptRowPresentUnsupported);
         }
@@ -2411,7 +2423,7 @@ impl ReceiptLedgerStore {
         &self,
         catalog: &mut ReceiptCatalog,
         persisted: CatalogEntry,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReservedReceipt, ReceiptLedgerError> {
         let key_digest = persisted.record.key_digest.clone();
         let expected_version = persisted.record.record_version;
@@ -2438,7 +2450,7 @@ impl ReceiptLedgerStore {
         };
         validate_catalog_replace(catalog, &persisted, &replacement)?;
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(catalog, replacement);
             })
         {
@@ -2448,7 +2460,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -2477,7 +2489,7 @@ impl ReceiptLedgerStore {
         catalog: &mut ReceiptCatalog,
         key: &ReceiptKey,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
         let mut reclaim = Vec::with_capacity(2);
         if let Some(digest) = catalog.invocation_index.get(&key.invocation_id()).cloned() {
@@ -2568,8 +2580,9 @@ impl ReceiptLedgerStore {
         &self,
         key: ReceiptKey,
         original_cutoff: OriginalCutoffDescriptor,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(&key);
         let mut catalog = self
@@ -2593,7 +2606,7 @@ impl ReceiptLedgerStore {
                 );
             }
             let persisted = self
-                .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+                .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
                 .ok_or(ReceiptLedgerError::Corrupt(
                     "catalogued receipt row is missing",
                 ))?;
@@ -2739,7 +2752,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -2776,8 +2789,9 @@ impl ReceiptLedgerStore {
         key: &ReceiptKey,
         expected_version: ReceiptVersion,
         bound_workspace_identity: SafeIdentityHash,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         self.transition_reserved_phase(
             key,
             expected_version,
@@ -2790,8 +2804,9 @@ impl ReceiptLedgerStore {
         &self,
         key: &ReceiptKey,
         expected_version: ReceiptVersion,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReservedReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         self.transition_reserved_phase(
             key,
             expected_version,
@@ -2807,8 +2822,9 @@ impl ReceiptLedgerStore {
         created_at_epoch_ms: u64,
         ttl_ms: u64,
         poll_interval_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskPromisedUnboundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let task = ReceiptTaskProjection::new(
             key.reserved_task_id(),
@@ -2837,7 +2853,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
         }
         let persisted = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued receipt row is missing",
             ))?;
@@ -2896,7 +2912,7 @@ impl ReceiptLedgerStore {
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -2906,7 +2922,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -2940,8 +2956,9 @@ impl ReceiptLedgerStore {
         key: &ReceiptKey,
         expected_version: ReceiptVersion,
         workspace_identity_hash: SafeIdentityHash,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskPromisedActorBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(key);
         let mut catalog = self
@@ -2961,7 +2978,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
         }
         let persisted = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued receipt row is missing",
             ))?;
@@ -3035,7 +3052,7 @@ impl ReceiptLedgerStore {
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -3045,7 +3062,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -3081,8 +3098,9 @@ impl ReceiptLedgerStore {
         created_at_epoch_ms: u64,
         ttl_ms: u64,
         poll_interval_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let task = ReceiptTaskProjection::new(
             key.reserved_task_id(),
@@ -3111,7 +3129,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
         }
         let persisted = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued receipt row is missing",
             ))?;
@@ -3213,7 +3231,7 @@ impl ReceiptLedgerStore {
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -3223,7 +3241,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -3257,8 +3275,9 @@ impl ReceiptLedgerStore {
         key: &ReceiptKey,
         expected_version: ReceiptVersion,
         confirmed_task_bound: TaskBoundReceipt,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(key);
         let mut catalog = self
@@ -3295,7 +3314,7 @@ impl ReceiptLedgerStore {
             );
         }
         let persisted = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued receipt row is missing",
             ))?;
@@ -3392,7 +3411,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_remove(&mut catalog, &persisted);
             })
         {
@@ -3402,7 +3421,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -3425,8 +3444,9 @@ impl ReceiptLedgerStore {
         key: &ReceiptKey,
         expected_version: ReceiptVersion,
         confirmed_terminal_bound: TaskTerminalBoundReceipt,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskTerminalBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(key);
         let mut catalog = self
@@ -3446,7 +3466,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
         }
         let persisted = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued receipt row is missing",
             ))?;
@@ -3519,7 +3539,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_remove(&mut catalog, &persisted);
             })
         {
@@ -3529,7 +3549,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -3554,8 +3574,9 @@ impl ReceiptLedgerStore {
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
         certificate: StagedTerminalTransferCertificate,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(key);
         let mut catalog = self
@@ -3575,7 +3596,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
         }
         let persisted = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued receipt row is missing",
             ))?;
@@ -3658,7 +3679,7 @@ impl ReceiptLedgerStore {
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -3668,7 +3689,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -3709,8 +3730,9 @@ impl ReceiptLedgerStore {
         key: &ReceiptKey,
         expected_version: ReceiptVersion,
         proven_link_capacity: ProvenTaskLinkCapacity,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskReceiptOwnedActorBoundReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(key);
         let mut catalog = self
@@ -3722,7 +3744,7 @@ impl ReceiptLedgerStore {
         }
         latch_catalog_result(&mut catalog, self.verify_named_authority())?;
         let expected = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
         if expected.record.key != *key {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
@@ -3816,7 +3838,7 @@ impl ReceiptLedgerStore {
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -3826,7 +3848,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -3860,8 +3882,9 @@ impl ReceiptLedgerStore {
         &self,
         key: &ReceiptKey,
         expected_state: TaskCancellationReceipt,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         if expected_state.key() != key {
             return Err(ReceiptLedgerError::TaskCancellationMismatch);
@@ -3884,7 +3907,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
         }
         let persisted = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued receipt row is missing",
             ))?;
@@ -3963,7 +3986,7 @@ impl ReceiptLedgerStore {
         };
         validate_catalog_replace(&catalog, &expected_entry, &replacement)?;
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -3973,7 +3996,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -4024,7 +4047,7 @@ impl ReceiptLedgerStore {
         key: &ReceiptKey,
         expected_version: ReceiptVersion,
         transition: ReservedPhaseTransition,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReservedReceipt, ReceiptLedgerError> {
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(key);
@@ -4045,7 +4068,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
         }
         let persisted = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued receipt row is missing",
             ))?;
@@ -4108,7 +4131,7 @@ impl ReceiptLedgerStore {
         };
         validate_catalog_replace(&catalog, &expected, &replacement)?;
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -4118,7 +4141,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -4148,7 +4171,7 @@ impl ReceiptLedgerStore {
         expected: CatalogEntry,
         key: ReceiptKey,
         original_cutoff: OriginalCutoffDescriptor,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReserveOutcome, ReceiptLedgerError> {
         let key_digest = expected.record.key_digest.clone();
         let cancel_requested = match &expected.record.lifecycle {
@@ -4215,7 +4238,7 @@ impl ReceiptLedgerStore {
             return self.reject_before_mutation(catalog, deadline, error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(catalog, replacement);
             })
         {
@@ -4225,7 +4248,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -4271,8 +4294,9 @@ impl ReceiptLedgerStore {
         expected_state: TaskCancellationReceipt,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         if expected_state.key() != key {
             return Err(ReceiptLedgerError::TaskBoundMismatch);
@@ -4319,7 +4343,7 @@ impl ReceiptLedgerStore {
         }
         latch_catalog_result(&mut catalog, self.verify_named_authority())?;
         let expected = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
         if expected.record.key != *key {
             return latch_catalog_error(&mut catalog, ReceiptLedgerError::ReceiptDigestCollision);
@@ -4395,7 +4419,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -4405,7 +4429,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -4439,8 +4463,9 @@ impl ReceiptLedgerStore {
     pub(crate) fn seed_task_terminal_receipt_backed_for_test(
         &self,
         seed: ReceiptBackedTaskTerminalSeed,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         let ReceiptBackedTaskTerminalSeed {
             key,
             original_cutoff,
@@ -4477,7 +4502,7 @@ impl ReceiptLedgerStore {
         check_deadline(deadline)?;
         latch_catalog_result(&mut catalog, self.verify_named_authority())?;
         let expected = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "test fixture reservation disappeared",
             ))?;
@@ -4536,7 +4561,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -4546,7 +4571,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -4577,8 +4602,9 @@ impl ReceiptLedgerStore {
     pub(crate) fn inject_identity_index_collision_for_test(
         &self,
         collide_on_invocation_id: bool,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<(), ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let catalog = self
             .writer
@@ -4623,8 +4649,9 @@ impl ReceiptLedgerStore {
         keys: Vec<ReceiptKey>,
         acknowledged_at_epoch_ms: u64,
         terminal_digest: TerminalDigest,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         let mut catalog = self
             .writer
             .lock()
@@ -4721,16 +4748,19 @@ impl ReceiptLedgerStore {
         expected_version: ReceiptVersion,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(key);
         let mut catalog = self
             .writer
             .lock()
             .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
-        let classified =
-            self.inspect_catalog_under_stable_fence(&mut catalog, Some(deadline), |catalog| {
+        let classified = self.inspect_catalog_under_stable_fence(
+            &mut catalog,
+            deadline.as_instant(),
+            |catalog| {
                 if let Some(existing) = catalog.records.get(&key_digest) {
                     if &existing.record.key != key {
                         return Err(ReceiptLedgerError::ReceiptDigestCollision);
@@ -4747,7 +4777,8 @@ impl ReceiptLedgerStore {
                     return Err(ReceiptLedgerError::ReservedTaskIdentityMismatch);
                 }
                 Err(ReceiptLedgerError::ReceiptNotFound)
-            })?;
+            },
+        )?;
         let expected = match classified {
             Ok(existing) => existing,
             Err(error) if error.requires_reopen() => {
@@ -4755,22 +4786,25 @@ impl ReceiptLedgerStore {
             }
             Err(error) => return Err(error),
         };
-        let persisted =
-            match self.read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))? {
-                Some(persisted) if persisted == expected => persisted,
-                Some(_) => {
-                    return latch_catalog_error(
-                        &mut catalog,
-                        ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
-                    )
-                }
-                None => {
-                    return latch_catalog_error(
-                        &mut catalog,
-                        ReceiptLedgerError::Corrupt("catalogued receipt row is missing"),
-                    )
-                }
-            };
+        let persisted = match self.read_entry_under_writer_lock(
+            &mut catalog,
+            &key_digest,
+            deadline.as_instant(),
+        )? {
+            Some(persisted) if persisted == expected => persisted,
+            Some(_) => {
+                return latch_catalog_error(
+                    &mut catalog,
+                    ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
+                )
+            }
+            None => {
+                return latch_catalog_error(
+                    &mut catalog,
+                    ReceiptLedgerError::Corrupt("catalogued receipt row is missing"),
+                )
+            }
+        };
 
         let persisted_state = match persisted.state() {
             Ok(state) => state,
@@ -4916,7 +4950,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -4926,7 +4960,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -4973,8 +5007,9 @@ impl ReceiptLedgerStore {
         expected_version: ReceiptVersion,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<DirectTerminalUnackedReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         self.publish_direct_terminal_publication(
             key,
             expected_version,
@@ -4990,8 +5025,9 @@ impl ReceiptLedgerStore {
         key: &ReceiptKey,
         terminal_digest: &TerminalDigest,
         acknowledged_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         acknowledged_at_epoch_ms
             .checked_add(ACKNOWLEDGED_TOMBSTONE_TTL_MS)
@@ -5001,8 +5037,10 @@ impl ReceiptLedgerStore {
             .writer
             .lock()
             .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
-        let classified =
-            self.inspect_catalog_under_stable_fence(&mut catalog, Some(deadline), |catalog| {
+        let classified = self.inspect_catalog_under_stable_fence(
+            &mut catalog,
+            deadline.as_instant(),
+            |catalog| {
                 if let Some(existing) = catalog.records.get(&key_digest) {
                     if &existing.record.key != key {
                         return Err(ReceiptLedgerError::ReceiptDigestCollision);
@@ -5019,7 +5057,8 @@ impl ReceiptLedgerStore {
                     return Err(ReceiptLedgerError::ReservedTaskIdentityMismatch);
                 }
                 Err(ReceiptLedgerError::ReceiptNotFound)
-            })?;
+            },
+        )?;
         let expected = match classified {
             Ok(existing) => existing,
             Err(error) if error.requires_reopen() => {
@@ -5027,22 +5066,25 @@ impl ReceiptLedgerStore {
             }
             Err(error) => return Err(error),
         };
-        let persisted =
-            match self.read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))? {
-                Some(persisted) if persisted == expected => persisted,
-                Some(_) => {
-                    return latch_catalog_error(
-                        &mut catalog,
-                        ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
-                    )
-                }
-                None => {
-                    return latch_catalog_error(
-                        &mut catalog,
-                        ReceiptLedgerError::Corrupt("catalogued receipt row is missing"),
-                    )
-                }
-            };
+        let persisted = match self.read_entry_under_writer_lock(
+            &mut catalog,
+            &key_digest,
+            deadline.as_instant(),
+        )? {
+            Some(persisted) if persisted == expected => persisted,
+            Some(_) => {
+                return latch_catalog_error(
+                    &mut catalog,
+                    ReceiptLedgerError::Corrupt("catalogued receipt row changed on disk"),
+                )
+            }
+            None => {
+                return latch_catalog_error(
+                    &mut catalog,
+                    ReceiptLedgerError::Corrupt("catalogued receipt row is missing"),
+                )
+            }
+        };
         match persisted.state() {
             Ok(ReceiptState::AcknowledgedTombstone(tombstone)) => {
                 if tombstone.terminal_digest() != terminal_digest {
@@ -5148,22 +5190,25 @@ impl ReceiptLedgerStore {
         )?;
         let (witness, witness_encoded) =
             serialize_reserved_record(witness, MAX_CANCEL_RESERVED_RECORD_BYTES)?;
-        if let Err(error) =
-            self.publish_replacement_record(&witness, &witness_encoded, Some(deadline), || {})
-        {
+        if let Err(error) = self.publish_replacement_record(
+            &witness,
+            &witness_encoded,
+            deadline.as_instant(),
+            || {},
+        ) {
             if !matches!(error, ReceiptLedgerError::DeadlineExceeded) {
                 catalog.unavailable = true;
             }
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(&key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(&key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_replace(&mut catalog, replacement);
             })
         {
@@ -5197,8 +5242,9 @@ impl ReceiptLedgerStore {
     pub(crate) fn reclaim_expired_tombstones(
         &self,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<usize, ReceiptLedgerError> {
+        let deadline = deadline.into();
         check_deadline(deadline)?;
         let mut catalog = self
             .writer
@@ -5219,7 +5265,7 @@ impl ReceiptLedgerStore {
         &self,
         catalog: &mut ReceiptCatalog,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<usize, ReceiptLedgerError> {
         let mut expired = catalog
             .records
@@ -5292,7 +5338,7 @@ impl ReceiptLedgerStore {
                 .ok_or(ReceiptLedgerError::Corrupt(
                     "receipt generation exhausted u64",
                 ))?;
-            self.publish_generation(final_generation, digests.first(), Some(deadline))?;
+            self.publish_generation(final_generation, digests.first(), deadline.as_instant())?;
             self.retire_receipt_batch_backings(std::slice::from_ref(&backing), deadline)?;
             for entry in &expected {
                 commit_catalog_remove(catalog, entry);
@@ -5358,7 +5404,7 @@ impl ReceiptLedgerStore {
         catalog: &mut ReceiptCatalog,
         replacement: &CatalogEntry,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
         if ack_tombstone_has_capacity(catalog, replacement) {
             return Ok(());
@@ -5391,7 +5437,7 @@ impl ReceiptLedgerStore {
         catalog: &mut ReceiptCatalog,
         key_digest: &ReceiptKeyDigest,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
         check_deadline(deadline)?;
         let expected =
@@ -5403,7 +5449,7 @@ impl ReceiptLedgerStore {
                     "expired tombstone disappeared while the writer lock was held",
                 ))?;
         let persisted = self
-            .read_entry_under_writer_lock(catalog, key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(catalog, key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued expired tombstone row is missing",
             ))?;
@@ -5448,7 +5494,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(catalog, error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_remove(catalog, &persisted);
             })
         {
@@ -5458,7 +5504,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -5481,7 +5527,7 @@ impl ReceiptLedgerStore {
         catalog: &mut ReceiptCatalog,
         key_digest: &ReceiptKeyDigest,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
         check_deadline(deadline)?;
         let expected =
@@ -5493,7 +5539,7 @@ impl ReceiptLedgerStore {
                     "expired Direct receipt disappeared while the writer lock was held",
                 ))?;
         let persisted = self
-            .read_entry_under_writer_lock(catalog, key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(catalog, key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued expired Direct receipt row is missing",
             ))?;
@@ -5547,7 +5593,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(catalog, error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_remove(catalog, &persisted);
             })
         {
@@ -5557,7 +5603,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -5580,7 +5626,7 @@ impl ReceiptLedgerStore {
         catalog: &mut ReceiptCatalog,
         key_digest: &ReceiptKeyDigest,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
         check_deadline(deadline)?;
         let expected =
@@ -5592,7 +5638,7 @@ impl ReceiptLedgerStore {
                     "expired receipt-backed Task disappeared while the writer lock was held",
                 ))?;
         let persisted = self
-            .read_entry_under_writer_lock(catalog, key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(catalog, key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::Corrupt(
                 "catalogued expired receipt-backed Task row is missing",
             ))?;
@@ -5640,7 +5686,7 @@ impl ReceiptLedgerStore {
             return latch_catalog_error(catalog, error);
         }
         if let Err(error) =
-            self.publish_replacement_record(&record, &encoded, Some(deadline), || {
+            self.publish_replacement_record(&record, &encoded, deadline.as_instant(), || {
                 commit_catalog_remove(catalog, &persisted);
             })
         {
@@ -5650,7 +5696,7 @@ impl ReceiptLedgerStore {
             return Err(error);
         }
         if let Err(error) =
-            self.publish_generation(mutation_sequence, Some(key_digest), Some(deadline))
+            self.publish_generation(mutation_sequence, Some(key_digest), deadline.as_instant())
         {
             catalog.unavailable = true;
             return Err(error);
@@ -5671,7 +5717,7 @@ impl ReceiptLedgerStore {
     fn reject_before_mutation<T>(
         &self,
         catalog: &mut ReceiptCatalog,
-        deadline: Instant,
+        deadline: OperationDeadline,
         error: ReceiptLedgerError,
     ) -> Result<T, ReceiptLedgerError> {
         check_deadline(deadline)?;
@@ -5695,25 +5741,25 @@ impl ReceiptLedgerStore {
     fn recover_exact(
         &self,
         key: &ReceiptKey,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
-        self.recover_exact_inner(key, None, deadline)
+        self.recover_exact_inner(key, None, deadline.into())
     }
 
     fn recover_exact_at(
         &self,
         key: &ReceiptKey,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
-        self.recover_exact_inner(key, Some(observed_at_epoch_ms), deadline)
+        self.recover_exact_inner(key, Some(observed_at_epoch_ms), deadline.into())
     }
 
     fn recover_exact_inner(
         &self,
         key: &ReceiptKey,
         observed_at_epoch_ms: Option<u64>,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
         check_deadline(deadline)?;
         let key_digest = receipt_key_digest(key);
@@ -5721,8 +5767,10 @@ impl ReceiptLedgerStore {
             .writer
             .lock()
             .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
-        let identity_mismatch =
-            self.inspect_catalog_under_stable_fence(&mut catalog, Some(deadline), |catalog| {
+        let identity_mismatch = self.inspect_catalog_under_stable_fence(
+            &mut catalog,
+            deadline.as_instant(),
+            |catalog| {
                 if catalog
                     .invocation_index
                     .get(&key.invocation_id())
@@ -5738,12 +5786,13 @@ impl ReceiptLedgerStore {
                 } else {
                     None
                 }
-            })?;
+            },
+        )?;
         if let Some(error) = identity_mismatch {
             return Err(error);
         }
         let recovered =
-            self.read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?;
+            self.read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?;
         let result = match recovered {
             Some(entry) if &entry.record.key != key => {
                 return latch_catalog_error(
@@ -5792,20 +5841,21 @@ impl ReceiptLedgerStore {
     fn resolve_task_exact(
         &self,
         task_id: TaskId,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
         check_deadline(deadline)?;
         let mut catalog = self
             .writer
             .lock()
             .map_err(|_| ReceiptLedgerError::Corrupt("receipt catalog lock was poisoned"))?;
-        let key_digest =
-            self.inspect_catalog_under_stable_fence(&mut catalog, Some(deadline), |catalog| {
-                catalog.reserved_task_index.get(&task_id).cloned()
-            })?;
+        let key_digest = self.inspect_catalog_under_stable_fence(
+            &mut catalog,
+            deadline.as_instant(),
+            |catalog| catalog.reserved_task_index.get(&task_id).cloned(),
+        )?;
         let key_digest = key_digest.ok_or(ReceiptLedgerError::ReceiptNotFound)?;
         let entry = self
-            .read_entry_under_writer_lock(&mut catalog, &key_digest, Some(deadline))?
+            .read_entry_under_writer_lock(&mut catalog, &key_digest, deadline.as_instant())?
             .ok_or(ReceiptLedgerError::ReceiptNotFound)?;
         if entry.record.key.reserved_task_id() != task_id {
             return latch_catalog_error(
@@ -6383,7 +6433,7 @@ impl ReceiptLedgerStore {
         &self,
         catalog: &mut ReceiptCatalog,
         receipt_key_digest: &ReceiptKeyDigest,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
         let Some(backing) = catalog.batch_backing.get(receipt_key_digest).cloned() else {
             return Ok(());
@@ -6435,7 +6485,7 @@ impl ReceiptLedgerStore {
         &self,
         receipt_key_digest: &ReceiptKeyDigest,
         expected_bytes: &[u8],
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
         let uncertain = || ReceiptLedgerError::CommitUncertain {
             receipt_key_digest: receipt_key_digest.clone(),
@@ -6476,7 +6526,7 @@ impl ReceiptLedgerStore {
         catalog: &mut ReceiptCatalog,
         rows: &[ReceiptBatchRow],
         final_generation: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
         commit: impl FnOnce(&mut ReceiptCatalog),
     ) -> Result<(), ReceiptLedgerError> {
         if rows.is_empty() || rows.len() > MAX_RECEIPT_BATCH_ENVELOPE_ROWS {
@@ -6603,7 +6653,7 @@ impl ReceiptLedgerStore {
     fn retire_receipt_batch_backings(
         &self,
         backings: &[ReceiptBatchBacking],
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<(), ReceiptLedgerError> {
         if backings.is_empty() {
             return Ok(());
@@ -6656,7 +6706,7 @@ impl ReceiptLedgerStore {
         &self,
         record: &StoredActiveReceiptV1,
         encoded: &[u8],
-        deadline: Instant,
+        deadline: OperationDeadline,
         on_visible: impl FnOnce(),
     ) -> Result<(), ReceiptLedgerError> {
         check_deadline(deadline)?;
@@ -7412,8 +7462,9 @@ fn parse_generation(bytes: &[u8]) -> Result<u64, ReceiptLedgerError> {
         .map_err(|_| ReceiptLedgerError::Corrupt("generation record exceeds u64"))
 }
 
-fn check_deadline(deadline: Instant) -> Result<(), ReceiptLedgerError> {
-    if Instant::now() >= deadline {
+fn check_deadline(deadline: impl Into<OperationDeadline>) -> Result<(), ReceiptLedgerError> {
+    let deadline = deadline.into();
+    if deadline.is_elapsed_at(Instant::now()) {
         Err(ReceiptLedgerError::DeadlineExceeded)
     } else {
         Ok(())
@@ -7421,10 +7472,7 @@ fn check_deadline(deadline: Instant) -> Result<(), ReceiptLedgerError> {
 }
 
 fn check_optional_deadline(deadline: Option<Instant>) -> Result<(), ReceiptLedgerError> {
-    match deadline {
-        Some(deadline) => check_deadline(deadline),
-        None => Ok(()),
-    }
+    check_deadline(OperationDeadline::from(deadline))
 }
 
 fn recovery_checkpoint(deadline: Option<Instant>) -> io::Result<()> {

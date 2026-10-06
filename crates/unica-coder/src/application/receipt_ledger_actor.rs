@@ -11,6 +11,7 @@ use crate::application::receipt_ledger::{
     ReceiptLedgerCatalogSnapshot, ReceiptLedgerCatalogSnapshotAuthority,
 };
 use crate::domain::invocation::SafeIdentityHash;
+use crate::domain::operation_deadline::OperationDeadline;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -37,8 +38,17 @@ impl HeavyResultSlot {
 
     fn acquire(
         self: &Arc<Self>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         health: &ActorHealth,
+    ) -> Result<HeavyResultPermit, ReceiptLedgerError> {
+        self.acquire_inner(deadline, health, || {})
+    }
+
+    fn acquire_inner(
+        self: &Arc<Self>,
+        deadline: OperationDeadline,
+        health: &ActorHealth,
+        mut before_wait: impl FnMut(),
     ) -> Result<HeavyResultPermit, ReceiptLedgerError> {
         let mut occupied = self
             .occupied
@@ -50,7 +60,7 @@ impl HeavyResultSlot {
             }
 
             let now = Instant::now();
-            if now >= deadline {
+            if deadline.is_elapsed_at(now) {
                 return Err(ReceiptLedgerError::DeadlineExceeded);
             }
             if !*occupied {
@@ -60,11 +70,19 @@ impl HeavyResultSlot {
                 });
             }
 
-            let (next, _) = self
-                .changed
-                .wait_timeout(occupied, deadline.saturating_duration_since(now))
-                .expect("receipt heavy-result permit mutex poisoned while waiting");
-            occupied = next;
+            before_wait();
+            occupied = match deadline.remaining_at(now) {
+                Some(remaining) => {
+                    self.changed
+                        .wait_timeout(occupied, remaining)
+                        .expect("receipt heavy-result permit mutex poisoned while waiting")
+                        .0
+                }
+                None => self
+                    .changed
+                    .wait(occupied)
+                    .expect("receipt heavy-result permit mutex poisoned while waiting"),
+            };
         }
     }
 
@@ -167,9 +185,9 @@ impl ActorHealth {
 
     fn acquire_heavy_result_permit(
         &self,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<HeavyResultPermit, ReceiptLedgerError> {
-        self.heavy_result_slot.acquire(deadline, self)
+        self.heavy_result_slot.acquire(deadline.into(), self)
     }
 
     fn wake_all(&self) {
@@ -188,17 +206,25 @@ impl ActorHealth {
             .expect("receipt actor wake mutex poisoned")
     }
 
-    fn wait_for_change(&self, observed_generation: u64, timeout: Duration) {
+    fn wait_for_change(&self, observed_generation: u64, timeout: Option<Duration>) {
         let generation = self
             .wake_generation
             .lock()
             .expect("receipt actor wake mutex poisoned");
-        let (generation, _) = self
-            .changed
-            .wait_timeout_while(generation, timeout, |generation| {
-                *generation == observed_generation
-            })
-            .expect("receipt actor wake mutex poisoned while waiting");
+        let generation = match timeout {
+            Some(timeout) => {
+                self.changed
+                    .wait_timeout_while(generation, timeout, |generation| {
+                        *generation == observed_generation
+                    })
+                    .expect("receipt actor wake mutex poisoned while waiting")
+                    .0
+            }
+            None => self
+                .changed
+                .wait_while(generation, |generation| *generation == observed_generation)
+                .expect("receipt actor wake mutex poisoned while waiting"),
+        };
         drop(generation);
     }
 }
@@ -207,36 +233,36 @@ enum Command {
     /// An observer's read of the whole catalog; production never sends it.
     #[allow(dead_code)]
     SnapshotCatalog {
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<ReceiptLedgerCatalogSnapshot>>,
     },
     Generation {
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<u64>>,
     },
     /// An observer's retention rotation; production never sends it.
     #[allow(dead_code)]
     RotateGenerationForTest {
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<u64>>,
     },
     Reserve {
         key: ReceiptKey,
         original_cutoff: OriginalCutoffDescriptor,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<ReserveOutcome>>,
     },
     BindReservedActor {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         bound_workspace_identity: SafeIdentityHash,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<ReservedReceipt>>,
     },
     MarkReservedBegun {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<ReservedReceipt>>,
     },
     PromiseTaskUnbound {
@@ -245,14 +271,14 @@ enum Command {
         created_at_epoch_ms: u64,
         ttl_ms: u64,
         poll_interval_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskPromisedUnboundReceipt>>,
     },
     BindPromisedTaskActor {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         workspace_identity_hash: SafeIdentityHash,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskPromisedActorBoundReceipt>>,
     },
     BeginBoundTaskHandoff {
@@ -261,7 +287,7 @@ enum Command {
         created_at_epoch_ms: u64,
         ttl_ms: u64,
         poll_interval_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
     },
     StageBoundTaskHandoffTerminal {
@@ -270,34 +296,34 @@ enum Command {
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
         certificate: Box<StagedTerminalTransferCertificate>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskHandoffActorBoundReceipt>>,
     },
     RetainBegunTaskAfterLinkCapacity {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         proven_link_capacity: ProvenTaskLinkCapacity,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskReceiptOwnedActorBoundReceipt>>,
     },
     CompleteBoundTaskHandoff {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         confirmed_task_bound: Box<TaskBoundReceipt>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskBoundReceipt>>,
     },
     CompleteStagedTaskHandoff {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         confirmed_terminal_bound: Box<TaskTerminalBoundReceipt>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskTerminalBoundReceipt>>,
     },
     RequestTaskCancel {
         key: ReceiptKey,
         expected_state: Box<TaskCancellationReceipt>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskCancellationReceipt>>,
     },
     PublishReceiptBackedTaskTerminal {
@@ -305,45 +331,45 @@ enum Command {
         expected_state: Box<TaskCancellationReceipt>,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<TaskTerminalReceiptBackedReceipt>>,
     },
     RequestCancelOrReserve {
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<CancelResolution>>,
     },
     PublishCancelledDirectBatch {
         requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<Vec<DirectTerminalUnackedReceipt>>>,
     },
     ReserveBatch {
         requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<Vec<ReserveOutcome>>>,
     },
     BindReservedActorBatch {
         requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<Vec<ReservedReceipt>>>,
     },
     MarkReservedBegunBatch {
         requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<Vec<ReservedReceipt>>>,
     },
     PublishDirectTerminalBatch {
         requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<Vec<CommittedDirectPublication>>>,
     },
     AcknowledgeDirectBatch {
         requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<Vec<AcknowledgedTombstoneReceipt>>>,
     },
     PublishDirectTerminal {
@@ -351,30 +377,30 @@ enum Command {
         expected_version: ReceiptVersion,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<CommittedDirectPublication>>,
     },
     AcknowledgeDirect {
         key: ReceiptKey,
         terminal_digest: TerminalDigest,
         acknowledged_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<AcknowledgedTombstoneReceipt>>,
     },
     ReclaimExpiredTombstones {
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<usize>>,
     },
     Recover {
         key: ReceiptKey,
         observed_at_epoch_ms: Option<u64>,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<ReceiptState>>,
     },
     ResolveTask {
         task_id: crate::domain::invocation::TaskId,
-        deadline: Instant,
+        deadline: OperationDeadline,
         ticket: Arc<Ticket<ReceiptState>>,
     },
 }
@@ -387,14 +413,15 @@ enum TicketState<R> {
 }
 
 struct Ticket<R> {
-    deadline: Instant,
+    deadline: OperationDeadline,
     running_timeout_error: ReceiptLedgerError,
     _heavy_result_permit: Option<HeavyResultPermit>,
     state: Mutex<TicketState<R>>,
 }
 
 impl<R> Ticket<R> {
-    fn queued(deadline: Instant, timeout_class: TimeoutClass) -> Self {
+    fn queued(deadline: impl Into<OperationDeadline>, timeout_class: TimeoutClass) -> Self {
+        let deadline = deadline.into();
         Self {
             deadline,
             running_timeout_error: timeout_class.running_error(),
@@ -404,10 +431,11 @@ impl<R> Ticket<R> {
     }
 
     fn queued_with_heavy_result_permit(
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
         timeout_class: TimeoutClass,
         heavy_result_permit: HeavyResultPermit,
     ) -> Self {
+        let deadline = deadline.into();
         Self {
             deadline,
             running_timeout_error: timeout_class.running_error(),
@@ -424,7 +452,9 @@ impl<R> Ticket<R> {
     fn try_begin(&self, health: &ActorHealth) -> bool {
         let mut state = self.state.lock().expect("receipt ticket mutex poisoned");
         let started = match &*state {
-            TicketState::Queued if health.is_ready() && Instant::now() < self.deadline => {
+            TicketState::Queued
+                if health.is_ready() && !self.deadline.is_elapsed_at(Instant::now()) =>
+            {
                 *state = TicketState::Running;
                 true
             }
@@ -459,7 +489,7 @@ impl<R> Ticket<R> {
     ) {
         let mut state = self.state.lock().expect("receipt ticket mutex poisoned");
         let should_latch = match &*state {
-            TicketState::Running if completed_at >= self.deadline => {
+            TicketState::Running if self.deadline.is_elapsed_at(completed_at) => {
                 *state = TicketState::TimedOut(Some(self.running_timeout_error.clone()));
                 true
             }
@@ -510,7 +540,9 @@ impl<R> Ticket<R> {
                     *state = TicketState::TimedOut(None);
                     return Err(ReceiptLedgerError::StoreUnavailable);
                 }
-                TicketState::Queued | TicketState::Running if Instant::now() >= self.deadline => {
+                TicketState::Queued | TicketState::Running
+                    if self.deadline.is_elapsed_at(Instant::now()) =>
+                {
                     let was_running = matches!(&*state, TicketState::Running);
                     *state = TicketState::TimedOut(None);
                     drop(state);
@@ -521,7 +553,7 @@ impl<R> Ticket<R> {
                     return Err(ReceiptLedgerError::DeadlineExceeded);
                 }
                 TicketState::Queued | TicketState::Running => {
-                    let remaining = self.deadline.saturating_duration_since(Instant::now());
+                    let remaining = self.deadline.remaining_at(Instant::now());
                     drop(state);
                     health.wait_for_change(observed_generation, remaining);
                 }
@@ -620,9 +652,10 @@ impl ReceiptLedgerActor {
     #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn snapshot_catalog(
         &self,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReceiptLedgerCatalogSnapshot, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -645,8 +678,12 @@ impl ReceiptLedgerActor {
         ticket.wait(&self.health)
     }
 
-    pub(crate) fn generation(&self, deadline: Instant) -> Result<u64, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+    pub(crate) fn generation(
+        &self,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<u64, ReceiptLedgerError> {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -667,9 +704,10 @@ impl ReceiptLedgerActor {
     #[cfg(feature = "receipt-ledger-test-support")]
     pub(crate) fn rotate_generation_for_test(
         &self,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<u64, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -698,9 +736,10 @@ impl ReceiptLedgerActor {
         &self,
         key: ReceiptKey,
         original_cutoff: OriginalCutoffDescriptor,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReserveOutcome, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -731,9 +770,10 @@ impl ReceiptLedgerActor {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         bound_workspace_identity: SafeIdentityHash,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReservedReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -763,9 +803,10 @@ impl ReceiptLedgerActor {
         &self,
         key: ReceiptKey,
         expected_version: ReceiptVersion,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReservedReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -797,9 +838,10 @@ impl ReceiptLedgerActor {
         created_at_epoch_ms: u64,
         ttl_ms: u64,
         poll_interval_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskPromisedUnboundReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -832,9 +874,10 @@ impl ReceiptLedgerActor {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         workspace_identity_hash: SafeIdentityHash,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskPromisedActorBoundReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -867,9 +910,10 @@ impl ReceiptLedgerActor {
         created_at_epoch_ms: u64,
         ttl_ms: u64,
         poll_interval_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -904,9 +948,10 @@ impl ReceiptLedgerActor {
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
         certificate: StagedTerminalTransferCertificate,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskHandoffActorBoundReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -939,9 +984,10 @@ impl ReceiptLedgerActor {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         confirmed_task_bound: TaskBoundReceipt,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -972,9 +1018,10 @@ impl ReceiptLedgerActor {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         confirmed_terminal_bound: TaskTerminalBoundReceipt,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskTerminalBoundReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1005,9 +1052,10 @@ impl ReceiptLedgerActor {
         key: ReceiptKey,
         expected_version: ReceiptVersion,
         proven_link_capacity: ProvenTaskLinkCapacity,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskReceiptOwnedActorBoundReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1037,9 +1085,10 @@ impl ReceiptLedgerActor {
         &self,
         key: ReceiptKey,
         expected_state: TaskCancellationReceipt,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1070,9 +1119,10 @@ impl ReceiptLedgerActor {
         expected_state: TaskCancellationReceipt,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<TaskTerminalReceiptBackedReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1103,9 +1153,10 @@ impl ReceiptLedgerActor {
         &self,
         key: ReceiptKey,
         cancel_reserved_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<CancelResolution, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1136,8 +1187,9 @@ impl ReceiptLedgerActor {
         requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<DirectTerminalUnackedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
         let ticket = Arc::new(Ticket::queued(
             deadline,
@@ -1159,8 +1211,9 @@ impl ReceiptLedgerActor {
     pub(crate) fn reserve_batch(
         &self,
         requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
         let ticket = Arc::new(Ticket::queued(deadline, TimeoutClass::ReserveBatch(digest)));
         self.enqueue(
@@ -1177,8 +1230,9 @@ impl ReceiptLedgerActor {
     pub(crate) fn bind_reserved_actor_batch(
         &self,
         requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
         let ticket = Arc::new(Ticket::queued(
             deadline,
@@ -1198,8 +1252,9 @@ impl ReceiptLedgerActor {
     pub(crate) fn mark_reserved_begun_batch(
         &self,
         requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
         let ticket = Arc::new(Ticket::queued(
             deadline,
@@ -1219,8 +1274,9 @@ impl ReceiptLedgerActor {
     pub(crate) fn publish_direct_terminal_batch(
         &self,
         requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
         let ticket = Arc::new(Ticket::queued(
             deadline,
@@ -1240,8 +1296,9 @@ impl ReceiptLedgerActor {
     pub(crate) fn acknowledge_direct_batch(
         &self,
         requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
+        let deadline = deadline.into();
         let digest = batch_digest(&requests, deadline, &self.health, |request| &request.0)?;
         let ticket = Arc::new(Ticket::queued(
             deadline,
@@ -1261,8 +1318,9 @@ impl ReceiptLedgerActor {
     pub(crate) fn recover(
         &self,
         key: ReceiptKey,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
+        let deadline = deadline.into();
         self.recover_inner(key, None, deadline)
     }
 
@@ -1270,8 +1328,9 @@ impl ReceiptLedgerActor {
         &self,
         key: ReceiptKey,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
+        let deadline = deadline.into();
         self.recover_inner(key, Some(observed_at_epoch_ms), deadline)
     }
 
@@ -1279,9 +1338,9 @@ impl ReceiptLedgerActor {
         &self,
         key: ReceiptKey,
         observed_at_epoch_ms: Option<u64>,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1309,9 +1368,10 @@ impl ReceiptLedgerActor {
     pub(crate) fn resolve_task(
         &self,
         task_id: crate::domain::invocation::TaskId,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1340,9 +1400,10 @@ impl ReceiptLedgerActor {
         expected_version: ReceiptVersion,
         terminal_epoch_ms: u64,
         terminal: V5CanonicalTerminal,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1375,9 +1436,10 @@ impl ReceiptLedgerActor {
         key: ReceiptKey,
         terminal_digest: TerminalDigest,
         acknowledged_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1407,9 +1469,10 @@ impl ReceiptLedgerActor {
     pub(crate) fn reclaim_expired_tombstones(
         &self,
         observed_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: impl Into<OperationDeadline>,
     ) -> Result<usize, ReceiptLedgerError> {
-        if Instant::now() >= deadline {
+        let deadline = deadline.into();
+        if deadline.is_elapsed_at(Instant::now()) {
             return Err(ReceiptLedgerError::DeadlineExceeded);
         }
         if !self.health.is_ready() {
@@ -1431,13 +1494,18 @@ impl ReceiptLedgerActor {
         ticket.wait(&self.health)
     }
 
-    fn enqueue(&self, mut command: Command, deadline: Instant) -> Result<(), ReceiptLedgerError> {
+    fn enqueue(
+        &self,
+        mut command: Command,
+        deadline: impl Into<OperationDeadline>,
+    ) -> Result<(), ReceiptLedgerError> {
+        let deadline = deadline.into();
         loop {
             if !self.health.is_ready() {
                 return Err(ReceiptLedgerError::StoreUnavailable);
             }
             let now = Instant::now();
-            if now >= deadline {
+            if deadline.is_elapsed_at(now) {
                 return Err(ReceiptLedgerError::DeadlineExceeded);
             }
 
@@ -1446,7 +1514,11 @@ impl ReceiptLedgerActor {
                 Err(TrySendError::Full(returned)) => {
                     command = returned;
                     std::thread::park_timeout(
-                        ENQUEUE_RETRY_SLICE.min(deadline.saturating_duration_since(now)),
+                        deadline
+                            .remaining_at(now)
+                            .map_or(ENQUEUE_RETRY_SLICE, |remaining| {
+                                ENQUEUE_RETRY_SLICE.min(remaining)
+                            }),
                     );
                 }
                 Err(TrySendError::Disconnected(_)) => {
@@ -1460,11 +1532,11 @@ impl ReceiptLedgerActor {
 
 fn batch_digest<T>(
     requests: &[T],
-    deadline: Instant,
+    deadline: OperationDeadline,
     health: &ActorHealth,
     key: impl Fn(&T) -> &ReceiptKey,
 ) -> Result<ReceiptKeyDigest, ReceiptLedgerError> {
-    if Instant::now() >= deadline {
+    if deadline.is_elapsed_at(Instant::now()) {
         return Err(ReceiptLedgerError::DeadlineExceeded);
     }
     if !health.is_ready() {
@@ -2050,6 +2122,7 @@ mod tests {
         V5CanonicalTerminal, V5ToolIdentity,
     };
     use crate::domain::invocation::{InvocationId, SafeIdentityHash, TaskId};
+    use crate::domain::operation_deadline::OperationDeadline;
     use std::cell::Cell;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2087,7 +2160,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if let Some(entered) = self.entered.take() {
@@ -2103,7 +2176,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             self.direct_calls.fetch_add(1, Ordering::SeqCst);
             Err(ReceiptLedgerError::CapacityExceeded)
@@ -2113,7 +2186,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -2121,7 +2194,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             Err(ReceiptLedgerError::ReceiptNotFound)
         }
@@ -2133,7 +2206,7 @@ mod tests {
         fn reserve_batch(
             &mut self,
             _requests: Vec<(ReceiptKey, OriginalCutoffDescriptor)>,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<Vec<ReserveOutcome>, ReceiptLedgerError> {
             panic!("injected reserve batch panic")
         }
@@ -2141,7 +2214,7 @@ mod tests {
         fn bind_reserved_actor_batch(
             &mut self,
             _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
             panic!("injected bind batch panic")
         }
@@ -2149,7 +2222,7 @@ mod tests {
         fn mark_reserved_begun_batch(
             &mut self,
             _requests: Vec<(ReceiptKey, ReceiptVersion, SafeIdentityHash)>,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<Vec<ReservedReceipt>, ReceiptLedgerError> {
             panic!("injected begun batch panic")
         }
@@ -2157,7 +2230,7 @@ mod tests {
         fn publish_direct_terminal_batch(
             &mut self,
             _requests: Vec<(ReceiptKey, ReceiptVersion, u64, V5CanonicalTerminal)>,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<Vec<CommittedDirectPublication>, ReceiptLedgerError> {
             panic!("injected terminal batch panic")
         }
@@ -2165,7 +2238,7 @@ mod tests {
         fn acknowledge_direct_batch(
             &mut self,
             _requests: Vec<(ReceiptKey, TerminalDigest, u64)>,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<Vec<AcknowledgedTombstoneReceipt>, ReceiptLedgerError> {
             panic!("injected acknowledgement batch panic")
         }
@@ -2174,7 +2247,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             panic!("injected receipt port panic")
         }
@@ -2185,7 +2258,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             panic!("injected direct terminal panic")
         }
@@ -2194,7 +2267,7 @@ mod tests {
             &mut self,
             _key: &ReceiptKey,
             _expected_state: TaskCancellationReceipt,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
             panic!("injected Task cancellation panic")
         }
@@ -2203,7 +2276,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             panic!("injected cancel reservation panic")
         }
@@ -2211,7 +2284,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             panic!("injected receipt recover panic")
         }
@@ -2227,7 +2300,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(self.error.clone())
@@ -2239,7 +2312,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(self.error.clone())
@@ -2249,7 +2322,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(self.error.clone())
@@ -2258,7 +2331,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(self.error.clone())
@@ -2267,7 +2340,7 @@ mod tests {
 
     struct DeadlineRecordingSendOnlyPort {
         calls: Cell<usize>,
-        seen: mpsc::Sender<(Instant, usize)>,
+        seen: mpsc::Sender<(OperationDeadline, usize)>,
     }
 
     impl ReceiptLedgerPort for DeadlineRecordingSendOnlyPort {
@@ -2275,7 +2348,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            deadline: Instant,
+            deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             self.calls.set(self.calls.get() + 1);
             self.seen
@@ -2290,7 +2363,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            deadline: Instant,
+            deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             self.calls.set(self.calls.get() + 1);
             self.seen
@@ -2303,7 +2376,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            deadline: Instant,
+            deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             self.calls.set(self.calls.get() + 1);
             self.seen
@@ -2315,7 +2388,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            deadline: Instant,
+            deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             self.calls.set(self.calls.get() + 1);
             self.seen
@@ -2336,7 +2409,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Err(ReceiptLedgerError::CapacityExceeded)
@@ -2348,7 +2421,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -2357,7 +2430,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -2365,7 +2438,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if let Some(entered) = self.entered.take() {
@@ -2395,7 +2468,7 @@ mod tests {
     }
 
     impl ReceiptLedgerPort for DropNotifyingPort {
-        fn generation(&mut self, _deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+        fn generation(&mut self, _deadline: OperationDeadline) -> Result<u64, ReceiptLedgerError> {
             if let Some(gate) = self.worker_generation.take() {
                 gate.entered.send(()).expect("report generation entry");
                 gate.release.recv().expect("release worker generation");
@@ -2410,7 +2483,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2421,7 +2494,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2430,7 +2503,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2438,7 +2511,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2509,7 +2582,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2519,7 +2592,7 @@ mod tests {
             key: &ReceiptKey,
             expected_version: ReceiptVersion,
             confirmed_task_bound: TaskBoundReceipt,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(key, confirmed_task_bound.key());
@@ -2532,7 +2605,7 @@ mod tests {
             &mut self,
             key: &ReceiptKey,
             expected_state: TaskCancellationReceipt,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<TaskCancellationReceipt, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             assert_eq!(key, expected_state.key());
@@ -2543,7 +2616,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2554,7 +2627,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2562,7 +2635,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2697,7 +2770,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2706,7 +2779,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2717,7 +2790,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2727,7 +2800,7 @@ mod tests {
             key: &ReceiptKey,
             terminal_digest: &TerminalDigest,
             acknowledged_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<AcknowledgedTombstoneReceipt, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             AcknowledgedTombstoneReceipt::new(
@@ -2742,7 +2815,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             Err(ReceiptLedgerError::StoreUnavailable)
         }
@@ -2792,7 +2865,7 @@ mod tests {
         actor
             .enqueue(
                 Command::Generation {
-                    deadline,
+                    deadline: deadline.into(),
                     ticket: Arc::clone(&ticket),
                 },
                 deadline,
@@ -2933,7 +3006,7 @@ mod tests {
         actor
             .enqueue(
                 Command::Generation {
-                    deadline,
+                    deadline: deadline.into(),
                     ticket: Arc::clone(&ticket),
                 },
                 deadline,
@@ -2950,6 +3023,116 @@ mod tests {
         observed_drop
             .recv_timeout(Duration::from_secs(1))
             .expect("worker exits and releases the port without self-join");
+    }
+
+    #[test]
+    fn no_deadline_actor_queue_waits_for_running_port_then_returns_success() {
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (dropped, _observed_drop) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn(DropNotifyingPort {
+            generation: 41,
+            dropped,
+            worker_generation: Some(WorkerGenerationGate {
+                actor_to_drop: None,
+                entered,
+                release: released,
+            }),
+        });
+        let first_actor = actor.clone();
+        let first =
+            std::thread::spawn(move || first_actor.generation(OperationDeadline::NoDeadline));
+        observed_entry
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first command is running");
+        let ticket = Arc::new(Ticket::queued(
+            OperationDeadline::NoDeadline,
+            TimeoutClass::Generation,
+        ));
+        actor
+            .enqueue(
+                Command::Generation {
+                    deadline: OperationDeadline::NoDeadline,
+                    ticket: Arc::clone(&ticket),
+                },
+                OperationDeadline::NoDeadline,
+            )
+            .expect("second command is queued behind the first");
+        let health = Arc::clone(&actor.health);
+        let (finished, observed_finish) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            finished
+                .send(ticket.wait(&health))
+                .expect("report queued result")
+        });
+        let before_release = observed_finish.recv_timeout(Duration::from_millis(50));
+        release.send(()).expect("release running command");
+        assert_eq!(first.join().expect("join first caller"), Ok(41));
+        assert_eq!(
+            observed_finish
+                .recv_timeout(Duration::from_secs(1))
+                .expect("queued command finishes"),
+            Ok(41)
+        );
+        second.join().expect("join queued caller");
+        assert_eq!(before_release, Err(mpsc::RecvTimeoutError::Timeout));
+        assert!(!actor.restart_required());
+    }
+
+    #[test]
+    fn no_deadline_mutation_keeps_late_successful_completion_authority() {
+        let health = ActorHealth::ready();
+        let ticket = Ticket::<u64>::queued(
+            OperationDeadline::NoDeadline,
+            TimeoutClass::Reserve(receipt_key_digest(&receipt_key())),
+        );
+        assert!(ticket.try_begin(&health));
+        // The controlled completion clock crosses every finite deadline used by
+        // the neighboring one-second completion-authority tests.
+        ticket.finish_at(Ok(41), Instant::now() + Duration::from_secs(3_600), &health);
+        assert_eq!(ticket.wait(&health), Ok(41));
+        assert!(health.is_ready());
+    }
+
+    #[test]
+    fn no_deadline_permit_wait_is_released_by_fail_stop() {
+        let health = Arc::new(ActorHealth::ready());
+        let held = health
+            .acquire_heavy_result_permit(OperationDeadline::NoDeadline)
+            .expect("hold permit");
+        let waiter_health = Arc::clone(&health);
+        let (finished, observed_finish) = mpsc::channel();
+        let (entered, observed_entry) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let mut gate = Some((entered, released));
+            let result = waiter_health
+                .heavy_result_slot
+                .acquire_inner(OperationDeadline::NoDeadline, &waiter_health, move || {
+                    if let Some((entered, released)) = gate.take() {
+                        entered.send(()).expect("occupied permit branch reached");
+                        released.recv().expect("release entry into permit wait");
+                    }
+                })
+                .map(|_| ());
+            finished.send(result).expect("report permit result");
+        });
+        observed_entry
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiter reaches occupied permit branch while holding its mutex");
+        // The hook holds the same mutex as wake_all. Once released, its next
+        // step atomically enters the condvar wait and releases that mutex;
+        // fail-stop cannot deliver its notification before that transition.
+        release.send(()).expect("release entry into condvar wait");
+        health.latch_recovery_required();
+        assert_eq!(
+            observed_finish
+                .recv_timeout(Duration::from_secs(1))
+                .expect("fail-stop wakes unlimited waiter"),
+            Err(ReceiptLedgerError::StoreUnavailable)
+        );
+        waiter.join().expect("join permit waiter");
+        drop(held);
     }
 
     #[test]
@@ -3257,7 +3440,7 @@ mod tests {
     }
 
     struct BlockingDirectTerminalPort {
-        entered: Option<mpsc::Sender<Instant>>,
+        entered: Option<mpsc::Sender<OperationDeadline>>,
         release: mpsc::Receiver<()>,
         calls: Arc<AtomicUsize>,
     }
@@ -3267,7 +3450,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -3278,7 +3461,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            deadline: Instant,
+            deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if let Some(entered) = self.entered.take() {
@@ -3294,7 +3477,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -3302,14 +3485,14 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             Err(ReceiptLedgerError::ReceiptNotFound)
         }
     }
 
     struct BlockingCancelReservationPort {
-        entered: Option<mpsc::Sender<Instant>>,
+        entered: Option<mpsc::Sender<OperationDeadline>>,
         release: mpsc::Receiver<()>,
         calls: Arc<AtomicUsize>,
     }
@@ -3319,7 +3502,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -3328,7 +3511,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            deadline: Instant,
+            deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if let Some(entered) = self.entered.take() {
@@ -3348,7 +3531,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -3356,7 +3539,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             Err(ReceiptLedgerError::ReceiptNotFound)
         }
@@ -3372,7 +3555,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _original_cutoff: OriginalCutoffDescriptor,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReserveOutcome, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -3381,7 +3564,7 @@ mod tests {
             &mut self,
             _key: ReceiptKey,
             _cancel_reserved_at_epoch_ms: u64,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CancelResolution, ReceiptLedgerError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(self.outcome.clone())
@@ -3393,7 +3576,7 @@ mod tests {
             _expected_version: ReceiptVersion,
             _terminal_epoch_ms: u64,
             _terminal: V5CanonicalTerminal,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
             Err(ReceiptLedgerError::CapacityExceeded)
         }
@@ -3401,7 +3584,7 @@ mod tests {
         fn recover(
             &mut self,
             _key: &ReceiptKey,
-            _deadline: Instant,
+            _deadline: OperationDeadline,
         ) -> Result<ReceiptState, ReceiptLedgerError> {
             Err(ReceiptLedgerError::ReceiptNotFound)
         }
@@ -3434,7 +3617,7 @@ mod tests {
             entered_wait
                 .recv_timeout(Duration::from_secs(1))
                 .expect("direct terminal entered the port"),
-            deadline
+            OperationDeadline::from(deadline)
         );
 
         assert_eq!(
@@ -3476,7 +3659,7 @@ mod tests {
             entered_wait
                 .recv_timeout(Duration::from_secs(1))
                 .expect("cancel reservation entered the port"),
-            deadline
+            OperationDeadline::from(deadline)
         );
 
         assert_eq!(
@@ -4049,7 +4232,7 @@ mod tests {
         );
         assert_eq!(
             seen_wait.recv().expect("reserve deadline observation"),
-            (reserve_deadline, 1)
+            (OperationDeadline::from(reserve_deadline), 1)
         );
 
         let cancel_deadline = Instant::now() + Duration::from_secs(1);
@@ -4063,7 +4246,7 @@ mod tests {
             seen_wait
                 .recv()
                 .expect("cancel reservation deadline observation"),
-            (cancel_deadline, 2)
+            (OperationDeadline::from(cancel_deadline), 2)
         );
 
         let repeated_cancel_deadline = Instant::now() + Duration::from_secs(1);
@@ -4077,7 +4260,7 @@ mod tests {
             seen_wait
                 .recv()
                 .expect("repeated cancellation deadline observation"),
-            (repeated_cancel_deadline, 3)
+            (OperationDeadline::from(repeated_cancel_deadline), 3)
         );
 
         let recover_deadline = Instant::now() + Duration::from_secs(1);
@@ -4089,7 +4272,7 @@ mod tests {
         );
         assert_eq!(
             seen_wait.recv().expect("recover deadline observation"),
-            (recover_deadline, 4)
+            (OperationDeadline::from(recover_deadline), 4)
         );
 
         let direct_deadline = Instant::now() + Duration::from_secs(1);
@@ -4107,7 +4290,7 @@ mod tests {
         );
         assert_eq!(
             seen_wait.recv().expect("direct deadline observation"),
-            (direct_deadline, 5)
+            (OperationDeadline::from(direct_deadline), 5)
         );
     }
 

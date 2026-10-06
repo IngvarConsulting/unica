@@ -1,6 +1,12 @@
 ---
 id: INV.RUNTIME.TIMERS-PRESERVE-WORK
-check: []
+check:
+  - crates/unica-coder/src/domain/operation_deadline.rs::absence_and_elapsed_finite_deadline_are_distinct
+  - crates/unica-coder/src/application/receipt_ledger_actor.rs::no_deadline_actor_queue_waits_for_running_port_then_returns_success
+  - crates/unica-coder/src/application/receipt_ledger_actor.rs::no_deadline_mutation_keeps_late_successful_completion_authority
+  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_actor_returns_late_real_store_commit_and_reopens
+  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_row_commit_survives_delayed_sync_and_exact_reopen
+  - crates/unica-coder/src/infrastructure/receipt_ledger/tests.rs::no_deadline_keeps_visible_io_failure_commit_uncertain
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
@@ -13,6 +19,12 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 [ограничение ресурса](resource-limit-evidence.md), и явного решения о поведении
 при его достижении. Произвольный таймаут не становится защитой от зависания
 только потому, что назван watchdog.
+
+Явное отсутствие срока отличается от истёкшего конечного срока. Ожидание
+в очереди и позднее успешное завершение записи сами по себе не превращают
+вызов без срока в ошибку или неопределённый исход. Отсутствие срока
+не ослабляет проверку принадлежности записи и подтверждение её сохранения:
+ошибка после видимого изменения по-прежнему требует точного восстановления.
 
 Таймер допустим для следующих действий:
 

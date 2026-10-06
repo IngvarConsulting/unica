@@ -2587,7 +2587,7 @@ fn recover_port_returns_the_exact_reserved_state_without_mutating_generation() {
         .expect("receipt remains reserved");
     let generation_before = store.generation().expect("generation before recovery");
 
-    let recovered = ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+    let recovered = ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
         .expect("recover exact receipt");
 
     assert_eq!(recovered, ReceiptState::Reserved(reserved));
@@ -3015,7 +3015,7 @@ fn exact_recovery_reclaims_its_tombstone_at_expiry_and_reports_absence() {
             &mut store,
             &key,
             tombstone.expires_at_epoch_ms() - 1,
-            reserve_deadline(),
+            (reserve_deadline()).into(),
         ),
         Ok(ReceiptState::AcknowledgedTombstone(tombstone.clone()))
     );
@@ -3024,7 +3024,7 @@ fn exact_recovery_reclaims_its_tombstone_at_expiry_and_reports_absence() {
             &mut store,
             &key,
             tombstone.expires_at_epoch_ms(),
-            reserve_deadline(),
+            (reserve_deadline()).into(),
         ),
         Err(ReceiptLedgerError::ReceiptNotFound)
     );
@@ -3081,7 +3081,7 @@ fn all_exact_tombstone_paths_remain_absent_after_the_expiry_boundary() {
             &mut store,
             &key,
             tombstone.expires_at_epoch_ms() + 1,
-            reserve_deadline(),
+            (reserve_deadline()).into(),
         ),
         Err(ReceiptLedgerError::ReceiptNotFound)
     );
@@ -3192,7 +3192,12 @@ fn tombstone_pool_does_not_consume_the_sixty_four_live_receipt_slots() {
     let fresh = receipt_key_with_ids(InvocationId::new(), TaskId::new(), "workspace-fresh");
 
     store
-        .prepare_new_admission_under_writer_lock(&mut catalog, &fresh, 1_001, reserve_deadline())
+        .prepare_new_admission_under_writer_lock(
+            &mut catalog,
+            &fresh,
+            1_001,
+            reserve_deadline().into(),
+        )
         .expect("separate tombstone pool cannot block live admission");
 }
 
@@ -3300,7 +3305,7 @@ fn direct_terminal_reopens_byte_equivalent_with_exact_state() {
     );
 
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
             .expect("recover live direct terminal"),
         ReceiptState::DirectTerminalUnacked(committed.clone())
     );
@@ -3313,7 +3318,7 @@ fn direct_terminal_reopens_byte_equivalent_with_exact_state() {
 
     let mut reopened = ReceiptLedgerStore::open(&receipts).expect("reopen receipt ledger");
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut reopened, &key, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut reopened, &key, (reserve_deadline()).into())
             .expect("recover reopened direct terminal"),
         ReceiptState::DirectTerminalUnacked(committed)
     );
@@ -3611,7 +3616,7 @@ fn direct_terminal_expires_at_absolute_boundary_and_releases_exact_quota() {
             &mut store,
             &key,
             expires_at_epoch_ms - 1,
-            reserve_deadline(),
+            (reserve_deadline()).into(),
         ),
         Ok(ReceiptState::DirectTerminalUnacked(committed))
     );
@@ -3628,7 +3633,12 @@ fn direct_terminal_expires_at_absolute_boundary_and_releases_exact_quota() {
         1
     );
     assert_eq!(
-        ReceiptLedgerPort::recover_at(&mut store, &key, expires_at_epoch_ms, reserve_deadline(),),
+        ReceiptLedgerPort::recover_at(
+            &mut store,
+            &key,
+            expires_at_epoch_ms,
+            (reserve_deadline()).into(),
+        ),
         Err(ReceiptLedgerError::ReceiptNotFound)
     );
     assert_eq!(store.generation().expect("expiry generation"), 3);
@@ -3651,7 +3661,12 @@ fn direct_terminal_expires_at_absolute_boundary_and_releases_exact_quota() {
     let mut reopened = ReceiptLedgerStore::open(&receipts).expect("reopen expired ledger");
     assert_eq!(reopened.generation().expect("reopened generation"), 3);
     assert_eq!(
-        ReceiptLedgerPort::recover_at(&mut reopened, &key, expires_at_epoch_ms, reserve_deadline(),),
+        ReceiptLedgerPort::recover_at(
+            &mut reopened,
+            &key,
+            expires_at_epoch_ms,
+            (reserve_deadline()).into(),
+        ),
         Err(ReceiptLedgerError::ReceiptNotFound)
     );
 }
@@ -3817,7 +3832,7 @@ fn exact_duplicate_direct_after_reopen_reads_the_existing_lifecycle_without_muta
 
     assert!(matches!(duplicate, ReserveOutcome::ExistingExact(_)));
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut reopened, &key, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut reopened, &key, (reserve_deadline()).into())
             .expect("recover duplicate direct lifecycle"),
         ReceiptState::DirectTerminalUnacked(committed)
     );
@@ -4030,7 +4045,7 @@ fn direct_terminal_repeat_preserves_first_winner_and_clean_conflicts_do_not_latc
         winner_bytes
     );
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
             .expect("clean conflict keeps the store reusable"),
         ReceiptState::DirectTerminalUnacked(committed)
     );
@@ -4059,7 +4074,7 @@ fn direct_terminal_repeat_preserves_first_winner_and_clean_conflicts_do_not_latc
         }
     );
     assert!(matches!(
-        ReceiptLedgerPort::recover(&mut store, &second_key, reserve_deadline()),
+        ReceiptLedgerPort::recover(&mut store, &second_key, (reserve_deadline()).into()),
         Ok(ReceiptState::Reserved(_))
     ));
 }
@@ -4100,7 +4115,7 @@ fn direct_terminal_catalog_invariant_failure_latches_the_live_writer() {
         ReceiptLedgerError::Corrupt("receipt catalog actual-byte accounting underflowed")
     );
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
             .expect_err("catalog invariant failure must fail-stop the live writer"),
         ReceiptLedgerError::StoreUnavailable
     );
@@ -4152,7 +4167,7 @@ fn direct_terminal_reader_accepts_payload_above_the_legacy_64_kib_bound() {
     let mut reopened = ReceiptLedgerStore::open(&receipts)
         .expect("reopen must read the full direct-terminal bound");
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut reopened, &key, near_limit_payload_deadline())
+        ReceiptLedgerPort::recover(&mut reopened, &key, (near_limit_payload_deadline()).into())
             .expect("recover near-limit direct terminal"),
         ReceiptState::DirectTerminalUnacked(committed)
     );
@@ -4195,7 +4210,7 @@ fn direct_terminal_after_rename_sync_failure_is_uncertain_and_reopens_the_winner
         }
     );
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
             .expect_err("uncertain live writer stays fail-stopped"),
         ReceiptLedgerError::StoreUnavailable
     );
@@ -4203,7 +4218,7 @@ fn direct_terminal_after_rename_sync_failure_is_uncertain_and_reopens_the_winner
 
     let mut reopened = ReceiptLedgerStore::open(&receipts)
         .expect("process-owned reopen resolves the visible direct winner");
-    let recovered = ReceiptLedgerPort::recover(&mut reopened, &key, reserve_deadline())
+    let recovered = ReceiptLedgerPort::recover(&mut reopened, &key, (reserve_deadline()).into())
         .expect("recover exact direct winner after uncertain commit");
     let ReceiptState::DirectTerminalUnacked(recovered) = recovered else {
         panic!("uncertain direct publication reopened as a different state")
@@ -4223,7 +4238,7 @@ fn recover_port_returns_receipt_not_found_only_for_a_stably_missing_exact_key() 
     let mut store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
 
-    let error = ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+    let error = ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
         .expect_err("stably missing exact receipt has a typed absence");
 
     assert_eq!(error, ReceiptLedgerError::ReceiptNotFound);
@@ -4247,12 +4262,12 @@ fn recover_rejects_same_invocation_id_bound_to_a_different_exact_key() {
     let generation = store.generation().expect("generation after reserve");
 
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &mismatch, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &mismatch, (reserve_deadline()).into())
             .expect_err("partial invocation-id collision must not look absent"),
         ReceiptLedgerError::InvocationIdentityMismatch
     );
     assert!(matches!(
-        ReceiptLedgerPort::recover(&mut store, &original, reserve_deadline()),
+        ReceiptLedgerPort::recover(&mut store, &original, (reserve_deadline()).into()),
         Ok(ReceiptState::Reserved(_))
     ));
     assert_eq!(
@@ -4278,12 +4293,12 @@ fn recover_rejects_same_reserved_task_id_bound_to_a_different_exact_key() {
     let generation = store.generation().expect("generation after reserve");
 
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &mismatch, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &mismatch, (reserve_deadline()).into())
             .expect_err("partial task-id collision must not look absent"),
         ReceiptLedgerError::ReservedTaskIdentityMismatch
     );
     assert!(matches!(
-        ReceiptLedgerPort::recover(&mut store, &original, reserve_deadline()),
+        ReceiptLedgerPort::recover(&mut store, &original, (reserve_deadline()).into()),
         Ok(ReceiptState::Reserved(_))
     ));
     assert_eq!(
@@ -4313,12 +4328,12 @@ fn fail_stopped_store_rejects_partial_identity_mismatch_as_unavailable() {
     fs::write(&row_path, vec![b' '; MAX_TASK_RECORD_ENVELOPE_BYTES + 1])
         .expect("replace row with corrupt persisted evidence");
     assert!(matches!(
-        ReceiptLedgerPort::recover(&mut store, &original, reserve_deadline()),
+        ReceiptLedgerPort::recover(&mut store, &original, (reserve_deadline()).into()),
         Err(ReceiptLedgerError::Corrupt(_))
     ));
 
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &mismatch, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &mismatch, (reserve_deadline()).into())
             .expect_err("latched store authority precedes clean mismatch classification"),
         ReceiptLedgerError::StoreUnavailable
     );
@@ -4367,12 +4382,12 @@ fn recover_port_rejects_an_expired_deadline_without_latching_the_store() {
     let mut store = ReceiptLedgerStore::open(&receipts).expect("open receipt ledger");
     let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
 
-    let error = ReceiptLedgerPort::recover(&mut store, &key, Instant::now())
+    let error = ReceiptLedgerPort::recover(&mut store, &key, (Instant::now()).into())
         .expect_err("expired recovery must not inspect storage");
 
     assert_eq!(error, ReceiptLedgerError::DeadlineExceeded);
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
             .expect_err("clean deadline rejection keeps the store reusable"),
         ReceiptLedgerError::ReceiptNotFound
     );
@@ -4673,6 +4688,217 @@ fn reserve_after_rename_sync_failure_is_commit_uncertain_and_store_fail_stops_un
         .expect("uncertain row is recovered as committed");
     assert_eq!(recovered.key(), &key);
     assert_eq!(recovered.original_cutoff(), &cutoff);
+}
+
+struct DelayedActualReservePort {
+    store: ReceiptLedgerStore,
+    entered: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+impl ReceiptLedgerPort for DelayedActualReservePort {
+    fn request_cancel_or_reserve(
+        &mut self,
+        key: ReceiptKey,
+        cancel_reserved_at_epoch_ms: u64,
+        deadline: OperationDeadline,
+    ) -> Result<CancelResolution, ReceiptLedgerError> {
+        self.store
+            .request_cancel_or_reserve(key, cancel_reserved_at_epoch_ms, deadline)
+    }
+
+    fn publish_direct_terminal(
+        &mut self,
+        key: &ReceiptKey,
+        expected_version: ReceiptVersion,
+        terminal_epoch_ms: u64,
+        terminal: V5CanonicalTerminal,
+        deadline: OperationDeadline,
+    ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+        ReceiptLedgerPort::publish_direct_terminal(
+            &mut self.store,
+            key,
+            expected_version,
+            terminal_epoch_ms,
+            terminal,
+            deadline,
+        )
+    }
+
+    fn reserve(
+        &mut self,
+        key: ReceiptKey,
+        cutoff: OriginalCutoffDescriptor,
+        deadline: OperationDeadline,
+    ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+        assert_eq!(deadline, OperationDeadline::NoDeadline);
+        self.entered
+            .send(())
+            .expect("actual store call is already running on actor");
+        self.release.recv().expect("release actual store commit");
+        self.store.reserve(key, cutoff, deadline)
+    }
+
+    fn recover(
+        &mut self,
+        key: &ReceiptKey,
+        deadline: OperationDeadline,
+    ) -> Result<ReceiptState, ReceiptLedgerError> {
+        ReceiptLedgerPort::recover(&mut self.store, key, deadline)
+    }
+}
+
+#[test]
+fn no_deadline_actor_returns_late_real_store_commit_and_reopens() {
+    use crate::application::receipt_ledger_actor::ReceiptLedgerActor;
+    use std::sync::mpsc;
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical root")
+        .join("receipts");
+    let (entered, observed_entry) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let actor = ReceiptLedgerActor::spawn(DelayedActualReservePort {
+        store: ReceiptLedgerStore::open(&receipts).expect("open actual ledger"),
+        entered,
+        release: released,
+    });
+    let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+    let cutoff = OriginalCutoffDescriptor::new(1_000, 7_000).unwrap();
+    let caller = actor.clone();
+    let call_key = key.clone();
+    let (finished, observed_finish) = mpsc::channel();
+    let call = std::thread::spawn(move || {
+        finished
+            .send(caller.reserve(call_key, cutoff, OperationDeadline::NoDeadline))
+            .expect("report actual actor commit");
+    });
+    observed_entry
+        .recv_timeout(Duration::from_secs(1))
+        .expect("port has started");
+    let before_release = observed_finish.recv_timeout(Duration::from_millis(50));
+    release.send(()).expect("release actual writer");
+    let result = observed_finish
+        .recv_timeout(Duration::from_secs(1))
+        .expect("actual commit completes")
+        .expect("actor retains authority over delayed successful commit")
+        .into_reservation()
+        .expect("exact new reservation");
+    call.join().expect("join actor caller");
+    assert!(matches!(
+        before_release,
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert_eq!(result.key(), &key);
+    assert!(!actor.restart_required());
+    let ReceiptState::Reserved(recovered) = actor
+        .recover(key.clone(), OperationDeadline::NoDeadline)
+        .expect("read exact committed actor result")
+    else {
+        panic!("reservation required");
+    };
+    assert_eq!(recovered.record_version(), result.record_version());
+    drop(actor);
+    let reopened =
+        ReceiptLedgerStore::open(&receipts).expect("actor releases exact writer before reopen");
+    let committed = reopened
+        .read_reserved(&receipt_key_digest(&key))
+        .expect("read actual persisted row")
+        .expect("late commit remains present");
+    assert_eq!(committed.key(), &key);
+    assert_eq!(committed.record_version(), result.record_version());
+    assert_eq!(committed.original_cutoff(), &cutoff);
+}
+
+#[test]
+fn no_deadline_row_commit_survives_delayed_sync_and_exact_reopen() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical root")
+        .join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).expect("open ledger");
+    let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+    let cutoff =
+        OriginalCutoffDescriptor::new(1_000, 7_000).expect("old finite descriptor is unchanged");
+    let former_boundary = Instant::now() + Duration::from_millis(10);
+    set_after_receipt_row_rename_hook_for_test(move || {
+        while Instant::now() < former_boundary {
+            std::thread::yield_now();
+        }
+    });
+    let reserved = store
+        .reserve(key.clone(), cutoff, OperationDeadline::NoDeadline)
+        .expect("visible row commits despite delayed durability")
+        .into_reservation()
+        .expect("new exact reservation");
+    assert!(Instant::now() >= former_boundary);
+    let terminal =
+        canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled).expect("canonical terminal");
+    let direct = store
+        .publish_direct_terminal(
+            &key,
+            reserved.record_version(),
+            1_001,
+            terminal.clone(),
+            OperationDeadline::NoDeadline,
+        )
+        .expect("commit exact terminal");
+    assert_eq!(direct.terminal().digest(), terminal.digest());
+    drop(store);
+    let mut reopened = ReceiptLedgerStore::open(&receipts).expect("reopen committed state");
+    let state = ReceiptLedgerPort::recover(&mut reopened, &key, OperationDeadline::NoDeadline)
+        .expect("recover exact committed terminal");
+    let ReceiptState::DirectTerminalUnacked(recovered) = state else {
+        panic!("exact direct terminal required");
+    };
+    assert_eq!(recovered.key(), &key);
+    assert_eq!(recovered.original_cutoff(), &cutoff);
+    assert_eq!(recovered.terminal().digest(), terminal.digest());
+    assert_eq!(recovered.terminal().outcome(), terminal.outcome());
+}
+
+#[test]
+fn no_deadline_keeps_visible_io_failure_commit_uncertain() {
+    let root = tempfile::tempdir().expect("temporary root");
+    let receipts = fs::canonicalize(root.path())
+        .expect("physical root")
+        .join("receipts");
+    let store = ReceiptLedgerStore::open(&receipts).expect("open ledger");
+    let key = receipt_key(INVOCATION_A, TASK_A, "workspace-a");
+    inject_receipt_row_directory_sync_failure_for_test();
+    let error = store
+        .reserve(
+            key.clone(),
+            OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+            OperationDeadline::NoDeadline,
+        )
+        .expect_err("real post-rename failure remains uncertain");
+    assert_eq!(
+        error,
+        ReceiptLedgerError::CommitUncertain {
+            receipt_key_digest: receipt_key_digest(&key)
+        }
+    );
+    assert_eq!(
+        store
+            .reserve(
+                receipt_key(INVOCATION_B, TASK_B, "workspace-b"),
+                OriginalCutoffDescriptor::new(1_000, 7_000).unwrap(),
+                OperationDeadline::NoDeadline
+            )
+            .expect_err("uncertain owner cannot accept more work"),
+        ReceiptLedgerError::StoreUnavailable
+    );
+    drop(store);
+    let reopened = ReceiptLedgerStore::open(&receipts).expect("exact reconciliation after reopen");
+    assert_eq!(
+        reopened
+            .read_reserved(&receipt_key_digest(&key))
+            .expect("read reservation")
+            .expect("visible commit survives")
+            .key(),
+        &key
+    );
 }
 
 #[test]
@@ -5304,7 +5530,7 @@ fn oversized_live_persisted_row_is_corruption_and_fail_stops_the_store() {
     );
     fs::write(&row_path, oversized).expect("replace row with oversized persisted evidence");
 
-    let error = ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+    let error = ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
         .expect_err("persisted oversize is corruption, not prospective input rejection");
 
     assert_eq!(
@@ -5313,7 +5539,7 @@ fn oversized_live_persisted_row_is_corruption_and_fail_stops_the_store() {
     );
     assert!(error.requires_reopen());
     assert_eq!(
-        ReceiptLedgerPort::recover(&mut store, &key, reserve_deadline())
+        ReceiptLedgerPort::recover(&mut store, &key, (reserve_deadline()).into())
             .expect_err("corrupt read latches the store"),
         ReceiptLedgerError::StoreUnavailable
     );

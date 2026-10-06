@@ -4,6 +4,7 @@
 //! поэтому выражения отбора nextest не меняются.
 
 use super::*;
+use crate::domain::operation_deadline::OperationDeadline;
 
 use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
 use crate::infrastructure::daemon::v13_workspace_bootstrap::test_control::HealthInspectionPause;
@@ -640,7 +641,7 @@ enum CancelPortFailure {
     ImmediateCommitUncertain,
     ImmediateStoreUnavailable,
     WaitPastOperationDeadline {
-        observed_deadline: mpsc::Sender<Instant>,
+        observed_deadline: mpsc::Sender<OperationDeadline>,
     },
 }
 
@@ -649,7 +650,7 @@ struct FailingCancelPort {
 }
 
 impl ReceiptLedgerPort for FailingCancelPort {
-    fn generation(&mut self, _deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+    fn generation(&mut self, _deadline: OperationDeadline) -> Result<u64, ReceiptLedgerError> {
         Ok(0)
     }
 
@@ -657,7 +658,7 @@ impl ReceiptLedgerPort for FailingCancelPort {
         &mut self,
         _key: ReceiptKey,
         _original_cutoff: OriginalCutoffDescriptor,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<ReserveOutcome, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -666,7 +667,7 @@ impl ReceiptLedgerPort for FailingCancelPort {
         &mut self,
         key: ReceiptKey,
         _cancel_reserved_at_epoch_ms: u64,
-        deadline: Instant,
+        deadline: OperationDeadline,
     ) -> Result<CancelResolution, ReceiptLedgerError> {
         match self.failure {
             CancelPortFailure::ImmediateCommitUncertain => {
@@ -684,7 +685,10 @@ impl ReceiptLedgerPort for FailingCancelPort {
                     .send(deadline)
                     .expect("publish live cancel operation deadline");
                 thread::sleep(
-                    deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(10),
+                    deadline
+                        .remaining_at(Instant::now())
+                        .expect("finite cancellation fixture")
+                        + Duration::from_millis(10),
                 );
                 Err(ReceiptLedgerError::StoreUnavailable)
             }
@@ -697,7 +701,7 @@ impl ReceiptLedgerPort for FailingCancelPort {
         _expected_version: ReceiptVersion,
         _terminal_epoch_ms: u64,
         _terminal: V5CanonicalTerminal,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -705,7 +709,7 @@ impl ReceiptLedgerPort for FailingCancelPort {
     fn recover(
         &mut self,
         _key: &ReceiptKey,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -716,7 +720,7 @@ struct SlowReservePort {
 }
 
 impl ReceiptLedgerPort for SlowReservePort {
-    fn generation(&mut self, _deadline: Instant) -> Result<u64, ReceiptLedgerError> {
+    fn generation(&mut self, _deadline: OperationDeadline) -> Result<u64, ReceiptLedgerError> {
         Ok(0)
     }
 
@@ -724,7 +728,7 @@ impl ReceiptLedgerPort for SlowReservePort {
         &mut self,
         key: ReceiptKey,
         original_cutoff: OriginalCutoffDescriptor,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<ReserveOutcome, ReceiptLedgerError> {
         thread::sleep(self.delay);
         Ok(ReserveOutcome::Created(ReservedReceipt::new(
@@ -747,7 +751,7 @@ impl ReceiptLedgerPort for SlowReservePort {
         &mut self,
         _key: ReceiptKey,
         _cancel_reserved_at_epoch_ms: u64,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<CancelResolution, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -758,7 +762,7 @@ impl ReceiptLedgerPort for SlowReservePort {
         _expected_version: ReceiptVersion,
         _terminal_epoch_ms: u64,
         _terminal: V5CanonicalTerminal,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -766,7 +770,7 @@ impl ReceiptLedgerPort for SlowReservePort {
     fn recover(
         &mut self,
         _key: &ReceiptKey,
-        _deadline: Instant,
+        _deadline: OperationDeadline,
     ) -> Result<ReceiptState, ReceiptLedgerError> {
         Err(ReceiptLedgerError::StoreUnavailable)
     }
@@ -948,7 +952,9 @@ fn running_mutation_timeout_preserves_response_margin_or_closes_after_it() {
     let response_completed_at = Instant::now();
     let operation_deadline = operation_deadline_rx
         .recv_timeout(Duration::from_secs(1))
-        .expect("observe the live cancel operation deadline");
+        .expect("observe the live cancel operation deadline")
+        .as_instant()
+        .expect("existing runtime deadline is finite");
     drop(owner);
     let server_result = server.join().expect("join timeout fail-stop runtime");
     let state = DaemonStateDirectory::open(&state_root, &identity)
