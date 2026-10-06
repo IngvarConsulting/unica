@@ -109,11 +109,16 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertIn(" по ветви |", row("SubsystemPath"))
         self.assertIn(" нет |", row("cwd"))
 
-    def test_check_ledger_preserves_nullable_argument_types(self) -> None:
-        check = next(tool for tool in self.tools if tool["name"] == "unica.check")
-        rendered = "\n".join(self.module.render_arguments(check))
-        for name, kind in [("at", "string"), ("limit", "integer"), ("cursor", "string")]:
-            self.assertIn(f"| `{name}` | {kind} or null | нет |", rendered)
+    def test_nullable_argument_types_render_as_alternatives(self) -> None:
+        # The live surface publishes one type per argument (#1211); the
+        # renderer still names a type array honestly if one ever appears.
+        schema = {
+            "type": "object",
+            "properties": {"cursor": {"type": ["string", "null"]}},
+            "required": [],
+        }
+        rendered = "\n".join(self.module.render_arguments({"inputSchema": schema}))
+        self.assertIn("| `cursor` | string or null | нет |", rendered)
 
     def test_apply_ledger_keeps_both_closed_call_forms_branch_required(self) -> None:
         apply = next(tool for tool in self.tools if tool["name"] == "unica.apply")
@@ -211,7 +216,8 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             # логические: ни один не называет файл.
             "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor"},
             "unica.check": {"at", "limit", "cursor"},
-            "unica.diff": {"left", "right", "filter", "limit", "cursor"},
+            # Продолжения сравнения нет (#1218): курсор не публикуется.
+            "unica.diff": {"left", "right", "filter", "limit"},
             "unica.run": {"op", "args", "dryRun", "infobase"},
             "unica.docs": {"query", "source", "limit", "cursor"},
         }

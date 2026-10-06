@@ -48,9 +48,9 @@ Confirm workspace source-set admission, or validate one logical node: readabilit
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `at` | string or null | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit or use null to check workspace source-set admission. |
-| `cursor` | string or null | нет | Continuation cursor from an earlier check of the same node. Omit or use null for the first page; an empty string is invalid. |
-| `limit` | integer or null | нет | Maximum diagnostics in one node-check page (maximum 50). Omit or use null for the default of 20. |
+| `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit to check workspace source-set admission; null is treated as omitted. |
+| `cursor` | string | нет | Continuation cursor from an earlier check of the same node; valid only with at. Omit, or pass an empty string or null, for the first page. |
+| `limit` | integer | нет | Maximum diagnostics in one node-check page, from 1 to 50; valid only with at. Omit for 20; null is treated as omitted. |
 
 **Результат сейчас:** Без `at` доказывает admission source set; если EOL-обход прерван сроком запроса и ёмкость checkpoint доступна, корневой ответ предлагает повторить `unica.check {}` с новым сроком. При исчерпании ёмкости и другой статической неполноте нужно устранить указанную причину. С `at` читает узел и запускает все валидаторы его вида (`cf`/`cfe` для корня по виду набора, `form`, `dcs`/`mxl` по `TemplateType`, `role`, `subsystem`, `interface`, `meta`, `bsl`), отдавая `status`, `validators` и диагностики страницами; узел без валидаторов отвечает читаемостью (отвечают типизированным `data`)
 
@@ -70,13 +70,12 @@ Compare two readable logical nodes of the same kind without changing files.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `cursor` | string | нет | Continuation cursor from an earlier diff. |
 | `filter` | object | нет | Optional projection applied before comparison. |
 | `left` | string | да | Qualified logical address of the left node. |
-| `limit` | integer | нет | Maximum differences to return. |
+| `limit` | integer | нет | Maximum differences to return, from 1 to 1000; omit for 100. A truncated answer has no continuation: compare smaller nodes or raise limit. |
 | `right` | string | да | Qualified logical address of the right node. |
 
-**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников; закрытые `paths`/`sections` фильтры поддержаны, cursor пока неподдержан (отвечают типизированным `data`)
+**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников; закрытые `paths`/`sections` фильтры поддержаны. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit` (отвечают типизированным `data`)
 
 **Целевой контракт:** Добавить предметные diff-проекции и продолжение сохранённого сравнения
 
@@ -240,7 +239,7 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
 | `cursor` | string | нет | Continuation cursor from an earlier addressed view. |
 | `filter` | object | нет | Optional projection such as sections; valid only with at. |
-| `limit` | integer | нет | Maximum child items per addressed view page; a preferred 64 KiB page size may stop earlier, but an indivisible item remains whole. |
+| `limit` | integer | нет | Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole. |
 
 **Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) с целевым размером страницы 64 КиБ; неделимый элемент возвращается целиком до технического предела результата, `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает сохранённый снимок; ветвь графа вызовов сохраняет полученные связи для продолжения; с квалифицированным `at` узел содержит закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
 

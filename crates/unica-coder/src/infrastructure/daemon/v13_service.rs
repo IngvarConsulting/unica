@@ -2010,13 +2010,6 @@ impl CanonicalV13ReadService {
     ) -> DomainResult {
         let arguments = invocation.arguments();
         let filter = arguments.get("filter");
-        if arguments.contains_key("cursor") {
-            return error_result(
-                None,
-                RefusalCode::UnsupportedCursor,
-                "diff pagination cursors are not implemented",
-            );
-        }
         let Some(left) = arguments.get("left").and_then(Value::as_str) else {
             return error_result(
                 None,
@@ -2092,7 +2085,20 @@ impl CanonicalV13ReadService {
         let truncated = changes.len() > limit;
         changes.truncate(limit);
         let equal = changes.is_empty() && !truncated;
-        let mut result = DomainResult::success("logical nodes compared");
+        // Diff has no continuation yet (#1217): a truncated answer must say
+        // that the rest is missing and how to ask a smaller question.
+        let mut result = if truncated {
+            let narrower = if limit < 1_000 {
+                "compare smaller nodes or call again with a larger limit (at most 1000)"
+            } else {
+                "compare smaller nodes"
+            };
+            DomainResult::success(format!(
+                "logical nodes compared; only the first {limit} differences are returned and the rest are omitted; no continuation exists, so {narrower}"
+            ))
+        } else {
+            DomainResult::success("logical nodes compared")
+        };
         result.data = Some(serde_json::json!({
             "equal": equal,
             "changes": changes,
