@@ -987,16 +987,22 @@ impl ProviderReadAuthority {
     pub(crate) fn subsystem_payload(
         &self,
         target: &MetadataAddress,
+        nested: &[String],
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
-        let descriptor = self.metadata_descriptor(target)?;
-        let descriptor = std::str::from_utf8(&descriptor).map_err(|_| {
+        let (descriptor_relative, descriptor_bytes) =
+            self.registered_subsystem_descriptor(target, nested, checkpoint)?;
+        let descriptor = std::str::from_utf8(&descriptor_bytes).map_err(|_| {
             ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
                 "subsystem descriptor is not UTF-8",
             )
         })?;
-        let ci_relative = self.attached_resource_relative(target, "CommandInterface.xml")?;
+        let ci_relative = if nested.is_empty() {
+            self.attached_resource_relative(target, "CommandInterface.xml")?
+        } else {
+            nested_subsystem_resource(&descriptor_relative, "CommandInterface.xml")
+        };
         let command_interface = self
             .read_optional_relative(&ci_relative, MAX_CONFIGURATION_BYTES)?
             .map(|bytes| {
@@ -1011,19 +1017,108 @@ impl ProviderReadAuthority {
             })
             .transpose()?;
         let (data, _) = parse_subsystem_info_xml(
-            Path::new(target.as_str()),
+            if nested.is_empty() {
+                Path::new(target.as_str())
+            } else {
+                descriptor_relative.as_path()
+            },
             descriptor,
             command_interface.is_some(),
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        let result = build_subsystem_info_result(
-            data,
-            None,
-            command_interface,
-            self.object_support(target, checkpoint)?,
-        );
+        if let Some(expected) = nested.last() {
+            if &data.name != expected {
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!(
+                        "subsystem descriptor `{}` names `{}` instead of `{expected}`",
+                        descriptor_relative.display(),
+                        data.name
+                    ),
+                ));
+            }
+        }
+        // Признак поддержки берётся из дескриптора читаемой подсистемы: у
+        // вложенной он свой, а не корня.
+        let support =
+            self.object_support_with_descriptor(target, Some(&descriptor_bytes), checkpoint)?;
+        let result = build_subsystem_info_result(data, None, command_interface, support);
         serde_json::to_value(result)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+    }
+
+    /// Спускается от корневой подсистемы к вложенной только по регистрации:
+    /// каждое следующее имя должно стоять в `ChildObjects` родителя. Файл,
+    /// лежащий на месте незарегистрированной подсистемы, подсистемой не
+    /// является. Читаются только дескрипторы цепочки, а не вся структура.
+    fn registered_subsystem_descriptor(
+        &self,
+        target: &MetadataAddress,
+        nested: &[String],
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<(PathBuf, Vec<u8>), ViewError> {
+        let mut relative = self.metadata_descriptor_relative(target)?;
+        let mut descriptor = self.metadata_descriptor(target)?;
+        for (depth, name) in nested.iter().enumerate() {
+            checkpoint()?;
+            let text = std::str::from_utf8(&descriptor).map_err(|_| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "subsystem descriptor is not UTF-8",
+                )
+            })?;
+            let (parent, _) = parse_subsystem_info_xml(&relative, text, false)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            // Промежуточный дескриптор обязан называть ту подсистему, по
+            // регистрации которой к нему пришли; корень сверен владельцем.
+            if let Some(expected) = depth.checked_sub(1).map(|index| &nested[index]) {
+                if &parent.name != expected {
+                    return Err(ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
+                        format!(
+                            "subsystem descriptor `{}` names `{}` instead of `{expected}`",
+                            relative.display(),
+                            parent.name
+                        ),
+                    ));
+                }
+            }
+            if !parent.child_names.iter().any(|child| child == name) {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    format!(
+                        "subsystem `{name}` is not registered in `{}`",
+                        relative.display()
+                    ),
+                ));
+            }
+            relative = nested_subsystem_descriptor(&relative, name);
+            descriptor = self
+                .read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)?
+                .ok_or_else(|| {
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        format!("subsystem descriptor `{}` is absent", relative.display()),
+                    )
+                })?;
+        }
+        Ok((relative, descriptor))
+    }
+
+    pub(crate) fn nested_subsystem_export_path(
+        &self,
+        target: &MetadataAddress,
+        nested: &[String],
+        resource: Option<&str>,
+    ) -> Result<String, ViewError> {
+        let mut relative = self.metadata_descriptor_relative(target)?;
+        for name in nested {
+            relative = nested_subsystem_descriptor(&relative, name);
+        }
+        path_text(match resource {
+            Some(resource) => nested_subsystem_resource(&relative, resource),
+            None => relative,
+        })
     }
 
     pub(crate) fn metadata_descriptor(
@@ -1460,6 +1555,19 @@ impl ProviderReadAuthority {
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         )
     }
+}
+
+/// `Subsystems/A.xml` → `Subsystems/A/Subsystems/B.xml`.
+fn nested_subsystem_descriptor(parent: &Path, name: &str) -> PathBuf {
+    parent
+        .with_extension("")
+        .join("Subsystems")
+        .join(format!("{name}.xml"))
+}
+
+/// `Subsystems/A/Subsystems/B.xml` → `Subsystems/A/Subsystems/B/Ext/<resource>`.
+fn nested_subsystem_resource(descriptor: &Path, resource: &str) -> PathBuf {
+    descriptor.with_extension("").join("Ext").join(resource)
 }
 
 fn identity_metadata_payload_from_evidence(
