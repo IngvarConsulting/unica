@@ -1,11 +1,9 @@
 ---
 id: INV.RUNTIME.COMPATIBLE-DEVELOPMENT-CYCLE
 check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_development_cycle_prepares_before_source_admission_and_runs_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::compatibility_cycle_accepts_explicit_force_and_rejects_silent_overwrite
   - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::compatibility_cycle_accepts_explicit_force_and_rejects_silent_overwrite
-  - crates/unica-coder/src/infrastructure/daemon/v13_cf_import.rs::upload_refuses_a_receipt_that_implicitly_applied_the_database
-  - crates/unica-coder/src/infrastructure/daemon/v13_configuration_transition.rs::transitions_preview_and_execute_the_current_target_with_the_force_flag
+gap: https://github.com/IngvarConsulting/unica/issues/1246
 ---
 
 # Цикл разработки сохраняет раздельные эффекты и явные ограничения

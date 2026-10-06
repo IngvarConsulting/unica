@@ -49,19 +49,26 @@ source-set:
     path: src/external-processors
 ```
 
-Для нового изолированного workspace полный минимальный пример имеет также обязательный runtime-контекст:
+Для нового изолированного workspace полный минимальный пример имеет также обязательный runtime-контекст. `v8project.yaml`:
 
 ```yaml
 workPath: build/runtime
-execution_timeout: 300000
 format: DESIGNER
-infobase:
-  connection: 'File=build/ib'
 source-set:
   - name: external-processors
     type: EXTERNAL_DATA_PROCESSORS
     path: src/external-processors
 ```
+
+База этой машины описывается в `v8project.local.yaml`:
+
+```yaml
+infobases:
+  origin:
+    connection: 'File=build/ib'
+```
+
+Ключ `execution_timeout` не пиши: раннер его не поддерживает, и Unica отказывает в запуске с ним.
 
 Не вызывай `infobase.create` ради scaffold или существующей проектной базы: он заводит базу, а для scaffold это не нужно. Для существующей connection сохранить настройки без переинициализации; `db-auth-check` может классифицировать только уже предоставленное runtime evidence и не запускает auth probe.
 
@@ -92,4 +99,4 @@ source-set:
 
 Проверь результат до того, как объявлять объект готовым. Проверить, что созданы `<Name>.xml`, `<Name>/Ext/ObjectModule.bsl` и, если запрошена форма, три файла под `<Name>/Forms/`. Форму дополнительно проверить `unica.check` по адресу её узла. Отдельный generic Meta validator не использовать: он не принимает root `ExternalDataProcessor`. Не создавать `Configuration.xml` или platform-generated CDFI sidecar; legitimate external descriptor может называться `ConfigDumpInfo.xml`, если пользователь выбрал такое имя объекта.
 
-Сборку и загрузку артефакта словарь `unica.run` не публикует: `make` отвечает `unsupported_operation` на `.epf`/`.erf`, а `upload` принимает только `.cf` и `.cfe`. Сообщай публикацию как пробел контракта Unica MCP.
+Сборку и загрузку артефакта словарь `unica.run` не публикует: `make` отвечает `unsupported_operation` на `.epf`/`.erf`, а `upload` сейчас недоступен вовсе. Сообщай публикацию как пробел контракта Unica MCP.

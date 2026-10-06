@@ -20,11 +20,12 @@ Use native CFE tools through MCP `unica`:
 - `unica.cfe.patch_method`
 
 Runtime export or loading of `.cfe` artifacts goes through `unica.run`:
-`download` with `extension` writes the `.cfe` from the infobase, `upload`
-with `extension` loads the working configuration without applying it to the database;
-`apply` with that extension applies it, and `reset` with `force:true` discards
-pending changes. `make` builds an artifact from sources; each operation is
-previewed first with `dryRun: true` and executed with `dryRun: false`.
+`download` with `extension` writes the `.cfe` from the infobase, and `make`
+builds an artifact from sources; each operation is previewed first with
+`dryRun: true` and executed with `dryRun: false`. Loading a `.cfe` file
+(`upload`) and the separate `apply`/`reset` are unavailable until the runner
+supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246));
+send extension sources with `push` instead.
 
 Runtime идёт через `unica.run`: вызов без `op` отдаёт словарь операций и
 контракт каждой — `argsSchema`, `execution`, `previewRequired`,

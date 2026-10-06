@@ -1,7 +1,7 @@
 {
   "ok": true,
   "command": "extensions",
-  "duration_ms": 9,
+  "duration_ms": 7,
   "data": {
     "provider": {
       "selected": "ibcmd",
@@ -18,7 +18,7 @@
     },
     "plan": "would read extension 'UnicaRunnerProbe' of file infobase '/workspace/base' with no configured infobase user via /platform/ibcmd",
     "extensions": [],
-    "duration_ms": 9
+    "duration_ms": 7
   },
   "warnings": [],
   "steps": []

@@ -1,10 +1,10 @@
 #![allow(clippy::result_large_err)]
 //! `infobase.create` — создание пустой базы по соединению из `v8project.yaml`
-//! силами `v8-runner init` (A-3 зонтика #871). Пара к `infobase.restore`: тот
+//! силами `v8-runner infobase create` (A-3 зонтика #871). Пара к `infobase.restore`: тот
 //! наполняет базу из DT, этот заводит пустую.
 //!
 //! Аргументов нет: соединение задаёт проектный файл, и словарь его не
-//! принимает — как у выгрузок. Превью зовёт `init --dry-run` и читает шаги
+//! принимает — как у выгрузок. Превью зовёт `infobase create --dry-run` и читает шаги
 //! раннера по их статусам: базу можно создать только если шаг `infobase`
 //! запланирован; существующая база — отказ до применения, а не тихий пропуск.
 //! Шаг EDT-пространства обязан быть пропущен: Unica работает с выгрузкой
@@ -16,13 +16,14 @@
 //! платформе и командная строка наружу не идут.
 
 use super::protocol::InvocationRequest;
-use super::runner_011::Runner011ProcessRunner;
+use super::runner_012::Runner012ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    resolve_bundled_runner, runner_rejection, runner_start_rejection, CONFIG_NAME,
+    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
-use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
@@ -36,9 +37,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub(super) const OPERATION: &str = "infobase.create";
-/// Имя команды в конверте раннера: словарь читается как слой и направление,
-/// раннер называет свои команды по-своему.
-const RUNNER_COMMAND: &str = "init";
+/// Команда раннера: в командной строке два слова, в конверте — они же через
+/// пробел. `init` у раннера 0.12 — другая команда: она пишет проектный файл.
+const RUNNER_ARGV: [&str; 2] = ["infobase", "create"];
+const RUNNER_COMMAND: &str = "infobase create";
 const INFOBASE_STEP: &str = "infobase";
 const EDT_STEP: &str = "edt_workspace";
 
@@ -108,7 +110,7 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
     }
 }
 
@@ -404,8 +406,8 @@ fn invoke_runner(
             .display()
             .to_string(),
         "--json-message".to_string(),
-        RUNNER_COMMAND.to_string(),
     ];
+    args.extend(RUNNER_ARGV.map(str::to_string));
     if dry_run {
         args.push("--dry-run".to_string());
     }
@@ -424,15 +426,7 @@ fn invoke_runner(
                 cancellation.protect_process_on_spawn()
             },
         })
-        .map_err(|error| {
-            if error.starts_with(CANCELLED_PREFIX) {
-                return reject(RefusalCode::Cancelled, "cancelled before provider launch");
-            }
-            reject_absent_runner(format!(
-                "failed to start bundled v8-runner: {}",
-                redactor(&error)
-            ))
-        })?;
+        .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
     parse_runner_output(output)
 }
 
@@ -579,7 +573,7 @@ mod tests {
     fn envelope(root: &Path, infobase: &str, edt: &str, dispatched: bool) -> Value {
         json!({
             "ok": true,
-            "command": "init",
+            "command": "infobase create",
             "duration_ms": 0,
             "data": {
                 "ok": true,
@@ -664,7 +658,7 @@ mod tests {
         assert!(!encoded.contains("--config"));
         assert!(runner
             .joined_args(0)
-            .ends_with("--json-message init --dry-run"));
+            .ends_with("--json-message infobase create --dry-run"));
     }
 
     #[test]
@@ -714,7 +708,9 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert_eq!(runner.call_count(), 3);
         assert!(runner.joined_args(0).ends_with("--dry-run"));
-        assert!(runner.joined_args(1).ends_with("--json-message init"));
+        assert!(runner
+            .joined_args(1)
+            .ends_with("--json-message infobase create"));
         assert!(runner.joined_args(2).ends_with("--dry-run"));
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["state"], "created");
@@ -817,7 +813,7 @@ mod tests {
         let failure = |code: &str| {
             json!({
                 "ok": false,
-                "command": "init",
+                "command": "infobase create",
                 "duration_ms": 0,
                 "data": {"ok": false, "provider_dispatched": true, "steps": [
                     {"target": "infobase", "action": "create", "status": "failed", "message": "refused", "duration_ms": 0}

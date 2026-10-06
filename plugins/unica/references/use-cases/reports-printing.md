@@ -5,9 +5,9 @@
 Use this when the user needs reports, DCS/DCS schemas, tabular document layouts,
 print forms, BSP external processing registration, or EPF/ERF build/export.
 
-`upload` and `make` in `unica.run` take `.cf`/`.cfe` only.
+`make` in `unica.run` takes `.cf`/`.cfe` only, and `upload` is unavailable.
 External processors and reports live in external source-sets. Target `push`
-and `pull` source transfer is unavailable with runner 0.11, and their publication as `.epf`/`.erf`
+and `pull` source transfer is unavailable for them, and their publication as `.epf`/`.erf`
 is outside the v0.13 surface.
 
 ## Primary path

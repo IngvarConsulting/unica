@@ -8,9 +8,7 @@ pub(crate) mod server;
 pub(crate) mod terminal_codec_v5;
 mod v13_artifact_build;
 mod v13_call_graph;
-mod v13_cf_import;
 mod v13_client_run;
-mod v13_configuration_transition;
 mod v13_documentation;
 mod v13_extensions;
 mod v13_infobase_create;
@@ -958,4 +956,4 @@ mod tests {
     }
 }
 
-mod runner_011;
+mod runner_012;

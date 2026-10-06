@@ -73,7 +73,7 @@ pub(super) fn reject_unavailable_run_before_admission(
         .get("infobase")
         .is_some_and(|v| v.as_str() != Some("origin"))
     {
-        return Some(reject_run_operation(op, "runner 0.11 adapter supports only the named infobase origin; no fallback to another target"));
+        return Some(reject_run_operation(op, "runner 0.12 adapter supports only the named infobase origin; no fallback to another target"));
     }
     if is_test_seam_operation(op) {
         return None;
@@ -142,7 +142,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 "execution": operation.execution(),
                 "effects": operation.effects(),
                 "implemented": operation.implemented,
-                "support": {"adapter":format!("v8-runner/{}", super::runner_011::VERSION), "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
+                "support": {"adapter":format!("v8-runner/{}", super::runner_012::VERSION), "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
                 "previewRequired": false,
@@ -172,9 +172,6 @@ mod runner_one_tests {
             ("push", json!({"force":true,"full":true})),
             ("pull", json!({"force":true})),
             ("infobase.create", json!({})),
-            ("upload", json!({"input":"dist/main.cf"})),
-            ("apply", json!({})),
-            ("reset", json!({"force":true})),
         ] {
             let request = InvocationRequest::new(
                 ToolIdentity::Run,
@@ -187,6 +184,46 @@ mod runner_one_tests {
                 execute_run_dictionary(&request).is_none(),
                 "{op} must reach its typed compatibility handler"
             );
+        }
+    }
+
+    /// Раннер 0.12 не загружает CF/CFE без применения и не знает `apply` и `reset`:
+    /// словарь называет операции недоступными, а вызов получает типизированный
+    /// отказ с разрывом до рабочего пространства и процесса.
+    #[test]
+    fn runner_012_refuses_upload_apply_and_reset_naming_the_gap() {
+        let dictionary = run_dictionary_result();
+        let operations = dictionary.data.as_ref().unwrap()["operations"]
+            .as_array()
+            .unwrap();
+        for (op, args) in [
+            ("upload", json!({"input":"dist/main.cf"})),
+            ("apply", json!({})),
+            ("reset", json!({"force":true})),
+        ] {
+            for dry_run in [true, false] {
+                let request = InvocationRequest::new(
+                    ToolIdentity::Run,
+                    json!({"op":op,"args":args,"dryRun":dry_run}),
+                    "/workspace-does-not-exist",
+                    7000,
+                )
+                .unwrap();
+                let result =
+                    execute_run_dictionary(&request).expect("refused before workspace or process");
+                assert!(!result.ok, "{op}");
+                assert_eq!(result.diagnostics[0]["code"], "unsupported_operation");
+                assert!(result.summary.contains("issues/1246"), "{}", result.summary);
+                assert!(result.summary.contains("push"), "{}", result.summary);
+            }
+            let published = operations.iter().find(|v| v["op"] == op).unwrap();
+            assert_eq!(published["implemented"], false, "{op}");
+            assert_eq!(published["support"]["state"], "unavailable", "{op}");
+            assert!(published["support"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("https://github.com/IngvarConsulting/unica/issues/1246"));
+            assert_eq!(published["support"]["adapter"], "v8-runner/0.12.0");
         }
     }
 

@@ -238,6 +238,12 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     self.assertEqual(tool["assetStrategy"], "archive-release-asset")
                     self.assertEqual(asset["assetName"], f"rlm-tools-bsl-{target}.tar.gz")
                     self.assertEqual(asset["archiveBinary"], tool["binaryName"] + exe)
+                elif tool["name"] == "v8-runner":
+                    # Архив издателя хранит бинарь в своём каталоге.
+                    self.assertEqual(tool["assetStrategy"], "upstream-archive-release-asset")
+                    self.assertTrue(
+                        asset["archiveBinary"].endswith(f"/{tool['binaryName']}{exe}")
+                    )
                 else:
                     self.assertEqual(tool["assetStrategy"], "direct-release-asset")
                     self.assertEqual(asset["assetName"], f"{tool['binaryName']}-{target}{exe}")
@@ -324,7 +330,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         self.assertEqual(runner["repository"], "https://github.com/IngvarConsulting/v8-runner-rust")
         self.assertEqual(runner["assetRepository"], runner["repository"])
-        self.assertEqual(runner["assetStrategy"], "direct-release-asset")
+        # Издатель выпускает раннер только архивами: бинарь выбирается внутри архива.
+        self.assertEqual(runner["assetStrategy"], "upstream-archive-release-asset")
         self.assertEqual(runner["license"], "AGPL-3.0-only")
 
         # Тег, версия и релиз не могут разойтись между собой.
@@ -332,12 +339,16 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertEqual(runner["assetTag"], runner["sourceTag"])
         self.assertRegex(runner["sourceCommit"], r"\A[0-9a-f]{40}\Z")
 
-        # Каждая объявленная цель несёт имя ассета и его хеш: без этого поставка
-        # перестаёт быть проверяемой, какой бы версия ни была.
+        # Каждая объявленная цель несёт имя архива, его хеш и размер и называет бинарь
+        # внутри архива: без этого поставка перестаёт быть проверяемой, какой бы
+        # версия ни была.
         self.assertEqual(set(runner["assets"]), set(lock["targets"]))
         for target, asset in runner["assets"].items():
-            self.assertTrue(asset["assetName"], target)
+            self.assertRegex(asset["assetName"], r"\.(tar\.gz|zip)\Z", target)
             self.assertRegex(asset["sha256"], r"\A[0-9a-f]{64}\Z", target)
+            self.assertIsInstance(asset["size"], int, target)
+            self.assertGreater(asset["size"], 0, target)
+            self.assertRegex(asset["archiveBinary"], r"\A[^/\\]+/v8-runner(\.exe)?\Z", target)
 
     def test_checked_in_rlm_tools_select_one_build_3_archive_per_target(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]

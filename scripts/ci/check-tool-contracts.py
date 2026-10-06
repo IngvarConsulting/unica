@@ -38,10 +38,12 @@ TOOL_HELP_CHECKS = [
         ["--transport", "stdio", "streamable-http"],
     ),
     ("v8-runner version", "v8-runner", ["--version"], ["v8-runner"]),
-    ("v8-runner build", "v8-runner", ["build", "--help"], ["build"]),
+    ("v8-runner push", "v8-runner", ["push", "--help"], ["Usage: v8-runner push"]),
 ]
 
 V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
+# Раннер 0.12 читает описание базы только из местного слоя рядом с проектным файлом.
+V8_RUNNER_LOCAL_CONFIG = "v8project.local.yaml"
 V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
 V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS = 60
 RLM_MCP_CONTRACT_TIMEOUT_SECONDS = 120.0
@@ -146,12 +148,12 @@ def validate_v8_runner_failed_partial_receipt(
     )
     if root is None:
         return errors
-    if root["ok"] is not False or root["command"] != "build":
-        errors.append("failure envelope must report ok=false and command=build")
+    if root["ok"] is not False or root["command"] != "push":
+        errors.append("failure envelope must report ok=false and command=push")
     if root["warnings"] != [] or root["steps"] != []:
         errors.append("failure envelope warnings and top-level steps must be empty")
 
-    # v8-runner 0.9.0 (ADR-0028 форка): `build` всегда несёт
+    # v8-runner 0.9.0 (ADR-0028 форка): `build`, с 0.12 `push`, всегда несёт
     # `provider_dispatched`. Квитанция с `platform_failure` — след вызванного
     # провайдера, поэтому здесь признак обязан быть `true`: `false` означал бы,
     # что раннер отказал до платформы, а ошибку подписал платформенной.
@@ -160,7 +162,16 @@ def validate_v8_runner_failed_partial_receipt(
         {"ok", "provider_dispatched", "provider", "steps", "duration_ms"},
         "build data",
     )
-    error = closed_mapping(root["error"], {"code", "kind", "message"}, "runner error")
+    # С 0.12 отказ может назвать шаг выхода `next`; его форма — дело раннера, а
+    # квитанция частичной загрузки читается по коду, роду и сообщению.
+    raw_error = root["error"]
+    error = closed_mapping(
+        {key: value for key, value in raw_error.items() if key != "next"}
+        if isinstance(raw_error, dict)
+        else raw_error,
+        {"code", "kind", "message"},
+        "runner error",
+    )
     if data is None or error is None:
         return errors
     receipt = data["provider"]
@@ -317,15 +328,24 @@ fn main() {
             return str(path).replace("'", "''")
 
         config = root / "v8project.yaml"
+        (root / V8_RUNNER_LOCAL_CONFIG).write_text(
+            "\n".join(
+                [
+                    "infobases:",
+                    "  origin:",
+                    f"    connection: 'File={yaml_path(infobase_path)}'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         config.write_text(
             "\n".join(
                 [
                     f"workPath: '{yaml_path(work_path)}'",
                     "format: DESIGNER",
-                    "providers: {build: designer, make: designer}",
-                    "infobase:",
-                    f"  connection: 'File={yaml_path(infobase_path)}'",
-                    "build:",
+                    "providers: {push: designer, make: designer}",
+                    "push:",
                     "  partialLoadThreshold: 20",
                     "source-set:",
                     "  - name: main",
@@ -346,7 +366,7 @@ fn main() {
             "--config",
             str(config),
             "--json-message",
-            "build",
+            "push",
         ]
         initial = subprocess.run(
             command,
@@ -359,7 +379,7 @@ fn main() {
         )
         if initial.returncode != 0:
             detail = (initial.stderr or initial.stdout).strip()
-            return [f"{label}: baseline build exited with {initial.returncode}: {detail}"]
+            return [f"{label}: baseline push exited with {initial.returncode}: {detail}"]
         captured_list.unlink(missing_ok=True)
         (object_root / "ObjectModule.bsl").write_text(
             "Procedure Проверка()\n    // Изменено после baseline\nEndProcedure\n",
@@ -738,13 +758,22 @@ fn main() {{
 
         config = root / "v8project.yaml"
         preview_config = root / "preview.yaml"
+        (root / V8_RUNNER_LOCAL_CONFIG).write_text(
+            "\n".join(
+                [
+                    "infobases:",
+                    "  origin:",
+                    f"    connection: 'File={yaml_path(infobase_path)}'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         preview_config.write_text(
             "\n".join(
                 [
                     f"workPath: '{yaml_path(work_path)}'",
                     "format: DESIGNER",
-                    "infobase:",
-                    f"  connection: 'File={yaml_path(infobase_path)}'",
                     "source-set: []",
                     "tools:",
                     "  platform:",
@@ -797,9 +826,7 @@ fn main() {{
                 [
                     f"workPath: '{yaml_path(work_path)}'",
                     "format: DESIGNER",
-                    "providers: {build: designer, make: designer}",
-                    "infobase:",
-                    f"  connection: 'File={yaml_path(infobase_path)}'",
+                    "providers: {push: designer, make: designer}",
                     "source-set:",
                     "  - name: main",
                     "    type: CONFIGURATION",
@@ -941,15 +968,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             return str(path).replace("'", "''")
 
         config = root / "v8project.yaml"
+        (root / V8_RUNNER_LOCAL_CONFIG).write_text(
+            "\n".join(
+                [
+                    "infobases:",
+                    "  origin:",
+                    f"    connection: 'File={yaml_path(infobase_path)}'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         config.write_text(
             "\n".join(
                 [
                     f"workPath: '{yaml_path(work_path)}'",
-                    "execution_timeout: 30000",
                     "format: DESIGNER",
-                    "providers: {build: designer, make: designer}",
-                    "infobase:",
-                    f"  connection: 'File={yaml_path(infobase_path)}'",
+                    "providers: {push: designer, make: designer}",
                     "source-set:",
                     "  - name: external-processors",
                     "    type: EXTERNAL_DATA_PROCESSORS",
@@ -970,7 +1005,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             str(config),
             "--json-message",
             "make",
-            "--source-set",
             "external-processors",
             "--output",
             "Deploy",
@@ -1123,6 +1157,13 @@ def detect_target() -> str:
 def tool_executable(tools_dir: Path, tool_name: str, target: str | None) -> Path:
     suffix = ".exe" if target == "win-x64" else ""
     candidate = tools_dir / f"{tool_name}{suffix}"
+    if not candidate.exists():
+        # Архив издателя кладёт бинарь в свой каталог (`v8-runner-<платформа>/`);
+        # единственный такой бинарь уровнем ниже — тот же инструмент.
+        nested = sorted(tools_dir.glob(f"*/{tool_name}{suffix or '*'}"))
+        nested = [path for path in nested if path.name in {tool_name, f"{tool_name}.exe"}]
+        if len(nested) == 1:
+            return nested[0]
     if candidate.exists() or suffix:
         return candidate
     exe_candidate = tools_dir / f"{tool_name}.exe"

@@ -18,11 +18,11 @@
 //! квитанцию: размер и дайджест файла. Путь к платформе наружу не идёт.
 
 use super::protocol::InvocationRequest;
-use super::runner_011::Runner011ProcessRunner;
+use super::runner_012::Runner012ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
-    missing_runner_rejection, resolve_bundled_runner, runner_rejection, valid_1c_identifier,
-    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
+    valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
@@ -141,7 +141,7 @@ impl PreparedArtifactBuild {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner011ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
     }
 }
 
@@ -572,12 +572,15 @@ fn invoke_runner(
             .to_string(),
         "--json-message".to_string(),
         RUNNER_COMMAND.to_string(),
+    ];
+    // Набор — позиционный аргумент: `--source-set` у раннера 0.12 скрытый синоним.
+    if let Some(source_set) = &prepared.arguments.source_set {
+        args.push(source_set.clone());
+    }
+    args.extend([
         "--output".to_string(),
         prepared.arguments.output.display().to_string(),
-    ];
-    if let Some(source_set) = &prepared.arguments.source_set {
-        args.extend(["--source-set".to_string(), source_set.clone()]);
-    }
+    ]);
     if let Some(extension) = &prepared.arguments.extension {
         args.extend(["--extension".to_string(), extension.clone()]);
     }
@@ -595,12 +598,7 @@ fn invoke_runner(
             timeout: None,
             cancellation: cancellation.clone(),
         })
-        .map_err(|error| {
-            reject_absent_runner(format!(
-                "failed to start bundled v8-runner: {}",
-                redactor(&error)
-            ))
-        })?;
+        .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
     parse_runner_output(output)
 }
 
@@ -1019,7 +1017,10 @@ mod tests {
         assert_eq!(result.data.as_ref().unwrap()["plan"]["extension"], "Sales");
         assert!(runner
             .joined_args(0)
-            .ends_with("--source-set ext-sales --extension Sales --dry-run"));
+            .contains("--json-message make ext-sales --output "));
+        assert!(runner
+            .joined_args(0)
+            .ends_with("--extension Sales --dry-run"));
     }
 
     #[test]
@@ -1064,7 +1065,10 @@ mod tests {
         );
         assert!(runner
             .joined_args(0)
-            .ends_with("--source-set Доработки --extension Доработки --dry-run"));
+            .contains("--json-message make Доработки --output "));
+        assert!(runner
+            .joined_args(0)
+            .ends_with("--extension Доработки --dry-run"));
         assert!(result.changed.is_empty());
         assert!(!prepared.arguments.output.exists());
     }

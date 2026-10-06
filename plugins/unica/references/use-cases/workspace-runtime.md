@@ -27,7 +27,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
 вызовами. Не обходи контракт прямым runner-ом.
 
-With runner 0.11.4, source sending and full pulling require explicit `force:true`.
+Source sending and full pulling require explicit `force:true`.
 They provide no generation or local-work protection; inspect the preview before execution.
 For source readiness independently of runtime availability, first
 call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,
@@ -109,14 +109,14 @@ source-set path itself has no stronger structural evidence.
 | Send sources / delete an extension | `push`, `force:true`, optional `sourceSet` and `full`; applies the database configuration. Deletion uses only `delete: "InstalledName"` |
 | Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
-| Load a `.cf`/`.cfe` into the working configuration only | `upload`, `input`, optional `extension`; loading does not apply the database configuration |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: v8-runner 0.12 has no load without applying the database configuration ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 | Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
 | Launch a 1C client | `launch`, `clientMode`, optional `execute`; `waitForExit` with `waitTimeoutMs` supports `thin` + `.epf`; terminal, no preview required |
 | Inspect installed extensions | `extensions.list`, empty args; preview/apply opens a platform session |
 | Change installed extension activity | `extensions.set`, `name`, boolean `active`; other properties are unavailable |
-| Apply or discard pending configuration changes | `apply`, optional `extension`; `reset`, `force:true`, optional `extension`; Designer only |
+| Apply or discard pending configuration changes | `apply` and `reset` — unavailable until the runner supports them ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 
 A previewApply operation requires explicit boolean `dryRun`: `true` shows the
 plan without execution, and `false` executes using the current inputs. The API
