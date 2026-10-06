@@ -524,6 +524,15 @@ impl ActorBoundInvocation {
         &self.workspace_identity_hash
     }
 
+    /// Names of the source sets the actor admitted, in admission order: the
+    /// same order execution reads them in, before any source is leased.
+    pub(in crate::infrastructure::daemon) fn admitted_source_set_names(&self) -> Vec<&str> {
+        self.read_sources
+            .iter()
+            .map(|source| source.binding.source_set_name())
+            .collect()
+    }
+
     pub(super) fn response_deadline(&self) -> &InvocationResponseDeadline {
         &self.response_deadline
     }

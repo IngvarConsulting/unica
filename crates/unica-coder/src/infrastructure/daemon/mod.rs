@@ -16,6 +16,7 @@ mod v13_infobase_create;
 mod v13_infobase_exports;
 mod v13_read_modes;
 mod v13_run_dictionary;
+mod v13_search_admission;
 #[allow(dead_code)]
 mod v13_service;
 mod v13_source_export;

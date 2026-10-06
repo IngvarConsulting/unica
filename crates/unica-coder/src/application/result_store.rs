@@ -306,6 +306,42 @@ impl SearchCursorStore {
         token: &str,
         expected: &SearchCursorBinding,
     ) -> Result<StoredSearchCursor, SearchCursorError> {
+        let (owner, plaintext) = self.open_question(token, expected)?;
+        let (present, digest) = search_answer_digest(expected);
+        if plaintext[33] != present || plaintext[34..66] != digest {
+            return Err(SearchCursorError::Stale);
+        }
+        let raw_offset: [u8; 8] = plaintext[98..106]
+            .try_into()
+            .map_err(|_| SearchCursorError::Invalid)?;
+        let offset = usize::try_from(u64::from_be_bytes(raw_offset))
+            .map_err(|_| SearchCursorError::Invalid)?;
+        let mut payload = zeroize::Zeroizing::new([0u8; SEARCH_CURSOR_PAYLOAD_BYTES]);
+        payload.copy_from_slice(&plaintext);
+        Ok(StoredSearchCursor {
+            owner,
+            payload,
+            offset,
+        })
+    }
+
+    /// Authenticates a token and its question before any answer exists: the
+    /// format, this owner and the question binding (query, scope, mode,
+    /// kind, source sets, page limit). The answer half — whether the result
+    /// or coverage changed — needs the answer and stays with [`Self::read`].
+    pub(crate) fn verify_question(
+        &self,
+        token: &str,
+        expected: &SearchCursorBinding,
+    ) -> Result<(), SearchCursorError> {
+        self.open_question(token, expected).map(|_| ())
+    }
+
+    fn open_question(
+        &self,
+        token: &str,
+        expected: &SearchCursorBinding,
+    ) -> Result<(Arc<SearchCursorOwner>, zeroize::Zeroizing<Vec<u8>>), SearchCursorError> {
         use aes_siv::KeyInit;
         let ciphertext = decode_search_cursor(token)?;
         let owner = self
@@ -332,22 +368,7 @@ impl SearchCursorStore {
         if plaintext[1..33] != search_question_digest(expected)? {
             return Err(SearchCursorError::Invalid);
         }
-        let (present, digest) = search_answer_digest(expected);
-        if plaintext[33] != present || plaintext[34..66] != digest {
-            return Err(SearchCursorError::Stale);
-        }
-        let raw_offset: [u8; 8] = plaintext[98..106]
-            .try_into()
-            .map_err(|_| SearchCursorError::Invalid)?;
-        let offset = usize::try_from(u64::from_be_bytes(raw_offset))
-            .map_err(|_| SearchCursorError::Invalid)?;
-        let mut payload = zeroize::Zeroizing::new([0u8; SEARCH_CURSOR_PAYLOAD_BYTES]);
-        payload.copy_from_slice(&plaintext);
-        Ok(StoredSearchCursor {
-            owner,
-            payload,
-            offset,
-        })
+        Ok((owner, plaintext))
     }
 
     pub(crate) fn insert_next(
@@ -1291,6 +1312,26 @@ mod tests {
             Some(SearchCursorError::Stale)
         );
         assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
+
+        // Before the answer exists only the question can be verified: a
+        // foreign question, owner or token is refused, a changed answer is not
+        // yet known and stays for `read` to report as stale.
+        let mut unanswered = changed_answer.clone();
+        unanswered.result_fingerprint = None;
+        assert_eq!(store.verify_question(&token, &unanswered), Ok(()));
+        assert_eq!(store.verify_question(&token, &changed_answer), Ok(()));
+        assert_eq!(
+            store.verify_question(&token, &other_kind),
+            Err(SearchCursorError::Invalid)
+        );
+        assert_eq!(
+            SearchCursorStore::default().verify_question(&token, &binding),
+            Err(SearchCursorError::Invalid)
+        );
+        assert_eq!(
+            store.verify_question("не-наш-курсор", &binding),
+            Err(SearchCursorError::Invalid)
+        );
     }
 
     #[test]

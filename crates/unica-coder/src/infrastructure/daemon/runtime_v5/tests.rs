@@ -5690,3 +5690,154 @@ fn cancel_during_inline_admission_before_handoff_publishes_cancelled() {
         .expect("daemon thread did not panic")
         .expect("daemon exits cleanly");
 }
+
+/// A symbol provider whose index is cold: a search blocks until the test
+/// opens the gate, so a call that reached it would cross the response cutoff
+/// and come back as a task.
+struct ColdIndexSearchProvider {
+    calls: Arc<AtomicUsize>,
+    warm: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl crate::domain::code_intelligence::CodeIntelligenceProvider for ColdIndexSearchProvider {
+    fn identity(&self) -> crate::domain::code_intelligence::ProviderIdentity {
+        crate::domain::code_intelligence::ProviderIdentity::new(
+            crate::domain::code_intelligence::ProviderRole::Symbol,
+            "cold-symbol",
+        )
+    }
+
+    fn capabilities(&self) -> &[crate::domain::code_intelligence::ProviderCapability] {
+        &[crate::domain::code_intelligence::ProviderCapability::Search]
+    }
+
+    fn search(
+        &self,
+        _request: &crate::domain::code_intelligence::SearchRequest,
+        _context: &crate::domain::code_intelligence::CodeIntelligenceContext,
+        _deadline: crate::domain::code_intelligence::ProviderDeadline,
+        _cancellation: &CancellationToken,
+    ) -> crate::domain::code_intelligence::ProviderSearchSection {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let (warm, changed) = &*self.warm;
+        let guard = warm.lock().unwrap();
+        let _ = changed
+            .wait_timeout_while(guard, Duration::from_secs(30), |warm| !*warm)
+            .unwrap();
+        crate::domain::code_intelligence::ProviderSearchSection::dependency_pending(
+            self.identity(),
+            crate::domain::code_intelligence::SearchRanking::Provider,
+            crate::domain::code_intelligence::SearchOrdering::Provider,
+            vec![],
+            vec![],
+            "buildingIndex",
+        )
+        .unwrap()
+    }
+}
+
+/// #1216: through the daemon a search whose cursor is not a continuation of
+/// the question, or whose limit is out of range, is answered directly with a
+/// `fixCall` refusal. It creates no task and does not wait for the cold index
+/// of the selected provider.
+#[test]
+fn search_argument_refusal_is_direct_while_the_provider_index_is_cold() {
+    let root = tempfile::tempdir().expect("temporary search state root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+    let workspace = tempfile::tempdir().expect("temporary search workspace");
+    let source = workspace.path().join("src");
+    std::fs::create_dir_all(&source).expect("create source root");
+    std::fs::write(
+        workspace.path().join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+    )
+    .expect("write workspace descriptor");
+    std::fs::write(
+        source.join("Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+    )
+    .expect("write configuration root");
+    let workspace = std::fs::canonicalize(workspace.path()).expect("physical workspace");
+    let identity = CoreIdentity::production_v5();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let warm = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(80),
+    )
+    .with_invocation_service(Arc::new(
+        crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::with_search_providers_for_test(
+            vec![Arc::new(ColdIndexSearchProvider {
+                calls: calls.clone(),
+                warm: warm.clone(),
+            })],
+        ),
+    ));
+    let server = thread::spawn(move || run_daemon(config));
+    let _record = wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_millis(300),
+    )
+    .expect("connect v5 owner");
+    for (arguments, code) in [
+        (
+            json!({"query": "Needle", "role": "symbol", "cursor": "не-наш-курсор"}),
+            "invalid_cursor",
+        ),
+        (
+            json!({"query": "Needle", "role": "symbol", "cursor": format!("sc2.{}", "0".repeat(244))}),
+            "invalid_cursor",
+        ),
+        (
+            json!({"query": "Needle", "role": "symbol", "limit": 51}),
+            "bad_value",
+        ),
+    ] {
+        let serde_json::Value::Object(arguments) = arguments else {
+            unreachable!("search arguments are an object")
+        };
+        let invocation = V5InvocationRequest::new(
+            InvocationId::new(),
+            TaskId::new(),
+            V5ToolIdentity::Search,
+            arguments.clone(),
+            unica_bootstrap::ResolvedWorkspace::launch_cwd(
+                workspace.to_string_lossy().into_owned(),
+            ),
+            7_000,
+        )
+        .expect("valid search invocation");
+        let submitted = owner
+            .submit_invocation(invocation)
+            .expect("submit search invocation");
+        let V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Direct { receipt },
+        } = submitted
+        else {
+            panic!("{arguments:?} must be answered directly, not as a task: {submitted:?}");
+        };
+        let ReceiptTerminalOutcome::Completed { result } = receipt.terminal() else {
+            panic!("{arguments:?} must complete with a refusal: {receipt:?}");
+        };
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], code, "{result:?}");
+        assert_eq!(result.diagnostics[0]["outcome"], "fixCall", "{result:?}");
+    }
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a refused search must not ask the cold provider"
+    );
+
+    *warm.0.lock().unwrap() = true;
+    warm.1.notify_all();
+    drop(owner);
+    server
+        .join()
+        .expect("v5 search daemon did not panic")
+        .expect("v5 search daemon exited cleanly");
+}

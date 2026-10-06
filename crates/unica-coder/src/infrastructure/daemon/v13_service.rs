@@ -88,8 +88,11 @@ impl Default for CanonicalV13ReadService {
 impl CanonicalInvocationService for CanonicalV13ReadService {
     fn prepare(
         &self,
-        _invocation: &ActorBoundInvocation,
+        invocation: &ActorBoundInvocation,
     ) -> Result<ExecutionClass, Box<DomainResult>> {
+        if invocation.tool() == ToolIdentity::Search {
+            super::v13_search_admission::admit_search_call(invocation, &self.search_cursors)?;
+        }
         Ok(ExecutionClass::InlineCandidate)
     }
 
@@ -140,6 +143,16 @@ impl CanonicalV13ReadService {
             Arc::new(ViewCursorStore::default().with_capacity_observer(observer.clone()));
         service.find_builder = service.find_builder.with_capacity_observer(observer);
         service
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_search_providers_for_test(
+        providers: Vec<Arc<dyn crate::domain::code_intelligence::CodeIntelligenceProvider>>,
+    ) -> Self {
+        Self {
+            search_providers: Some(providers),
+            ..Self::default()
+        }
     }
 
     #[cfg(test)]
@@ -4386,6 +4399,180 @@ mod tests {
             assert!(result.rev.is_none());
             assert!(!serde_json::to_string(&result).unwrap().contains(private));
         }
+    }
+
+    /// A provider whose index is still cold: a search waits until the test
+    /// opens the gate. A call that reached it before the gate opens would
+    /// hang the test instead of returning.
+    struct ColdIndexProvider {
+        calls: Arc<AtomicUsize>,
+        warm: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl CodeIntelligenceProvider for ColdIndexProvider {
+        fn identity(&self) -> ProviderIdentity {
+            ProviderIdentity::new(ProviderRole::Symbol, "cold-symbol")
+        }
+
+        fn capabilities(&self) -> &[ProviderCapability] {
+            &[ProviderCapability::Search]
+        }
+
+        fn search(
+            &self,
+            _request: &SearchRequest,
+            _context: &CodeIntelligenceContext,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+        ) -> ProviderSearchSection {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let (warm, changed) = &*self.warm;
+            let guard = warm.lock().unwrap();
+            let _ = changed
+                .wait_timeout_while(guard, Duration::from_secs(30), |warm| !*warm)
+                .unwrap();
+            ProviderSearchSection::dependency_pending(
+                self.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                vec![],
+                vec![],
+                "buildingIndex",
+            )
+            .unwrap()
+        }
+    }
+
+    /// #1216: the arguments of `search` are decided before execution. A
+    /// cursor that is not a continuation of this question, and a limit out
+    /// of range, are refused by `prepare` — the step before execution and
+    /// before a call can become a task — without asking a provider whose
+    /// index is still cold. A continuation of the same question passes and
+    /// reaches the provider.
+    #[test]
+    fn search_arguments_are_refused_before_a_cold_provider_is_asked() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::application::result_store::SearchCursorStore;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+
+        let workspace = role_search_workspace();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let warm = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let service = Arc::new(
+            super::CanonicalV13ReadService::with_search_providers_for_test(vec![Arc::new(
+                ColdIndexProvider {
+                    calls: calls.clone(),
+                    warm: warm.clone(),
+                },
+            )]),
+        );
+        let runtime = V5CanonicalInvocationRuntime::new(service.clone(), Arc::new(TokioClock));
+        let bind = |arguments: serde_json::Value| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Search,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            runtime.bind(request).unwrap()
+        };
+        let refused = |arguments: serde_json::Value| match bind(arguments.clone()).prepare() {
+            Ok(_) => panic!("{arguments} must be refused before execution"),
+            Err(result) => *result,
+        };
+
+        let question = SearchCursorBinding {
+            workspace_identity: bind(json!({"query": "Needle", "role": "symbol"}))
+                .workspace_identity_hash()
+                .as_str()
+                .to_owned(),
+            query: "Needle".into(),
+            scope: None,
+            mode: "symbol".into(),
+            kind: None,
+            source_sets: vec!["main".into()],
+            result_fingerprint: None,
+            page_limit: 5,
+        };
+        let issue = |store: &SearchCursorStore, change: &dyn Fn(&mut SearchCursorBinding)| {
+            let mut binding = question.clone();
+            change(&mut binding);
+            store.insert_first(binding, 5).unwrap()
+        };
+        let foreign = [
+            issue(&service.search_cursors, &|binding| binding.page_limit = 10),
+            issue(&service.search_cursors, &|binding| {
+                binding.query = "Другое".into()
+            }),
+            issue(&service.search_cursors, &|binding| {
+                binding.mode = "semantic".into()
+            }),
+            issue(&service.search_cursors, &|binding| {
+                binding.source_sets = vec!["ext".into()]
+            }),
+            issue(&SearchCursorStore::default(), &|_| {}),
+            "не-наш-курсор".to_string(),
+        ];
+        for cursor in foreign {
+            let result =
+                refused(json!({"query": "Needle", "role": "symbol", "limit": 5, "cursor": cursor}));
+            assert!(!result.ok);
+            assert_eq!(
+                result.diagnostics[0]["code"], "invalid_cursor",
+                "{result:?}"
+            );
+            assert_eq!(result.diagnostics[0]["outcome"], "fixCall", "{result:?}");
+        }
+        for arguments in [
+            json!({"query": "Needle", "role": "symbol", "limit": 51}),
+            json!({"query": "Needle", "limit": 51}),
+            json!({"query": "Needle", "corpus": "names", "limit": 51}),
+            json!({"query": "Needle", "role": "symbol", "scope": "main:Нет такого"}),
+            json!({"query": "Needle", "role": "index"}),
+            json!({"query": "  ", "role": "symbol"}),
+        ] {
+            let result = refused(arguments.clone());
+            assert_eq!(
+                result.diagnostics[0]["code"], "bad_value",
+                "{arguments}: {result:?}"
+            );
+            assert_eq!(
+                result.diagnostics[0]["outcome"], "fixCall",
+                "{arguments}: {result:?}"
+            );
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a refused argument must not wait for the cold index"
+        );
+
+        let continuation = issue(&service.search_cursors, &|_| {});
+        let prepared = match bind(
+            json!({"query": "Needle", "role": "symbol", "limit": 5, "cursor": continuation}),
+        )
+        .prepare()
+        {
+            Ok(prepared) => prepared,
+            Err(result) => panic!("a continuation of the same question is admitted: {result:?}"),
+        };
+        *warm.0.lock().unwrap() = true;
+        warm.1.notify_all();
+        let result = prepared.execute(CancellationToken::new()).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_ne!(
+            result
+                .diagnostics
+                .first()
+                .map(|diagnostic| &diagnostic["code"]),
+            Some(&json!("invalid_cursor")),
+            "{result:?}"
+        );
     }
 
     #[test]
