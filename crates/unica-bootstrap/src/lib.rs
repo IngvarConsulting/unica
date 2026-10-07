@@ -7,6 +7,7 @@ mod download;
 mod error;
 mod host;
 mod manifest;
+pub mod network;
 mod platform;
 mod verification;
 

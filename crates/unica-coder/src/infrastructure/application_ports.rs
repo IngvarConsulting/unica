@@ -894,7 +894,7 @@ fn documentation_registry(
         Arc::new(crate::infrastructure::kb_1ci::Kb1ciProvider {
             base: crate::infrastructure::kb_1ci::KB_BASE.to_string(),
             network: policy.network("kb-1ci"),
-            transport: Arc::new(crate::infrastructure::kb_1ci::UreqKbTransport),
+            transport: Arc::new(crate::infrastructure::kb_1ci::NetworkKbTransport::default()),
             // Токен вызова: сетевой обход обязан отменяться вместе с вызовом
             // MCP, поэтому реестр собирается на вызов, а не на процесс.
             cancellation: cancellation.clone(),

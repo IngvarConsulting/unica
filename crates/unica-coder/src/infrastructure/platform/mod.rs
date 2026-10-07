@@ -1,6 +1,8 @@
 mod entrypoint;
 pub(crate) mod filesystem;
 pub(crate) mod full_dump_publication;
+#[cfg(test)]
+mod network_trust_tests;
 mod process;
 mod process_metrics;
 pub(crate) mod secure_read;
