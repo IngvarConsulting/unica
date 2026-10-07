@@ -533,7 +533,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         expected_publish_timeouts = {
             "stage": 20,
-            "tag": 10,
+            "anchor": 10,
             "verify-fresh-install": 30,
             "verify-upgrade": 30,
             "promote": 10,
@@ -988,12 +988,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertGreaterEqual(all_scripts(self.publish).count("gh auth setup-git"), 2)
 
     def test_publication_is_one_linear_pass_ordered_by_needs(self) -> None:
-        """Publication order: stage → tag → verify → promote, no pull requests, no warden.
+        """Publication order: stage → anchor → verify → promote, no pull requests, no warden.
 
-        The order is the contract: the anchor tag exists before the install
-        checks run, and the catalog moves only behind their green result. A
-        rerun of the whole workflow resumes a partial publication, so every
-        stage states its idempotent escape.
+        The order is the contract: the candidate anchor exists before the
+        install checks run, and the catalog moves — with the release tag that
+        it names — only behind their green result. A rerun of the whole
+        workflow resumes a partial publication, so every stage states its
+        idempotent escape.
         """
         on = triggers(self.publish)
         text = all_scripts(self.publish)
@@ -1003,15 +1004,16 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("source_run_id", on["workflow_dispatch"]["inputs"])
         # Сборка запускается и по push в main; публикацию открывает только тег.
         self.assertIn("startsWith(github.event.workflow_run.head_branch, 'v')", condition(gate))
-        for job_id in ("stage", "tag", "verify-fresh-install", "verify-upgrade", "promote"):
+        for job_id in ("stage", "anchor", "verify-fresh-install", "verify-upgrade", "promote"):
             with self.subTest(job_id=job_id):
                 self.assertIn(job_id, jobs(self.publish))
-        self.assertEqual(needs(job(self.publish, "tag")), ["stage"])
-        self.assertEqual(needs(job(self.publish, "verify-fresh-install")), ["gate", "stage", "tag"])
-        self.assertEqual(needs(job(self.publish, "verify-upgrade")), ["gate", "stage", "tag"])
+        self.assertNotIn("tag", jobs(self.publish))
+        self.assertEqual(needs(job(self.publish, "anchor")), ["stage"])
+        self.assertEqual(needs(job(self.publish, "verify-fresh-install")), ["gate", "stage", "anchor"])
+        self.assertEqual(needs(job(self.publish, "verify-upgrade")), ["gate", "stage", "anchor"])
         self.assertEqual(
             needs(job(self.publish, "promote")),
-            ["gate", "stage", "tag", "verify-fresh-install", "verify-upgrade"],
+            ["gate", "stage", "anchor", "verify-fresh-install", "verify-upgrade"],
         )
         # The PR ceremony is gone with the warden: nothing opens pull requests
         # and no metadata travels in branch names.
@@ -1020,25 +1022,36 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("codex/promote-", text)
         self.assertNotIn("mode", on["workflow_dispatch"]["inputs"])
         stage_push = step_named(job(self.publish, "stage"), "Push the staged payload without changing any catalog")["run"]
-        promote_move = step_named(job(self.publish, "promote"), "Move the channel catalogs to the published tag")["run"]
+        promote_move = step_named(
+            job(self.publish, "promote"), "Publish the channel catalogs and the release tag in one push"
+        )["run"]
         # Idempotent escapes: a completed stage and a completed promote are
         # detected, and an existing tag is proven identical, never moved. The
         # behaviour, reruns included, is exercised in test_publish_channels.
         self.assertIn('echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"\n  exit 0', stage_push)
         self.assertIn('echo "${branch} already serves ${RELEASE_TAG}"', promote_move)
-        self.assertIn('rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}"', text)
+        self.assertIn('rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}"', promote_move)
         self.assertNotIn("git tag -f", text)
         self.assertNotIn("--force", text)
+        # The release tag is born only in promote, in the one atomic push that
+        # moves the catalogs naming it; nothing else pushes a release tag.
+        self.assertIn('git -C marketplace push --atomic origin "${refspecs[@]}"', promote_move)
+        self.assertEqual(text.count('refs/tags/${RELEASE_TAG}")'), 1)
+        self.assertNotIn('push origin "refs/tags/${RELEASE_TAG}"', text)
         # A stale straggler must fail forward-only instead of rolling a
         # catalog back — in both writers, over both host catalogs, in SemVer
-        # order, and again after a rebase retry. That two releases never
-        # interleave is test_publication_queue_keeps_every_admitted_release.
+        # order, and again on the retry after a refused push. That two
+        # releases never interleave is
+        # test_publication_queue_keeps_every_admitted_release.
         self.assertNotIn("sort -V", text)
         for writer in (stage_push, promote_move):
             with self.subTest(writer=writer.splitlines()[1]):
                 self.assertIn('python3 "$rules" catalog-ref "marketplace/$codex" "marketplace/$claude"', writer)
                 self.assertIn('python3 "$rules" forward', writer)
-                self.assertIn('after_rebase="$(served_ref HEAD~1)"', writer)
+        self.assertIn('after_rebase="$(served_ref HEAD~1)"', stage_push)
+        # The retry rebuilds the whole publication from the remote, which
+        # repeats every forward check on the state it now holds.
+        self.assertIn("if ! publish; then\n  prepare\n  publish\nfi", promote_move)
         # The payload is trusted only from the successful push build of the
         # very tag its manifest declares — dispatch cannot smuggle another one.
         self.assertIn('test "$run_event" = "push"', text)
@@ -1234,7 +1247,7 @@ class CandidateChannelTests(unittest.TestCase):
     def test_channel_rules_come_from_the_workflow_commit_without_credentials(self) -> None:
         # Код тега не исполняется рядом с токеном маркетплейса: правила канала
         # берутся из коммита самого workflow, и checkout не оставляет токена.
-        for job_id in ("gate", "stage", "verify-fresh-install", "verify-upgrade", "promote"):
+        for job_id in ("gate", "stage", "anchor", "verify-fresh-install", "verify-upgrade", "promote"):
             with self.subTest(job_id=job_id):
                 checkout = step_named(job(self.publish, job_id), "Check out the release channel rules")
                 self.assertTrue(checkout["uses"].startswith("actions/checkout@"))

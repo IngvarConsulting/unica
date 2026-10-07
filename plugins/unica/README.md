@@ -41,6 +41,25 @@ claude plugin install unica@unica
 Claude Code 2.1.68 and earlier reject the catalog's `git-subdir` source type and
 cannot load it at all; 2.1.69 is the first release that accepts it.
 
+### A branch or an exact version
+
+The marketplace is added by branch or by tag. A branch follows its channel:
+`--ref main` (Claude Code: no suffix) serves the latest stable release,
+`--ref next` (`#next`) the latest release of the
+[candidate channel](#release-candidates), and updating the marketplace brings
+the channel's next release. A tag pins one version: `--ref vX.Y.Z` (Claude
+Code: `#vX.Y.Z`) installs exactly X.Y.Z and stays there. A candidate's tag
+carries the `next` catalog, so its plugin is `unica@unica-next`:
+
+```sh
+codex plugin marketplace add IngvarConsulting/unica-marketplace --ref v0.13.0-rc.6
+codex plugin add unica@unica-next
+```
+
+Tags install their own version from `v0.13.0-rc.6` on. An earlier tag carries
+the previous release's catalog and installs that release instead; add the
+marketplace by branch for those.
+
 ### ZCode
 
 In **Plugin Marketplace → Add → Add Plugin Marketplace**, add a release

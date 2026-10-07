@@ -14,6 +14,11 @@
 1 — кандидат старше (опоздавший прогон), 2 — ref или тег не являются тегом
 выпуска. Пустой ref — тоже 2: каталог всегда что-то раздаёт, и пустое значение
 означает несчитанный каталог, а не первую публикацию.
+
+Тег `vX` маркетплейса — снимок опубликованного каталога: каталоги внутри него
+называют `vX`. До продвижения такого коммита нет, поэтому проверки установки
+идут по якорю `candidate/vX` на коммите stage: `anchor` печатает его имя,
+а `write-catalogs --ref` пишет каталоги кандидата, называющие якорь.
 """
 
 from __future__ import annotations
@@ -29,6 +34,9 @@ TAG = re.compile(
     r"(?:-(?P<prerelease>[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?\Z"
 )
 CANDIDATE = re.compile(r"\Arc\.(?:0|[1-9]\d*)\Z")
+# Якорь проверок установки. Не начинается с `v`, поэтому не совпадает
+# ни с тегом выпуска, ни с триггером `v*` проверок маркетплейса.
+ANCHOR_PREFIX = "candidate/"
 CODEX_CATALOG = Path(".agents/plugins/marketplace.json")
 CLAUDE_CATALOG = Path(".claude-plugin/marketplace.json")
 # Claude Code опознаёт маркетплейс по имени и не держит два одноимённых сразу,
@@ -58,6 +66,12 @@ def channel(tag: str) -> str:
     if not prerelease:
         return "stable"
     return "next" if CANDIDATE.match(".".join(prerelease)) else "none"
+
+
+def anchor(tag: str) -> str:
+    """The tag the install checks resolve before the catalog names `tag`."""
+    parse(tag)
+    return ANCHOR_PREFIX + tag
 
 
 def _identifier_key(identifier: str) -> tuple[int, int, str]:
@@ -109,8 +123,13 @@ def catalog_ref(codex_path: Path, claude_path: Path) -> str:
     return codex_ref
 
 
-def write_catalogs(target: str, tag: str, source: Path, destination: Path) -> None:
-    """Write the catalogs of a channel from the payload built for `tag`."""
+def write_catalogs(target: str, tag: str, source: Path, destination: Path, ref: str | None = None) -> None:
+    """Write the catalogs of a channel from the payload built for `tag`.
+
+    `ref` names the tag the catalogs resolve. It defaults to `tag` itself, the
+    published catalog; the only other value is the candidate anchor of `tag`,
+    which the install checks resolve before the release tag exists.
+    """
     if target not in MARKETPLACE_NAMES:
         raise TagError(f"unknown channel: {target!r}")
     if channel(tag) not in ("stable", target):
@@ -118,7 +137,12 @@ def write_catalogs(target: str, tag: str, source: Path, destination: Path) -> No
     codex_source, claude_source = source / CODEX_CATALOG, source / CLAUDE_CATALOG
     if catalog_ref(codex_source, claude_source) != tag:
         raise TagError(f"payload catalogs do not pin {tag}")
+    resolved = tag if ref is None else ref
+    if resolved not in (tag, anchor(tag)):
+        raise TagError(f"{resolved!r} is neither {tag} nor its candidate anchor")
     codex, claude = _load(codex_source), _load(claude_source)
+    for catalog in (codex, claude):
+        catalog["plugins"][0]["source"]["ref"] = resolved
     codex["name"] = MARKETPLACE_NAMES[target]
     codex.setdefault("interface", {})["displayName"] = DISPLAY_NAMES[target]
     claude["name"] = MARKETPLACE_NAMES[target]
@@ -139,7 +163,10 @@ def main(argv: list[str] | None = None) -> int:
     ref_command = commands.add_parser("catalog-ref", help="print the release both host catalogs pin")
     ref_command.add_argument("codex", type=Path)
     ref_command.add_argument("claude", type=Path)
+    anchor_command = commands.add_parser("anchor", help="print the candidate anchor tag of a release tag")
+    anchor_command.add_argument("tag")
     write_command = commands.add_parser("write-catalogs", help="write a channel's catalogs from the payload")
+    write_command.add_argument("--ref", help="tag the catalogs resolve: the release tag (default) or its anchor")
     write_command.add_argument("channel", choices=sorted(MARKETPLACE_NAMES))
     write_command.add_argument("tag")
     write_command.add_argument("source", type=Path)
@@ -150,8 +177,10 @@ def main(argv: list[str] | None = None) -> int:
             print(channel(args.tag))
         elif args.command == "catalog-ref":
             print(catalog_ref(args.codex, args.claude))
+        elif args.command == "anchor":
+            print(anchor(args.tag))
         elif args.command == "write-catalogs":
-            write_catalogs(args.channel, args.tag, args.source, args.destination)
+            write_catalogs(args.channel, args.tag, args.source, args.destination, args.ref)
         elif not is_forward(args.current, args.candidate):
             print(f"{args.candidate} is older than {args.current}", file=sys.stderr)
             return 1

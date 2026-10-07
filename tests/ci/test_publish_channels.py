@@ -1,10 +1,10 @@
 """Каналы публикации проверяются исполнением самих шагов workflow.
 
-Шаги `stage` и `promote` берутся из publish-unica-marketplace.yml как есть и
-выполняются над локальным репозиторием вместо маркетплейса: `gh repo clone`
-клонирует его, а `git push` пишет в него. Так проверяется то, что увидят
-потребители каналов, — ref каталогов на ветках `main` и `next`, — а не текст
-шагов.
+Шаги `stage`, `anchor`, `promote` и загрузка каталога кандидата в проверках
+установки берутся из publish-unica-marketplace.yml как есть и выполняются над
+локальным репозиторием вместо маркетплейса: `gh repo clone` клонирует его,
+а `git push` пишет в него. Так проверяется то, что увидят потребители каналов,
+— ref каталогов на ветках `main` и `next` и внутри тегов, — а не текст шагов.
 """
 
 from __future__ import annotations
@@ -24,13 +24,19 @@ from tests.ci.test_unica_workflow import PUBLISH_WORKFLOW, REPO_ROOT, job, load,
 
 CHANNEL_SCRIPT = REPO_ROOT / "scripts" / "ci" / "release-channel.py"
 STAGE_STEP = ("stage", "Push the staged payload without changing any catalog")
-PROMOTE_STEP = ("promote", "Move the channel catalogs to the published tag")
+ANCHOR_STEP = ("anchor", "Create the candidate anchor at the staged payload")
+PROMOTE_STEP = ("promote", "Publish the channel catalogs and the release tag in one push")
+FRESH_CATALOG_STEP = ("verify-fresh-install", "Download the candidate catalog")
+UPGRADE_CATALOG_STEP = ("verify-upgrade", "Download the candidate catalog")
 CODEX = ".agents/plugins/marketplace.json"
 CLAUDE = ".claude-plugin/marketplace.json"
 FAKE_GH = """#!/usr/bin/env bash
 set -euo pipefail
 if [ "$#" -eq 4 ] && [ "$1 $2 $3" = "repo clone IngvarConsulting/unica-marketplace" ]; then
   exec git clone -q "$FAKE_MARKETPLACE" "$4"
+fi
+if [ "$#" -ge 4 ] && [ "$1 $2" = "run download" ] && [ "${@:$#-1:1}" = "--dir" ]; then
+  exec cp -R "$FAKE_PAYLOAD" "${@:$#}"
 fi
 echo "fake gh: unsupported: $*" >&2
 exit 64
@@ -76,6 +82,9 @@ class PublishChannelTests(unittest.TestCase):
         self.git("commit", "-q", "-m", "promote: Unica v0.12.3", cwd=seed)
         self.git("clone", "-q", "--bare", str(seed), str(self.root / "marketplace.git"))
         self.runs = 0
+        # The staging commit the last successful stage step reported, as the
+        # stage job hands it to the jobs after it.
+        self.staging_sha = ""
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -106,18 +115,53 @@ class PublishChannelTests(unittest.TestCase):
         rules = workspace / "rules" / "scripts" / "ci"
         rules.mkdir(parents=True)
         shutil.copy(CHANNEL_SCRIPT, rules / CHANNEL_SCRIPT.name)
-        write_plugin(workspace / "payload", tag.removeprefix("v"))
-        write_payload(workspace / "payload", tag)
+        # A download step fetches the build artifact itself; the others find
+        # it where the job's earlier download put it.
+        downloads = step in (FRESH_CATALOG_STEP, UPGRADE_CATALOG_STEP)
+        payload = workspace / ("artifact" if downloads else "payload")
+        write_plugin(payload, tag.removeprefix("v"))
+        write_payload(payload, tag)
         output = workspace / "github-output"
         output.touch()
-        env = {**self.env, "RELEASE_TAG": tag, "CHANNEL": channel, "GITHUB_OUTPUT": str(output)}
+        env = {
+            **self.env,
+            "RELEASE_TAG": tag,
+            "CHANNEL": channel,
+            "GITHUB_OUTPUT": str(output),
+            "STAGING_SHA": self.staging_sha,
+            "PYTHON": "python3",
+            "SOURCE_RUN_ID": "1",
+            "DOWNLOAD_TOKEN": "unused",
+            "FAKE_PAYLOAD": str(payload),
+        }
         text = step_named(job(self.publish, step[0]), step[1])["run"]
-        return subprocess.run(["bash", "-c", text], cwd=workspace, env=env, capture_output=True, text=True)
+        result = subprocess.run(["bash", "-c", text], cwd=workspace, env=env, capture_output=True, text=True)
+        if step == STAGE_STEP and result.returncode == 0:
+            self.staging_sha = output.read_text(encoding="utf-8").split("staging_sha=", 1)[1].split()[0]
+        return result
 
     def release(self, tag: str, channel: str) -> None:
-        for step in (STAGE_STEP, PROMOTE_STEP):
+        for step in (STAGE_STEP, ANCHOR_STEP, PROMOTE_STEP):
             result = self.run_step(step, tag, channel)
             self.assertEqual(result.returncode, 0, f"{step[0]} {tag}: {result.stderr}")
+
+    def tags(self) -> dict[str, str]:
+        """Every marketplace tag and the commit it names."""
+        lines = self.marketplace(
+            "for-each-ref", "--format=%(refname:short) %(objectname) %(*objectname)", "refs/tags"
+        ).splitlines()
+        named = {}
+        for line in lines:
+            name, direct, peeled = (line.split(" ") + [""])[:3]
+            named[name] = peeled or direct
+        return named
+
+    def tag_serves(self, tag: str) -> tuple[str, str, str]:
+        """(marketplace name, codex ref, claude ref) the catalogs inside the tag name."""
+        return self.served(f"refs/tags/{tag}^{{commit}}")
+
+    def tree(self, revision: str) -> str:
+        return self.marketplace("rev-parse", f"{revision}:plugins/unica").strip()
 
     def heads(self) -> dict[str, str]:
         return {branch: self.marketplace("rev-parse", branch) for branch in sorted(self.branches())}
@@ -140,14 +184,16 @@ class PublishChannelTests(unittest.TestCase):
         self.git("push", "-q", "origin", "main", cwd=work)
 
     def lock_main(self) -> Path:
-        """A pre-receive hook refuses pushes to main while the returned flag exists."""
+        """An update hook refuses main while the returned flag exists.
+
+        The hook judges each ref on its own, as a branch protection does: a
+        push that is not atomic would still move every other ref it carries.
+        """
         flag = self.root / "main-locked"
-        hook = self.root / "marketplace.git" / "hooks" / "pre-receive"
+        hook = self.root / "marketplace.git" / "hooks" / "update"
         hook.write_text(
             "#!/bin/sh\n"
-            "while read old new ref; do\n"
-            f'  if [ "$ref" = refs/heads/main ] && [ -f "{flag}" ]; then echo "main is locked" >&2; exit 1; fi\n'
-            "done\n",
+            f'if [ "$1" = refs/heads/main ] && [ -f "{flag}" ]; then echo "main is locked" >&2; exit 1; fi\n',
             encoding="utf-8",
         )
         hook.chmod(0o755)
@@ -202,12 +248,14 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual({branch: self.marketplace("rev-parse", branch) for branch in before}, before)
 
     def test_a_rerun_of_a_completed_publication_changes_nothing(self) -> None:
-        self.release("v0.13.0-rc.3", "next")
-        before = {branch: self.marketplace("rev-parse", branch) for branch in ("main", "next")}
+        for tag, channel in (("v0.13.0-rc.3", "next"), ("v0.13.0", "stable")):
+            with self.subTest(tag=tag):
+                self.release(tag, channel)
+                before = (self.heads(), self.tags())
 
-        self.release("v0.13.0-rc.3", "next")
+                self.release(tag, channel)
 
-        self.assertEqual({branch: self.marketplace("rev-parse", branch) for branch in before}, before)
+                self.assertEqual((self.heads(), self.tags()), before)
 
     def test_a_stale_stable_release_is_refused_at_stage(self) -> None:
         self.release("v0.13.0", "stable")
@@ -230,17 +278,21 @@ class PublishChannelTests(unittest.TestCase):
         self.assertIn("older than v0.13.0-rc.3", result.stderr)
         self.assertEqual(self.heads(), before)
 
-    def test_next_moves_before_main_and_a_rerun_completes_the_release(self) -> None:
+    def test_next_main_and_the_tag_move_in_one_push_and_a_rerun_completes_the_release(self) -> None:
         self.release("v0.13.0-rc.3", "next")
-        self.assertEqual(self.run_step(STAGE_STEP, "v0.13.0", "stable").returncode, 0)
+        for step in (STAGE_STEP, ANCHOR_STEP):
+            self.assertEqual(self.run_step(step, "v0.13.0", "stable").returncode, 0)
         flag = self.lock_main()
 
         failed = self.run_step(PROMOTE_STEP, "v0.13.0", "stable")
 
         self.assertNotEqual(failed.returncode, 0)
-        # The failure between the two pushes leaves next ahead of main, never behind.
-        self.assertEqual(self.served("next"), ("unica-next", "v0.13.0", "v0.13.0"))
+        # The push is atomic: a refused main leaves next and the tag where they
+        # were, so next never falls behind main and no tag exists without the
+        # catalog that names it.
+        self.assertEqual(self.served("next"), ("unica-next", "v0.13.0-rc.3", "v0.13.0-rc.3"))
         self.assertEqual(self.served("main"), ("unica", "v0.12.3", "v0.12.3"))
+        self.assertNotIn("v0.13.0", self.tags())
 
         flag.unlink()
         rerun = self.run_step(PROMOTE_STEP, "v0.13.0", "stable")
@@ -248,6 +300,77 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual(rerun.returncode, 0, rerun.stderr)
         self.assertEqual(self.served("main"), ("unica", "v0.13.0", "v0.13.0"))
         self.assertEqual(self.served("next"), ("unica-next", "v0.13.0", "v0.13.0"))
+        self.assertEqual(self.tags()["v0.13.0"], self.marketplace("rev-parse", "main").strip())
+
+    def test_the_release_tag_is_the_published_catalog(self) -> None:
+        # Тег vX называет коммит продвижения: поставивший по --ref vX получает
+        # каталог, который называет vX, а не предыдущий выпуск.
+        for tag, channel, home, name in (
+            ("v0.13.0-rc.3", "next", "next", "unica-next"),
+            ("v0.13.0", "stable", "main", "unica"),
+        ):
+            with self.subTest(tag=tag):
+                self.release(tag, channel)
+                tags = self.tags()
+
+                self.assertEqual(tags[tag], self.marketplace("rev-parse", home).strip())
+                self.assertEqual(self.tag_serves(tag), (name, tag, tag))
+                self.assertEqual(self.tree(f"refs/tags/{tag}^{{commit}}"), self.tree(self.staging_sha))
+                # The install checks resolved the anchor on the staging commit,
+                # whose catalogs still name the previous release.
+                self.assertEqual(tags[f"candidate/{tag}"], self.staging_sha)
+                self.assertNotEqual(self.tag_serves(f"candidate/{tag}")[1], tag)
+
+    def test_a_stable_release_kept_out_of_next_is_tagged_on_main(self) -> None:
+        self.release("v0.13.0", "stable")
+        self.release("v0.14.0-rc.1", "next")
+        self.release("v0.13.1", "stable")
+
+        tags = self.tags()
+        self.assertEqual(tags["v0.13.1"], self.marketplace("rev-parse", "main").strip())
+        self.assertEqual(self.tag_serves("v0.13.1"), ("unica", "v0.13.1", "v0.13.1"))
+        self.assertEqual(tags["v0.14.0-rc.1"], self.marketplace("rev-parse", "next").strip())
+
+    def test_install_checks_resolve_the_candidate_anchor(self) -> None:
+        for tag, channel, name in (("v0.13.0-rc.3", "next", "unica-next"), ("v0.13.0", "stable", "unica")):
+            for step in (FRESH_CATALOG_STEP, UPGRADE_CATALOG_STEP):
+                with self.subTest(tag=tag, job=step[0]):
+                    result = self.run_step(step, tag, channel)
+
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    candidate = self.root / f"run-{self.runs}" / "candidate"
+                    for path in (CODEX, CLAUDE):
+                        catalog = json.loads((candidate / path).read_text(encoding="utf-8"))
+                        self.assertEqual(catalog["name"], name)
+                        self.assertEqual(catalog["plugins"][0]["source"]["ref"], f"candidate/{tag}")
+
+    def test_a_tag_left_on_the_staging_commit_is_kept_and_the_catalog_completes(self) -> None:
+        # До 0.13.0-rc.6 тег vX ставился на коммит stage. Повтор такого выпуска
+        # тег не двигает: деревья плагина совпали — продвигаются одни ветки.
+        for step in (STAGE_STEP, ANCHOR_STEP):
+            self.assertEqual(self.run_step(step, "v0.13.0-rc.3", "next").returncode, 0)
+        self.marketplace("tag", "-a", "v0.13.0-rc.3", self.staging_sha, "-m", "Unica v0.13.0-rc.3")
+
+        result = self.run_step(PROMOTE_STEP, "v0.13.0-rc.3", "next")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tags()["v0.13.0-rc.3"], self.staging_sha)
+        self.assertEqual(self.served("next"), ("unica-next", "v0.13.0-rc.3", "v0.13.0-rc.3"))
+
+    def test_a_release_tag_with_other_bytes_stops_the_publication(self) -> None:
+        # Опубликованный тег не двигается: тот же номер с другими байтами —
+        # сожжённая версия, а не повтор.
+        self.release("v0.13.0-rc.3", "next")
+        self.assertEqual(self.run_step(STAGE_STEP, "v0.13.0-rc.4", "next").returncode, 0)
+        self.marketplace("tag", "-a", "v0.13.0-rc.4", "v0.13.0-rc.3^{commit}", "-m", "burnt")
+        before = (self.heads(), self.tags())
+
+        for step in (ANCHOR_STEP, PROMOTE_STEP):
+            with self.subTest(job=step[0]):
+                result = self.run_step(step, "v0.13.0-rc.4", "next")
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((self.heads(), self.tags()), before)
 
     def test_next_follows_main_outside_the_served_plugin(self) -> None:
         # The marketplace checks its branches with the scripts and workflows

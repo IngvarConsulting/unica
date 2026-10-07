@@ -1462,8 +1462,8 @@ class ProductContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("needs: [gate, stage, tag, verify-fresh-install, verify-upgrade]", publish)
-        self.assertIn("needs: [gate, stage, tag]", publish)
+        self.assertIn("needs: [gate, stage, anchor, verify-fresh-install, verify-upgrade]", publish)
+        self.assertIn("needs: [gate, stage, anchor]", publish)
         # A published tag never moves; a rerun proves sameness instead.
         self.assertNotIn("git tag -f", publish)
         self.assertNotIn("--force", publish)
@@ -1603,18 +1603,20 @@ class ProductContractTests(unittest.TestCase):
             # a failure part-way through has to leave everything untouched.
             self.assertEqual(cargo.read_text(encoding="utf-8"), before)
 
-    def test_the_anchor_tag_names_the_staging_commit(self) -> None:
+    def test_the_candidate_anchor_names_the_staging_commit(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
         publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
             encoding="utf-8"
         )
 
-        # Naming the promotion commit would require tagging a commit that does
-        # not exist until the catalog has already moved, which is exactly the
-        # order the two-phase invariant forbids. The staging commit carries the
-        # plugin bytes and exists before the install checks run.
-        self.assertIn('tag -a "$RELEASE_TAG" "$STAGING_SHA"', publish)
-        self.assertNotIn("tag at commit ${promotion_sha}", publish)
+        # The install checks need an immutable ref on the staged bytes before
+        # the catalog moves. The release tag cannot be it: its catalogs name
+        # the release, and that commit exists only once promote builds it. The
+        # anchor `candidate/vX` takes that role on the staging commit; the
+        # release tag is created in promote, as test_publish_channels runs.
+        self.assertIn('tag -a "$anchor" "$STAGING_SHA"', publish)
+        self.assertNotIn('tag -a "$RELEASE_TAG" "$STAGING_SHA"', publish)
+        self.assertIn('tag -a "$RELEASE_TAG" "$release_commit"', publish)
 
     def test_release_gate_pins_the_oldest_supported_client(self) -> None:
         from tests.ci.test_unica_workflow import RELEASE_WORKFLOW, job, load, script, steps
