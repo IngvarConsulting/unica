@@ -32,7 +32,9 @@ const PRODUCT_DIR: &str = "rlm-bsl";
 const GENERATION_PREFIX: &str = "index-v";
 const TRASH_PREFIX: &str = ".trash-rlm-";
 const LOCK_FILE_NAME: &str = "bsl_index.lock";
-/// Walking deeper than the index layout needs is not required to see use.
+/// The index layout is shallower than this. A directory at this depth that
+/// still has entries is not walked, and unwalked content cannot prove the
+/// generation idle, so such a generation is kept.
 const MAX_IDLE_WALK_DEPTH: usize = 6;
 
 /// Parents of generation directories, relative to the pair root.
@@ -237,10 +239,14 @@ fn is_idle(path: &Path, idle: Duration, now: SystemTime) -> bool {
     fn newest_change(path: &Path, depth: usize) -> Option<SystemTime> {
         let metadata = std::fs::symlink_metadata(path).ok()?;
         let mut newest = metadata.modified().ok()?;
-        if metadata.is_dir()
-            && !metadata_is_link_or_reparse_point(&metadata)
-            && depth < MAX_IDLE_WALK_DEPTH
-        {
+        if metadata.is_dir() && !metadata_is_link_or_reparse_point(&metadata) {
+            if depth >= MAX_IDLE_WALK_DEPTH {
+                return std::fs::read_dir(path)
+                    .ok()?
+                    .next()
+                    .is_none()
+                    .then_some(newest);
+            }
             for entry in std::fs::read_dir(path).ok()? {
                 newest = newest.max(newest_change(&entry.ok()?.path(), depth + 1)?);
             }
@@ -483,6 +489,32 @@ mod tests {
         assert!(db.is_file());
 
         age_tree(&pair_root, old).unwrap();
+        assert_eq!(collect(&pair_root, day), vec!["index-v15".to_string()]);
+    }
+
+    /// Содержимое глубже предела обхода не просматривается и потому не
+    /// доказывает простой: такое поколение остаётся.
+    #[test]
+    fn content_below_the_walk_limit_keeps_the_generation() {
+        let (_guard, pair_root) = root();
+        seed_generation(&pair_root, "index-v15");
+        let mut deep = pair_root.join(PRODUCT_DIR).join("index-v15");
+        for level in 0..MAX_IDLE_WALK_DEPTH {
+            deep = deep.join(format!("d{level}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("unseen.db"), b"x").unwrap();
+        let day = Duration::from_secs(24 * 60 * 60);
+        if age_tree(&pair_root, SystemTime::now() - 2 * day).is_err() {
+            // Windows cannot open a directory this way to set its time.
+            return;
+        }
+
+        assert!(collect(&pair_root, day).is_empty());
+        assert!(deep.join("unseen.db").is_file());
+
+        std::fs::remove_file(deep.join("unseen.db")).unwrap();
+        age_tree(&pair_root, SystemTime::now() - 2 * day).unwrap();
         assert_eq!(collect(&pair_root, day), vec!["index-v15".to_string()]);
     }
 
