@@ -24,9 +24,9 @@ except ImportError:  # pragma: no cover - unavailable on Windows
 
 
 MARKER = "UNICA_RLM_BENCHMARK_MARKER"
-SECTION_HEADING = "## Замер RLM v1.33.0"
-RELEASE_TAG = "rlm-tools-bsl-v1.33.0-build.3"
-SOURCE_COMMIT = "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549"
+SECTION_HEADING = "## Замер RLM v1.42.0"
+RELEASE_TAG = "rlm-tools-bsl-v1.42.0-build.1"
+SOURCE_COMMIT = "9a84f24f0c156630e1d4e757b30070a13a56d0e0"
 TOOLS_LOCK = (
     Path(__file__).resolve().parents[2]
     / "plugins"
@@ -38,11 +38,11 @@ TOOLS_LOCK = (
 # identify different bytes and must remain paired when the lock changes.
 PACKAGED_DARWIN_ARCHIVE = {
     "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
-    "sha256": "55caf6a245b3bb47344e2191408841f45aefb614b23480d9941f2cb3e2d8af2c",
-    "size": 72708783,
+    "sha256": "412cbe92aa51f6823e9d2dea43d8ace5717f0f3ad5ee1c53d47ef2ce940f5cff",
+    "size": 75135269,
     "archiveBinary": "rlm-bsl-index",
 }
-PACKAGED_INDEX_SHA256 = "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e"
+PACKAGED_INDEX_SHA256 = "fb44a2286acd386cbc8f2aa91f598146ad3974be245ec8620911138dad350f0e"
 TAIL_LIMIT = 4_000
 HEX_40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX_64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -549,7 +549,7 @@ def run_benchmark(
     index_dir: Path,
 ) -> dict[str, object]:
     """Run all benchmark scenarios against one fresh, isolated index directory."""
-    if label not in {"packaged-v1.33.0", "source-v1.33.0"}:
+    if label not in {"packaged-v1.42.0", "source-v1.42.0"}:
         raise RuntimeError(f"unsupported benchmark label: {label}")
     if not HEX_40.fullmatch(source_commit):
         raise RuntimeError("source commit must be exactly 40 lowercase hex characters")
@@ -679,7 +679,7 @@ def _is_absolute_path(value: str) -> bool:
 def _validate_summary_document(document: dict[str, object]) -> None:
     if document.get("schemaVersion") != 1:
         raise RuntimeError("summary requires benchmark schema version 1")
-    if document.get("label") not in {"packaged-v1.33.0", "source-v1.33.0"}:
+    if document.get("label") not in {"packaged-v1.42.0", "source-v1.42.0"}:
         raise RuntimeError("summary contains an unsupported benchmark label")
     if not HEX_40.fullmatch(str(document.get("sourceCommit", ""))):
         raise RuntimeError("summary contains an invalid source commit")
@@ -721,15 +721,15 @@ def _locked_packaged_index_sha256() -> str:
 def _validate_summary_pair(
     documents: list[dict[str, object]],
 ) -> list[dict[str, object]]:
-    expected_labels = {"packaged-v1.33.0", "source-v1.33.0"}
+    expected_labels = {"packaged-v1.42.0", "source-v1.42.0"}
     labels = [document.get("label") for document in documents]
     if len(documents) != 2 or set(labels) != expected_labels:
         raise RuntimeError(
-            "summary requires exactly one packaged-v1.33.0 and one "
-            "source-v1.33.0 result"
+            "summary requires exactly one packaged-v1.42.0 and one "
+            "source-v1.42.0 result"
         )
     by_label = {str(document["label"]): document for document in documents}
-    ordered = [by_label["packaged-v1.33.0"], by_label["source-v1.33.0"]]
+    ordered = [by_label["packaged-v1.42.0"], by_label["source-v1.42.0"]]
     for document in ordered:
         _validate_summary_document(document)
         if document["sourceCommit"] != SOURCE_COMMIT:
@@ -739,7 +739,7 @@ def _validate_summary_pair(
     packaged_sha256 = _locked_packaged_index_sha256()
     if ordered[0]["executableSha256"] != packaged_sha256:
         raise RuntimeError(
-            "summary requires exact build.3 Darwin rlm-bsl-index SHA-256 "
+            "summary requires exact build.1 Darwin rlm-bsl-index SHA-256 "
             f"{packaged_sha256}"
         )
     if ordered[0]["repoHead"] != ordered[1]["repoHead"]:
@@ -837,7 +837,7 @@ def markdown_summary(documents: list[dict[str, object]]) -> str:
                 f"{_format_decimal(minimum)}–{_format_seconds(maximum)} |"
             )
 
-    source_stats = stats_by_label.get("source-v1.33.0")
+    source_stats = stats_by_label.get("source-v1.42.0")
     if source_stats:
         lines.extend(
             [
@@ -845,7 +845,7 @@ def markdown_summary(documents: list[dict[str, object]]) -> str:
                 "Сравнение медиан source CLI с опубликованным замером "
                 "RLM v1.29.1:",
                 "",
-                "| Сценарий | v1.29.1 | v1.33.0 | Изменение |",
+                "| Сценарий | v1.29.1 | v1.42.0 | Изменение |",
                 "| --- | ---: | ---: | ---: |",
             ]
         )
@@ -909,7 +909,7 @@ def markdown_summary(documents: list[dict[str, object]]) -> str:
 
 
 def replace_summary_section(body: str, summary: str) -> str:
-    """Replace or append the v1.33 section without duplicating it."""
+    """Replace or append the v1.42 section without duplicating it."""
     normalized = summary.rstrip() + "\n"
     pattern = re.compile(
         rf"(?ms)^{re.escape(SECTION_HEADING)}\n.*?(?=^## |\Z)"
@@ -934,7 +934,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--executable", type=Path)
     parser.add_argument(
-        "--label", choices=("packaged-v1.33.0", "source-v1.33.0")
+        "--label", choices=("packaged-v1.42.0", "source-v1.42.0")
     )
     parser.add_argument("--source-commit")
     parser.add_argument("--index-dir", type=Path)

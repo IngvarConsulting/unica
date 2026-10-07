@@ -132,8 +132,8 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             for scenario in MODULE.SCENARIOS
         }
         return MODULE.result_document(
-            label="source-v1.33.0",
-            source_commit="3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+            label="source-v1.42.0",
+            source_commit="9a84f24f0c156630e1d4e757b30070a13a56d0e0",
             executable_sha256="a" * 64,
             repo_head="b" * 40,
             selected=selected
@@ -148,9 +148,9 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
     ) -> list[dict]:
         source = self.sample_document(selected=selected)
         packaged = copy.deepcopy(source)
-        packaged["label"] = "packaged-v1.33.0"
+        packaged["label"] = "packaged-v1.42.0"
         packaged["executableSha256"] = (
-            "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e"
+            "fb44a2286acd386cbc8f2aa91f598146ad3974be245ec8620911138dad350f0e"
         )
         return [packaged, source]
 
@@ -268,8 +268,8 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
 
     def test_result_keeps_raw_samples_and_provenance(self) -> None:
         result = MODULE.result_document(
-            label="packaged-v1.33.0",
-            source_commit="3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+            label="packaged-v1.42.0",
+            source_commit="9a84f24f0c156630e1d4e757b30070a13a56d0e0",
             executable_sha256="a" * 64,
             repo_head="b" * 40,
             selected={"bsl-1": [Path("src/CommonModules/One/Module.bsl")]},
@@ -280,10 +280,10 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
             final_clean=True,
         )
         self.assertEqual(result["schemaVersion"], 1)
-        self.assertEqual(result["label"], "packaged-v1.33.0")
+        self.assertEqual(result["label"], "packaged-v1.42.0")
         self.assertEqual(
             result["sourceCommit"],
-            "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+            "9a84f24f0c156630e1d4e757b30070a13a56d0e0",
         )
         self.assertEqual(result["executableSha256"], "a" * 64)
         self.assertEqual(result["repoHead"], "b" * 40)
@@ -295,8 +295,8 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
 
     def test_raw_sample_schema_keeps_command_evidence_and_index_statistics(self) -> None:
         result = MODULE.result_document(
-            label="packaged-v1.33.0",
-            source_commit="3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+            label="packaged-v1.42.0",
+            source_commit="9a84f24f0c156630e1d4e757b30070a13a56d0e0",
             executable_sha256="a" * 64,
             repo_head="b" * 40,
             selected={"bsl-1": [Path("src/CommonModules/One/Module.bsl")]},
@@ -371,8 +371,8 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         sample = MODULE.Sample(5.2, 120_000_000, True, "fresh")
 
         result = MODULE.result_document(
-            label="packaged-v1.33.0",
-            source_commit="3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+            label="packaged-v1.42.0",
+            source_commit="9a84f24f0c156630e1d4e757b30070a13a56d0e0",
             executable_sha256="a" * 64,
             repo_head="b" * 40,
             selected={"bsl-1": [Path("src/CommonModules/One/Module.bsl")]},
@@ -428,9 +428,9 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
 
         summary = MODULE.markdown_summary(documents)
 
-        self.assertTrue(summary.startswith("## Замер RLM v1.33.0\n"))
-        self.assertIn("`rlm-tools-bsl-v1.33.0-build.3`", summary)
-        self.assertIn("| source-v1.33.0 | No-op update | 5 | 3,00 с | 1,00–5,00 с |", summary)
+        self.assertTrue(summary.startswith("## Замер RLM v1.42.0\n"))
+        self.assertIn("`rlm-tools-bsl-v1.42.0-build.1`", summary)
+        self.assertIn("| source-v1.42.0 | No-op update | 5 | 3,00 с | 1,00–5,00 с |", summary)
         self.assertIn("12 290", summary)
         self.assertIn("220 748", summary)
         self.assertIn("Макс. RSS среди всех завершённых дочерних процессов", summary)
@@ -445,16 +445,16 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         twice = MODULE.replace_summary_section(once, summary)
 
         self.assertEqual(once, twice)
-        self.assertEqual(once.count("## Замер RLM v1.33.0"), 1)
+        self.assertEqual(once.count("## Замер RLM v1.42.0"), 1)
         self.assertIn("Keep me.", once)
 
     def test_summary_requires_exactly_one_packaged_and_one_source_result(self) -> None:
         source = self.sample_document()
-        with self.assertRaisesRegex(RuntimeError, "exactly one packaged-v1.33.0"):
+        with self.assertRaisesRegex(RuntimeError, "exactly one packaged-v1.42.0"):
             MODULE.markdown_summary([source])
 
         duplicate_source = copy.deepcopy(source)
-        with self.assertRaisesRegex(RuntimeError, "exactly one packaged-v1.33.0"):
+        with self.assertRaisesRegex(RuntimeError, "exactly one packaged-v1.42.0"):
             MODULE.markdown_summary([source, duplicate_source])
 
     def test_summary_requires_the_exact_source_commit_for_both_results(self) -> None:
@@ -468,7 +468,7 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
     def test_standalone_executable_identity_is_distinct_from_archive_identity(self) -> None:
         self.assertEqual(
             MODULE._locked_packaged_index_sha256(),
-            "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e",
+            "fb44a2286acd386cbc8f2aa91f598146ad3974be245ec8620911138dad350f0e",
         )
         lock = json.loads(MODULE.TOOLS_LOCK.read_text(encoding="utf-8"))
         tool = next(item for item in lock["tools"] if item["name"] == "rlm-bsl-index")
@@ -497,14 +497,15 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "archive identity"):
                             MODULE._locked_packaged_index_sha256()
 
-    def test_summary_rejects_the_packaged_build_2_executable_digest(self) -> None:
+    def test_summary_rejects_the_previous_release_executable_digest(self) -> None:
         documents = self.paired_documents()
         documents[0]["executableSha256"] = (
-            "d48bd7a0186e46b6d2a48476bc9926fb638882544e7be201293f89db9e654a63"
+            # rlm-bsl-index of the previous pin, rlm-tools-bsl-v1.33.0-build.3.
+            "bdf429e3a8dee1fb9b1f1af66adcc4280732cc4287c92c4fbe4effddc0f8492e"
         )
 
         with self.assertRaisesRegex(
-            RuntimeError, "exact build.3 Darwin rlm-bsl-index SHA-256"
+            RuntimeError, "exact build.1 Darwin rlm-bsl-index SHA-256"
         ):
             MODULE.markdown_summary(documents)
 
@@ -568,9 +569,9 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
                         "--executable",
                         str(self.root / "missing-executable"),
                         "--label",
-                        "packaged-v1.33.0",
+                        "packaged-v1.42.0",
                         "--source-commit",
-                        "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+                        "9a84f24f0c156630e1d4e757b30070a13a56d0e0",
                         "--index-dir",
                         str(self.root / "missing-index"),
                         "--output",
@@ -630,8 +631,8 @@ class BenchmarkRlmIndexTests(unittest.TestCase):
         document = MODULE.run_benchmark(
             repo=repo,
             executable=executable,
-            label="packaged-v1.33.0",
-            source_commit="3e6920cd015a61af4ba7aa1a5f1fedd8bc935549",
+            label="packaged-v1.42.0",
+            source_commit="9a84f24f0c156630e1d4e757b30070a13a56d0e0",
             index_dir=index_dir,
         )
 
