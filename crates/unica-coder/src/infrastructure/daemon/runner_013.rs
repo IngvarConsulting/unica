@@ -689,7 +689,7 @@ mod tests {
     fn the_projection_directory_is_stable_per_working_copy() {
         let root = workspace(
             "infobase: {connection: 'File=ib'}\n",
-            Some("infobases: {origin: {shared: true}}\n"),
+            Some("infobases: {origin: {user: Tester}}\n"),
         );
         let directory = projection_directory(&identity(root.path()));
         for _ in 0..2 {
@@ -702,7 +702,7 @@ mod tests {
         }
         let local: Value =
             serde_yaml::from_slice(&std::fs::read(directory.join(LOCAL_NAME)).unwrap()).unwrap();
-        assert_eq!(local["infobases"]["origin"]["shared"], true);
+        assert_eq!(local["infobases"]["origin"]["user"], "Tester");
         assert!(crate::infrastructure::platform::directory_is_owner_only(&directory).unwrap());
 
         // Без местного слоя прежняя копия местного слоя не остаётся.
