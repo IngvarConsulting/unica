@@ -192,7 +192,14 @@ fn write_config(path: &Path, value: &Value) -> Result<(), String> {
         .map_err(|_| "cannot write private projected runner config")?;
     file.write_all(bytes.as_bytes())
         .map_err(|_| "cannot write private projected runner config")?;
+    // The directory is recorded as the infobase owner: after a crash the copy
+    // must be either the previous or the new one, never empty.
+    file.as_file()
+        .sync_all()
+        .map_err(|_| "cannot write private projected runner config")?;
     file.persist(path)
+        .map_err(|_| "cannot write private projected runner config")?;
+    crate::infrastructure::platform::filesystem::sync_parent_directory(directory)
         .map_err(|_| "cannot write private projected runner config")?;
     Ok(())
 }

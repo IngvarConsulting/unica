@@ -521,8 +521,10 @@ fn validate_envelope(
             )
         })?
         .to_string();
-    if let Some(requested) = &prepared.arguments.source_set {
-        if requested != &source_set {
+    // The receipt is checked against the set the runner was asked for, also
+    // when the request left it to the declared configuration set.
+    if let Some(requested) = planned_source_set(prepared)? {
+        if requested != source_set {
             return Err(reject(
                 RefusalCode::InvalidResult,
                 format!("v8-runner {phase} answered for a different source set than requested"),
@@ -556,6 +558,26 @@ fn validate_envelope(
     Ok(source_set)
 }
 
+/// The set the runner is asked to build from: the requested one, or for a
+/// `.cf` without `sourceSet` the declared configuration set. A `.cfe` without
+/// it is left to the runner and its `--extension`.
+fn planned_source_set(prepared: &PreparedArtifactBuild) -> Result<Option<String>, DomainResult> {
+    Ok(match (&prepared.arguments.source_set, prepared.arguments.kind) {
+        (Some(source_set), _) => Some(source_set.clone()),
+        (None, ArtifactKind::Cf) => Some(
+            configuration_source_set(&prepared.context.workspace_root)
+                .map_err(|error| reject(RefusalCode::InvalidState, error))?
+                .ok_or_else(|| {
+                    reject(
+                        RefusalCode::InvalidState,
+                        format!("{CONFIG_NAME} declares no configuration source-set; name the source set to build the .cf from with sourceSet"),
+                    )
+                })?,
+        ),
+        (None, ArtifactKind::Cfe) => None,
+    })
+}
+
 fn invoke_runner(
     prepared: &PreparedArtifactBuild,
     tool: &BundledTool,
@@ -578,21 +600,7 @@ fn invoke_runner(
     // Без набора и без `--extension` раннер 0.13 собирает все наборы в каталог
     // и путь к одному файлу отклоняет, поэтому `.cf` без набора заказывается по
     // имени набора основной конфигурации.
-    let source_set = match (&prepared.arguments.source_set, prepared.arguments.kind) {
-        (Some(source_set), _) => Some(source_set.clone()),
-        (None, ArtifactKind::Cf) => Some(
-            configuration_source_set(&prepared.context.workspace_root)
-                .map_err(|error| reject(RefusalCode::InvalidState, error))?
-                .ok_or_else(|| {
-                    reject(
-                        RefusalCode::InvalidState,
-                        format!("{CONFIG_NAME} declares no configuration source-set; name the source set to build the .cf from with sourceSet"),
-                    )
-                })?,
-        ),
-        (None, ArtifactKind::Cfe) => None,
-    };
-    args.extend(source_set);
+    args.extend(planned_source_set(prepared)?);
     args.extend([
         "--output".to_string(),
         prepared.arguments.output.display().to_string(),
@@ -1167,6 +1175,28 @@ mod tests {
             result.diagnostics[0]["code"], "invalid_result",
             "{result:?}"
         );
+
+        // Без sourceSet `.cf` заказан по набору конфигурации `main`; ответ
+        // по другому объявленному набору — не та квитанция.
+        let runner = SequenceRunner::new(vec![process(
+            envelope(
+                &prepared.arguments.output,
+                ArtifactKind::Cf,
+                "ext-sales",
+                None,
+                false,
+            ),
+            true,
+        )]);
+        let result = run(root.path(), &prepared, &runner);
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("different source set than requested"));
 
         let runner = SequenceRunner::new(vec![process(
             envelope(
