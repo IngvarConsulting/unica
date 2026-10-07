@@ -318,8 +318,8 @@ class PublishChannelTests(unittest.TestCase):
                 self.assertEqual(self.tree(f"refs/tags/{tag}^{{commit}}"), self.tree(self.staging_sha))
                 # The install checks resolved the anchor on the staging commit,
                 # whose catalogs still name the previous release.
-                self.assertEqual(tags[f"candidate/{tag}"], self.staging_sha)
-                self.assertNotEqual(self.tag_serves(f"candidate/{tag}")[1], tag)
+                self.assertEqual(tags[f"candidate-{tag}"], self.staging_sha)
+                self.assertNotEqual(self.tag_serves(f"candidate-{tag}")[1], tag)
 
     def test_a_stable_release_kept_out_of_next_is_tagged_on_main(self) -> None:
         self.release("v0.13.0", "stable")
@@ -342,7 +342,7 @@ class PublishChannelTests(unittest.TestCase):
                     for path in (CODEX, CLAUDE):
                         catalog = json.loads((candidate / path).read_text(encoding="utf-8"))
                         self.assertEqual(catalog["name"], name)
-                        self.assertEqual(catalog["plugins"][0]["source"]["ref"], f"candidate/{tag}")
+                        self.assertEqual(catalog["plugins"][0]["source"]["ref"], f"candidate-{tag}")
 
     def test_a_tag_left_on_the_staging_commit_is_kept_and_the_catalog_completes(self) -> None:
         # До 0.13.0-rc.6 тег vX ставился на коммит stage. Повтор такого выпуска
@@ -356,6 +356,61 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.tags()["v0.13.0-rc.3"], self.staging_sha)
         self.assertEqual(self.served("next"), ("unica-next", "v0.13.0-rc.3", "v0.13.0-rc.3"))
+
+    def test_an_anchor_with_other_bytes_stops_the_install_checks(self) -> None:
+        # Якорь не двигается: повтор с якорем на чужих байтах — отказ, а не
+        # проверка установки по не тем байтам.
+        self.release("v0.13.0-rc.3", "next")
+        self.assertEqual(self.run_step(STAGE_STEP, "v0.13.0-rc.4", "next").returncode, 0)
+        self.marketplace("tag", "-a", "candidate-v0.13.0-rc.4", "v0.13.0-rc.3^{commit}", "-m", "stale")
+        before = (self.heads(), self.tags())
+
+        result = self.run_step(ANCHOR_STEP, "v0.13.0-rc.4", "next")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.heads(), self.tags()), before)
+
+    def test_a_push_refused_once_is_rebuilt_and_published(self) -> None:
+        self.release("v0.13.0-rc.3", "next")
+        for step in (STAGE_STEP, ANCHOR_STEP):
+            self.assertEqual(self.run_step(step, "v0.13.0", "stable").returncode, 0)
+        # The first push is refused whole; the step itself must rebuild and
+        # publish on its second pass, without a rerun of the job.
+        flag = self.root / "refuse-once"
+        flag.touch()
+        hook = self.root / "marketplace.git" / "hooks" / "pre-receive"
+        hook.write_text(
+            f'#!/bin/sh\nif [ -f "{flag}" ]; then rm -f "{flag}"; echo "refused once" >&2; exit 1; fi\n',
+            encoding="utf-8",
+        )
+        hook.chmod(0o755)
+
+        result = self.run_step(PROMOTE_STEP, "v0.13.0", "stable")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("refused once", result.stderr)
+        self.assertEqual(self.served("main"), ("unica", "v0.13.0", "v0.13.0"))
+        self.assertEqual(self.served("next"), ("unica-next", "v0.13.0", "v0.13.0"))
+        self.assertEqual(self.tags()["v0.13.0"], self.marketplace("rev-parse", "main").strip())
+        self.assertEqual(self.tag_serves("v0.13.0"), ("unica", "v0.13.0", "v0.13.0"))
+
+    def test_a_candidate_overtaken_before_promote_leaves_next_alone(self) -> None:
+        # Гонка: к promote кандидата rc.4 next уже раздаёт rc.5. Опоздавший
+        # кандидат не откатывает канал и не получает тега.
+        self.release("v0.13.0-rc.3", "next")
+        for step in (STAGE_STEP, ANCHOR_STEP):
+            self.assertEqual(self.run_step(step, "v0.13.0-rc.4", "next").returncode, 0)
+        late_staging = self.staging_sha
+        self.release("v0.13.0-rc.5", "next")
+        before = (self.heads(), self.tags())
+        self.staging_sha = late_staging
+
+        result = self.run_step(PROMOTE_STEP, "v0.13.0-rc.4", "next")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("next already serves a release newer than v0.13.0-rc.4", result.stderr)
+        self.assertEqual((self.heads(), self.tags()), before)
+        self.assertEqual(self.served("next"), ("unica-next", "v0.13.0-rc.5", "v0.13.0-rc.5"))
 
     def test_a_release_tag_with_other_bytes_stops_the_publication(self) -> None:
         # Опубликованный тег не двигается: тот же номер с другими байтами —

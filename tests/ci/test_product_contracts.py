@@ -1612,7 +1612,7 @@ class ProductContractTests(unittest.TestCase):
         # The install checks need an immutable ref on the staged bytes before
         # the catalog moves. The release tag cannot be it: its catalogs name
         # the release, and that commit exists only once promote builds it. The
-        # anchor `candidate/vX` takes that role on the staging commit; the
+        # anchor `candidate-vX` takes that role on the staging commit; the
         # release tag is created in promote, as test_publish_channels runs.
         self.assertIn('tag -a "$anchor" "$STAGING_SHA"', publish)
         self.assertNotIn('tag -a "$RELEASE_TAG" "$STAGING_SHA"', publish)

@@ -3,7 +3,7 @@ name: Publish Unica Marketplace
 # The linear delivery pipeline. One human action — the signed
 # source tag — starts the build; this workflow runs after it and carries the
 # release to consumers in one pass: stage the payload, create the candidate
-# anchor `candidate/vX` on it, verify the candidate the way a consumer installs
+# anchor `candidate-vX` on it, verify the candidate the way a consumer installs
 # it from that anchor, and only then move the catalog. The release tag `vX` is
 # a snapshot of the published catalog — the catalogs inside it name `vX` — so
 # promote creates it on the promotion commit and pushes it atomically with the
@@ -262,7 +262,7 @@ jobs:
     # Тег `vX` маркетплейса — снимок опубликованного каталога: каталоги внутри
     # него называют `vX`, поэтому он появляется только вместе с продвижением.
     # Проверкам установки неизменный ref на проверяемых байтах нужен раньше:
-    # это якорь `candidate/vX` на коммите stage.
+    # это якорь `candidate-vX` на коммите stage.
     needs: stage
     runs-on: ubuntu-latest
     timeout-minutes: 10

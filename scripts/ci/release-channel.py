@@ -17,7 +17,7 @@
 
 Тег `vX` маркетплейса — снимок опубликованного каталога: каталоги внутри него
 называют `vX`. До продвижения такого коммита нет, поэтому проверки установки
-идут по якорю `candidate/vX` на коммите stage: `anchor` печатает его имя,
+идут по якорю `candidate-vX` на коммите stage: `anchor` печатает его имя,
 а `write-catalogs --ref` пишет каталоги кандидата, называющие якорь.
 """
 
@@ -36,7 +36,7 @@ TAG = re.compile(
 CANDIDATE = re.compile(r"\Arc\.(?:0|[1-9]\d*)\Z")
 # Якорь проверок установки. Не начинается с `v`, поэтому не совпадает
 # ни с тегом выпуска, ни с триггером `v*` проверок маркетплейса.
-ANCHOR_PREFIX = "candidate/"
+ANCHOR_PREFIX = "candidate-"
 CODEX_CATALOG = Path(".agents/plugins/marketplace.json")
 CLAUDE_CATALOG = Path(".claude-plugin/marketplace.json")
 # Claude Code опознаёт маркетплейс по имени и не держит два одноимённых сразу,

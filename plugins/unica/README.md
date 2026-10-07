@@ -56,9 +56,14 @@ codex plugin marketplace add IngvarConsulting/unica-marketplace --ref v0.13.0-rc
 codex plugin add unica@unica-next
 ```
 
-Tags install their own version from `v0.13.0-rc.6` on. An earlier tag carries
-the previous release's catalog and installs that release instead; add the
-marketplace by branch for those.
+Tags `v0.9.1` through `v0.13.0-rc.5` carry the previous version's catalog and
+install that version instead of their own: install those versions by branch.
+From `v0.13.0-rc.6` on, a tag installs its own version.
+
+A marketplace with the same name (`unica` or `unica-next`) that is already
+added by branch must be removed first, with
+`codex plugin marketplace remove unica-next` or
+`claude plugin marketplace remove unica-next`, before it is added by tag.
 
 ### ZCode
 

@@ -21,7 +21,7 @@ The release workflow and its contract tests therefore split publication:
 1. **Stage** — put the plugin bytes on the branch of the release's channel:
    `main` for a stable release, `next` for a candidate. The catalogs still name
    the previous tag, so no consumer is affected yet. The staging commit gets
-   the **candidate anchor** `candidate/vX`, an immutable tag the install checks
+   the **candidate anchor** `candidate-vX`, an immutable tag the install checks
    resolve.
 2. **Promote** — commit the channel's catalogs naming `vX` and push that
    commit together with the release tag `vX` in one atomic push. This is the
@@ -35,8 +35,9 @@ installs exactly X. A stable release's tag names the promotion commit of
 `git-subdir` to that tag, which `scripts/verify_marketplace.py` in the
 marketplace repo enforces. The
 [tag rule](../arch/rules/distribution/marketplace-release-tag.md) states the
-guarantee. Tags up to `v0.13.0-rc.5` were created on the staging commit and
-name the previous release's catalog; they stay as they are.
+guarantee. Tags `v0.9.1` through `v0.13.0-rc.5` were created on the staging
+commit and name the previous release's catalog; they stay as they are. Earlier
+tags, `v0.7.2` through `v0.8.1`, name their own version.
 
 ## One human action, one linear pipeline
 
@@ -48,8 +49,8 @@ Marketplace**, started automatically when the tag-triggered build succeeds:
 | Step 0 — set the version | |
 | Step 1 — tag the source release | build → assets → BSP assessment |
 | | stage the payload (catalog untouched) |
-| | create the candidate anchor `candidate/vX` on the staging commit |
-| | consumer install checks from `candidate/vX`: fresh + upgrade, three hosts |
+| | create the candidate anchor `candidate-vX` on the staging commit |
+| | consumer install checks from `candidate-vX`: fresh + upgrade, three hosts |
 | | green → the channel's catalogs and the tag `vX`, one atomic push → **live** |
 | Step 3 — merge the line back into `main` | |
 
@@ -60,7 +61,7 @@ not verify the signature itself — GitHub reports these signatures as
 unverified today. What keeps the tag trustworthy is write access and the
 repository's tag protection rules; keep those protections on. The marketplace
 tags are created by the pipeline: `vX` is the ref the catalog resolves,
-`candidate/vX` the ref the install checks resolve, and nothing verifies their
+`candidate-vX` the ref the install checks resolve, and nothing verifies their
 signature — the runbook used to ask for a second signed tag. The linear
 pipeline removed that wait.
 
@@ -207,8 +208,10 @@ gh api 'repos/IngvarConsulting/unica-marketplace/contents/.agents/plugins/market
 
 Both must print `vX.Y.Z`. The marketplace repository runs its own **Verify
 marketplace** on every push of a branch or a `v*` tag it receives, so `stage`
-and `promote` leave runs there, after the fact; the `candidate/` anchor does
-not match `v*` and starts none. Those runs do not gate anything: the
+and `promote` leave runs there, after the fact; the `candidate-` anchor does
+not match `v*` and starts none. The tag of a stable release now names a commit
+whose catalog matches its plugin, so the run on that tag also performs a fresh
+install from it. Those runs do not gate anything: the
 pipeline's `verify-upgrade` and `verify-fresh-install` jobs already ran on
 three hosts before `promote` moved the catalog.
 
@@ -230,13 +233,18 @@ Rerun the whole workflow after fixing the cause — completed stages detect
 themselves and pass through:
 
 - `stage` finds the payload already on the branch and reports that commit.
-- `anchor` finds `candidate/vX` and only checks that its `plugins/unica` tree
+- `anchor` finds `candidate-vX` and only checks that its `plugins/unica` tree
   is the staged one.
 - `promote` pushes the branches and the tag `vX` atomically, so a refused push
   moved nothing and a rerun starts over. A branch that already serves `vX` is
   left alone. An existing tag `vX` is never moved: its `plugins/unica` tree
   must equal the staged one, and then only the branches that do not yet serve
   `vX` are pushed. A different tree means a burnt version.
+- A rerun of a release the old pipeline published (its `vX` on the staging
+  commit, its catalog already moved) finds no anchor and may place
+  `candidate-vX` on the promotion commit: `stage` reports the branch head. The
+  `plugins/unica` tree is the same, so the anchor still names the verified
+  bytes.
 
 ```bash
 gh run rerun <publish-run-id> --failed
@@ -260,7 +268,7 @@ to them, which is what makes aborting cheap.
 | source tag pushed | nothing |
 | assets published | nothing — no catalog names them |
 | payload staged | nothing — the catalog still names the previous tag |
-| candidate anchor pushed | nothing — no catalog names `candidate/vX` |
+| candidate anchor pushed | nothing — no catalog names `candidate-vX` |
 | install checks green | nothing |
 | **catalog and tag `vX` pushed** | **the release is live** — for a candidate, only on the `next` channel |
 
@@ -271,10 +279,11 @@ Consumers choose what they follow when they add the marketplace:
   an update brings its latest release.
 - **A tag** — `--ref vX.Y.Z` (Claude Code: `#vX.Y.Z`) installs exactly that
   version and stays on it. The catalog inside a candidate's tag is the `next`
-  one, named `unica-next`, so its plugin is `unica@unica-next`. This holds
-  from `v0.13.0-rc.6`: an earlier tag carries the previous release's catalog
-  and installs that release, not its own, so add the marketplace by branch
-  instead.
+  one, named `unica-next`, so its plugin is `unica@unica-next`. Tags
+  `v0.9.1` through `v0.13.0-rc.5` carry the previous version's catalog and
+  install it, not their own: install those versions by branch. A marketplace
+  of the same name already added by branch is removed first
+  (`marketplace remove`), then added by tag.
 
 ## A release candidate: served on `next` only
 
@@ -357,7 +366,7 @@ reference them by identity:
   re-uploading an asset under the same name breaks every Unica version that
   pinned it — including versions released long ago. Toolchain releases are as
   immutable as this repository's own.
-- **Tags** in either repository, the marketplace's `candidate/vX` anchors
+- **Tags** in either repository, the marketplace's `candidate-vX` anchors
   included. Consumers resolve `git-subdir` against `vX`, and a rerun proves an
   existing tag or anchor carries the staged bytes instead of moving it.
 
@@ -420,8 +429,8 @@ tag by hand.
 | Publish run failed at `stage`, `anchor` or `promote` on a push | Transient push failure or a moved branch; a refused atomic push in `promote` moved nothing | `gh run rerun <run-id> --failed`; stages are idempotent |
 | Publish run failed at the install checks | The candidate does not install as a consumer | Fix forward; the version is burnt, the catalog never moved |
 | `stage` fails with `vX.Y.Z-rc.N is older than vA.B.C` | A newer release or candidate is already served | The candidate is stale; tag the next `-rc.N` of a newer version |
-| `anchor` or `promote` fails comparing an existing `vX` or `candidate/vX` | The version was already published with different bytes | Never move the tag; release the next patch |
-| `--ref vX` installs the previous version | `vX` is `v0.13.0-rc.5` or older: those tags name the staging commit, whose catalog still named the previous release | Expected for those tags; add the marketplace by branch |
+| `anchor` or `promote` fails comparing an existing `vX` or `candidate-vX` | The version was already published with different bytes | Never move the tag; release the next patch |
+| `--ref vX` installs the previous version | `vX` is one of `v0.9.1` through `v0.13.0-rc.5`: those tags name the staging commit, whose catalog still named the previous release | Expected for those tags; add the marketplace by branch |
 | Packaging fails with `release tag vX.Y.Z != vA.B.C` | The tagged commit does not declare X.Y.Z: step 0 was not merged, or the wrong commit was tagged | Tag the merge commit of the version pull request. If the bad tag was pushed, that version is burnt — take the next patch |
 | `Verify marketplace` red after the catalog moved, at `previous-stable-upgrade` with `git clone marketplace source timed out after 30s` | Codex re-clones the whole marketplace on `plugin marketplace upgrade`; a clone that misses its own 30s budget leaves the stale local catalog, which then installs the previous version | Transient. `gh run rerun <run-id> --failed`. Consumers are unaffected: the catalog is already correct and the pipeline's own upgrade checks passed before promote |
 | Consumers still report the old version | The publish run did not finish | Check its failed stage and rerun |
