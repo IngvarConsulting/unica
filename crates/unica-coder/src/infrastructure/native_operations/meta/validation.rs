@@ -4418,6 +4418,94 @@ mod tests {
 
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
+    /// `AutomaticAndManaged` допустим только у корня конфигурации: корень
+    /// уходит в проверку `cf` раньше общих перечислений объектов (#1271).
+    #[test]
+    fn configuration_accepts_automatic_and_managed_lock_mode_unlike_objects() {
+        let root = std::env::temp_dir().join(format!(
+            "unica-config-lock-mode-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let workspace = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let init = super::super::super::cf::create_configuration_scaffold(
+            serde_json::json!({"Name": "Demo", "OutputDir": "src"})
+                .as_object()
+                .unwrap(),
+            &workspace,
+        );
+        assert!(init.ok, "{init:?}");
+        let config_path = root.join("src/Configuration.xml");
+        let original = fs::read_to_string(&config_path).unwrap();
+        let mixed = original.replacen(
+            "<DataLockControlMode>Managed</DataLockControlMode>",
+            "<DataLockControlMode>AutomaticAndManaged</DataLockControlMode>",
+            1,
+        );
+        assert_ne!(mixed, original, "the scaffold must declare a lock mode");
+        fs::write(&config_path, &mixed).unwrap();
+
+        let owner = validate_metadata_owner_shape_8_3_27(&config_path, &workspace, "test");
+        assert!(owner.is_ok(), "{owner:?}");
+        let check = super::super::super::cf::validate_cf(
+            &serde_json::Map::from_iter([(
+                "ConfigPath".to_string(),
+                serde_json::Value::from("src"),
+            )]),
+            &workspace,
+        );
+        assert!(check.ok, "{check:?}");
+        let _ = fs::remove_dir_all(&root);
+
+        let (catalog, _) = super::super::template_catalog::minimal_metadata_xml_for_tests(
+            MetadataKind::Catalog,
+            "Demo",
+        )
+        .unwrap();
+        let mixed_catalog = catalog.replacen(
+            "<DataLockControlMode>Automatic</DataLockControlMode>",
+            "<DataLockControlMode>AutomaticAndManaged</DataLockControlMode>",
+            1,
+        );
+        assert_ne!(
+            mixed_catalog, catalog,
+            "the catalog must declare a lock mode"
+        );
+        super::super::format_contract::validate_metadata_8_3_27_enum_contract(&catalog, "test")
+            .unwrap();
+        let rejected = super::super::format_contract::validate_metadata_8_3_27_enum_contract(
+            &mixed_catalog,
+            "test",
+        )
+        .unwrap_err();
+        assert!(rejected.contains("DataLockControlMode"), "{rejected}");
+
+        let document = Document::parse(&mixed_catalog).unwrap();
+        let properties = document
+            .descendants()
+            .find(|node| node.has_tag_name((MD_NS, "Properties")))
+            .unwrap();
+        let mut reporter = MetaValidationReporter::new(30);
+        meta_validate_check_property_values(&mut reporter, Some(properties));
+        assert!(
+            reporter
+                .errors
+                .iter()
+                .any(|error| error.contains("DataLockControlMode")),
+            "{:?}",
+            reporter.errors
+        );
+    }
+
     fn context() -> WorkspaceContext {
         WorkspaceContext {
             cwd: PathBuf::from("/workspace"),
