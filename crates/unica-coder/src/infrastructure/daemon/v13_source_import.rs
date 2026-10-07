@@ -435,11 +435,6 @@ fn execute_with_resolved_runner(
             "requiresPlatform": true,
         }));
 
-        // Исполнение пустого плана ничего не загрузит: первой идёт подсказка
-        // полной загрузки.
-        if nothing_planned {
-            result.next.push(full_preview_hint(prepared));
-        }
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
@@ -453,6 +448,12 @@ fn execute_with_resolved_runner(
                 "execute with the current arguments"
             }
         }));
+        // Исполнение пустого плана ничего не загрузит. Полная загрузка нужна,
+        // только если базу могли изменить вне этой рабочей копии, поэтому она
+        // идёт второй и с условием.
+        if nothing_planned {
+            result.next.push(full_preview_hint(prepared));
+        }
         return result;
     }
     if cancellation.is_cancelled() {
@@ -563,7 +564,7 @@ fn skipped_warning(plan: &[PlannedStep]) -> Option<Value> {
         json!({
             "code": SKIPPED_WARNING_CODE,
             "sourceSets": skipped,
-            "message": "these source sets were neither loaded nor applied: the runner found no changes against its own memory of earlier loads; the infobase state was not verified",
+            "message": "these source sets were neither loaded nor applied: the runner found no changes against its own memory of earlier loads, which it does not check against the infobase; the infobase state was not verified. If the infobase may have been changed outside this working copy (another worktree, the Designer, a manual load), only a full push restores it; if only this working copy loads it, nothing needs to be done",
         })
     })
 }
@@ -591,14 +592,16 @@ fn nothing_loaded(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Doma
 }
 
 /// Полная загрузка не смотрит в память раннера: это путь к известному
-/// состоянию базы. Предлагается превью, не исполнение.
+/// состоянию базы. Нужна она, только если базу могли изменить вне этой
+/// рабочей копии; обычный повтор без правок её не требует. Поэтому причина
+/// названа с условием, и предлагается превью, не исполнение.
 fn full_preview_hint(prepared: &PreparedSourceImport) -> Value {
     let mut args = public_arguments(prepared);
     args["full"] = Value::Bool(true);
     json!({
         "tool": "unica.run",
         "args": {"op": OPERATION, "args": args, "dryRun": true},
-        "reason": "preview a full push, which loads the sources regardless of the runner's memory"
+        "reason": "only if the infobase may have been changed outside this working copy: preview a full push, which loads the sources regardless of the runner's memory"
     })
 }
 
@@ -1275,6 +1278,13 @@ mod tests {
             result.warnings[0]["sourceSets"],
             json!(["main", "ext-sales"])
         );
+        // Полная загрузка нужна не всегда: предупреждение называет условие.
+        let message = result.warnings[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("changed outside this working copy")
+                && message.contains("nothing needs to be done"),
+            "{message}"
+        );
         assert!(result.diagnostics.is_empty(), "{result:?}");
         // Путь к известному состоянию — превью полной загрузки, а не исполнение.
         assert_eq!(result.next.len(), 1, "{result:?}");
@@ -1282,6 +1292,13 @@ mod tests {
         assert_eq!(
             result.next[0]["args"]["args"],
             json!({"force": true, "full": true})
+        );
+        assert!(
+            result.next[0]["reason"].as_str().unwrap().starts_with(
+                "only if the infobase may have been changed outside this working copy"
+            ),
+            "{:?}",
+            result.next[0]
         );
 
         // Превью того же пропуска говорит то же заранее.
@@ -1300,9 +1317,16 @@ mod tests {
             preview.summary
         );
         assert_eq!(preview.warnings[0]["code"], "infobase_state_unverified");
-        assert_eq!(preview.next[0]["args"]["args"]["full"], true);
-        assert_eq!(preview.next[0]["args"]["dryRun"], true);
-        assert_eq!(preview.next[1]["args"]["dryRun"], false);
+        // Первой идёт исполнение текущих аргументов, полная загрузка — второй
+        // и с условием.
+        assert_eq!(preview.next[0]["args"]["dryRun"], false);
+        assert!(preview.next[0]["args"]["args"].get("full").is_none());
+        assert_eq!(preview.next[1]["args"]["args"]["full"], true);
+        assert_eq!(preview.next[1]["args"]["dryRun"], true);
+        assert!(preview.next[1]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("only if"));
     }
 
     #[test]
