@@ -13,7 +13,7 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.apply` по адресу корня набора (`<набор>:Configuration`): свойства правит `props.set`, состав — `object.create`/`object.remove`, командный интерфейс — `commandVisibility.set`, `commandPlacement.set`, `commandOrder.set`.
+- Preferred path: use MCP `unica` tool `unica.apply` по адресу корня набора (`<набор>:Configuration`): свойства правит `props.set`, состав — `object.create`/`object.remove`, порядок подсистем верхнего уровня — `subsystemOrder.set`. Видимость, размещение и порядок команд и групп корень не принимает: они правятся на интерфейсе подсистемы `<набор>:Subsystem.<Имя>.Interface` через `/unica:interface-edit`.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
 - Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
   Когда пользователь поручил внести эту правку, вызови `unica.apply` только
@@ -32,7 +32,7 @@ allowed-tools:
 |---|---|
 | `props.set` | свойства корня: версия, поставщик, режим совместимости и прочие пары «ключ — значение» |
 | `object.create`, `object.remove` | состав конфигурации: объект метаданных заводится и снимается по имени |
-| `commandVisibility.set`, `commandPlacement.set`, `commandOrder.set` | командный интерфейс корня |
+| `subsystemOrder.set` | порядок подсистем верхнего уровня: `values: {subsystems: […]}` — перестановка сохранённого состава |
 
 ```json
 {
@@ -51,6 +51,12 @@ allowed-tools:
 ```
 
 Применение — вызов только с `executionToken` из `data.executionToken` успешного плана.
+
+`commandVisibility.set`, `commandPlacement.set`, `commandOrder.set` и
+`groupOrder.set` на `<набор>:Configuration` отклоняются: их адрес —
+интерфейс подсистемы, например `main:Subsystem.Продажи.Interface`. Маршрута
+`main:Interface` у корня нет. Эти правки описаны в
+`/unica:interface-edit`.
 
 **Роли по умолчанию, панели и стартовая страница** канонической операции не
 имеют: их правка — пробел контракта Unica MCP, сообщай о нём, а не подменяй
