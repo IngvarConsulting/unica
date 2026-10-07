@@ -23,7 +23,7 @@ use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_yaml::Value as YamlValue;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::CStr;
+use std::ffi::{c_char, CStr};
 use std::fmt;
 use std::io::Read;
 use std::mem::MaybeUninit;
@@ -816,7 +816,9 @@ fn validate_health_yaml_anchor_availability(
                 let problem = if problem_ptr.is_null() {
                     "unknown YAML scanner error".into()
                 } else {
-                    CStr::from_ptr(problem_ptr).to_string_lossy().into_owned()
+                    CStr::from_ptr(problem_ptr.cast::<c_char>())
+                        .to_string_lossy()
+                        .into_owned()
                 };
                 return Err(format!(
                     "failed to parse YAML before health inspection: {problem}"
