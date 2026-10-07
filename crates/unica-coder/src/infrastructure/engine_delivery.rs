@@ -375,6 +375,11 @@ pub(crate) fn canonical_delivery_result(
                     Ok(RefusalDetail::ProviderAbsent),
                     "check network access to the pinned release and repeat the call",
                 ),
+                DeliveryFailureClass::UntrustedCertificate => (
+                    "untrusted-certificate",
+                    Ok(RefusalDetail::ProviderAbsent),
+                    "the operating system does not trust the certificate presented by the release host; most often HTTPS is intercepted by security software or a corporate gateway whose root is not in the OS trust store: add the host to the HTTPS-scanning exclusions, install the gateway root into the OS trust store, or set HTTPS_PROXY (NO_PROXY lists exceptions), then restart Unica",
+                ),
                 DeliveryFailureClass::Timeout => (
                     "timeout",
                     Err(RefusalCode::DeadlineExceeded),
@@ -508,6 +513,12 @@ impl PreparedEngineOrder {
 
 fn classify_failure(error: BootstrapError) -> DeliveryFailure {
     let class = match error.failure() {
+        Failure::Network
+            if error.network_failure()
+                == Some(unica_bootstrap::network::NetworkFailure::UntrustedCertificate) =>
+        {
+            DeliveryFailureClass::UntrustedCertificate
+        }
         Failure::Network => DeliveryFailureClass::Network,
         Failure::Timeout => DeliveryFailureClass::Timeout,
         Failure::Disk => DeliveryFailureClass::Disk,
@@ -620,6 +631,53 @@ mod tests {
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("secret network URL"));
         assert!(!encoded.contains("private cache path"));
+    }
+
+    /// Первая доставка движка за антивирусом: ОС не доверяет подменённому
+    /// корню. Ответ называет вероятную причину и что исправить, а не
+    /// «проверьте сеть и повторите» — повтор здесь не поможет.
+    #[test]
+    fn an_untrusted_certificate_reaches_the_caller_as_its_own_class_with_the_cure() {
+        use unica_bootstrap::network::test_support::{client_with, TestRoot, TlsStand};
+        use unica_bootstrap::{Downloader, HttpDownloader, SilentDownload};
+
+        let root = TestRoot::generate("Unica delivery untrusted root");
+        let stand = TlsStand::start(&root, "archive", "application/octet-stream");
+        let destination = tempfile::tempdir().expect("scratch");
+        let error = HttpDownloader::with_client(client_with(&[]))
+            .download(
+                &stand.url("v8-runner.tar.gz"),
+                &destination.path().join("v8-runner.tar.gz"),
+                &SilentDownload,
+            )
+            .expect_err("корень не доверен");
+
+        let failure = classify_failure(error);
+        assert_eq!(failure.class(), DeliveryFailureClass::UntrustedCertificate);
+        assert!(
+            failure.legacy_diagnostic().contains("intercepted"),
+            "{}",
+            failure.legacy_diagnostic()
+        );
+        let result = canonical_delivery_result(
+            EngineDeliveryState::Failed {
+                artifact: "v8-runner".to_string(),
+                failure: Arc::new(failure),
+            },
+            &CanonicalDeliveryProgress::default(),
+        )
+        .expect("failed delivery has a public refusal");
+        assert_eq!(
+            result.data.as_ref().unwrap()["delivery"]["failureClass"],
+            "untrusted-certificate"
+        );
+        let encoded = serde_json::to_string(&result).unwrap();
+        assert!(encoded.contains("intercepted"), "{encoded}");
+        assert!(encoded.contains("trust store"), "{encoded}");
+        assert!(
+            !encoded.contains("127.0.0.1"),
+            "адрес не попадает в ответ: {encoded}"
+        );
     }
 
     fn absolute_install_root(name: &str) -> PathBuf {

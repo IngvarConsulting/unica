@@ -1,9 +1,10 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::Duration;
+use std::sync::Arc;
 
 use crate::error::{BootstrapError, Failure, Result};
+use crate::network::{NetworkClient, NetworkError, NetworkFailure};
 
 pub trait Downloader: Send + Sync {
     fn download(
@@ -33,27 +34,34 @@ impl DownloadObserver for SilentDownload {
 /// Шаг чтения.
 const CHUNK: usize = 64 * 1024;
 
-/// HTTP-загрузчик с ограничением времени подключения и ожидания данных.
+/// HTTP-загрузчик поверх общего клиента процесса ([`NetworkClient`]):
+/// TLS с доверием ОС, прокси из окружения, подключение до 30 с и ожидание
+/// данных до 60 с.
 ///
 /// Сейчас общего срока передачи нет. Контроль длительного почти нулевого
 /// прогресса и ограниченные автоматические повторы ещё не реализованы.
+#[derive(Default)]
 pub struct HttpDownloader {
-    agent: ureq::Agent,
-}
-
-impl Default for HttpDownloader {
-    fn default() -> Self {
-        Self {
-            agent: ureq::AgentBuilder::new()
-                .timeout_connect(Duration::from_secs(30))
-                .timeout_read(Duration::from_secs(60))
-                .redirects(5)
-                .build(),
-        }
-    }
+    /// `None` — общий клиент процесса, собираемый при первой загрузке.
+    client: Option<Arc<NetworkClient>>,
 }
 
 impl HttpDownloader {
+    /// Загрузчик с заданным клиентом, например собранным из своей таблицы
+    /// переменных прокси.
+    pub fn with_client(client: Arc<NetworkClient>) -> Self {
+        Self {
+            client: Some(client),
+        }
+    }
+
+    fn client(&self) -> std::result::Result<Arc<NetworkClient>, NetworkError> {
+        match &self.client {
+            Some(client) => Ok(Arc::clone(client)),
+            None => NetworkClient::shared(),
+        }
+    }
+
     /// Перенести байты, продолжив с того места, где оборвалась прошлая попытка.
     ///
     /// Схему проверяет вызывающий: здесь только перенос.
@@ -70,32 +78,22 @@ impl HttpDownloader {
             .map(|meta| meta.len())
             .unwrap_or(0);
 
-        let mut request = self.agent.get(url);
-        if received > 0 {
-            request = request.set("Range", &format!("bytes={received}-"));
-        }
-        let response = match request.call() {
+        let range = format!("bytes={received}-");
+        let headers: &[(&str, &str)] = if received > 0 {
+            &[("Range", range.as_str())]
+        } else {
+            &[]
+        };
+        let response = match self
+            .client()
+            .and_then(|client| client.get(url, headers, None))
+        {
             Ok(response) => response,
             // Диапазон за концом файла: качать больше нечего. Тот ли это файл,
             // рассудит контрольная сумма у вызывающего.
-            Err(ureq::Error::Status(416, _)) => return Ok(()),
-            Err(error) => {
-                return Err(BootstrapError::of(
-                    Failure::Network,
-                    format!("failed to download runtime asset {url}: {error}"),
-                ))
-            }
+            Err(error) if error.status() == Some(416) => return Ok(()),
+            Err(error) => return Err(download_failure(url, error)),
         };
-        // Редирект не вправе понизить схему.
-        if url.starts_with("https://") && !response.get_url().starts_with("https://") {
-            return Err(BootstrapError::of(
-                Failure::Configuration,
-                format!(
-                    "runtime download redirected to a non-HTTPS URL: {}",
-                    response.get_url()
-                ),
-            ));
-        }
 
         // Сервер вправе забыть про диапазон и ответить `200` целым файлом. Так
         // делают зеркала и прокси. Дописать такой ответ к недокачанному файлу
@@ -147,6 +145,30 @@ impl HttpDownloader {
     }
 }
 
+/// Перевести сетевой отказ в отказ загрузчика: класс задаёт код выхода,
+/// а совет сетевого отказа заменяет общий «повторите».
+fn download_failure(url: &str, error: NetworkError) -> BootstrapError {
+    let failure = match error.failure() {
+        NetworkFailure::Configuration | NetworkFailure::InsecureRedirect => Failure::Configuration,
+        NetworkFailure::UntrustedCertificate
+        | NetworkFailure::RejectedCertificate
+        | NetworkFailure::Status(_)
+        | NetworkFailure::Transport => Failure::Network,
+    };
+    let refusal = BootstrapError::of(
+        failure,
+        format!(
+            "failed to download runtime asset {url}: {}",
+            error.message()
+        ),
+    )
+    .with_network(error.failure());
+    match error.cure() {
+        Some(cure) => refusal.with_cure(cure),
+        None => refusal,
+    }
+}
+
 impl Downloader for HttpDownloader {
     fn download(
         &self,
@@ -171,7 +193,10 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use crate::network::test_support::{client_with, ConnectProxy, TestRoot, TlsStand};
     use std::thread;
 
     /// Что стенд делает с заголовком `Range`.
@@ -276,6 +301,15 @@ mod tests {
         path.join("artifact.tar.gz")
     }
 
+    /// Загрузчик без прокси: тест не должен зависеть от переменных машины.
+    fn local() -> HttpDownloader {
+        downloader_with(&[])
+    }
+
+    fn downloader_with(variables: &[(&str, &str)]) -> HttpDownloader {
+        HttpDownloader::with_client(client_with(variables))
+    }
+
     fn payload(size: usize) -> Vec<u8> {
         (0..size).map(|index| (index % 251) as u8).collect()
     }
@@ -287,7 +321,7 @@ mod tests {
         let destination = scratch("tail");
         fs::write(&destination, &bytes[..1000]).expect("partial file");
 
-        HttpDownloader::default()
+        local()
             .transfer(&stand.url, &destination, &SilentDownload)
             .expect("resume the download");
 
@@ -308,7 +342,7 @@ mod tests {
         let destination = scratch("forgetful");
         fs::write(&destination, &bytes[..1000]).expect("partial file");
 
-        HttpDownloader::default()
+        local()
             .transfer(&stand.url, &destination, &SilentDownload)
             .expect("download from a forgetful server");
 
@@ -337,7 +371,7 @@ mod tests {
         let destination = scratch("watched");
         let watched = Watched::default();
 
-        HttpDownloader::default()
+        local()
             .transfer(&stand.url, &destination, &watched)
             .expect("download");
 
@@ -358,7 +392,7 @@ mod tests {
         fs::write(&destination, &bytes[..1000]).expect("partial file");
         let watched = Watched::default();
 
-        HttpDownloader::default()
+        local()
             .transfer(&stand.url, &destination, &watched)
             .expect("resume");
 
@@ -379,7 +413,7 @@ mod tests {
         let stand = serve(bytes.clone(), Ranges::Trickle);
         let destination = scratch("slow");
 
-        HttpDownloader::default()
+        local()
             .transfer(&stand.url, &destination, &SilentDownload)
             .expect("медленный канал доезжает");
 
@@ -390,7 +424,7 @@ mod tests {
     fn a_plaintext_url_is_refused_before_any_byte_moves() {
         let destination = scratch("plaintext");
 
-        let error = HttpDownloader::default()
+        let error = local()
             .download(
                 "http://example.invalid/artifact.tar.gz",
                 &destination,
@@ -400,5 +434,87 @@ mod tests {
 
         assert!(error.to_string().contains("HTTPS"), "{error}");
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn a_root_the_os_does_not_trust_is_refused_with_the_interception_cure() {
+        // Корень стенда не стоит в хранилище ОС: так выглядит подмена
+        // сертификата средством защиты, корня которого ОС не знает.
+        let root = TestRoot::generate("Unica untrusted test root");
+        let stand = TlsStand::start(&root, payload(64), "application/octet-stream");
+        let destination = scratch("untrusted");
+
+        let error = local()
+            .download(&stand.url("artifact.tar.gz"), &destination, &SilentDownload)
+            .expect_err("недоверенный корень");
+
+        assert_eq!(error.failure(), Failure::Network);
+        let diagnosis = error.diagnosis();
+        for expected in ["intercepted", "trust store", "HTTPS_PROXY", "127.0.0.1"] {
+            assert!(diagnosis.contains(expected), "{expected}: {diagnosis}");
+        }
+        assert!(
+            !diagnosis.contains("run again"),
+            "повтор не лечит недоверенный корень: {diagnosis}"
+        );
+        assert!(stand.connections() >= 1, "соединение дошло до стенда");
+        assert!(stand.requests().is_empty(), "до HTTP дело не дошло");
+    }
+
+    #[test]
+    fn https_proxy_carries_the_download_to_the_proxy() {
+        let root = TestRoot::generate("Unica proxy test root");
+        let stand = TlsStand::start(&root, payload(64), "application/octet-stream");
+        let proxy = ConnectProxy::start();
+        let destination = scratch("proxied");
+
+        // Корень стенда ОС не доверяет, поэтому загрузка дальше рукопожатия
+        // не пойдёт; здесь проверяется маршрут. Полную загрузку через прокси
+        // с доверенным корнем доказывает тест хранилища Linux.
+        let error = downloader_with(&[("HTTPS_PROXY", &proxy.url())])
+            .download(&stand.url("artifact.tar.gz"), &destination, &SilentDownload)
+            .expect_err("корень не доверен");
+
+        assert_eq!(proxy.targets(), vec![stand.authority()]);
+        assert!(
+            error.to_string().contains("from HTTPS_PROXY"),
+            "отказ называет маршрут: {error}"
+        );
+    }
+
+    #[test]
+    fn no_proxy_sends_the_download_past_the_proxy() {
+        let root = TestRoot::generate("Unica no-proxy test root");
+        let stand = TlsStand::start(&root, payload(64), "application/octet-stream");
+        let proxy = ConnectProxy::start();
+        let destination = scratch("bypass");
+
+        let error = downloader_with(&[("HTTPS_PROXY", &proxy.url()), ("NO_PROXY", "127.0.0.1")])
+            .download(&stand.url("artifact.tar.gz"), &destination, &SilentDownload)
+            .expect_err("корень не доверен");
+
+        assert!(proxy.targets().is_empty(), "{:?}", proxy.targets());
+        assert!(stand.connections() >= 1, "соединение шло напрямую");
+        assert!(error.to_string().contains("direct connection"), "{error}");
+    }
+
+    #[test]
+    fn an_unsupported_proxy_is_a_configuration_refusal_without_the_password() {
+        let error = downloader_with(&[("HTTPS_PROXY", "socks5://alice:s3cret@127.0.0.1:9")])
+            .download(
+                "https://127.0.0.1:9/artifact.tar.gz",
+                &scratch("socks"),
+                &SilentDownload,
+            )
+            .expect_err("SOCKS не поддерживается");
+
+        assert_eq!(error.failure(), Failure::Configuration);
+        let diagnosis = error.diagnosis();
+        assert!(diagnosis.contains("HTTPS_PROXY"), "{diagnosis}");
+        assert!(!diagnosis.contains("s3cret"), "{diagnosis}");
+        assert!(
+            !diagnosis.contains("reinstall"),
+            "совет про прокси, а не про переустановку: {diagnosis}"
+        );
     }
 }

@@ -200,6 +200,9 @@ impl ArtifactReady {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DeliveryFailureClass {
     Network,
+    /// ОС не доверяет цепочке сертификатов узла выпуска: чаще всего это
+    /// перехват TLS средством защиты или шлюзом. Повтор не поможет.
+    UntrustedCertificate,
     Timeout,
     Disk,
     Checksum,

@@ -582,6 +582,11 @@ impl FileInvocationStoreV5 {
             .ok_or(V5TaskStoreError::Corrupt("task record version overflow"))
     }
 
+    /// Whether the retained root is still the directory this store owns.
+    pub(crate) fn verify_store_authority(&self) -> Result<(), V5TaskStoreError> {
+        self.verify_root_authority()
+    }
+
     /// Arms one commit fault for the next publication; only the runtime
     /// hooks and store tests arm it.
     pub(crate) fn inject_next_publication_failure(&self, failure: PublicationFailure) {

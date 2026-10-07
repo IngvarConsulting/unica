@@ -104,7 +104,7 @@
       <ul class="needs">
         <li><b>Агент и Git.</b> <span>Codex или Claude Code 2.1.69 и новее. Нативная поддержка ZCode готовится — см. вкладку ZCode ниже. Через Git ставится плагин, на Windows подойдёт Git for Windows. Node.js и Python не нужны.</span></li>
         <li><b>Система.</b> <span>Windows x64, macOS на Apple Silicon или Linux x64.</span></li>
-        <li><b>Прямой доступ к GitHub.</b> <span>Первый запуск скачивает ядро, движки докачиваются при первом вызове, которому они нужны. Загрузчик не ходит через прокси и доверяет только вшитым корневым сертификатам. Если GitHub доступен только через прокси, ядро и движки можно скачать заранее, как описано в разделе <a href="architecture.html#network">«Сеть и данные»</a>.</span></li>
+        <li><b>Доступ к GitHub.</b> <span>Первый запуск скачивает ядро, движки докачиваются при первом вызове, которому они нужны. Сертификаты проверяет операционная система, прокси берётся из <code>HTTPS_PROXY</code> и <code>NO_PROXY</code>. Для машины без сети ядро и движки можно скачать заранее, как описано в разделе <a href="architecture.html#network">«Сеть и данные»</a>.</span></li>
         <li><b>Один плагин из двух.</b> <span><code>unica@unica</code> и <code>unica@unica-next</code> запускают MCP-сервер с одним именем <code>unica</code>, поэтому установленным держите один из них.</span></li>
       </ul>
     </div>
@@ -255,7 +255,7 @@
       <h2>Если что-то не так</h2>
       <ul class="needs">
         <li><b>Версия не та, что в карточке «Сейчас в канале».</b> <span>Обновите маркетплейс канала и плагин, как в разделе <a href="#update">«Обновление»</a>. Если версия не сменилась, <a href="https://github.com/IngvarConsulting/unica/issues/new" target="_blank" rel="noopener noreferrer">заведите issue</a>.</span></li>
-        <li><b>Первый старт падает на загрузке ядра.</b> <span>Например, с ошибкой <code>UnknownIssuer</code>. Скорее всего, GitHub доступен только через прокси или HTTPS перехватывает антивирус: загрузчик так не работает. Обход описан в разделе <a href="architecture.html#network">«Сеть и данные»</a>.</span></li>
+        <li><b>Первый старт падает на загрузке ядра.</b> <span>Например, с сообщением, что ОС не доверяет сертификату. Скорее всего, HTTPS перехватывает антивирус или шлюз, а его корня нет в хранилище ОС, или GitHub доступен только через прокси. Что сделать, описано в разделе <a href="architecture.html#network">«Сеть и данные»</a>.</span></li>
         <li><b>Остался установленным стабильный плагин.</b> <span>Оба плагина запускают сервер <code>unica</code>. Удалите <code>unica@unica</code>, как во втором шаге установки.</span></li>
         <li><b>Нашли ошибку в кандидате.</b> <span><a href="https://github.com/IngvarConsulting/unica/issues/new" target="_blank" rel="noopener noreferrer">Заведите issue</a> и укажите агента и версию плагина: из <code>plugin list</code> в Codex и Claude Code или карточки плагина в ZCode. Так мы поймём, какой кандидат проверять.</span></li>
       </ul>
