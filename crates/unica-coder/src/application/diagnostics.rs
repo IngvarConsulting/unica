@@ -524,6 +524,20 @@ fn normalize_provider_outcome(
                     "completed provider outcome included an error",
                 );
             }
+            // A named cause is why the filter could not prove what it hid; a
+            // section that names one and still claims completeness would let
+            // `check` read a broken baseline as a clean module.
+            if outcome.complete
+                && outcome
+                    .suppression
+                    .as_ref()
+                    .is_some_and(|suppression| suppression.reason.is_some())
+            {
+                return provider_contract_failure(
+                    outcome.version,
+                    "provider named a suppression failure but claimed a complete outcome",
+                );
+            }
             // Coverage comes from the full provider response, before filtering
             // and truncation can hide the resource that failed.
             outcome.complete &= !outcome
@@ -2320,6 +2334,40 @@ mod tests {
             );
             assert!(result.providers[0].suppression.is_none());
         }
+    }
+
+    /// A named suppression failure is the reason the section is incomplete:
+    /// a provider that names one and still claims completeness breaks the
+    /// contract instead of passing a broken baseline off as a clean result.
+    #[test]
+    fn diagnostics_named_suppression_failure_cannot_claim_a_complete_section() {
+        let mut outcome = successful(Vec::new());
+        outcome.status = DiagnosticProviderStatus::Completed;
+        outcome.complete = true;
+        outcome.suppression = Some(DiagnosticSuppression {
+            by: DiagnosticSuppressionSource::Baseline,
+            known: Some(1),
+            new: Some(0),
+            reason: Some(DiagnosticSuppressionReason {
+                code: "missing".to_string(),
+                detail: Some("cannot read diagnostics baseline baseline.json".to_string()),
+            }),
+        });
+        let (registry, _) =
+            fake_registry([outcome, successful(Vec::new()), successful(Vec::new())]);
+
+        let result = run(registry, &findings_request()).unwrap();
+
+        assert!(!result.complete);
+        assert_eq!(result.state, DiagnosticResultState::Partial);
+        let section = &result.providers[0];
+        assert_eq!(section.status, DiagnosticProviderStatus::Failed);
+        assert!(!section.complete);
+        assert_eq!(
+            section.error.as_ref().unwrap().code,
+            "provider_contract_invalid"
+        );
+        assert!(section.suppression.is_none());
     }
 
     #[test]

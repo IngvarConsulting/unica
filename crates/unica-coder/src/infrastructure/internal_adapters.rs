@@ -7,8 +7,10 @@ use crate::domain::operational_config::OperationalConfig;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::{resolve_bundled_tool, BundledTool};
 use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
+use crate::infrastructure::diagnostics_baseline::{broken_baseline_outcome, cli_baseline_failure};
 use crate::infrastructure::diagnostics_jsonl::{
-    AnalyzerDiagnosticsBatch, DiagnosticsJsonlParser, MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
+    AnalyzerDiagnosticsBatch, AnalyzerDiagnosticsFileTotals, DiagnosticsJsonlParser,
+    MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
 };
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
@@ -1778,6 +1780,12 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             return Ok(BslAnalyzerOutcome::plain(outcome));
         }
         if !output.status_success {
+            // A broken `[diagnostics.baseline]` stops the analyzer before
+            // `start`, so only its stderr names the cause. That run is a
+            // named incompleteness, not an unavailable provider.
+            let baseline_failure = (!output.timed_out)
+                .then(|| cli_baseline_failure(&output.stderr))
+                .flatten();
             let timeout_error = output
                 .timed_out
                 .then(|| process_timeout_error("code analysis", process_timeout));
@@ -1791,7 +1799,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                     output.status
                 ));
             }
-            return Ok(BslAnalyzerOutcome::plain(AdapterOutcome {
+            let outcome = AdapterOutcome {
                 ok: false,
                 summary: format!("{tool_name} failed through internal code analysis adapter"),
                 changes: Vec::new(),
@@ -1808,7 +1816,21 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 stdout: None,
                 stderr: (!stderr.trim().is_empty()).then_some(stderr),
                 command: Some(reported_command),
-            }));
+            };
+            return Ok(BslAnalyzerOutcome {
+                outcome,
+                data: None,
+                diagnostics: baseline_failure.map(|reason| AnalyzerDiagnosticsBatch {
+                    outcome: broken_baseline_outcome(reason),
+                    files: AnalyzerDiagnosticsFileTotals {
+                        discovered: None,
+                        processed: None,
+                        failed: None,
+                    },
+                    diagnostics_reported: None,
+                    elapsed_seconds: None,
+                }),
+            });
         }
 
         let batch = parser.finish();
@@ -5769,6 +5791,59 @@ analyze_timeout_seconds = 900
                 _ => assert!(result.is_err(), "{exit}: {result:?}"),
             }
         }
+        cleanup_context(&context);
+    }
+
+    /// bsl-analyzer v0.2.86 validates `[diagnostics.baseline]` before `start`
+    /// and exits 1 with the cause on stderr (`analyze.rs`). The module check
+    /// must see a named, incomplete section, not "provider is unavailable";
+    /// any other failed run keeps failing as before.
+    #[test]
+    fn analyze_names_a_broken_baseline_the_cli_refused_before_start() {
+        let context = temp_context("baseline refused, анализ");
+        let root = normalize_path_identity(&context.cwd).unwrap();
+        let module = root.join("CommonModules/Обмен/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Процедура Выполнить() Экспорт\nКонецПроцедуры\n").unwrap();
+        let run = |stderr: &str, timed_out: bool| {
+            let mut output = analyze_process_output("");
+            output.status_success = false;
+            output.status = "exit status: 1".to_string();
+            output.stderr = stderr.to_string();
+            output.timed_out = timed_out;
+            let runner = FakeProcessRunner { output };
+            BslAnalyzerMcpAdapter::with_process_runner(&runner).analyze_diagnostic_batch(
+                &context,
+                &root,
+                Some(&module),
+                Some(Duration::from_secs(30)),
+                &CancellationToken::new(),
+            )
+        };
+        // The real stderr shape, with a spaced path outside the workspace.
+        let stderr = "Error: \"cannot read diagnostics baseline /Users/dev/My Projects/base dir/\
+                      missing.json: No such file or directory (os error 2)\"\n";
+
+        let batch = run(stderr, false).expect("a broken baseline is a named result");
+        let outcome = batch.outcome;
+        assert_eq!(
+            outcome.status,
+            crate::domain::diagnostics::DiagnosticProviderStatus::Completed
+        );
+        assert!(!outcome.complete);
+        assert!(outcome.error.is_none());
+        assert!(outcome.observations.is_empty());
+        let reason = outcome.suppression.unwrap().reason.expect("cause is named");
+        assert_eq!(reason.code, "missing");
+        assert_eq!(
+            reason.detail.as_deref(),
+            Some("cannot read diagnostics baseline missing.json: No such file or directory (os error 2)")
+        );
+
+        // A timeout is a timeout even if stderr ends with a baseline line, and
+        // an unrelated failure stays an unexplained one.
+        assert!(run(stderr, true).is_err());
+        assert!(run("Error: \"metadata is unreadable\"\n", false).is_err());
         cleanup_context(&context);
     }
 

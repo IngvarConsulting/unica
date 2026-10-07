@@ -9,6 +9,10 @@ check:
   - crates/unica-coder/src/infrastructure/diagnostics.rs::resident_baseline_is_a_named_filter_and_a_broken_one_names_its_cause
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_passes_under_a_proven_baseline_and_names_a_broken_one
   - crates/unica-coder/src/application/diagnostics.rs::diagnostics_baseline_suppression_is_a_named_filter_not_incompleteness
+  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_named_suppression_failure_cannot_claim_a_complete_section
+  - crates/unica-coder/src/infrastructure/diagnostics_baseline.rs::cli_names_every_broken_baseline_it_reports_before_start
+  - crates/unica-coder/src/infrastructure/diagnostics_baseline.rs::baseline_detail_hides_a_spaced_physical_path_whole
+  - crates/unica-coder/src/infrastructure/internal_adapters.rs::analyze_names_a_broken_baseline_the_cli_refused_before_start
 ---
 
 # Сбой диагностического движка не стирает доказанные находки
@@ -26,9 +30,14 @@ check:
 
 Сломанная или не применённая базовая линия диагностик делает секцию неполной
 и называет причину: код и подробность анализатора, в которых скрыты секреты
-и физические пути. Отказ `check` из-за неё передаёт эту причину, а не
-сообщает только, что анализ не завершился. Подавление допустимо лишь
-в секции с результатом: пустой ответ и отказ поставщика его не несут.
+и физические пути, включая пути с пробелами. Резидентный ответ сообщает
+такую линию состоянием `error`; CLI `analyze` завершается ошибкой до события
+`start`, и причину называет его stderr. Обе формы дают одну и ту же
+неполную секцию с причиной, а не «поставщик недоступен». Отказ `check`
+из-за неё передаёт эту причину, а не сообщает только, что анализ
+не завершился. Секция, назвавшая причину, не может объявить себя полной.
+Подавление допустимо лишь в секции с результатом: пустой ответ и отказ
+поставщика его не несут.
 
 Проверки относятся к координатору, разбору ответа анализатора и вердикту
 `check`. Канонический `unica.check` сейчас отказывает
