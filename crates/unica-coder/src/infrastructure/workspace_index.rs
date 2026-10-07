@@ -13,6 +13,7 @@ use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedOutput,
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
+use crate::infrastructure::rlm_generation_collection::spawn_stale_rlm_generation_collection;
 #[cfg(test)]
 use crate::infrastructure::source_revision::SourceRevisionService;
 #[cfg(test)]
@@ -42,7 +43,7 @@ const LOCK_STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 const LOCK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const LOCK_SCHEMA_VERSION: u32 = 1;
 const RLM_PRODUCT_DIR: &str = "rlm-bsl";
-const RLM_INDEX_GENERATION: &str = "index-v15";
+const RLM_INDEX_GENERATION: &str = "index-v17";
 const RLM_PYTHON_UTF8: &str = "1";
 const RLM_PYTHON_IO_ENCODING: &str = "utf-8:surrogateescape";
 const STATUS_FILE_NAME: &str = "bsl_index_status.json";
@@ -445,6 +446,11 @@ impl<'a> WorkspaceIndexService<'a> {
     ) -> Result<Option<UsableIndexBuild>, String> {
         self.validate_bound_source_root(source_root)?;
         let state_context = self.state_context(context, source_root)?;
+        // Generations an earlier RLM left behind are removed in the background;
+        // a busy or failing removal never affects this read.
+        if let Ok(pair_root) = rlm_provider_state_root(&state_context, source_root) {
+            spawn_stale_rlm_generation_collection(pair_root, RLM_INDEX_GENERATION);
+        }
         usable_index_build(&state_context, source_root)
     }
 
@@ -2637,12 +2643,12 @@ mod tests {
         let error = rlm_provider_state_root_with(&context, &source_root, None).unwrap_err();
 
         assert!(error.contains("required for RLM state outside sourceRoot"));
-        assert!(!source_root.join("rlm-bsl/index-v15/bsl_index.db").exists());
+        assert!(!source_root.join("rlm-bsl/index-v17/bsl_index.db").exists());
         assert!(!source_root
-            .join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            .join("caches/rlm-bsl/index-v17/bsl_index_status.json")
             .exists());
         assert!(!source_root
-            .join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            .join("locks/rlm-bsl/index-v17/bsl_index.lock")
             .exists());
         cleanup(&context);
     }
@@ -2685,12 +2691,12 @@ mod tests {
         }));
         assert!(runner.commands.borrow().is_empty());
         assert!(runner.backgrounds.borrow().is_empty());
-        assert!(!source_root.join("rlm-bsl/index-v15/bsl_index.db").exists());
+        assert!(!source_root.join("rlm-bsl/index-v17/bsl_index.db").exists());
         assert!(!source_root
-            .join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            .join("caches/rlm-bsl/index-v17/bsl_index_status.json")
             .exists());
         assert!(!source_root
-            .join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            .join("locks/rlm-bsl/index-v17/bsl_index.lock")
             .exists());
         testing::remove_dir_symlink_for_test(&second).unwrap();
         testing::remove_dir_symlink_for_test(&context.cache_root).unwrap();
@@ -2745,7 +2751,7 @@ mod tests {
         assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_eq!(
             first.join(RLM_PRODUCT_DIR).join(RLM_INDEX_GENERATION),
-            first.join("rlm-bsl/index-v15")
+            first.join("rlm-bsl/index-v17")
         );
         cleanup(&context);
     }
@@ -2867,19 +2873,19 @@ mod tests {
 
         assert_eq!(
             first_status,
-            first_root.join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            first_root.join("caches/rlm-bsl/index-v17/bsl_index_status.json")
         );
         assert_eq!(
             first_lock,
-            first_root.join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            first_root.join("locks/rlm-bsl/index-v17/bsl_index.lock")
         );
         assert_eq!(
             second_status,
-            second_root.join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            second_root.join("caches/rlm-bsl/index-v17/bsl_index_status.json")
         );
         assert_eq!(
             second_lock,
-            second_root.join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            second_root.join("locks/rlm-bsl/index-v17/bsl_index.lock")
         );
         assert_ne!(first_status, second_status);
         assert_ne!(first_lock, second_lock);
@@ -2948,7 +2954,7 @@ mod tests {
     }
 
     #[test]
-    fn builder_15_uses_a_new_generation_and_leaves_builder_14_untouched() {
+    fn builder_17_uses_a_new_generation_and_leaves_older_generations_untouched() {
         let context = test_context("generation-cutover");
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(&source_root).unwrap();
@@ -2956,13 +2962,22 @@ mod tests {
         let legacy = state_root.join("rlm-tools-bsl");
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("builder-14-sentinel"), "keep").unwrap();
+        // RLM 1.42 writes builder-17 schema; a builder-15 index of RLM 1.33
+        // stays where it was and is never handed to the new reader.
+        let builder_15 = state_root.join("rlm-bsl/index-v15");
+        fs::create_dir_all(&builder_15).unwrap();
+        fs::write(builder_15.join("bsl_index.db"), "builder-15-db").unwrap();
 
         let commands = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
             .commands(&context, &source_root, &CancellationToken::new())
             .unwrap();
         let actual = PathBuf::from(index_command_env(&commands.info, "RLM_INDEX_DIR"));
 
-        assert_eq!(actual, state_root.join("rlm-bsl/index-v15"));
+        assert_eq!(actual, state_root.join("rlm-bsl/index-v17"));
+        assert_eq!(
+            fs::read_to_string(builder_15.join("bsl_index.db")).unwrap(),
+            "builder-15-db"
+        );
         assert_eq!(index_command_env(&commands.info, "PYTHONUTF8"), "1");
         assert_eq!(
             index_command_env(&commands.info, "PYTHONIOENCODING"),
@@ -2972,6 +2987,55 @@ mod tests {
             fs::read_to_string(legacy.join("builder-14-sentinel")).unwrap(),
             "keep"
         );
+        cleanup(&context);
+    }
+
+    /// Чтение активной сборки запускает уборку прежнего поколения той же пары:
+    /// давно не тронутое index-v15 исчезает, текущее поколение остаётся.
+    #[test]
+    fn active_build_collects_an_idle_previous_generation_but_not_the_current_one() {
+        let context = test_context("generation-collection-wiring");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
+        let previous = [
+            pair_root.join("rlm-bsl/index-v15"),
+            pair_root.join("caches/rlm-bsl/index-v15"),
+            pair_root.join("locks/rlm-bsl/index-v15"),
+        ];
+        for directory in &previous {
+            fs::create_dir_all(directory).unwrap();
+            fs::write(directory.join("payload"), b"builder-15").unwrap();
+        }
+        let current = pair_root.join("rlm-bsl").join(RLM_INDEX_GENERATION);
+        fs::create_dir_all(&current).unwrap();
+        fs::write(current.join("payload"), b"current").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+        let aged = previous.iter().chain([&current]).try_for_each(|directory| {
+            File::options()
+                .write(true)
+                .open(directory.join("payload"))?
+                .set_modified(old)?;
+            File::open(directory)?.set_modified(old)
+        });
+        if aged.is_err() {
+            cleanup(&context);
+            // Windows cannot open a directory this way to set its time: the
+            // wiring is proven on Unix only.
+            return;
+        }
+
+        let _ = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
+            .active_build(&context, &source_root);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while previous.iter().any(|directory| directory.exists()) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        for directory in &previous {
+            assert!(!directory.exists(), "{}", directory.display());
+        }
+        assert_eq!(fs::read(current.join("payload")).unwrap(), b"current");
         cleanup(&context);
     }
 
@@ -3031,7 +3095,7 @@ mod tests {
         fs::create_dir_all(&legacy).unwrap();
         let legacy_db = legacy.join("bsl_index.db");
         fs::write(&legacy_db, b"builder-14-db").unwrap();
-        let alias = pair_root.join("rlm-bsl/index-v15");
+        let alias = pair_root.join("rlm-bsl/index-v17");
         fs::create_dir_all(alias.parent().unwrap()).unwrap();
         let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
             cleanup(&context);
@@ -3068,12 +3132,12 @@ mod tests {
             &context,
             BslIndexStatus::ready(
                 &source_root,
-                &pair_root.join("rlm-bsl/index-v15/bsl_index.db"),
+                &pair_root.join("rlm-bsl/index-v17/bsl_index.db"),
             )
             .with_indexed_revision(Some(revision.clone())),
         )
         .unwrap();
-        let alias = pair_root.join("rlm-bsl/index-v15");
+        let alias = pair_root.join("rlm-bsl/index-v17");
         fs::create_dir_all(alias.parent().unwrap()).unwrap();
         let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
             cleanup(&context);
@@ -3102,7 +3166,7 @@ mod tests {
         fs::create_dir_all(&legacy).unwrap();
         let legacy_marker = legacy.join(STATUS_FILE_NAME);
         fs::write(&legacy_marker, b"builder-14-status").unwrap();
-        let alias = pair_root.join("caches/rlm-bsl/index-v15");
+        let alias = pair_root.join("caches/rlm-bsl/index-v17");
         fs::create_dir_all(alias.parent().unwrap()).unwrap();
         let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
             cleanup(&context);
@@ -3137,7 +3201,7 @@ mod tests {
         fs::create_dir_all(&legacy).unwrap();
         let legacy_marker = legacy.join(LOCK_FILE_NAME);
         fs::write(&legacy_marker, b"builder-14-lock").unwrap();
-        let alias = pair_root.join("locks/rlm-bsl/index-v15");
+        let alias = pair_root.join("locks/rlm-bsl/index-v17");
         fs::create_dir_all(alias.parent().unwrap()).unwrap();
         let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
             cleanup(&context);

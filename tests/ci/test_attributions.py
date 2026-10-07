@@ -183,9 +183,9 @@ class AttributionTests(unittest.TestCase):
             (root / "plugins/unica/ATTRIBUTIONS.md").read_text(encoding="utf-8")
         )[("tool", "rlm-bsl-mcp")]
 
-        self.assertIn("`1.33.0`", section)
-        self.assertIn("`3e6920cd015a61af4ba7aa1a5f1fedd8bc935549`", section)
-        self.assertIn("`rlm-tools-bsl-v1.33.0-build.3`", section)
+        self.assertIn("`1.42.0`", section)
+        self.assertIn("`9a84f24f0c156630e1d4e757b30070a13a56d0e0`", section)
+        self.assertIn("`rlm-tools-bsl-v1.42.0-build.1`", section)
         self.assertIn("Nuitka", section)
 
     def test_parse_sections_rejects_duplicate_markers(self) -> None:

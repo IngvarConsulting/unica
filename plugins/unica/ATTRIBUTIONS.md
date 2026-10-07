@@ -63,8 +63,11 @@ LGPL-3.0-or-later проекта Unica не заменяет эти услови
 - Репозиторий: [Dach-Coin/rlm-tools-bsl](https://github.com/Dach-Coin/rlm-tools-bsl)
 - Автор: [Roman Starchenko](https://github.com/Dach-Coin); исходный проект
   `rlm-tools` — [Stefan O'Shea](https://github.com/stefanoshea)
-- Закреплённая версия: `1.33.0`, commit `3e6920cd015a61af4ba7aa1a5f1fedd8bc935549`
-- Архив standalone runtime: `rlm-tools-bsl-v1.33.0-build.3`
+- Закреплённая версия: `1.42.0`, commit `9a84f24f0c156630e1d4e757b30070a13a56d0e0`
+- Архив standalone runtime: `rlm-tools-bsl-v1.42.0-build.1`
+- Изменения исходного кода: патчи `patches/rlm-tools-bsl/` репозитория
+  [IngvarConsulting/unica-toolchain](https://github.com/IngvarConsulting/unica-toolchain)
+  удерживают сессию и inline-ресурсы, пока принятая работа не завершилась
 - Инструмент сборки standalone runtime: [Nuitka](https://nuitka.net/) `4.1.3`
 - Лицензия: [MIT](third-party/licenses/rlm-tools-bsl/LICENSE)
 

@@ -869,9 +869,9 @@ mod tests {
         // manifest scanner prunes that directory. The fence has to prune it
         // too: otherwise every index or service write reads as a source
         // change and the reconcile never stabilizes.
-        fs::create_dir_all(cache.join("caches/rlm-bsl/index-v15")).unwrap();
+        fs::create_dir_all(cache.join("caches/rlm-bsl/index-v17")).unwrap();
         fs::write(
-            cache.join("caches/rlm-bsl/index-v15/bsl_index_status.json"),
+            cache.join("caches/rlm-bsl/index-v17/bsl_index_status.json"),
             "{\"status\":\"ready\"}",
         )
         .unwrap();
@@ -926,9 +926,9 @@ mod tests {
             )
             .unwrap();
 
-        fs::create_dir_all(cache.join("caches/rlm-bsl/index-v15")).unwrap();
+        fs::create_dir_all(cache.join("caches/rlm-bsl/index-v17")).unwrap();
         fs::write(
-            cache.join("caches/rlm-bsl/index-v15/bsl_index_status.json"),
+            cache.join("caches/rlm-bsl/index-v17/bsl_index_status.json"),
             "{\"status\":\"ready\"}",
         )
         .unwrap();

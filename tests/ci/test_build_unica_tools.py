@@ -77,8 +77,8 @@ def write_raw_archive(
                     )
 
 
-RUNTIME_RELEASE = "rlm-tools-bsl-v1.33.0-build.3"
-RUNTIME_SOURCE_COMMIT = "3e6920cd015a61af4ba7aa1a5f1fedd8bc935549"
+RUNTIME_RELEASE = "rlm-tools-bsl-v1.42.0-build.1"
+RUNTIME_SOURCE_COMMIT = "9a84f24f0c156630e1d4e757b30070a13a56d0e0"
 RUNTIME_TARGET = {
     "key": "linux-x64",
     "triple": "x86_64-unknown-linux-gnu",
@@ -91,18 +91,18 @@ RUNTIME_TARGETS = ("darwin-arm64", "linux-x64", "win-x64")
 RUNTIME_ARCHIVES = {
     "darwin-arm64": {
         "assetName": "rlm-tools-bsl-darwin-arm64.tar.gz",
-        "sha256": "55caf6a245b3bb47344e2191408841f45aefb614b23480d9941f2cb3e2d8af2c",
-        "size": 72_708_783,
+        "sha256": "412cbe92aa51f6823e9d2dea43d8ace5717f0f3ad5ee1c53d47ef2ce940f5cff",
+        "size": 75_135_269,
     },
     "linux-x64": {
         "assetName": "rlm-tools-bsl-linux-x64.tar.gz",
-        "sha256": "1a27e1305c159c01f4b928fa63358567236197844af4663188bd5b30aa780f40",
-        "size": 106_083_876,
+        "sha256": "43ff374feea19f7d2cd7a8071810ffab1be67500b69857663f2645bca2f4fea9",
+        "size": 109_405_738,
     },
     "win-x64": {
         "assetName": "rlm-tools-bsl-win-x64.tar.gz",
-        "sha256": "9655a8d052ae3d033ea8761e7a503ffd1d9a7e4f303b17ed6c8bc9fd86e5abb2",
-        "size": 75_235_914,
+        "sha256": "1c7e19dc53b2d924eeef3b47ac53ea90c76bd106a8fe4594f7c9c58869088471",
+        "size": 77_494_107,
     },
 }
 
@@ -132,7 +132,7 @@ def runtime_manifest(binary: bytes = b"multidist") -> dict:
         "schemaVersion": 1,
         "releaseTag": RUNTIME_RELEASE,
         "source": {
-            "ref": "v1.33.0",
+            "ref": "v1.42.0",
             "commit": RUNTIME_SOURCE_COMMIT,
             "tree": "4b321de0454d4d0998762659891374a3a1326cd0",
             "patches": [],
@@ -428,9 +428,9 @@ class BuildUnicaToolsTests(unittest.TestCase):
         def tool(name: str) -> dict:
             return {
                 "name": name,
-                "version": "1.33.0",
+                "version": "1.42.0",
                 "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-                "sourceTag": "v1.33.0",
+                "sourceTag": "v1.42.0",
                 "sourceCommit": RUNTIME_SOURCE_COMMIT,
                 "license": "MIT",
                 "binaryName": name,
@@ -987,7 +987,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
             return {
                 "name": name,
                 "repository": "https://github.com/Dach-Coin/rlm-tools-bsl",
-                "sourceTag": "v1.33.0",
+                "sourceTag": "v1.42.0",
                 "sourceCommit": RUNTIME_SOURCE_COMMIT,
                 "assetRepository": "https://github.com/IngvarConsulting/unica-toolchain",
                 "assetTag": RUNTIME_RELEASE,

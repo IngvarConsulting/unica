@@ -46,6 +46,7 @@ pub(crate) mod redaction;
 #[allow(dead_code)]
 pub(crate) mod receipt_ledger;
 mod revision_artifact_policy;
+pub(crate) mod rlm_generation_collection;
 pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_build_fallback;
 pub(crate) mod runtime_build_preflight;

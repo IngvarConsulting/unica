@@ -3494,7 +3494,11 @@ fn rlm_start_arguments(
         "max_output_chars": 100_000,
         "max_execute_calls": 10_000,
         "execution_timeout_seconds": execution_timeout_seconds,
-        "include_metadata": false
+        "include_metadata": false,
+        // RLM 1.41+ refuses a slim BSL session without an explicit helper
+        // domain choice. Unica calls helpers by name and needs only the core
+        // signatures; the empty choice keeps the start response small.
+        "domains": []
     }))
 }
 
@@ -4691,6 +4695,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(args["execution_timeout_seconds"], 300);
+        assert_eq!(args["domains"], json!([]));
     }
 
     #[test]
@@ -5241,12 +5246,12 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|error| { error.contains("failed to resolve existing path ancestor") }));
-        assert!(!source_root.join("rlm-bsl/index-v15/bsl_index.db").exists());
+        assert!(!source_root.join("rlm-bsl/index-v17/bsl_index.db").exists());
         assert!(!source_root
-            .join("caches/rlm-bsl/index-v15/bsl_index_status.json")
+            .join("caches/rlm-bsl/index-v17/bsl_index_status.json")
             .exists());
         assert!(!source_root
-            .join("locks/rlm-bsl/index-v15/bsl_index.lock")
+            .join("locks/rlm-bsl/index-v17/bsl_index.lock")
             .exists());
         testing::remove_dir_symlink_for_test(&second).unwrap();
         testing::remove_dir_symlink_for_test(&first).unwrap();
@@ -7833,7 +7838,7 @@ fn main() {
         let lock_path =
             crate::infrastructure::workspace_index::rlm_provider_state_root(context, source_root)
                 .unwrap()
-                .join("locks/rlm-bsl/index-v15/bsl_index.lock");
+                .join("locks/rlm-bsl/index-v17/bsl_index.lock");
         fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
         let now = now_secs_for_test();
         fs::write(
