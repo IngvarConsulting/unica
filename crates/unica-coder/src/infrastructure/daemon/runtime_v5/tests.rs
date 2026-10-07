@@ -5690,3 +5690,478 @@ fn cancel_during_inline_admission_before_handoff_publishes_cancelled() {
         .expect("daemon thread did not panic")
         .expect("daemon exits cleanly");
 }
+
+/// Fails one retirement step for one record, for as long as it is armed.
+struct RetirementStepFault {
+    step: V5RetirementStep,
+    target: Mutex<Option<TaskId>>,
+    armed: AtomicBool,
+    injected: AtomicUsize,
+    /// Runs in place of the failed step before it reports the failure.
+    on_fault: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+}
+
+impl RetirementStepFault {
+    fn at(step: V5RetirementStep) -> Self {
+        Self {
+            step,
+            target: Mutex::new(None),
+            armed: AtomicBool::new(true),
+            injected: AtomicUsize::new(0),
+            on_fault: Mutex::new(None),
+        }
+    }
+}
+
+impl V5RuntimeHooks for RetirementStepFault {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn retirement_step_fault(&self, step: V5RetirementStep, task_id: TaskId) -> bool {
+        let fails = step == self.step
+            && self.armed.load(Ordering::SeqCst)
+            && *self.target.lock().expect("retirement fault target") == Some(task_id);
+        if fails {
+            self.injected.fetch_add(1, Ordering::SeqCst);
+            if let Some(on_fault) = &*self.on_fault.lock().expect("retirement fault action") {
+                on_fault();
+            }
+        }
+        fails
+    }
+}
+
+const RETIREMENT_TEST_TTL_MS: u64 = 3_600_000;
+/// Every Task created at the start of the test has outlived its TTL here,
+/// while the live Task completed shortly before.
+const RETIREMENT_TEST_OBSERVED_EPOCH_MS: u64 = 4_000_000;
+
+/// Creates a Task of `workspace` through the real receipt and Task stores and
+/// completes it with `summary` at `terminal_epoch_ms`.
+fn materialize_completed_task(
+    runtime: &V5ReceiptRuntime,
+    identity: &CoreIdentity,
+    clock: &ManualEpochClock,
+    workspace: &str,
+    created_epoch_ms: u64,
+    terminal_epoch_ms: u64,
+    summary: &str,
+) -> TaskId {
+    clock.set(created_epoch_ms);
+    let key = ReceiptKey::new(
+        InvocationId::new(),
+        TaskId::new(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(&serde_json::Map::new()),
+            request_scope_hash(workspace).expect("request scope"),
+        ),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let reserved = runtime
+        .receipt_ledger
+        .reserve(
+            key.clone(),
+            OriginalCutoffDescriptor::new(created_epoch_ms, 6_000).expect("valid cutoff"),
+            deadline,
+        )
+        .expect("reserve Task receipt")
+        .into_reservation()
+        .expect("new Task receipt");
+    let actor_bound = runtime
+        .receipt_ledger
+        .bind_reserved_actor(
+            key.clone(),
+            reserved.record_version(),
+            SafeIdentityHash::from_sha256(Sha256::digest(workspace.as_bytes()).into()),
+            deadline,
+        )
+        .expect("bind Task actor");
+    let begun = runtime
+        .receipt_ledger
+        .mark_reserved_begun(key.clone(), actor_bound.record_version(), deadline)
+        .expect("mark Task attempt begun");
+    let handoff = runtime
+        .receipt_ledger
+        .begin_bound_task_handoff(
+            key.clone(),
+            begun.record_version(),
+            created_epoch_ms,
+            RETIREMENT_TEST_TTL_MS,
+            V5_TASK_POLL_INTERVAL_MS,
+            deadline,
+        )
+        .expect("begin Task handoff");
+    let (record, task_bound) = runtime
+        .task_projection
+        .materialize_bound_handoff(&handoff, created_epoch_ms, deadline, runtime.hooks.as_ref())
+        .unwrap_or_else(|failure| panic!("materialize TaskBound: {}", failure.error));
+    let task_bound = runtime
+        .receipt_ledger
+        .complete_bound_task_handoff(key.clone(), handoff.record_version(), task_bound, deadline)
+        .expect("complete TaskBound ownership");
+    clock.set(terminal_epoch_ms);
+    let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+        result: Box::new(DomainResult::success(summary)),
+    })
+    .expect("canonical completed terminal");
+    runtime
+        .task_projection
+        .publish_bound_task_terminal(
+            &task_bound,
+            &record,
+            &terminal,
+            terminal_epoch_ms,
+            deadline,
+            runtime.hooks.as_ref(),
+        )
+        .unwrap_or_else(|failure| panic!("publish completed Task: {}", failure.error));
+    key.reserved_task_id()
+}
+
+fn retirement_link(runtime: &V5ReceiptRuntime, task_id: TaskId) -> Option<TaskLifecycleLinkRecord> {
+    let deadline = crate::domain::code_intelligence::ProviderDeadline::new(
+        Instant::now() + Duration::from_secs(5),
+    );
+    match runtime
+        .task_projection
+        .lifecycle_links
+        .read_by_task_id(task_id, deadline)
+    {
+        Ok(link) => Some(link),
+        Err(TaskLifecycleLinkStoreError::NotFound { .. }) => None,
+        Err(error) => panic!("read lifecycle link of {task_id}: {error}"),
+    }
+}
+
+fn retirement_task_present(runtime: &V5ReceiptRuntime, task_id: TaskId) -> bool {
+    let deadline = crate::domain::code_intelligence::ProviderDeadline::new(
+        Instant::now() + Duration::from_secs(5),
+    );
+    match runtime.task_projection.task_store.get(task_id, deadline) {
+        Ok(_) => true,
+        Err(V5TaskStoreError::NotFound { .. }) => false,
+        Err(error) => panic!("read Task {task_id}: {error}"),
+    }
+}
+
+/// `tasks/get`, `tasks/result` (a wait) and `tasks/cancel` of the live Task
+/// all answer its completed result, and the process keeps admitting work.
+fn assert_live_task_answers(runtime: &V5ReceiptRuntime, live: TaskId, context: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    for (operation, answer) in [
+        ("get", runtime.resolve_task(live, deadline)),
+        ("wait", runtime.wait_task(live, 0, deadline)),
+        ("cancel", runtime.cancel_task(live, deadline)),
+    ] {
+        match answer {
+            Ok(V5DaemonTaskSnapshot::Completed { result, .. }) => assert!(
+                result.ok && result.summary == "live result",
+                "{context}: {operation} returned another result: {result:?}"
+            ),
+            other => panic!("{context}: {operation} of the live Task failed: {other:?}"),
+        }
+    }
+    assert!(
+        !runtime.restart_required(),
+        "{context}: a retirement failure closed the daemon for every Task"
+    );
+}
+
+/// An accumulated store: two expired Tasks of this workspace, one expired
+/// Task of another workspace copy that cannot be retired, and a live Task.
+struct AccumulatedRetirementStore {
+    _root: tempfile::TempDir,
+    runtime: Arc<V5ReceiptRuntime>,
+    clock: Arc<ManualEpochClock>,
+    expired: Vec<TaskId>,
+    foreign: TaskId,
+    live: TaskId,
+}
+
+fn accumulated_retirement_store(hooks: Arc<dyn V5RuntimeHooks>) -> AccumulatedRetirementStore {
+    let root = tempfile::tempdir().expect("temporary retirement state root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical retirement state root");
+    let identity = CoreIdentity::production_v5();
+    let clock = Arc::new(ManualEpochClock::new(1_000));
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(50),
+    )
+    .with_v5_epoch_clock_for_test(clock.clone())
+    .with_runtime_hooks_for_test(hooks);
+    let state =
+        DaemonStateDirectory::open(&state_root, &identity).expect("open retirement daemon state");
+    let runtime = V5ReceiptRuntime::open(&state, &config).expect("open retirement runtime");
+    let first = materialize_completed_task(
+        &runtime,
+        &identity,
+        &clock,
+        "workspace-a",
+        1_000,
+        2_000,
+        "expired a",
+    );
+    let foreign = materialize_completed_task(
+        &runtime,
+        &identity,
+        &clock,
+        "workspace-other-copy",
+        1_100,
+        2_100,
+        "expired foreign",
+    );
+    let second = materialize_completed_task(
+        &runtime,
+        &identity,
+        &clock,
+        "workspace-a",
+        1_200,
+        2_200,
+        "expired b",
+    );
+    let live = materialize_completed_task(
+        &runtime,
+        &identity,
+        &clock,
+        "workspace-a",
+        3_900_000,
+        3_950_000,
+        "live result",
+    );
+    clock.set(RETIREMENT_TEST_OBSERVED_EPOCH_MS);
+    AccumulatedRetirementStore {
+        _root: root,
+        runtime: Arc::new(runtime),
+        clock,
+        expired: vec![first, second],
+        foreign,
+        live,
+    }
+}
+
+/// #863: a record whose retirement fails at `step` stays with its committed
+/// state; the live Task is answered, the other expired records are retired,
+/// the failed one is not retried on every poll and is retired after its pause.
+fn assert_unretirable_record_stays_confined(step: V5RetirementStep) {
+    let hooks = Arc::new(RetirementStepFault::at(step));
+    let store = accumulated_retirement_store(hooks.clone());
+    let runtime = &store.runtime;
+    *hooks.target.lock().expect("retirement fault target") = Some(store.foreign);
+
+    for poll in 0..3 {
+        assert_live_task_answers(runtime, store.live, &format!("{step:?} poll {poll}"));
+    }
+    assert_eq!(
+        hooks.injected.load(Ordering::SeqCst),
+        1,
+        "{step:?}: the failed record must wait for its pause instead of failing every poll"
+    );
+    for task_id in &store.expired {
+        assert!(
+            retirement_link(runtime, *task_id).is_none()
+                && !retirement_task_present(runtime, *task_id),
+            "{step:?}: an expired record next to the failed one was not retired"
+        );
+    }
+    let link = retirement_link(runtime, store.foreign);
+    match step {
+        V5RetirementStep::Begin => assert!(
+            matches!(link, Some(TaskLifecycleLinkRecord::TaskTerminalBound(_))),
+            "{step:?}: the failed record lost its terminal link: {link:?}"
+        ),
+        _ => assert!(
+            matches!(
+                link,
+                Some(TaskLifecycleLinkRecord::TaskRetirementPending(_))
+            ),
+            "{step:?}: the failed record lost its committed retirement intent: {link:?}"
+        ),
+    }
+    assert_eq!(
+        retirement_task_present(runtime, store.foreign),
+        step != V5RetirementStep::Finalize,
+        "{step:?}: the failed record changed its Task beyond the failed step"
+    );
+    // Reading the record that could not be retired does not close the daemon
+    // either, even when its Task is already deleted and only the link remains.
+    let foreign = runtime.resolve_task(store.foreign, Instant::now() + Duration::from_secs(5));
+    if step == V5RetirementStep::Finalize {
+        assert!(
+            matches!(foreign, Err(ReceiptLedgerError::ReceiptNotFound)),
+            "{step:?}: a deleted Task under its retirement intent must read as absent: {foreign:?}"
+        );
+    } else {
+        assert!(
+            matches!(&foreign, Ok(V5DaemonTaskSnapshot::Completed { result, .. })
+                if result.summary == "expired foreign"),
+            "{step:?}: the record that could not be retired lost its result: {foreign:?}"
+        );
+    }
+    assert_live_task_answers(
+        runtime,
+        store.live,
+        &format!("{step:?} after the failed record"),
+    );
+
+    hooks.armed.store(false, Ordering::SeqCst);
+    store
+        .clock
+        .set(RETIREMENT_TEST_OBSERVED_EPOCH_MS + RETIREMENT_RETRY_INITIAL_DELAY_MS);
+    assert_live_task_answers(runtime, store.live, &format!("{step:?} retry"));
+    assert!(
+        retirement_link(runtime, store.foreign).is_none()
+            && !retirement_task_present(runtime, store.foreign),
+        "{step:?}: the failed record was not retired after its pause"
+    );
+}
+
+#[test]
+fn retirement_begin_failure_stays_with_its_record() {
+    assert_unretirable_record_stays_confined(V5RetirementStep::Begin);
+}
+
+#[test]
+fn retirement_authorize_failure_stays_with_its_record() {
+    assert_unretirable_record_stays_confined(V5RetirementStep::Authorize);
+}
+
+#[test]
+fn retirement_delete_failure_stays_with_its_record() {
+    assert_unretirable_record_stays_confined(V5RetirementStep::Delete);
+}
+
+#[test]
+fn retirement_finalize_failure_stays_with_its_record() {
+    assert_unretirable_record_stays_confined(V5RetirementStep::Finalize);
+}
+
+/// The real store fault: deleting an expired Task returns `CommitUncertain`
+/// after the file is gone. The record keeps its intent, the live Task is
+/// answered, and the retry reconciles the absent Task.
+#[test]
+fn uncertain_retirement_delete_stays_with_its_record_and_reconciles_on_retry() {
+    let store = accumulated_retirement_store(Arc::new(NoHooks));
+    let runtime = &store.runtime;
+    runtime
+        .task_projection
+        .task_store
+        .inject_next_publication_failure(PublicationFailure::AfterDeleteBeforeSync);
+
+    assert_live_task_answers(runtime, store.live, "uncertain delete");
+    let mut expired = store.expired.clone();
+    expired.push(store.foreign);
+    let left = expired
+        .iter()
+        .filter(|task_id| retirement_link(runtime, **task_id).is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(left.len(), 1, "exactly the uncertain record keeps its link");
+    assert!(
+        matches!(
+            retirement_link(runtime, *left[0]),
+            Some(TaskLifecycleLinkRecord::TaskRetirementPending(_))
+        ) && !retirement_task_present(runtime, *left[0]),
+        "the uncertain delete keeps its committed intent over the deleted Task"
+    );
+    assert_live_task_answers(runtime, store.live, "uncertain delete, next poll");
+
+    store
+        .clock
+        .set(RETIREMENT_TEST_OBSERVED_EPOCH_MS + RETIREMENT_RETRY_INITIAL_DELAY_MS);
+    assert_live_task_answers(runtime, store.live, "uncertain delete retry");
+    for task_id in expired {
+        assert!(
+            retirement_link(runtime, task_id).is_none()
+                && !retirement_task_present(runtime, task_id),
+            "the retry did not finish retiring {task_id}"
+        );
+    }
+}
+
+#[test]
+fn retirement_retry_pause_doubles_up_to_an_hour_without_an_attempt_limit() {
+    assert_eq!(retirement_retry_delay_ms(1), 60_000);
+    assert_eq!(retirement_retry_delay_ms(2), 120_000);
+    assert_eq!(retirement_retry_delay_ms(6), 1_920_000);
+    assert_eq!(retirement_retry_delay_ms(7), RETIREMENT_RETRY_MAX_DELAY_MS);
+    assert_eq!(
+        retirement_retry_delay_ms(u32::MAX),
+        RETIREMENT_RETRY_MAX_DELAY_MS
+    );
+}
+
+/// The intent to retire reaches the disk, but its commit reports an uncertain
+/// outcome and memory keeps the terminal link: what `publish_and_readback`
+/// leaves when the directory sync or readback fails after the rename. The
+/// process goes on serving the other Tasks from the durable catalog, so later
+/// commits keep the intent instead of overwriting it with the stale copy.
+#[test]
+fn retirement_failure_after_uncertain_link_commit_serves_the_durable_catalog() {
+    let hooks = Arc::new(RetirementStepFault::at(V5RetirementStep::Begin));
+    let store = accumulated_retirement_store(hooks.clone());
+    let runtime = &store.runtime;
+    *hooks.target.lock().expect("retirement fault target") = Some(store.foreign);
+    let Some(TaskLifecycleLinkRecord::TaskTerminalBound(terminal)) =
+        retirement_link(runtime, store.foreign)
+    else {
+        panic!("the foreign expired Task must be terminal-bound")
+    };
+    let durable_intent = Arc::new(Mutex::new(None));
+    let weak_runtime = Arc::downgrade(runtime);
+    let committed = Arc::clone(&durable_intent);
+    *hooks.on_fault.lock().expect("retirement fault action") = Some(Box::new(move || {
+        let runtime = weak_runtime
+            .upgrade()
+            .expect("runtime is alive during its read");
+        let links = &runtime.task_projection.lifecycle_links;
+        let before_commit = links.memory_catalog_for_test();
+        let intent = links
+            .begin_task_retirement(
+                &terminal,
+                64,
+                64,
+                crate::domain::code_intelligence::ProviderDeadline::new(
+                    Instant::now() + Duration::from_secs(5),
+                ),
+            )
+            .expect("commit the intent to retire");
+        links.restore_memory_catalog_for_test(before_commit);
+        *committed.lock().expect("committed intent") = Some(intent);
+    }));
+
+    assert_live_task_answers(runtime, store.live, "uncertain link commit");
+    assert_eq!(hooks.injected.load(Ordering::SeqCst), 1);
+    let durable_intent = durable_intent
+        .lock()
+        .expect("committed intent")
+        .clone()
+        .expect("the fault committed the intent");
+    assert_eq!(
+        retirement_link(runtime, store.foreign),
+        Some(TaskLifecycleLinkRecord::TaskRetirementPending(
+            durable_intent
+        )),
+        "the durable intent to retire was replaced by the stale terminal link"
+    );
+    for task_id in &store.expired {
+        assert!(
+            retirement_link(runtime, *task_id).is_none()
+                && !retirement_task_present(runtime, *task_id),
+            "an expired record next to the failed one was not retired"
+        );
+    }
+
+    hooks.armed.store(false, Ordering::SeqCst);
+    store
+        .clock
+        .set(RETIREMENT_TEST_OBSERVED_EPOCH_MS + RETIREMENT_RETRY_INITIAL_DELAY_MS);
+    assert_live_task_answers(runtime, store.live, "uncertain link commit retry");
+    assert!(
+        retirement_link(runtime, store.foreign).is_none()
+            && !retirement_task_present(runtime, store.foreign),
+        "the durable intent was not finished after its pause"
+    );
+}
