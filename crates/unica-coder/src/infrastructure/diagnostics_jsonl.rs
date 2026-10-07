@@ -173,7 +173,9 @@ impl DiagnosticsJsonlParser {
                 "bsl-analyzer did not report exactly the requested module".to_string(),
             );
         }
-        let status = if self.observations.is_empty() {
+        // An enabled baseline may have hidden every finding: no observations
+        // then do not prove the files clean, as in the resident reply.
+        let status = if self.observations.is_empty() && !self.baseline_suppression {
             DiagnosticProviderStatus::Empty
         } else {
             DiagnosticProviderStatus::Completed
@@ -764,6 +766,40 @@ mod tests {
             assert!(batch.outcome.error.is_none(), "{baseline}");
             assert_eq!(batch.outcome.complete, complete, "{baseline}");
             assert_eq!(batch.outcome.observations.len(), 1, "{baseline}");
+        }
+    }
+
+    #[test]
+    fn baseline_that_hid_every_finding_is_not_reported_empty() {
+        for (baseline, status, complete) in [
+            (
+                r#"{"state":"disabled","complete":true}"#,
+                DiagnosticProviderStatus::Empty,
+                true,
+            ),
+            (
+                r#"{"state":"full","unsuppressed":0,"known":2,"complete":true}"#,
+                DiagnosticProviderStatus::Completed,
+                false,
+            ),
+        ] {
+            let done = format!(
+                r#"{{"type":"done","elapsed_secs":0.1,"total_files":1,"total_diagnostics":0,"failed_files":0,"baseline":{baseline}}}"#
+            );
+            let mut parser = parser();
+            feed(
+                &mut parser,
+                &[
+                    r#"{"type":"start","total_files":1,"version":"0.2.86"}"#,
+                    r#"{"type":"file","path":"Module.bsl","diagnostics":[]}"#,
+                    &done,
+                ],
+            );
+
+            let batch = parser.finish();
+            assert!(batch.outcome.observations.is_empty(), "{baseline}");
+            assert_eq!(batch.outcome.status, status, "{baseline}");
+            assert_eq!(batch.outcome.complete, complete, "{baseline}");
         }
     }
 
