@@ -62,8 +62,9 @@ From `v0.13.0-rc.6` on, a tag installs its own version.
 
 A marketplace with the same name (`unica` or `unica-next`) that is already
 added by branch must be removed first, with
-`codex plugin marketplace remove unica-next` or
-`claude plugin marketplace remove unica-next`, before it is added by tag.
+`codex plugin marketplace remove <unica|unica-next>` or
+`claude plugin marketplace remove <unica|unica-next>` (the name in use), before
+it is added by tag.
 
 ### ZCode
 

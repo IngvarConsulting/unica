@@ -97,9 +97,9 @@ codex plugin add unica@unica-next
 тег ставит свою версию.
 
 Если маркетплейс с тем же именем (`unica` или `unica-next`) уже добавлен по
-ветке, перед добавлением по тегу удалите его:
-`codex plugin marketplace remove unica-next` или
-`claude plugin marketplace remove unica-next`.
+ветке, перед добавлением по тегу удалите его, подставив это имя:
+`codex plugin marketplace remove <unica|unica-next>` или
+`claude plugin marketplace remove <unica|unica-next>`.
 
 ### Доставка ядра и движков
 
