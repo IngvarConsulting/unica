@@ -354,11 +354,25 @@ fn execute_with_resolved_runner(
         Ok(inputs) => inputs,
         Err(result) => return result,
     };
-    let preview = match invoke_runner(prepared, tool, runner, &cancellation, true) {
+    // Набор заказывается один раз: превью, применение и обе квитанции видят
+    // один и тот же план, даже если проектный файл тем временем сменится.
+    let planned = match planned_source_set(prepared) {
+        Ok(planned) => planned,
+        Err(result) => return result,
+    };
+    let preview = match invoke_runner(
+        prepared,
+        planned.as_deref(),
+        tool,
+        runner,
+        &cancellation,
+        true,
+    ) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    let source_set = match validate_envelope(prepared, &before, &preview, false) {
+    let source_set = match validate_envelope(prepared, planned.as_deref(), &before, &preview, false)
+    {
         Ok(source_set) => source_set,
         Err(result) => return result,
     };
@@ -411,11 +425,19 @@ fn execute_with_resolved_runner(
             "make cancelled before provider launch",
         );
     }
-    let applied = match invoke_runner(prepared, tool, runner, &cancellation, false) {
+    let applied = match invoke_runner(
+        prepared,
+        planned.as_deref(),
+        tool,
+        runner,
+        &cancellation,
+        false,
+    ) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    let built_from = match validate_envelope(prepared, &before, &applied, true) {
+    let built_from = match validate_envelope(prepared, planned.as_deref(), &before, &applied, true)
+    {
         Ok(source_set) => source_set,
         Err(result) => return result,
     };
@@ -480,6 +502,7 @@ fn execute_with_resolved_runner(
 /// Сверка конверта с планом; возвращает набор, который раннер выбрал.
 fn validate_envelope(
     prepared: &PreparedArtifactBuild,
+    planned: Option<&str>,
     inputs: &StableInputs,
     envelope: &Value,
     applied: bool,
@@ -523,7 +546,7 @@ fn validate_envelope(
         .to_string();
     // The receipt is checked against the set the runner was asked for, also
     // when the request left it to the declared configuration set.
-    if let Some(requested) = planned_source_set(prepared)? {
+    if let Some(requested) = planned {
         if requested != source_set {
             return Err(reject(
                 RefusalCode::InvalidResult,
@@ -580,6 +603,7 @@ fn planned_source_set(prepared: &PreparedArtifactBuild) -> Result<Option<String>
 
 fn invoke_runner(
     prepared: &PreparedArtifactBuild,
+    planned: Option<&str>,
     tool: &BundledTool,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
@@ -600,7 +624,7 @@ fn invoke_runner(
     // Без набора и без `--extension` раннер 0.13 собирает все наборы в каталог
     // и путь к одному файлу отклоняет, поэтому `.cf` без набора заказывается по
     // имени набора основной конфигурации.
-    args.extend(planned_source_set(prepared)?);
+    args.extend(planned.map(str::to_string));
     args.extend([
         "--output".to_string(),
         prepared.arguments.output.display().to_string(),

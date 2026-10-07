@@ -193,7 +193,9 @@ fn write_config(path: &Path, value: &Value) -> Result<(), String> {
     file.write_all(bytes.as_bytes())
         .map_err(|_| "cannot write private projected runner config")?;
     // The directory is recorded as the infobase owner: after a crash the copy
-    // must be either the previous or the new one, never empty.
+    // must be either the previous or the new one, never empty. The file is
+    // flushed everywhere; the rename is made durable on Unix, where a
+    // directory can be synced (on Windows the platform helper is a no-op).
     file.as_file()
         .sync_all()
         .map_err(|_| "cannot write private projected runner config")?;
