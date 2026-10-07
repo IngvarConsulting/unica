@@ -13,6 +13,9 @@ mod target;
 pub(crate) mod testing;
 
 pub use entrypoint::run_platform_main;
+#[cfg(test)]
+pub(crate) use filesystem::directory_is_owner_only;
+pub(crate) use filesystem::restrict_directory_to_owner;
 pub(crate) use filesystem::short_private_runtime_dir;
 pub(crate) use process::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,

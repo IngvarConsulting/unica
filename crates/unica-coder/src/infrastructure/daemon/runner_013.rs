@@ -1,14 +1,23 @@
-//! The pinned 0.12 executable stays behind the runner 1.0 operation contract.
+//! The pinned 0.13 executable stays behind the runner 1.0 operation contract.
 //!
 //! The workspace keeps the Unica vocabulary of `v8project.yaml` and
 //! `v8project.local.yaml`; the runner reads its own. When the two differ, a
-//! private copy of both layers is projected into a temporary directory and the
-//! runner reads that copy. The originals are never written, and the private copy
-//! is removed on every exit.
+//! private copy of both layers is projected into the stable directory
+//! `<workspace>/.build/unica/runner-project/` and the runner reads that copy.
+//! The originals are never written.
 //!
-//! The 0.12 loader resolves relative paths from the directory of the primary
+//! The directory is stable on purpose: runner 0.13 records the directory of the
+//! config it read as the working copy that holds a file infobase, and checks
+//! later whether that directory still declares the infobase. A copy removed after
+//! each command would leave a gone owner that any other working copy silently
+//! replaces. One directory per workspace root keeps the owner alive while the
+//! working copy exists. Each projected command rewrites the copy atomically; a
+//! command that needs no projection removes it, so the workspace itself becomes
+//! the owner and its former projection is a gone owner of the same copy.
+//!
+//! The 0.13 loader resolves relative paths from the directory of the primary
 //! config, and source-set paths from `basePath`, which it always sets to that
-//! directory: the project schema of 0.12 has no `basePath` key. The private copy
+//! directory: the project schema of 0.13 has no `basePath` key. The private copy
 //! lives elsewhere, so every such path is made absolute against the workspace
 //! root before the copy is written.
 use super::v13_workspace_bootstrap::read_yaml_config;
@@ -20,7 +29,7 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
 
-pub(super) const VERSION: &str = "0.12.0";
+pub(super) const VERSION: &str = "0.13.0";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -49,7 +58,7 @@ const BASE_NAME: &str = "v8project.yaml";
 const LOCAL_NAME: &str = "v8project.local.yaml";
 /// The only named infobase this adapter serves.
 const ORIGIN: &str = "origin";
-/// Provider keys renamed by runner 0.12: previous name, canonical name.
+/// Provider keys renamed by runner 0.12 and kept by 0.13: previous name, canonical name.
 const RENAMED_PROVIDERS: [(&str, &str); 5] = [
     ("build", "push"),
     ("dump", "pull"),
@@ -58,8 +67,8 @@ const RENAMED_PROVIDERS: [(&str, &str); 5] = [
     ("infobase.configuration.export", "download"),
 ];
 
-pub(super) struct Runner012ProcessRunner;
-impl ProcessRunner for Runner012ProcessRunner {
+pub(super) struct Runner013ProcessRunner;
+impl ProcessRunner for Runner013ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         run_projected(&SystemProcessRunner, command)
     }
@@ -108,19 +117,31 @@ fn with_projected_config<T>(
         validate_layer(local, LOCAL_NAME)?;
     }
     if !needs_projection(&base, local.as_ref()) {
+        // The workspace itself holds the infobase now: a former projection must
+        // not stay alive as another working copy that still declares it.
+        let root = normalize_path_identity(root).map_err(refuse)?;
+        match std::fs::remove_dir_all(projection_directory(&root)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("cannot remove the former projected runner config".into()),
+        }
         return execute(command);
     }
     let root = normalize_path_identity(root).map_err(refuse)?;
     // Project both layers before creating private files or starting any process.
     let (base, local) = project(base, local, &root)?;
-    let directory = tempfile::Builder::new()
-        .prefix("unica-runner012-")
-        .tempdir()
-        .map_err(|_| "cannot create private runner config directory")?;
-    let config = directory.path().join(BASE_NAME);
+    let directory = projection_directory(&root);
+    create_private_directory(&directory)?;
+    let config = directory.join(BASE_NAME);
     write_config(&config, &base)?;
-    if let Some(local) = local {
-        write_config(&directory.path().join(LOCAL_NAME), &local)?;
+    let local_path = directory.join(LOCAL_NAME);
+    match local {
+        Some(local) => write_config(&local_path, &local)?,
+        None => match std::fs::remove_file(&local_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("cannot remove a stale projected local layer".into()),
+        },
     }
     let mut projected = command.clone();
     projected.args[position] = config.display().to_string();
@@ -128,10 +149,52 @@ fn with_projected_config<T>(
     execute(&projected)
 }
 
+/// The stable projection directory of one workspace root, in the Unica cache:
+/// `<workspace>/.build/unica/runner-project` by default. A cache moved out by
+/// `UNICA_CACHE_DIR` is shared by workspaces, so there the directory is keyed by
+/// the workspace root.
+pub(super) fn projection_directory(root: &Path) -> PathBuf {
+    projection_directory_in(root, std::env::var_os("UNICA_CACHE_DIR").map(PathBuf::from))
+}
+
+fn projection_directory_in(root: &Path, cache_override: Option<PathBuf>) -> PathBuf {
+    match cache_override {
+        None => root.join(".build").join("unica").join("runner-project"),
+        Some(cache) => {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(root.as_os_str().as_encoded_bytes());
+            let key: String = digest[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            cache.join("runner-project").join(key)
+        }
+    }
+}
+
+/// The local layer carries credentials: the directory is readable by its owner
+/// only.
+fn create_private_directory(directory: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(directory)
+        .map_err(|_| "cannot create private runner config directory")?;
+    crate::infrastructure::platform::restrict_directory_to_owner(directory)
+        .map_err(|_| "cannot restrict private runner config directory".into())
+}
+
+/// Writes one projected layer atomically: a concurrent command of the same
+/// working copy reads either the previous or the new copy, never a half.
 fn write_config(path: &Path, value: &Value) -> Result<(), String> {
+    use std::io::Write;
     let bytes =
         serde_yaml::to_string(value).map_err(|_| "cannot serialize projected runner config")?;
-    std::fs::write(path, bytes).map_err(|_| "cannot write private projected runner config".into())
+    let directory = path.parent().ok_or("projected config has no directory")?;
+    let mut file = tempfile::NamedTempFile::new_in(directory)
+        .map_err(|_| "cannot write private projected runner config")?;
+    file.write_all(bytes.as_bytes())
+        .map_err(|_| "cannot write private projected runner config")?;
+    file.persist(path)
+        .map_err(|_| "cannot write private projected runner config")?;
+    Ok(())
 }
 
 fn mapping<'a>(value: &'a Value, file: &str) -> Result<&'a Mapping, String> {
@@ -144,16 +207,29 @@ fn mapping<'a>(value: &'a Value, file: &str) -> Result<&'a Mapping, String> {
 fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
     let map = mapping(value, file)?;
     if map.contains_key(Value::from("basePath")) {
-        // 0.12 rejects the key and always resolves source sets from the
+        // 0.13 rejects the key and always resolves source sets from the
         // directory of v8project.yaml.
         return Err(refuse(format!(
-            "basePath is not supported by v8-runner 0.12: source-set paths are resolved from the directory of {BASE_NAME}; remove basePath from {file}"
+            "basePath is not supported by v8-runner 0.13: source-set paths are resolved from the directory of {BASE_NAME}; remove basePath from {file}"
         )));
     }
     for key in ["execution_timeout", "execution_timeout_seconds"] {
         if map.contains_key(Value::from(key)) {
             return Err(refuse(format!(
-                "{key} is not supported by v8-runner 0.12: a command has no overall deadline, only individual steps do; remove {key} from {file}"
+                "{key} is not supported by v8-runner 0.13: a command has no overall deadline, only individual steps do; remove {key} from {file}"
+            )));
+        }
+    }
+    // 0.13 has no partial-load threshold and refuses the key by name; the
+    // legacy `build` section is the same setting under its previous name.
+    for section in ["push", "build"] {
+        if map
+            .get(Value::from(section))
+            .and_then(Value::as_mapping)
+            .is_some_and(|settings| settings.contains_key(Value::from("partialLoadThreshold")))
+        {
+            return Err(refuse(format!(
+                "{section}.partialLoadThreshold is not supported by v8-runner 0.13: the runner has no partial-load threshold, and a full load is requested with push full:true; remove the key from {file}"
             )));
         }
     }
@@ -168,7 +244,7 @@ fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
             .ok_or_else(|| refuse(format!("infobases in {file} must be a mapping")))?;
         if bases.keys().any(|name| name.as_str() != Some(ORIGIN)) {
             return Err(refuse(format!(
-                "{file} declares an infobase other than {ORIGIN}; the runner 0.12 adapter serves only infobases.{ORIGIN}"
+                "{file} declares an infobase other than {ORIGIN}; the runner 0.13 adapter serves only infobases.{ORIGIN}"
             )));
         }
     }
@@ -181,20 +257,20 @@ fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
                 .filter(|k| matches!(*k, "apply" | "reset" | "diff"))
         }) {
             return Err(refuse(format!(
-                "providers.{command} in {file} cannot be represented by runner 0.12"
+                "providers.{command} in {file} cannot be represented by runner 0.13"
             )));
         }
     }
     Ok(())
 }
 
-/// Without projection 0.12 reads the workspace files itself, so the fast path
+/// Without projection 0.13 reads the workspace files itself, so the fast path
 /// is taken only when it would read them exactly as the projection would.
 fn needs_projection(base: &Value, local: Option<&Value>) -> bool {
     let layers = || std::iter::once(base).chain(local);
     base.get("infobase").is_some()
         || base.get("infobases").is_some()
-        // 0.12 requires workPath; the projection supplies the default.
+        // 0.13 requires workPath; the projection supplies the default.
         || !layers().any(|layer| layer.get("workPath").is_some())
         || layers().any(|layer| {
             layer.get("infobase").is_some()
@@ -227,7 +303,7 @@ fn needs_projection(base: &Value, local: Option<&Value>) -> bool {
 /// Projects both layers. The infobase description of either layer, legacy
 /// `infobase:` or `infobases.origin`, is merged field by field (local wins, as
 /// the runner merges layers) and written only into the private local layer:
-/// 0.12 refuses `infobases` in the project file.
+/// 0.13 refuses `infobases` in the project file.
 fn project(
     mut base: Value,
     mut local: Option<Value>,
@@ -370,7 +446,7 @@ fn project_layer(mut value: Value, root: &Path, file: &str) -> Result<Value, Str
         }
     }
     // These are exactly the config-directory-relative paths normalized by the
-    // 0.12 loader outside the infobase sections (`normalize_config_paths`).
+    // 0.13 loader outside the infobase sections (`normalize_config_paths`).
     for parts in [
         &["workPath"][..],
         &["tools", "platform", "path"],
@@ -411,7 +487,7 @@ fn project_layer(mut value: Value, root: &Path, file: &str) -> Result<Value, Str
     Ok(value)
 }
 
-/// The paths of one infobase section the 0.12 loader resolves from the config
+/// The paths of one infobase section the 0.13 loader resolves from the config
 /// directory (`normalize_infobase_paths`).
 fn absolutize_infobase(infobase: &mut Value, root: &Path) -> Result<(), String> {
     for parts in [
@@ -551,7 +627,8 @@ mod tests {
     }
 
     /// Runs the projection and returns what the runner read; the private copy
-    /// must be gone afterwards and the workspace files untouched.
+    /// stays in the stable projection directory and the workspace files are
+    /// untouched.
     fn projected(base: &str, local: Option<&str>) -> (PathBuf, Value, Option<Value>) {
         let root = workspace(base, local);
         let probe = Probe::new();
@@ -560,8 +637,12 @@ mod tests {
             "simulated provider failure"
         );
         let config = probe.config.lock().unwrap().clone().unwrap();
-        assert_ne!(config, root.path().join(BASE_NAME), "projection expected");
-        assert!(!config.parent().unwrap().exists(), "private copy survived");
+        assert_eq!(
+            config,
+            projection_directory(&identity(root.path())).join(BASE_NAME),
+            "projection expected"
+        );
+        assert!(config.is_file(), "the projected copy is kept");
         assert_eq!(
             std::fs::read_to_string(root.path().join(BASE_NAME)).unwrap(),
             base
@@ -591,8 +672,81 @@ mod tests {
         path.display().to_string()
     }
 
+    /// Раннер 0.13 записывает владельцем файловой базы каталог прочитанного
+    /// конфига. Каталог проекции поэтому постоянный и один на рабочую копию:
+    /// повтор пишет туда же, лишний местный слой убирается, а команда без
+    /// проекции убирает сам каталог, и владельцем становится рабочая копия.
     #[test]
-    fn projection_preserves_overlay_paths_and_removes_private_files_on_failure() {
+    fn the_projection_directory_is_stable_per_working_copy() {
+        let root = workspace(
+            "infobase: {connection: 'File=ib'}\n",
+            Some("infobases: {origin: {shared: true}}\n"),
+        );
+        let directory = projection_directory(&identity(root.path()));
+        for _ in 0..2 {
+            let probe = Probe::new();
+            run_projected(&probe, &command(root.path())).unwrap_err();
+            assert_eq!(
+                probe.config.lock().unwrap().clone().unwrap(),
+                directory.join(BASE_NAME)
+            );
+        }
+        let local: Value =
+            serde_yaml::from_slice(&std::fs::read(directory.join(LOCAL_NAME)).unwrap()).unwrap();
+        assert_eq!(local["infobases"]["origin"]["shared"], true);
+        assert!(crate::infrastructure::platform::directory_is_owner_only(&directory).unwrap());
+
+        // Без местного слоя прежняя копия местного слоя не остаётся.
+        std::fs::remove_file(root.path().join(LOCAL_NAME)).unwrap();
+        std::fs::write(
+            root.path().join(BASE_NAME),
+            "workPath: build\nsource-set: [{name: main, type: configuration, path: src}]\n",
+        )
+        .unwrap();
+        run_projected(&Probe::new(), &command(root.path())).unwrap_err();
+        assert!(directory.join(BASE_NAME).is_file());
+        assert!(!directory.join(LOCAL_NAME).exists());
+
+        // Конфиг, который раннер читает сам, убирает каталог проекции.
+        std::fs::write(
+            root.path().join(BASE_NAME),
+            "workPath: build\nformat: DESIGNER\n",
+        )
+        .unwrap();
+        let probe = Probe::new();
+        run_projected(&probe, &command(root.path())).unwrap_err();
+        assert_eq!(
+            probe.config.lock().unwrap().clone().unwrap(),
+            root.path().join(BASE_NAME)
+        );
+        assert!(!directory.exists());
+    }
+
+    /// Кеш, вынесенный `UNICA_CACHE_DIR`, общий для рабочих копий: каталог
+    /// проекции в нём ключуется корнем рабочей копии и в корень не пишется.
+    #[test]
+    fn a_moved_cache_keys_the_projection_by_the_working_copy() {
+        let cache = PathBuf::from("/cache");
+        let a = projection_directory_in(Path::new("/work/a"), Some(cache.clone()));
+        let b = projection_directory_in(Path::new("/work/b"), Some(cache.clone()));
+        assert_ne!(a, b);
+        assert!(
+            a.starts_with(cache.join("runner-project")),
+            "{}",
+            a.display()
+        );
+        assert_eq!(
+            a,
+            projection_directory_in(Path::new("/work/a"), Some(cache))
+        );
+        assert_eq!(
+            projection_directory_in(Path::new("/work/a"), None),
+            Path::new("/work/a/.build/unica/runner-project")
+        );
+    }
+
+    #[test]
+    fn projection_preserves_overlay_paths_and_writes_private_files() {
         let (root, base, local) = projected(
             "format: DESIGNER\ninfobases: {origin: {connection: 'File=base'}}\nproviders: {download: designer}\n",
             Some("infobases: {origin: {password: private-test-secret}}\nworkPath: work-local\ntools: {platform: {path: platform}, designer_agent: {host-key: keys/agent, base-dir: agent-base}}\nproviders: {infobase.configuration.export: agent}\n"),
@@ -661,11 +815,11 @@ mod tests {
         let sales = std::env::temp_dir().join("unica-abs-sales");
         let sales = sales.display();
         let config = format!(
-            "infobases:\n  origin:\n    connection: 'File=base'\nbuild: {{partialLoadThreshold: 20}}\nproviders:\n  build: designer\n  dump: designer\n  load: designer\n  init: designer\n  infobase: {{dump: ibcmd, restore: ibcmd}}\nsource-set:\n  - name: main\n    type: configuration\n    path: src\n  - name: sales\n    type: extension\n    path: '{sales}'\ntools: {{edt_cli: {{path: 1cedtcli}}, va: {{epf_path: va/va.epf}}}}\ntests: {{va: {{params_path: va/params.json, profiles: {{smoke: {{feature_path: features}}}}}}}}\n"
+            "infobases:\n  origin:\n    connection: 'File=base'\nbuild: {{}}\nproviders:\n  build: designer\n  dump: designer\n  load: designer\n  init: designer\n  infobase: {{dump: ibcmd, restore: ibcmd}}\nsource-set:\n  - name: main\n    type: configuration\n    path: src\n  - name: sales\n    type: extension\n    path: '{sales}'\ntools: {{edt_cli: {{path: 1cedtcli}}, va: {{epf_path: va/va.epf}}}}\ntests: {{va: {{params_path: va/params.json, profiles: {{smoke: {{feature_path: features}}}}}}}}\n"
         );
         let (root, base, local) = projected(&config, None);
         assert!(base.get("build").is_none());
-        assert_eq!(base["push"]["partialLoadThreshold"], 20);
+        assert!(base["push"].as_mapping().is_some_and(Mapping::is_empty));
         let providers = &base["providers"];
         for key in ["push", "pull", "upload", "infobase.create"] {
             assert_eq!(providers[key], "designer", "{key}");
@@ -681,7 +835,7 @@ mod tests {
         assert_eq!(base["source-set"][1]["path"], sales.to_string());
         assert!(
             base.get("basePath").is_none(),
-            "0.12 closed schema rejects basePath"
+            "0.13 closed schema rejects basePath"
         );
         assert_eq!(base["tools"]["edt_cli"]["path"], "1cedtcli");
         assert_eq!(
@@ -747,10 +901,47 @@ mod tests {
         ] {
             let reason = refused(base, local);
             assert!(
-                reason.contains("not supported by v8-runner 0.12"),
+                reason.contains("not supported by v8-runner 0.13"),
                 "{reason}"
             );
             assert!(reason.contains("no overall deadline"), "{reason}");
+            assert!(reason.contains(&format!("from {file}")), "{reason}");
+        }
+    }
+
+    /// Раннер 0.13 отклоняет порог частичной загрузки по имени. Unica
+    /// отвечает до запуска раннера, в обоих слоях и в прежней секции `build`,
+    /// и тогда, когда проекция не нужна и раннер читал бы файлы сам.
+    #[test]
+    fn partial_load_threshold_is_refused_before_the_runner_starts() {
+        for (base, local, section, file) in [
+            (
+                "workPath: build\npush: {partialLoadThreshold: 20}\n",
+                Some("infobases: {origin: {connection: 'File=ib'}}\n"),
+                "push",
+                BASE_NAME,
+            ),
+            (
+                "build: {partialLoadThreshold: 20}\n",
+                None,
+                "build",
+                BASE_NAME,
+            ),
+            (
+                "workPath: build\n",
+                Some("push: {partialLoadThreshold: 5}\n"),
+                "push",
+                LOCAL_NAME,
+            ),
+        ] {
+            let reason = refused(base, local);
+            assert!(
+                reason.contains(&format!(
+                    "{section}.partialLoadThreshold is not supported by v8-runner 0.13"
+                )),
+                "{reason}"
+            );
+            assert!(reason.contains("full:true"), "{reason}");
             assert!(reason.contains(&format!("from {file}")), "{reason}");
         }
     }
@@ -762,7 +953,8 @@ mod tests {
             "0.9.0",
             "0.11.3",
             "0.11.4",
-            "0.12.1",
+            "0.12.0",
+            "0.13.1",
             "1.0.0",
             "1.0.0-rc.1",
             "",

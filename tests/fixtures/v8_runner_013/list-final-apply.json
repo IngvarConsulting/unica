@@ -1,7 +1,7 @@
 {
   "ok": true,
   "command": "extensions",
-  "duration_ms": 4663,
+  "duration_ms": 5799,
   "data": {
     "provider": {
       "selected": "ibcmd",
@@ -16,7 +16,7 @@
       "kind": "all"
     },
     "extensions": [],
-    "duration_ms": 4663
+    "duration_ms": 5799
   },
   "warnings": [],
   "steps": []

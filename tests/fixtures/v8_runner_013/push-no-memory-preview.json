@@ -1,0 +1,28 @@
+{
+  "ok": false,
+  "command": "push",
+  "duration_ms": 0,
+  "data": {
+    "provider": {
+      "selected": "designer",
+      "origin": {
+        "kind": "default"
+      }
+    },
+    "ok": false,
+    "provider_dispatched": false,
+    "steps": [],
+    "duration_ms": 0
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "no_memory",
+    "kind": "no_memory",
+    "message": "cannot push: this working copy has no memory of file infobase '/workspace/A/build/ib' with no configured infobase user for source-set 'main', so nothing proves that the sources derive from its state; an empty infobase is not told apart, because its generation depends on the platform version. If the infobase holds the right state, see what is there with `v8-runner --config /workspace/B/v8project.yaml pull main`; if the source directory does, run `v8-runner --config /workspace/B/v8project.yaml push --force`, which loads the whole directory and replaces the configuration in the infobase, losing what was changed there. The infobase is shared (`shared: true`): other working copies change it too; its other owners: '/workspace/A' on 'dev-host'.",
+    "next": {
+      "command": "pull",
+      "source_set": "main"
+    }
+  }
+}

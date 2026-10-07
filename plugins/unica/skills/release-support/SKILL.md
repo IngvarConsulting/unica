@@ -35,7 +35,7 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 1. Identify release scope: vendor update, extension change, merge branch, support-state change, hotfix, migration, or integration contract change.
 2. Map source-sets with `unica.view {}`; inspect the configuration root with `unica.view <set>:Configuration`, extensions with `unica.diff` between the extension and configuration sets, `unica.view` on the object node, and `unica.search`.
 3. List compatibility risks: metadata rename/delete, changed roles, changed integration contracts, data migrations, scheduled jobs, query behavior, BSP hooks, and extension interceptors.
-4. Run `unica.check` on the changed modules; build and update go through `unica.run` (`make`, or source `push` with `force:true`; loading a `.cf`/`.cfe` file is unavailable, #1246) with a `dryRun: true` preview followed by explicit `dryRun: false`; test runs are outside the v0.13 surface, so record them as unverified unless separate evidence is supplied.
+4. Run `unica.check` on the changed modules; build and update go through `unica.run` (`make`, or source `push`; loading a `.cf`/`.cfe` file is unavailable, #1246) with a `dryRun: true` preview followed by explicit `dryRun: false`; test runs are outside the v0.13 surface, so record them as unverified unless separate evidence is supplied.
 5. Produce a release readiness note: blocking findings, migration steps, rollback boundary, manual checks, and Unica MCP contract gaps.
 
 ## Installed extensions
@@ -55,7 +55,10 @@ Support-state checks come from `unica.view` on the configuration root (`support`
 оно удаляет и данные расширения. Сначала проверь его preview, затем передай `dryRun: false`.
 Режим удаления нельзя совмещать с отправкой исходников. Выключение активности
 не равно удалению. Отдельного публичного создания пустого расширения нет:
-первая отправка `push` с `force:true` создаёт его из исходников.
+первая отправка `push` создаёт его из исходников. Если набор расширения
+объявлен после создания базы, `push` откажет `no_memory`: памяти об этом наборе
+у рабочей копии нет. Тогда превью `push` с `sourceSet` этого набора и `force:true`
+покажет загрузку одного расширения; исполняй её после подтверждения человека.
 Загрузка CF/CFE (`upload`) и отдельные `apply`/`reset` сейчас недоступны
 ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)): сообщай это
 как пробел контракта Unica MCP и не заменяй их прямым запуском раннера.

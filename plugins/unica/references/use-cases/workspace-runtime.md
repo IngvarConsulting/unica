@@ -27,8 +27,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
 вызовами. Не обходи контракт прямым runner-ом.
 
-Source sending and full pulling require explicit `force:true`.
-They provide no generation or local-work protection; inspect the preview before execution.
+Source `push` checks the infobase generation before loading a set and is refused with `non_fast_forward` when the infobase moved ahead of this working copy's record, or with `no_memory` when this working copy has no memory of the infobase; the refusal offers a `pull` preview and a `push` preview with `force:true`. `force:true` overwrites the infobase: every selected set is loaded in full without that check, and changes made in the infobase are lost. A set the runner skips by its memory is neither loaded nor checked. Full pulling requires explicit `force:true` and provides no local-work protection; inspect the preview before execution.
 For source readiness independently of runtime availability, first
 call `unica.check {}`. It returns `status`, `ready`, `repositoryReady`,
 `checks[]` and `diagnostics[]` — the verdict on the workspace. The facts it
@@ -106,10 +105,10 @@ source-set path itself has no stronger structural evidence.
 | Intent | `unica.run` operation |
 | --- | --- |
 | Create an absent empty infobase | `infobase.create`, empty args; then send sources separately; no sync baseline |
-| Send sources / delete an extension | `push`, `force:true`, optional `sourceSet` and `full`; applies the database configuration. Deletion uses only `delete: "InstalledName"` |
+| Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
-| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: v8-runner 0.12 has no load without applying the database configuration ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: v8-runner 0.13 has no load without applying the database configuration ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 | Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |

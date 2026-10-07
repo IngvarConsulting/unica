@@ -947,6 +947,19 @@ class ProductContractTests(unittest.TestCase):
         self.assertTrue(
             any("closed" in error for error in validator(unknown_error_field, 4, "main"))
         )
+        # С 0.13 шаг ещё называет судьбу записи поколения набора; другая
+        # приписка к сообщению шага — уже не та квитанция.
+        generation_note = copy.deepcopy(envelope)
+        generation_note["data"]["steps"][0]["message"] = (
+            f"platform error: {message}; the configuration generation of "
+            "source-set 'main' is not recorded after the failed load"
+        )
+        self.assertEqual(validator(generation_note, 4, "main"), [])
+        other_note = copy.deepcopy(envelope)
+        other_note["data"]["steps"][0]["message"] = f"platform error: {message}; retried"
+        self.assertTrue(
+            any("does not match" in error for error in validator(other_note, 4, "main"))
+        )
         previous_command = copy.deepcopy(envelope)
         previous_command["command"] = "build"
         self.assertTrue(

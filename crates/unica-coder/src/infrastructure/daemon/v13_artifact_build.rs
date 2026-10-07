@@ -18,11 +18,12 @@
 //! квитанцию: размер и дайджест файла. Путь к платформе наружу не идёт.
 
 use super::protocol::InvocationRequest;
-use super::runner_012::Runner012ProcessRunner;
+use super::runner_013::Runner013ProcessRunner;
 use super::v13_infobase_exports::{
-    closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
-    missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    closed_workspace_relative_path, configuration_source_set, digest_optional_workspace_file,
+    digest_required_workspace_file, missing_runner_rejection, resolve_bundled_runner,
+    runner_rejection, runner_start_rejection, valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME,
+    RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
@@ -141,7 +142,7 @@ impl PreparedArtifactBuild {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
     }
 }
 
@@ -574,9 +575,24 @@ fn invoke_runner(
         RUNNER_COMMAND.to_string(),
     ];
     // Набор — позиционный аргумент: `--source-set` у раннера 0.12 скрытый синоним.
-    if let Some(source_set) = &prepared.arguments.source_set {
-        args.push(source_set.clone());
-    }
+    // Без набора и без `--extension` раннер 0.13 собирает все наборы в каталог
+    // и путь к одному файлу отклоняет, поэтому `.cf` без набора заказывается по
+    // имени набора основной конфигурации.
+    let source_set = match (&prepared.arguments.source_set, prepared.arguments.kind) {
+        (Some(source_set), _) => Some(source_set.clone()),
+        (None, ArtifactKind::Cf) => Some(
+            configuration_source_set(&prepared.context.workspace_root)
+                .map_err(|error| reject(RefusalCode::InvalidState, error))?
+                .ok_or_else(|| {
+                    reject(
+                        RefusalCode::InvalidState,
+                        format!("{CONFIG_NAME} declares no configuration source-set; name the source set to build the .cf from with sourceSet"),
+                    )
+                })?,
+        ),
+        (None, ArtifactKind::Cfe) => None,
+    };
+    args.extend(source_set);
     args.extend([
         "--output".to_string(),
         prepared.arguments.output.display().to_string(),
@@ -985,11 +1001,34 @@ mod tests {
             !encoded.contains(&root_text),
             "absolute path leaked: {encoded}"
         );
+        // Без набора раннер 0.13 собрал бы все наборы в каталог и путь к файлу
+        // отклонил бы: `.cf` заказывается по имени набора основной конфигурации.
         let args = runner.joined_args(0);
         assert!(
-            args.contains("--json-message make --output ") && args.ends_with("--dry-run"),
+            args.contains("--json-message make main --output ") && args.ends_with("--dry-run"),
             "{args}"
         );
+    }
+
+    /// Проект без набора основной конфигурации: `.cf` без `sourceSet` собирать
+    /// не из чего, и отказ приходит до запуска раннера.
+    #[test]
+    fn a_cf_without_a_configuration_set_is_refused_before_the_runner_starts() {
+        let root = workspace();
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            "format: DESIGNER\nsource-set:\n  - name: ext-sales\n    type: EXTENSION\n    path: ext-sales\n",
+        )
+        .unwrap();
+        let prepared = build_of(root.path(), "dist/main.cf", None, None, true);
+        let runner = SequenceRunner::new(vec![]);
+        let result = run(root.path(), &prepared, &runner);
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("declares no configuration source-set"));
+        assert_eq!(runner.call_count(), 0);
     }
 
     #[test]
