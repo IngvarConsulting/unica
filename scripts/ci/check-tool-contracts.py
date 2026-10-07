@@ -1634,6 +1634,7 @@ def check_rlm_mcp_contract(mcp_tool: Path, index_tool: Path) -> list[str]:
                     "max_execute_calls": 10_000,
                     "execution_timeout_seconds": 30,
                     "include_metadata": False,
+                    "domains": [],
                 },
             )
             if not isinstance(start_payload, dict):

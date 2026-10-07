@@ -2173,6 +2173,7 @@ fn test_only() { std::process::Command::new("git"); }
                 "max_execute_calls": 10_000,
                 "execution_timeout_seconds": 30,
                 "include_metadata": False,
+                "domains": [],
             },
         )
         self.assertEqual(
