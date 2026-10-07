@@ -16,7 +16,7 @@
 //! платформе и командная строка наружу не идут.
 
 use super::protocol::InvocationRequest;
-use super::runner_012::Runner012ProcessRunner;
+use super::runner_013::Runner013ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, runner_start_rejection, CONFIG_NAME,
@@ -110,7 +110,7 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
     }
 }
 

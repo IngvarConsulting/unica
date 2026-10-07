@@ -13,7 +13,7 @@
 //! соединения: у выгрузок то же правило (`INV.RUNTIME.V13-INFOBASE-EXPORTS`).
 
 use super::protocol::InvocationRequest;
-use super::runner_012::Runner012ProcessRunner;
+use super::runner_013::Runner013ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
@@ -153,7 +153,7 @@ impl PreparedClientRun {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
     }
 }
 
@@ -693,7 +693,7 @@ fn invoke_runner(
                 RefusalCode::Cancelled,
                 "launch cancelled while reading the runner result",
             )
-        } else if super::runner_012::config_refusal(&error).is_some() {
+        } else if super::runner_013::config_refusal(&error).is_some() {
             // Проектный файл отклонён до запуска раннера: клиента ещё нет.
             runner_start_rejection(Some(OPERATION.to_string()), &error)
         } else if owns_client {

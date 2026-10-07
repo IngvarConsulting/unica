@@ -1,7 +1,7 @@
 {
   "ok": true,
   "command": "extensions",
-  "duration_ms": 18351,
+  "duration_ms": 21996,
   "data": {
     "provider": {
       "selected": "ibcmd",
@@ -26,10 +26,10 @@
         "unsafe_action_protection": true,
         "used_in_distributed_infobase": false,
         "scope": "infobase",
-        "hash_sum": "Ah+es+7Z6SL7YcwRSmrNHAvUml8="
+        "hash_sum": "mZ9q/COg+fFy/obMEwjsFYeVh/0="
       }
     ],
-    "duration_ms": 18351
+    "duration_ms": 21996
   },
   "warnings": [],
   "steps": []

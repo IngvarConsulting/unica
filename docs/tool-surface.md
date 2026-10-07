@@ -138,10 +138,10 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | --- | --- | --- | --- |
 | `args` | object | нет | Typed arguments for the selected operation. |
 | `dryRun` | boolean | нет | Required by previewApply operations: true returns a non-mutating preview; false executes with the current arguments without requiring a prior preview. |
-| `infobase` | string | нет | Named infobase; defaults to origin. The runner 0.12 adapter supports only origin. |
+| `infobase` | string | нет | Named infobase; defaults to origin. The runner 0.13 adapter supports only origin. |
 | `op` | string | нет | Runner 1.0 operation name; omit to list the target dictionary and adapter support. |
 
-**Результат сейчас:** 10 из 13 операций целевого словаря исполнимы через закреплённый адаптер 0.12.0; upload, apply и reset отвечают `unsupported_operation` (разрыв #1246): раннер 0.12 не загружает CF/CFE без применения и не знает apply/reset, исходники идут через push, который применяет конфигурацию БД. Плановые операции требуют явный boolean dryRun: true показывает план, false исполняет без предварительного preview. run не принимает ifRev и не выдаёт rev. push исходников и pull требуют force. infobase.create создаёт пустую базу. Три исполнимые операции ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
+**Результат сейчас:** 10 из 13 операций целевого словаря исполнимы через закреплённый адаптер 0.13.0; upload, apply и reset отвечают `unsupported_operation` (разрыв #1246): раннер 0.13 не загружает CF/CFE без применения и не знает apply/reset, исходники идут через push, который применяет конфигурацию БД. Плановые операции требуют явный boolean dryRun: true показывает план, false исполняет без предварительного preview. run не принимает ifRev и не выдаёт rev. push перед загрузкой набора сверяет поколение базы и отказывает, если база ушла вперёд или памяти о ней нет; force:true перезаписывает базу без сверки. pull требует force. infobase.create создаёт пустую базу. Три исполнимые операции ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
 
 **Целевой контракт:** Ограничены три операции разработки; upload, apply и reset вернутся, когда раннер получит push --no-apply, apply и reset (#1246). Адаптер 1.0 расширяет те же имена контролем поколений и синхронизацией; текущий dryRun не фиксирует состояние базы или исходников между вызовами.
 

@@ -5,7 +5,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs::development_cycle_admits_the_explicit_compatibility_subset
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_create_prepares_before_source_admission_and_runs_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_unavailable_runner_operations_are_refused_at_bind_without_a_runner
-  - crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs::runner_012_refuses_upload_apply_and_reset_naming_the_gap
+  - crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs::runner_013_refuses_upload_apply_and_reset_naming_the_gap
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_source_export_prepares_before_source_admission_and_runs_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_source_import_prepares_before_source_admission_and_runs_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_run_dictionary.rs::runner_one_refuses_unsupported_semantics_and_old_names_before_admission
@@ -20,7 +20,7 @@ check:
 Неподдерживаемый запрос получает отказ до допуска исходников и запуска
 платформы, а не успешный preview.
 
-Адаптер раннера 0.12 исполняет десять из 13 операций. Операции разработки
+Адаптер раннера 0.13 исполняет десять из 13 операций. Операции разработки
 `push`, `pull` и `infobase.create` имеют статус `limited` с точной схемой
 аргументов и описанием отсутствующих гарантий. `upload`, `apply` и `reset`
 имеют статус `unavailable`: в раннере нет загрузки без применения к базе

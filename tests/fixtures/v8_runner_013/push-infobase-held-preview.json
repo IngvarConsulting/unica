@@ -1,0 +1,27 @@
+{
+  "ok": false,
+  "command": "push",
+  "duration_ms": 0,
+  "data": {
+    "message": "cannot start push: the infobase '/workspace/A/build/ib' is held by the working copy '/workspace/A' on this machine, which does not share it; this working copy does not share it. A command that writes a development infobase runs only in the working copy that holds it, or on a shared infobase when every working copy that holds it and this one share it, and repeating it does not help. Ways out for this working copy: its own clean infobase — declare infobases.origin with a connection of its own in v8project.local.yaml and run `v8-runner infobase create`; a copy of the infobase with its data — `infobase create --from <infobase>` (not available yet, #330); a shared infobase — `shared: true` at the infobase in v8project.local.yaml of every working copy that holds it and of this one: a working copy on another machine reports its consent through the owner marker at its next write command. To free the infobase: remove the infobase from v8project.local.yaml of '/workspace/A' or remove that working copy. Owner marker: '/workspace/A/build/.ib.v8-runner.owners.json'"
+  },
+  "warnings": [],
+  "steps": [
+    {
+      "name": "infobase owner",
+      "ok": false,
+      "status": "failed",
+      "kind": "resolve_target",
+      "duration_ms": 0,
+      "message": "cannot start push: the infobase '/workspace/A/build/ib' is held by the working copy '/workspace/A' on this machine, which does not share it; this working copy does not share it. A command that writes a development infobase runs only in the working copy that holds it, or on a shared infobase when every working copy that holds it and this one share it, and repeating it does not help. Ways out for this working copy: its own clean infobase — declare infobases.origin with a connection of its own in v8project.local.yaml and run `v8-runner infobase create`; a copy of the infobase with its data — `infobase create --from <infobase>` (not available yet, #330); a shared infobase — `shared: true` at the infobase in v8project.local.yaml of every working copy that holds it and of this one: a working copy on another machine reports its consent through the owner marker at its next write command. To free the infobase: remove the infobase from v8project.local.yaml of '/workspace/A' or remove that working copy. Owner marker: '/workspace/A/build/.ib.v8-runner.owners.json'"
+    }
+  ],
+  "error": {
+    "code": "infobase_held",
+    "kind": "workspace",
+    "message": "cannot start push: the infobase '/workspace/A/build/ib' is held by the working copy '/workspace/A' on this machine, which does not share it; this working copy does not share it. A command that writes a development infobase runs only in the working copy that holds it, or on a shared infobase when every working copy that holds it and this one share it, and repeating it does not help. Ways out for this working copy: its own clean infobase — declare infobases.origin with a connection of its own in v8project.local.yaml and run `v8-runner infobase create`; a copy of the infobase with its data — `infobase create --from <infobase>` (not available yet, #330); a shared infobase — `shared: true` at the infobase in v8project.local.yaml of every working copy that holds it and of this one: a working copy on another machine reports its consent through the owner marker at its next write command. To free the infobase: remove the infobase from v8project.local.yaml of '/workspace/A' or remove that working copy. Owner marker: '/workspace/A/build/.ib.v8-runner.owners.json'",
+    "next": {
+      "command": "infobase create"
+    }
+  }
+}

@@ -1,4 +1,4 @@
-//! The pinned 0.12 executable stays behind the runner 1.0 operation contract.
+//! The pinned 0.13 executable stays behind the runner 1.0 operation contract.
 //!
 //! The workspace keeps the Unica vocabulary of `v8project.yaml` and
 //! `v8project.local.yaml`; the runner reads its own. When the two differ, a
@@ -6,9 +6,9 @@
 //! runner reads that copy. The originals are never written, and the private copy
 //! is removed on every exit.
 //!
-//! The 0.12 loader resolves relative paths from the directory of the primary
+//! The 0.13 loader resolves relative paths from the directory of the primary
 //! config, and source-set paths from `basePath`, which it always sets to that
-//! directory: the project schema of 0.12 has no `basePath` key. The private copy
+//! directory: the project schema of 0.13 has no `basePath` key. The private copy
 //! lives elsewhere, so every such path is made absolute against the workspace
 //! root before the copy is written.
 use super::v13_workspace_bootstrap::read_yaml_config;
@@ -20,7 +20,7 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
 
-pub(super) const VERSION: &str = "0.12.0";
+pub(super) const VERSION: &str = "0.13.0";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -49,7 +49,7 @@ const BASE_NAME: &str = "v8project.yaml";
 const LOCAL_NAME: &str = "v8project.local.yaml";
 /// The only named infobase this adapter serves.
 const ORIGIN: &str = "origin";
-/// Provider keys renamed by runner 0.12: previous name, canonical name.
+/// Provider keys renamed by runner 0.12 and kept by 0.13: previous name, canonical name.
 const RENAMED_PROVIDERS: [(&str, &str); 5] = [
     ("build", "push"),
     ("dump", "pull"),
@@ -58,8 +58,8 @@ const RENAMED_PROVIDERS: [(&str, &str); 5] = [
     ("infobase.configuration.export", "download"),
 ];
 
-pub(super) struct Runner012ProcessRunner;
-impl ProcessRunner for Runner012ProcessRunner {
+pub(super) struct Runner013ProcessRunner;
+impl ProcessRunner for Runner013ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         run_projected(&SystemProcessRunner, command)
     }
@@ -114,7 +114,7 @@ fn with_projected_config<T>(
     // Project both layers before creating private files or starting any process.
     let (base, local) = project(base, local, &root)?;
     let directory = tempfile::Builder::new()
-        .prefix("unica-runner012-")
+        .prefix("unica-runner013-")
         .tempdir()
         .map_err(|_| "cannot create private runner config directory")?;
     let config = directory.path().join(BASE_NAME);
@@ -144,16 +144,29 @@ fn mapping<'a>(value: &'a Value, file: &str) -> Result<&'a Mapping, String> {
 fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
     let map = mapping(value, file)?;
     if map.contains_key(Value::from("basePath")) {
-        // 0.12 rejects the key and always resolves source sets from the
+        // 0.13 rejects the key and always resolves source sets from the
         // directory of v8project.yaml.
         return Err(refuse(format!(
-            "basePath is not supported by v8-runner 0.12: source-set paths are resolved from the directory of {BASE_NAME}; remove basePath from {file}"
+            "basePath is not supported by v8-runner 0.13: source-set paths are resolved from the directory of {BASE_NAME}; remove basePath from {file}"
         )));
     }
     for key in ["execution_timeout", "execution_timeout_seconds"] {
         if map.contains_key(Value::from(key)) {
             return Err(refuse(format!(
-                "{key} is not supported by v8-runner 0.12: a command has no overall deadline, only individual steps do; remove {key} from {file}"
+                "{key} is not supported by v8-runner 0.13: a command has no overall deadline, only individual steps do; remove {key} from {file}"
+            )));
+        }
+    }
+    // 0.13 has no partial-load threshold and refuses the key by name; the
+    // legacy `build` section is the same setting under its previous name.
+    for section in ["push", "build"] {
+        if map
+            .get(Value::from(section))
+            .and_then(Value::as_mapping)
+            .is_some_and(|settings| settings.contains_key(Value::from("partialLoadThreshold")))
+        {
+            return Err(refuse(format!(
+                "{section}.partialLoadThreshold is not supported by v8-runner 0.13: the runner has no partial-load threshold, and a full load is requested with push full:true; remove the key from {file}"
             )));
         }
     }
@@ -168,7 +181,7 @@ fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
             .ok_or_else(|| refuse(format!("infobases in {file} must be a mapping")))?;
         if bases.keys().any(|name| name.as_str() != Some(ORIGIN)) {
             return Err(refuse(format!(
-                "{file} declares an infobase other than {ORIGIN}; the runner 0.12 adapter serves only infobases.{ORIGIN}"
+                "{file} declares an infobase other than {ORIGIN}; the runner 0.13 adapter serves only infobases.{ORIGIN}"
             )));
         }
     }
@@ -181,20 +194,20 @@ fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
                 .filter(|k| matches!(*k, "apply" | "reset" | "diff"))
         }) {
             return Err(refuse(format!(
-                "providers.{command} in {file} cannot be represented by runner 0.12"
+                "providers.{command} in {file} cannot be represented by runner 0.13"
             )));
         }
     }
     Ok(())
 }
 
-/// Without projection 0.12 reads the workspace files itself, so the fast path
+/// Without projection 0.13 reads the workspace files itself, so the fast path
 /// is taken only when it would read them exactly as the projection would.
 fn needs_projection(base: &Value, local: Option<&Value>) -> bool {
     let layers = || std::iter::once(base).chain(local);
     base.get("infobase").is_some()
         || base.get("infobases").is_some()
-        // 0.12 requires workPath; the projection supplies the default.
+        // 0.13 requires workPath; the projection supplies the default.
         || !layers().any(|layer| layer.get("workPath").is_some())
         || layers().any(|layer| {
             layer.get("infobase").is_some()
@@ -227,7 +240,7 @@ fn needs_projection(base: &Value, local: Option<&Value>) -> bool {
 /// Projects both layers. The infobase description of either layer, legacy
 /// `infobase:` or `infobases.origin`, is merged field by field (local wins, as
 /// the runner merges layers) and written only into the private local layer:
-/// 0.12 refuses `infobases` in the project file.
+/// 0.13 refuses `infobases` in the project file.
 fn project(
     mut base: Value,
     mut local: Option<Value>,
@@ -370,7 +383,7 @@ fn project_layer(mut value: Value, root: &Path, file: &str) -> Result<Value, Str
         }
     }
     // These are exactly the config-directory-relative paths normalized by the
-    // 0.12 loader outside the infobase sections (`normalize_config_paths`).
+    // 0.13 loader outside the infobase sections (`normalize_config_paths`).
     for parts in [
         &["workPath"][..],
         &["tools", "platform", "path"],
@@ -411,7 +424,7 @@ fn project_layer(mut value: Value, root: &Path, file: &str) -> Result<Value, Str
     Ok(value)
 }
 
-/// The paths of one infobase section the 0.12 loader resolves from the config
+/// The paths of one infobase section the 0.13 loader resolves from the config
 /// directory (`normalize_infobase_paths`).
 fn absolutize_infobase(infobase: &mut Value, root: &Path) -> Result<(), String> {
     for parts in [
@@ -661,11 +674,11 @@ mod tests {
         let sales = std::env::temp_dir().join("unica-abs-sales");
         let sales = sales.display();
         let config = format!(
-            "infobases:\n  origin:\n    connection: 'File=base'\nbuild: {{partialLoadThreshold: 20}}\nproviders:\n  build: designer\n  dump: designer\n  load: designer\n  init: designer\n  infobase: {{dump: ibcmd, restore: ibcmd}}\nsource-set:\n  - name: main\n    type: configuration\n    path: src\n  - name: sales\n    type: extension\n    path: '{sales}'\ntools: {{edt_cli: {{path: 1cedtcli}}, va: {{epf_path: va/va.epf}}}}\ntests: {{va: {{params_path: va/params.json, profiles: {{smoke: {{feature_path: features}}}}}}}}\n"
+            "infobases:\n  origin:\n    connection: 'File=base'\nbuild: {{}}\nproviders:\n  build: designer\n  dump: designer\n  load: designer\n  init: designer\n  infobase: {{dump: ibcmd, restore: ibcmd}}\nsource-set:\n  - name: main\n    type: configuration\n    path: src\n  - name: sales\n    type: extension\n    path: '{sales}'\ntools: {{edt_cli: {{path: 1cedtcli}}, va: {{epf_path: va/va.epf}}}}\ntests: {{va: {{params_path: va/params.json, profiles: {{smoke: {{feature_path: features}}}}}}}}\n"
         );
         let (root, base, local) = projected(&config, None);
         assert!(base.get("build").is_none());
-        assert_eq!(base["push"]["partialLoadThreshold"], 20);
+        assert!(base["push"].as_mapping().is_some_and(Mapping::is_empty));
         let providers = &base["providers"];
         for key in ["push", "pull", "upload", "infobase.create"] {
             assert_eq!(providers[key], "designer", "{key}");
@@ -681,7 +694,7 @@ mod tests {
         assert_eq!(base["source-set"][1]["path"], sales.to_string());
         assert!(
             base.get("basePath").is_none(),
-            "0.12 closed schema rejects basePath"
+            "0.13 closed schema rejects basePath"
         );
         assert_eq!(base["tools"]["edt_cli"]["path"], "1cedtcli");
         assert_eq!(
@@ -747,10 +760,47 @@ mod tests {
         ] {
             let reason = refused(base, local);
             assert!(
-                reason.contains("not supported by v8-runner 0.12"),
+                reason.contains("not supported by v8-runner 0.13"),
                 "{reason}"
             );
             assert!(reason.contains("no overall deadline"), "{reason}");
+            assert!(reason.contains(&format!("from {file}")), "{reason}");
+        }
+    }
+
+    /// Раннер 0.13 отклоняет порог частичной загрузки по имени. Unica
+    /// отвечает до запуска раннера, в обоих слоях и в прежней секции `build`,
+    /// и тогда, когда проекция не нужна и раннер читал бы файлы сам.
+    #[test]
+    fn partial_load_threshold_is_refused_before_the_runner_starts() {
+        for (base, local, section, file) in [
+            (
+                "workPath: build\npush: {partialLoadThreshold: 20}\n",
+                Some("infobases: {origin: {connection: 'File=ib'}}\n"),
+                "push",
+                BASE_NAME,
+            ),
+            (
+                "build: {partialLoadThreshold: 20}\n",
+                None,
+                "build",
+                BASE_NAME,
+            ),
+            (
+                "workPath: build\n",
+                Some("push: {partialLoadThreshold: 5}\n"),
+                "push",
+                LOCAL_NAME,
+            ),
+        ] {
+            let reason = refused(base, local);
+            assert!(
+                reason.contains(&format!(
+                    "{section}.partialLoadThreshold is not supported by v8-runner 0.13"
+                )),
+                "{reason}"
+            );
+            assert!(reason.contains("full:true"), "{reason}");
             assert!(reason.contains(&format!("from {file}")), "{reason}");
         }
     }
@@ -762,7 +812,8 @@ mod tests {
             "0.9.0",
             "0.11.3",
             "0.11.4",
-            "0.12.1",
+            "0.12.0",
+            "0.13.1",
             "1.0.0",
             "1.0.0-rc.1",
             "",

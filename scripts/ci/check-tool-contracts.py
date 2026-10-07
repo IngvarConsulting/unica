@@ -237,7 +237,16 @@ def validate_v8_runner_failed_partial_receipt(
         errors.append("partial mode file_count must be a positive integer")
     if step["source_set"] != expected_source_set or step["ok"] is not False:
         errors.append("failed partial step does not match the requested source-set")
-    if step["message"] != f"platform error: {message}":
+    # С 0.13 шаг неудачной загрузки ещё называет судьбу записи поколения
+    # набора (журнал поколений помечается после отказа загрузки).
+    generation_note = (
+        f"; the configuration generation of source-set '{expected_source_set}' "
+        "is not recorded after the failed load"
+    )
+    if step["message"] not in {
+        f"platform error: {message}",
+        f"platform error: {message}{generation_note}",
+    }:
         errors.append("failed partial step message does not match the runner error")
 
     prefix = f"load failed for source-set '{expected_source_set}' with exit code "
@@ -347,8 +356,6 @@ fn main() {
                     f"workPath: '{yaml_path(work_path)}'",
                     "format: DESIGNER",
                     "providers: {push: designer, make: designer}",
-                    "push:",
-                    "  partialLoadThreshold: 20",
                     "source-set:",
                     "  - name: main",
                     "    type: CONFIGURATION",
@@ -370,8 +377,10 @@ fn main() {
             "--json-message",
             "push",
         ]
+        # Runner 0.13 refuses a push into an infobase it has no memory of
+        # (`no_memory`); the baseline load is the explicit overwrite.
         initial = subprocess.run(
-            command,
+            [*command, "--force"],
             cwd=root,
             env=environment,
             text=True,

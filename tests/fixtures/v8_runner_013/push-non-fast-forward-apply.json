@@ -1,0 +1,38 @@
+{
+  "ok": false,
+  "command": "push",
+  "duration_ms": 2860,
+  "data": {
+    "provider": {
+      "selected": "designer",
+      "origin": {
+        "kind": "default"
+      }
+    },
+    "ok": false,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "source_set": "main",
+        "mode": "full",
+        "ok": false,
+        "message": "cannot push source-set 'main': file infobase '/workspace/A/build/ib' with no configured infobase user moved ahead since the last exchange of this working copy — its configuration generation is 19ece0d79ec27b48af3a501835b1d59900000000, the one recorded after the last build (2026-10-07T14:38:28.833806+00:00) is 5d598420fd015846aeb614e7a2b98cf500000000; take its changes first with `v8-runner --config /workspace/A/v8project.yaml pull main`, or overwrite them with `v8-runner --config /workspace/A/v8project.yaml push main --force`. The infobase is shared (`shared: true`): other working copies change it too; its other owners: '/workspace/B' on 'dev-host'.",
+        "duration_ms": 0
+      }
+    ],
+    "duration_ms": 2860
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "non_fast_forward",
+    "kind": "non_fast_forward",
+    "message": "cannot push source-set 'main': file infobase '/workspace/A/build/ib' with no configured infobase user moved ahead since the last exchange of this working copy — its configuration generation is 19ece0d79ec27b48af3a501835b1d59900000000, the one recorded after the last build (2026-10-07T14:38:28.833806+00:00) is 5d598420fd015846aeb614e7a2b98cf500000000; take its changes first with `v8-runner --config /workspace/A/v8project.yaml pull main`, or overwrite them with `v8-runner --config /workspace/A/v8project.yaml push main --force`. The infobase is shared (`shared: true`): other working copies change it too; its other owners: '/workspace/B' on 'dev-host'.",
+    "next": {
+      "command": "pull",
+      "source_set": "main"
+    },
+    "base_generation": "19ece0d79ec27b48af3a501835b1d59900000000",
+    "local_generation": "5d598420fd015846aeb614e7a2b98cf500000000"
+  }
+}

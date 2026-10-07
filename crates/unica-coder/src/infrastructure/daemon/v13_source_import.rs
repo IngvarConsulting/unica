@@ -4,20 +4,25 @@
 //! базу в исходники, этот вносит исходники в базу.
 //!
 //! Аргументы закрыты: `sourceSet` — имя одного объявленного набора (без него
-//! импортируются все), `force:true` обязателен; `full` — сбросить кэш изменений раннера и
-//! загрузить всё целиком. Превью зовёт `push --dry-run`: раннер выбирает
-//! для каждого набора режим (`full` или `partial` по своим правилам частичной
-//! загрузки), не запуская конфигуратор. Применение повторяет превью, сверяет
-//! забор ревизии и требует тот же состав наборов и те же режимы: иной режим
-//! значит, что исходники изменились между превью и применением.
+//! импортируются все); `full` — сбросить кэш изменений раннера и загрузить всё
+//! целиком; `force:true` — перезаписать базу (`push --force`): каждый набор
+//! грузится целиком без сверки памяти и поколения базы, сделанное в базе
+//! теряется. Без `force` раннер 0.13 перед загрузкой набора сверяет поколение
+//! базы с записью о прошлом обмене и отказывает `non_fast_forward`, если база
+//! ушла вперёд, или `no_memory`, если памяти о базе нет. Превью зовёт
+//! `push --dry-run`: раннер выбирает для каждого набора режим, не запуская
+//! конфигуратор. Применение повторяет превью и требует тот же состав наборов
+//! и те же режимы: иной режим значит, что исходники изменились между превью и
+//! применением.
 //!
 //! Состояние базы после импорта Unica не проверяет — оно засвидетельствовано
 //! провайдером, и ответ называет это прямо. Набор, который раннер пропустил
-//! по своей памяти, загружен не был: такой ответ называет состояние базы
-//! непроверенным, а не импортом. Проза шагов раннера наружу не идёт.
+//! по своей памяти, загружен не был, и поколение базы для него не сверялось:
+//! такой ответ называет состояние базы непроверенным, а не импортом. Проза
+//! шагов раннера наружу не идёт.
 
 use super::protocol::InvocationRequest;
-use super::runner_012::Runner012ProcessRunner;
+use super::runner_013::Runner013ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, runner_start_rejection, CONFIG_NAME,
@@ -49,6 +54,8 @@ struct ImportArguments {
     /// Один объявленный набор; `None` — все наборы `v8project.yaml`.
     source_set: Option<String>,
     full_rebuild: bool,
+    /// `push --force`: перезапись базы без сверки памяти и поколения.
+    force: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -108,9 +115,11 @@ impl PreparedSourceImport {
                 format!("push does not accept `{unknown}`; use its published argsSchema"),
             ));
         }
-        if args.get("force") != Some(&Value::Bool(true)) {
-            return Err(reject(RefusalCode::UnsupportedOperation, "push requires force:true on the compatibility adapter; synchronization protection is unavailable"));
-        }
+        let force = match args.get("force") {
+            None => false,
+            Some(Value::Bool(force)) => *force,
+            Some(_) => return Err(reject(RefusalCode::BadValue, "push force must be boolean")),
+        };
         let mut public = args.clone();
         public.remove("force");
         if public.get("noApply").is_some_and(|v| v != false) {
@@ -120,7 +129,8 @@ impl PreparedSourceImport {
         if let Some(full) = public.remove("full") {
             public.insert("fullRebuild".into(), full);
         }
-        let arguments = parse_import_arguments(&public)?;
+        let mut arguments = parse_import_arguments(&public)?;
+        arguments.force = force;
         Ok(Self {
             arguments,
             dry_run,
@@ -136,7 +146,7 @@ impl PreparedSourceImport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner012ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
     }
 }
 
@@ -173,6 +183,7 @@ fn parse_import_arguments(args: &Map<String, Value>) -> Result<ImportArguments, 
     Ok(ImportArguments {
         source_set,
         full_rebuild,
+        force: false,
     })
 }
 
@@ -406,7 +417,12 @@ fn execute_with_resolved_runner(
         let nothing_planned = plan.iter().all(|step| step.mode == StepMode::Skipped);
         let summary = if nothing_planned {
             format!(
-                "push planned no load for {}: the runner found no changes against its own memory; executing will not verify the infobase state",
+                "push planned no load for {}: the runner found no changes against its memory of earlier exchanges; executing loads nothing, does not compare the infobase generation and does not verify the infobase state",
+                subject_summary(&plan)
+            )
+        } else if prepared.arguments.force {
+            format!(
+                "push planned overwriting the infobase with {} without touching it yet; executing loads every set in full without checking the infobase generation, and changes made in the infobase since this working copy's last exchange are lost",
                 subject_summary(&plan)
             )
         } else {
@@ -427,6 +443,7 @@ fn execute_with_resolved_runner(
         };
         let mut result = DomainResult::success(summary);
         result.warnings.extend(skipped_warning(&plan));
+        result.warnings.extend(overwrite_warning(prepared, &plan));
         result.data = Some(json!({
             "op": OPERATION,
             "dryRun": true,
@@ -492,10 +509,36 @@ fn execute_with_resolved_runner(
     if performed != plan {
         // Иной состав или режим значит, что раннер импортировал не тот план,
         // который одобрен: исходники или проектный файл сменились после превью.
-        return reject(
+        // Если при этом что-то загружено, база уже изменена — отказ говорит
+        // это прямо и называет наборы, чтобы следующий шаг не исходил из
+        // прежнего состояния базы (#1265).
+        let loaded: Vec<&PlannedStep> = performed
+            .iter()
+            .filter(|step| step.mode != StepMode::Skipped)
+            .collect();
+        if loaded.is_empty() {
+            return reject(
+                RefusalCode::ConcurrentChange,
+                "push performed a different plan than previewed and loaded nothing: the sources changed between preview and apply; run dryRun: true again",
+            );
+        }
+        let names: Vec<&str> = loaded.iter().map(|step| step.source_set.as_str()).collect();
+        let mut result = reject(
             RefusalCode::ConcurrentChange,
-            "push performed a different plan than previewed: the sources changed between preview and apply; run dryRun: true again",
+            format!(
+                "push performed a different plan than previewed and already loaded {} into the infobase: the infobase configuration was changed and applied; the sources changed between preview and apply; run dryRun: true again before relying on the infobase state",
+                names.join(", ")
+            ),
         );
+        for step in loaded {
+            result.changed.push(json!({
+                "infobase": true,
+                "kind": "configuration",
+                "sourceSet": step.source_set,
+                "mode": step.mode.as_str(),
+            }));
+        }
+        return result;
     }
     if !anything_loaded {
         return nothing_loaded(prepared, &plan);
@@ -509,10 +552,17 @@ fn execute_with_resolved_runner(
         .cloned()
         .collect();
     let skipped_count = plan.len() - loaded.len();
-    let mut summary = format!(
-        "push imported {}; the infobase state is attested by the provider",
-        subject_summary(&loaded)
-    );
+    let mut summary = if prepared.arguments.force {
+        format!(
+            "push overwrote the infobase with {}: every set was loaded in full without checking the infobase generation, and changes made in the infobase since this working copy's last exchange are lost; the infobase state is attested by the provider",
+            subject_summary(&loaded)
+        )
+    } else {
+        format!(
+            "push imported {}; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider",
+            subject_summary(&loaded)
+        )
+    };
     if skipped_count > 0 {
         summary.push_str(&format!(
             "; {skipped_count} skipped source set(s) were not loaded and their infobase state was not verified"
@@ -524,8 +574,8 @@ fn execute_with_resolved_runner(
         "dryRun": false,
         "providerDispatched": true,
         "full": prepared.arguments.full_rebuild,
-        "force": true,
-        "generationProtection": false,
+        "force": prepared.arguments.force,
+        "generationProtection": !prepared.arguments.force,
         "appliesDatabaseConfiguration": true,
         "steps": public_steps(&plan),
         "targetStateAttestedBy": "provider",
@@ -543,6 +593,7 @@ fn execute_with_resolved_runner(
     if let Some(warning) = skipped_warning(&plan) {
         result.warnings.push(warning);
     }
+    result.warnings.extend(overwrite_warning(prepared, &plan));
 
     result
 }
@@ -564,7 +615,35 @@ fn skipped_warning(plan: &[PlannedStep]) -> Option<Value> {
         json!({
             "code": SKIPPED_WARNING_CODE,
             "sourceSets": skipped,
-            "message": "these source sets were neither loaded nor applied: the runner found no changes against its own memory of earlier loads, which it does not check against the infobase; the infobase state was not verified. If the infobase may have been changed outside this working copy (another worktree, the Designer, a manual load), only a full push restores it; if only this working copy loads it, nothing needs to be done",
+            "message": "these source sets were neither loaded nor applied: the runner found no changes against its memory of earlier exchanges with this infobase. It compares the infobase generation only before loading a set, so for these sets it did not check the infobase, and the infobase state was not verified. If the infobase may have been changed outside this working copy (another worktree, the Designer, a manual load), a full push loads the sources and, before loading, is refused with non_fast_forward if the infobase moved ahead of this working copy's record; if only this working copy loads it, nothing needs to be done",
+        })
+    })
+}
+
+/// Код предупреждения о перезаписи базы по `force:true`.
+const OVERWRITE_WARNING_CODE: &str = "infobase_overwritten";
+
+/// `force:true` грузит наборы целиком без сверки памяти и поколения: то, что
+/// изменили в базе после прошлого обмена этой рабочей копии, теряется. Ответ
+/// называет это и в превью, и после исполнения.
+fn overwrite_warning(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Option<Value> {
+    if !prepared.arguments.force {
+        return None;
+    }
+    let sets: Vec<&str> = plan
+        .iter()
+        .filter(|step| step.mode != StepMode::Skipped)
+        .map(|step| step.source_set.as_str())
+        .collect();
+    (!sets.is_empty()).then(|| {
+        json!({
+            "code": OVERWRITE_WARNING_CODE,
+            "sourceSets": sets,
+            "message": if prepared.dry_run {
+                "force:true overwrites the infobase: these sets are loaded in full without checking the infobase generation or this working copy's memory of it, and changes made in the infobase since the last exchange are lost"
+            } else {
+                "force:true overwrote the infobase: these sets were loaded in full without checking the infobase generation or this working copy's memory of it, and changes made in the infobase since the last exchange are lost"
+            },
         })
     })
 }
@@ -573,7 +652,7 @@ fn skipped_warning(plan: &[PlannedStep]) -> Option<Value> {
 /// никто не проверял. Ответ так и говорит и не выдаёт пропуск за импорт.
 fn nothing_loaded(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> DomainResult {
     let mut result = DomainResult::success(format!(
-        "push loaded nothing into the infobase for {}: the runner found no changes against its own memory; the infobase state was not verified",
+        "push loaded nothing into the infobase for {}: the runner found no changes against its memory of earlier exchanges and, loading nothing, did not compare the infobase generation; the infobase state was not verified",
         subject_summary(plan)
     ));
     result.data = Some(json!({
@@ -581,8 +660,9 @@ fn nothing_loaded(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Doma
         "dryRun": false,
         "providerDispatched": false,
         "full": prepared.arguments.full_rebuild,
-        "force": true,
-        "generationProtection": false,
+        "force": prepared.arguments.force,
+        "generationProtection": !prepared.arguments.force,
+        "generationChecked": false,
         "steps": public_steps(plan),
         "targetStateKnownAfterApply": false,
     }));
@@ -591,8 +671,9 @@ fn nothing_loaded(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Doma
     result
 }
 
-/// Полная загрузка не смотрит в память раннера: это путь к известному
-/// состоянию базы. Нужна она, только если базу могли изменить вне этой
+/// Полная загрузка не смотрит в хеш-память раннера, но поколение базы перед
+/// загрузкой сверяет: ушедшую вперёд базу она не перезапишет, а откажет
+/// `non_fast_forward`. Нужна она, только если базу могли изменить вне этой
 /// рабочей копии; обычный повтор без правок её не требует. Поэтому причина
 /// названа с условием, и предлагается превью, не исполнение.
 fn full_preview_hint(prepared: &PreparedSourceImport) -> Value {
@@ -601,7 +682,7 @@ fn full_preview_hint(prepared: &PreparedSourceImport) -> Value {
     json!({
         "tool": "unica.run",
         "args": {"op": OPERATION, "args": args, "dryRun": true},
-        "reason": "only if the infobase may have been changed outside this working copy: preview a full push, which loads the sources regardless of the runner's memory"
+        "reason": "only if the infobase may have been changed outside this working copy: preview a full push; executing it loads every set in full and, before loading, is refused with non_fast_forward if the infobase moved ahead of this working copy's record"
     })
 }
 
@@ -638,10 +719,12 @@ fn validate_preview(
             "v8-runner preview planned different source sets than v8project.yaml declares",
         ));
     }
-    if prepared.arguments.full_rebuild && plan.iter().any(|step| step.mode != StepMode::Full) {
+    if (prepared.arguments.full_rebuild || prepared.arguments.force)
+        && plan.iter().any(|step| step.mode != StepMode::Full)
+    {
         return Err(reject(
             RefusalCode::InvalidResult,
-            "v8-runner preview planned a partial import despite fullRebuild",
+            "v8-runner preview planned a partial import despite fullRebuild or force",
         ));
     }
     Ok(plan)
@@ -679,6 +762,10 @@ fn invoke_runner(
     if prepared.arguments.full_rebuild {
         args.push("--full".to_string());
     }
+    // Единственный ключ, который обходит сверку памяти и поколения базы.
+    if prepared.arguments.force {
+        args.push("--force".to_string());
+    }
     if dry_run {
         args.push("--dry-run".to_string());
     }
@@ -701,34 +788,125 @@ fn invoke_runner(
         })
         .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
     parse_runner_output(output)
+        .map_err(|(rejection, error)| exchange_refusal(prepared, rejection, &error))
 }
 
-fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
+/// Отказ обмена с базой: `non_fast_forward` — база ушла вперёд записанного
+/// поколения, `no_memory` — памяти рабочей копии о базе нет.
+///
+/// Выбор за тем, кто знает, чья правка верна, поэтому отказ ничего не
+/// перезаписывает сам и называет оба выхода превью: выгрузить базу в набор
+/// (`pull`) или перезаписать базу набором (`push` с `force:true`). Поколения
+/// базы и записи идут в `data` так, как их назвал раннер.
+fn exchange_refusal(
+    prepared: &PreparedSourceImport,
+    rejection: DomainResult,
+    error: &Value,
+) -> DomainResult {
+    let Some(code @ ("non_fast_forward" | "no_memory")) = error["code"].as_str() else {
+        return rejection;
+    };
+    debug_assert_eq!(rejection.diagnostics[0]["code"], "invalid_state");
+    let source_set = error["next"]["source_set"]
+        .as_str()
+        .filter(|name| valid_source_set_name(name))
+        .map(str::to_owned)
+        .or_else(|| prepared.arguments.source_set.clone());
+    let mut data = json!({"op": OPERATION, "runnerCode": code});
+    if let Some(source_set) = &source_set {
+        data["sourceSet"] = json!(source_set);
+    }
+    for (from, to) in [
+        ("base_generation", "baseGeneration"),
+        ("local_generation", "localGeneration"),
+    ] {
+        if let Some(generation) = error[from].as_str() {
+            data[to] = json!(generation);
+        }
+    }
+    // Проза раннера здесь не идёт наружу: она называет команды его
+    // командной строки с путями проекта, в том числе `push --force`, а выход
+    // через Unica — превью в `next`. Факты отказа — в `data`.
+    let subject = source_set.as_deref().map_or_else(
+        || "the selected source sets".to_string(),
+        |set| format!("source set `{set}`"),
+    );
+    let message = if code == "non_fast_forward" {
+        format!(
+            "push loaded nothing: the infobase moved ahead of this working copy's record of the last exchange for {subject} (its configuration generation differs from the recorded one; both are in data), so loading would overwrite changes made in the infobase. Choose: pull the infobase into the source set, or overwrite the infobase with push force:true"
+        )
+    } else {
+        format!(
+            "push loaded nothing: this working copy has no memory of the infobase for {subject}, so nothing proves that the sources derive from its state. Choose: pull the infobase into the source set, or overwrite the infobase with push force:true"
+        )
+    };
+    let mut rejection =
+        DomainResult::canonical_rejection(rejection.at.clone(), RefusalCode::InvalidState, message);
+    rejection.data = Some(data);
+    let mut pull_args = json!({"force": true});
+    if let Some(source_set) = &source_set {
+        pull_args["sourceSet"] = json!(source_set);
+    }
+    rejection.next.push(json!({
+        "tool": "unica.run",
+        "args": {"op": "pull", "args": pull_args, "dryRun": true},
+        "reason": "if the infobase holds the right state: preview a full pull that takes it into the source set, replacing the set and discarding its uncommitted work; an extension source set also needs extension"
+    }));
+    // Перезапись — того же набора, о котором отказ, а не всех наборов вызова.
+    let mut push_args = public_arguments(prepared);
+    push_args["force"] = Value::Bool(true);
+    if let Some(source_set) = &source_set {
+        push_args["sourceSet"] = json!(source_set);
+    }
+    rejection.next.push(json!({
+        "tool": "unica.run",
+        "args": {"op": OPERATION, "args": push_args, "dryRun": true},
+        "reason": "if the sources hold the right state: preview push with force:true, which loads every set in full and overwrites the infobase; changes made in the infobase since this working copy's last exchange are lost"
+    }));
+    rejection
+}
+
+fn parse_runner_output(output: ProcessOutput) -> Result<Value, (DomainResult, Value)> {
     if output.cancelled {
-        return Err(reject(RefusalCode::Cancelled, "v8-runner was cancelled"));
+        return Err((
+            reject(RefusalCode::Cancelled, "v8-runner was cancelled"),
+            Value::Null,
+        ));
     }
     if output.timed_out {
-        return Err(reject(
-            RefusalCode::DeadlineExceeded,
-            "v8-runner exceeded its execution deadline",
+        return Err((
+            reject(
+                RefusalCode::DeadlineExceeded,
+                "v8-runner exceeded its execution deadline",
+            ),
+            Value::Null,
         ));
     }
     if output.stdout_truncated || output.stdout_had_invalid_utf8 {
-        return Err(reject(
-            RefusalCode::InvalidResult,
-            "v8-runner returned an unreadable or oversized JSON result",
+        return Err((
+            reject(
+                RefusalCode::InvalidResult,
+                "v8-runner returned an unreadable or oversized JSON result",
+            ),
+            Value::Null,
         ));
     }
     let envelope: Value = serde_json::from_str(&output.stdout).map_err(|_| {
-        reject(
-            RefusalCode::InvalidResult,
-            "v8-runner returned an invalid JSON result",
+        (
+            reject(
+                RefusalCode::InvalidResult,
+                "v8-runner returned an invalid JSON result",
+            ),
+            Value::Null,
         )
     })?;
     if envelope["command"] != RUNNER_COMMAND {
-        return Err(reject(
-            RefusalCode::InvalidResult,
-            "v8-runner returned a result for a different operation",
+        return Err((
+            reject(
+                RefusalCode::InvalidResult,
+                "v8-runner returned a result for a different operation",
+            ),
+            Value::Null,
         ));
     }
     if !output.status_success || envelope["ok"] != true {
@@ -739,7 +917,10 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
             .as_str()
             .map(redactor)
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
-        return Err(runner_rejection(Some(OPERATION.to_string()), code, message));
+        return Err((
+            runner_rejection(Some(OPERATION.to_string()), code, message),
+            envelope["error"].clone(),
+        ));
     }
     Ok(envelope)
 }
@@ -754,8 +935,8 @@ fn subject_summary(plan: &[PlannedStep]) -> String {
 fn public_plan(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Value {
     json!({
         "full": prepared.arguments.full_rebuild,
-        "force": true,
-        "generationProtection": false,
+        "force": prepared.arguments.force,
+        "generationProtection": !prepared.arguments.force,
         "appliesDatabaseConfiguration": true,
         "steps": public_steps(plan),
         // Что превью узнать не может, названо, а не умолчано.
@@ -765,7 +946,9 @@ fn public_plan(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Value {
 
 fn public_arguments(prepared: &PreparedSourceImport) -> Value {
     let mut args = Map::new();
-    args.insert("force".to_string(), Value::Bool(true));
+    if prepared.arguments.force {
+        args.insert("force".to_string(), Value::Bool(true));
+    }
     if let Some(source_set) = &prepared.arguments.source_set {
         args.insert("sourceSet".to_string(), Value::String(source_set.clone()));
     }
@@ -862,6 +1045,7 @@ mod tests {
             arguments: ImportArguments {
                 source_set: source_set.map(str::to_string),
                 full_rebuild,
+                force: false,
             },
             dry_run,
             context: WorkspaceContext {
@@ -927,8 +1111,11 @@ mod tests {
         )
     }
 
+    /// Без `force` push идёт под защитой раннера: память и поколение базы
+    /// сверяются, ключа `--force` в командной строке нет. `force:true` — и
+    /// только он — передаёт раннеру `--force`, а ответ называет перезапись.
     #[test]
-    fn compatibility_cycle_accepts_explicit_force_and_rejects_silent_overwrite() {
+    fn force_is_optional_and_only_force_overwrites_the_infobase() {
         let root = workspace();
         let request = |args| {
             InvocationRequest::new(
@@ -939,9 +1126,73 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(PreparedSourceImport::parse(&request(json!({"force":true,"full":true}))).is_ok());
-        assert!(PreparedSourceImport::parse(&request(json!({}))).is_err());
-        assert!(PreparedSourceImport::parse(&request(json!({"force":false}))).is_err());
+        for args in [json!({}), json!({"force": false}), json!({"full": true})] {
+            let parsed = PreparedSourceImport::parse(&request(args.clone()))
+                .unwrap_or_else(|_| panic!("{args} must be accepted"));
+            assert!(!parsed.arguments.force, "{args}");
+        }
+        let forced = PreparedSourceImport::parse(&request(json!({"force":true,"full":true})))
+            .unwrap_or_else(|_| panic!("force:true must be accepted"));
+        assert!(forced.arguments.force && forced.arguments.full_rebuild);
+        let refused = PreparedSourceImport::parse(&request(json!({"force":"yes"})))
+            .expect_err("non-boolean force is refused");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+
+        let runner = SequenceRunner::new(vec![process(
+            envelope(&[("main", full()), ("ext-sales", full())], false),
+            true,
+        )]);
+        let mut preview = prepared(root.path(), None, false, true);
+        preview.arguments.force = true;
+        let result = run(root.path(), &preview, &runner);
+        assert!(result.ok, "{result:?}");
+        assert!(runner
+            .joined_args(0)
+            .ends_with("--json-message push --force --dry-run"));
+        let plan = &result.data.as_ref().unwrap()["plan"];
+        assert_eq!(plan["force"], true);
+        assert_eq!(plan["generationProtection"], false);
+        assert_eq!(result.warnings[0]["code"], "infobase_overwritten");
+        assert_eq!(
+            result.warnings[0]["sourceSets"],
+            json!(["main", "ext-sales"])
+        );
+        assert!(result.summary.contains("changes made in the infobase"));
+        assert_eq!(result.next[0]["args"]["args"], json!({"force": true}));
+
+        // Перезапись грузит всё целиком: частичный план под force — не наш план.
+        let runner = SequenceRunner::new(vec![process(
+            envelope(&[("main", full()), ("ext-sales", partial(1))], false),
+            true,
+        )]);
+        let result = run(root.path(), &preview, &runner);
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+
+        let runner = SequenceRunner::new(vec![
+            process(
+                envelope(&[("main", full()), ("ext-sales", full())], false),
+                true,
+            ),
+            process(
+                envelope(&[("main", full()), ("ext-sales", full())], true),
+                true,
+            ),
+        ]);
+        let mut apply = prepared(root.path(), None, false, false);
+        apply.arguments.force = true;
+        let result = run(root.path(), &apply, &runner);
+        assert!(result.ok, "{result:?}");
+        assert!(runner
+            .joined_args(1)
+            .ends_with("--json-message push --force"));
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["force"], true);
+        assert_eq!(data["generationProtection"], false);
+        assert_eq!(result.warnings[0]["code"], "infobase_overwritten");
+        assert!(result.summary.starts_with("push overwrote the infobase"));
     }
 
     #[test]
@@ -1018,10 +1269,13 @@ mod tests {
         assert_eq!(data["plan"]["steps"][1]["mode"], "partial");
         assert_eq!(data["plan"]["steps"][1]["files"], 3);
         assert_eq!(data["plan"]["targetStateKnownBeforeApply"], false);
+        assert_eq!(data["plan"]["force"], false);
+        assert_eq!(data["plan"]["generationProtection"], true);
+        assert!(result.warnings.is_empty(), "{result:?}");
         assert!(result.rev.is_none());
         assert!(result.next[0]["args"].get("ifRev").is_none());
         assert_eq!(result.next[0]["args"]["dryRun"], false);
-        assert_eq!(result.next[0]["args"]["args"], json!({"force":true}));
+        assert_eq!(result.next[0]["args"]["args"], json!({}));
         assert!(result.changed.is_empty());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
@@ -1047,7 +1301,7 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert_eq!(
             result.next[0]["args"]["args"],
-            json!({"sourceSet": "ext-sales", "full": true, "force":true})
+            json!({"sourceSet": "ext-sales", "full": true})
         );
         assert!(result.summary.contains("source set `ext-sales`"));
         assert!(runner
@@ -1081,7 +1335,7 @@ mod tests {
             fs::write(config, yaml).unwrap();
             let request = InvocationRequest::new(
                 ToolIdentity::Run,
-                json!({"op": "push", "args": {"sourceSet": name, "force": true}, "dryRun": true}),
+                json!({"op": "push", "args": {"sourceSet": name}, "dryRun": true}),
                 root.path().display().to_string(),
                 7000,
             )
@@ -1217,8 +1471,10 @@ mod tests {
         // засвидетельствованный провайдером, без оговорок о пропуске.
         assert_eq!(
             result.summary,
-            "push imported 2 source sets; the infobase state is attested by the provider"
+            "push imported 2 source sets; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider"
         );
+        assert_eq!(data["force"], false);
+        assert_eq!(data["generationProtection"], true);
         assert!(result.warnings.is_empty(), "{result:?}");
         assert!(result.next.is_empty(), "{result:?}");
         assert!(data.get("targetStateKnownAfterApply").is_none());
@@ -1262,9 +1518,13 @@ mod tests {
         assert_eq!(runner.call_count(), 2);
         assert_eq!(
             result.summary,
-            "push loaded nothing into the infobase for 2 source sets: the runner found no changes against its own memory; the infobase state was not verified"
+            "push loaded nothing into the infobase for 2 source sets: the runner found no changes against its memory of earlier exchanges and, loading nothing, did not compare the infobase generation; the infobase state was not verified"
         );
         let data = result.data.as_ref().unwrap();
+        // Защита поколения включена, но сверки не было: раннер сверяет
+        // поколение только перед загрузкой набора.
+        assert_eq!(data["generationProtection"], true);
+        assert_eq!(data["generationChecked"], false);
         assert_eq!(data["providerDispatched"], false);
         assert_eq!(data["targetStateKnownAfterApply"], false);
         assert!(data.get("targetStateAttestedBy").is_none(), "{data}");
@@ -1282,6 +1542,8 @@ mod tests {
         let message = result.warnings[0]["message"].as_str().unwrap();
         assert!(
             message.contains("changed outside this working copy")
+                && message.contains("did not check the infobase")
+                && message.contains("non_fast_forward")
                 && message.contains("nothing needs to be done"),
             "{message}"
         );
@@ -1289,10 +1551,9 @@ mod tests {
         // Путь к известному состоянию — превью полной загрузки, а не исполнение.
         assert_eq!(result.next.len(), 1, "{result:?}");
         assert_eq!(result.next[0]["args"]["dryRun"], true);
-        assert_eq!(
-            result.next[0]["args"]["args"],
-            json!({"force": true, "full": true})
-        );
+        // Полная загрузка без force: перед загрузкой она сверит поколение и
+        // ушедшую вперёд базу не перезапишет.
+        assert_eq!(result.next[0]["args"]["args"], json!({"full": true}));
         assert!(
             result.next[0]["reason"].as_str().unwrap().starts_with(
                 "only if the infobase may have been changed outside this working copy"
@@ -1349,6 +1610,47 @@ mod tests {
             result.diagnostics[0]["code"], "concurrent_change",
             "{result:?}"
         );
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("loaded nothing"));
+        assert!(result.changed.is_empty(), "{result:?}");
+    }
+
+    /// Обратная гонка (#1265): превью пропустило все наборы, а исполнение
+    /// загрузило. База уже изменена — отказ говорит это и называет наборы,
+    /// чтобы следующий шаг не исходил из прежнего состояния базы.
+    #[test]
+    fn apply_that_loads_a_previewed_skip_names_the_changed_infobase() {
+        let root = workspace();
+        let sets = ["main", "ext-sales"];
+        let runner = SequenceRunner::new(vec![
+            process(skipped_envelope(&sets), true),
+            process(
+                envelope(&[("main", partial(2)), ("ext-sales", skipped())], true),
+                true,
+            ),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, false),
+            &runner,
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            result.diagnostics[0]["code"], "concurrent_change",
+            "{result:?}"
+        );
+        let message = result.diagnostics[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("already loaded main into the infobase")
+                && message.contains("infobase configuration was changed"),
+            "{message}"
+        );
+        assert_eq!(result.changed.len(), 1, "{result:?}");
+        assert_eq!(result.changed[0]["infobase"], true);
+        assert_eq!(result.changed[0]["sourceSet"], "main");
+        assert_eq!(result.changed[0]["mode"], "partial");
     }
 
     #[test]
@@ -1378,19 +1680,20 @@ mod tests {
         assert_eq!(result.warnings[0]["sourceSets"], json!(["ext-sales"]));
         assert_eq!(
             result.summary,
-            "push imported source set `main`; the infobase state is attested by the provider; 1 skipped source set(s) were not loaded and their infobase state was not verified"
+            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider; 1 skipped source set(s) were not loaded and their infobase state was not verified"
         );
     }
 
     fn captured(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_012")
+            .join("../../tests/fixtures/v8_runner_013")
             .join(name);
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
-    /// Конверты раннера 0.12.0, снятые вживую на сценарии #1240: в базе
-    /// конфигурация другого рабочего каталога, а раннер пропустил набор.
+    /// Конверты раннера 0.13.0, снятые вживую на сценарии #1240: базу,
+    /// общую по `shared: true`, перезаписал другой рабочий каталог, а раннер
+    /// пропустил набор по своей памяти и поколение базы не сверял.
     #[test]
     fn captured_runner_skip_is_answered_as_an_unverified_infobase_state() {
         let root = workspace();
@@ -1535,6 +1838,10 @@ mod tests {
                 Outcome::NeedsHuman,
             ),
             ("workspace_busy", "concurrent_change", Outcome::RetryAsIs),
+            ("infobase_busy", "concurrent_change", Outcome::RetryAsIs),
+            ("infobase_held", "invalid_state", Outcome::NeedsHuman),
+            ("non_fast_forward", "invalid_state", Outcome::NeedsHuman),
+            ("no_memory", "invalid_state", Outcome::NeedsHuman),
             ("invalid_argument", "bad_value", Outcome::FixCall),
         ] {
             let runner = SequenceRunner::new(vec![process(failure(code), false)]);
@@ -1544,8 +1851,132 @@ mod tests {
                 &runner,
             );
             assert_eq!(result.diagnostics[0]["code"], expected, "{code}");
+            assert_eq!(result.diagnostics[0]["outcome"], outcome.as_str(), "{code}");
             assert_eq!(map_runner_code(code).outcome(), outcome, "{code}");
         }
+    }
+
+    /// Живые отказы раннера 0.13.0 (`tests/fixtures/v8_runner_013/`): база ушла
+    /// вперёд записи и памяти о базе нет. Unica ничего не перезаписывает сама:
+    /// отказ несёт оба поколения и два выхода превью — выгрузку набора и
+    /// перезапись базы через `force:true`.
+    #[test]
+    fn captured_exchange_refusals_name_both_ways_out_and_the_generations() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-full-preview.json"), true),
+            process(captured("push-non-fast-forward-apply.json"), false),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), true, false),
+            &runner,
+        );
+        assert!(runner.joined_args(1).ends_with("push main --full"));
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
+        assert_eq!(result.diagnostics[0]["outcome"], "needsHuman");
+        let message = result.diagnostics[0]["message"].as_str().unwrap();
+        assert!(message.contains("moved ahead"), "{message}");
+        // Команды командной строки раннера и пути проекта наружу не идут.
+        assert!(
+            !message.contains("v8-runner")
+                && !message.contains("--force")
+                && !message.contains("/workspace"),
+            "{message}"
+        );
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["runnerCode"], "non_fast_forward");
+        assert_eq!(data["sourceSet"], "main");
+        assert_eq!(
+            data["baseGeneration"],
+            "19ece0d79ec27b48af3a501835b1d59900000000"
+        );
+        assert_eq!(
+            data["localGeneration"],
+            "5d598420fd015846aeb614e7a2b98cf500000000"
+        );
+        assert!(result.changed.is_empty(), "{result:?}");
+        assert_eq!(result.next.len(), 2, "{result:?}");
+        assert_eq!(result.next[0]["args"]["op"], "pull");
+        assert_eq!(result.next[0]["args"]["dryRun"], true);
+        assert_eq!(
+            result.next[0]["args"]["args"],
+            json!({"force": true, "sourceSet": "main"})
+        );
+        assert_eq!(result.next[1]["args"]["op"], "push");
+        assert_eq!(result.next[1]["args"]["dryRun"], true);
+        assert_eq!(
+            result.next[1]["args"]["args"],
+            json!({"force": true, "sourceSet": "main", "full": true})
+        );
+
+        // Превью без памяти о базе отказывает тем же родом и до запуска платформы.
+        let runner = SequenceRunner::new(vec![process(
+            captured("push-no-memory-preview.json"),
+            false,
+        )]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, true),
+            &runner,
+        );
+        assert_eq!(runner.call_count(), 1);
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["runnerCode"], "no_memory");
+        assert_eq!(data["sourceSet"], "main");
+        assert!(data.get("baseGeneration").is_none(), "{data}");
+        assert_eq!(result.next[0]["args"]["op"], "pull");
+        // Перезапись — того набора, о котором отказ, а не всех наборов.
+        assert_eq!(
+            result.next[1]["args"]["args"],
+            json!({"force": true, "sourceSet": "main"})
+        );
+    }
+
+    /// Живые отказы занятой базы (раннер 0.13.0): другая команда держит базу —
+    /// повтор; другая рабочая копия держит базу — нужен человек, первый выход —
+    /// своя чистая база.
+    #[test]
+    fn captured_base_contention_refusals_keep_their_outcomes() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-full-preview.json"), true),
+            process(captured("push-infobase-busy-apply.json"), false),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), true, false),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "concurrent_change",
+            "{result:?}"
+        );
+        assert_eq!(result.diagnostics[0]["outcome"], "retry");
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("retry when it finishes"));
+
+        let runner = SequenceRunner::new(vec![process(
+            captured("push-infobase-held-preview.json"),
+            false,
+        )]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, true),
+            &runner,
+        );
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
+        assert_eq!(result.diagnostics[0]["outcome"], "needsHuman");
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is held by the working copy"));
+        assert_eq!(result.next.len(), 1, "{result:?}");
+        assert_eq!(result.next[0]["args"]["op"], "infobase.create");
+        assert_eq!(result.next[0]["args"]["dryRun"], true);
     }
 
     #[test]

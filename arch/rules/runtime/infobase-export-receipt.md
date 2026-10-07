@@ -1,7 +1,7 @@
 ---
 id: INV.RUNTIME.V13-INFOBASE-EXPORTS
 check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::runner_012_provider_receipt_replaces_selection_for_all_three_operations
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::runner_013_provider_receipt_replaces_selection_for_all_three_operations
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_infobase_exports_are_implemented_with_closed_agent_facing_arguments
   - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_run_without_a_revision_gate
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::preview_is_non_mutating_and_returns_no_revision_or_raw_command
