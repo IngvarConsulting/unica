@@ -3088,7 +3088,7 @@ fn run_bsl_diagnostics(
     address: &QualifiedAddress,
     invocation: &ActorBoundExecution,
     cancellation: &CancellationToken,
-) -> Result<(bool, Vec<Value>), Box<DomainResult>> {
+) -> Result<CheckStepVerdict, Box<DomainResult>> {
     use crate::application::diagnostics::DiagnosticCoordinator;
     use crate::application::ports::ApplicationPorts;
     use crate::domain::diagnostics::{DiagnosticAction, DiagnosticFilter, DiagnosticRequest};
@@ -3174,11 +3174,12 @@ fn run_bsl_diagnostics(
             if !bsl_result_proves_full_verdict(&result) {
                 // Прогон начался и не завершился — это не отсутствие
                 // поставщика: уточнения у такого случая нет, и код отвечает
-                // своим умолчанием.
+                // своим умолчанием. Причину, которую поставщик назвал
+                // (сломанная базовая линия), сообщение передаёт дальше.
                 return Err(Box::new(error_result(
                     Some(address.to_string()),
                     RefusalCode::ProviderUnavailable,
-                    "BSL analysis did not complete, so the module is unproven",
+                    bsl_incomplete_message(&result),
                 )));
             }
             let findings: Vec<Value> = result
@@ -3190,7 +3191,11 @@ fn run_bsl_diagnostics(
             // стилю не ломает модуль, и остальные валидаторы поверхности
             // судят так же.
             let passed = bsl_findings_passed(&result.items);
-            Ok((passed, findings))
+            Ok(CheckStepVerdict {
+                passed,
+                diagnostics: findings,
+                suppressed: bsl_suppression_facts(&result),
+            })
         }
         // Координатор отказывает по разным причинам, и уточнение получает
         // только та, которую словарь уточнений называет: «подходящего
@@ -3224,6 +3229,67 @@ fn bsl_result_proves_full_verdict(result: &crate::domain::diagnostics::Diagnosti
         && result.truncated == Some(false)
         && result.items_total == Some(result.items.len())
         && result.items_returned == Some(result.items.len())
+}
+
+/// Итог одного валидатора `check`: вердикт, находки и фильтры, которые
+/// пользователь настроил и поставщик применил до ответа.
+struct CheckStepVerdict {
+    passed: bool,
+    diagnostics: Vec<Value>,
+    suppressed: Vec<Value>,
+}
+
+impl From<(bool, Vec<Value>)> for CheckStepVerdict {
+    fn from((passed, diagnostics): (bool, Vec<Value>)) -> Self {
+        Self {
+            passed,
+            diagnostics,
+            suppressed: Vec::new(),
+        }
+    }
+}
+
+const BSL_INCOMPLETE_MESSAGE: &str = "BSL analysis did not complete, so the module is unproven";
+
+/// Отказ называет причину, если поставщик её назвал: сломанная базовая
+/// линия диагностик — это не «анализ не закончился вообще».
+fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult) -> String {
+    let reasons: Vec<String> = result
+        .providers
+        .iter()
+        .filter_map(|section| {
+            let reason = section.suppression.as_ref()?.reason.as_ref()?;
+            Some(match &reason.detail {
+                Some(detail) => format!("diagnostics baseline {}: {detail}", reason.code),
+                None => format!("diagnostics baseline {}", reason.code),
+            })
+        })
+        .collect();
+    if reasons.is_empty() {
+        BSL_INCOMPLETE_MESSAGE.to_string()
+    } else {
+        format!("{BSL_INCOMPLETE_MESSAGE}: {}", reasons.join("; "))
+    }
+}
+
+/// Подавление по настройке пользователя называется фактом рядом с
+/// вердиктом: «прошёл» с базовой линией значит «прошёл после фильтра».
+fn bsl_suppression_facts(result: &crate::domain::diagnostics::DiagnosticResult) -> Vec<Value> {
+    result
+        .providers
+        .iter()
+        .filter_map(|section| {
+            let suppression = section.suppression.as_ref()?;
+            let mut fact = serde_json::to_value(suppression).expect("suppression serializes");
+            fact.as_object_mut()
+                .expect("suppression is an object")
+                .insert(
+                    "provider".to_string(),
+                    Value::String(section.id.to_string()),
+                );
+            Some(fact)
+        })
+        .collect()
 }
 
 fn bsl_findings_passed(items: &[crate::domain::diagnostics::DiagnosticItem]) -> bool {
@@ -3276,26 +3342,32 @@ fn run_node_checks(
     }
     let mut passed = true;
     let mut diagnostics = Vec::new();
+    let mut suppressed = Vec::new();
     let mut validators = Vec::new();
     for step in plan {
         let verdict = match step {
             CheckStep::Native(validator) => {
                 run_native_validator(&address, kind, validator, invocation, cancellation)
+                    .map(CheckStepVerdict::from)
             }
-            CheckStep::Meta => run_meta_validator(&address, at, context, cancellation),
+            CheckStep::Meta => {
+                run_meta_validator(&address, at, context, cancellation).map(CheckStepVerdict::from)
+            }
             CheckStep::Bsl => run_bsl_diagnostics(ports, &address, invocation, cancellation),
         };
         match verdict {
             Err(refusal) => return *refusal,
-            Ok((step_passed, step_diagnostics)) => {
-                passed &= step_passed;
+            Ok(step_verdict) => {
+                passed &= step_verdict.passed;
                 validators.push(step.name());
-                diagnostics.extend(step_diagnostics.into_iter().map(|mut diagnostic| {
-                    if let Some(object) = diagnostic.as_object_mut() {
+                let tag = |mut value: Value| {
+                    if let Some(object) = value.as_object_mut() {
                         object.insert("validator".to_string(), Value::String(step.name().into()));
                     }
-                    diagnostic
-                }));
+                    value
+                };
+                diagnostics.extend(step_verdict.diagnostics.into_iter().map(tag));
+                suppressed.extend(step_verdict.suppressed.into_iter().map(tag));
             }
         }
     }
@@ -3305,13 +3377,17 @@ fn run_node_checks(
         "validation reported findings"
     });
     result.at = Some(at.to_string());
-    result.data = Some(serde_json::json!({
+    let mut data = serde_json::json!({
         "status": if passed { "passed" } else { "failed" },
         "at": at,
         "kind": kind,
         "validators": validators,
         "diagnostics": diagnostics,
-    }));
+    });
+    if !suppressed.is_empty() {
+        data["suppressed"] = Value::Array(suppressed);
+    }
+    result.data = Some(data);
     result
 }
 
@@ -4019,6 +4095,92 @@ mod tests {
         result.items_total = Some(0);
         result.items_returned = Some(0);
         assert!(super::bsl_result_proves_full_verdict(&result));
+    }
+
+    /// `check` модуля под базовой линией: доказанный фильтр — полный
+    /// вердикт с названным фактом подавления; сломанная линия — отказ,
+    /// который называет причину поставщика, а не «анализ не закончился».
+    #[test]
+    fn bsl_check_passes_under_a_proven_baseline_and_names_a_broken_one() {
+        use crate::domain::diagnostics::{
+            DiagnosticAction, DiagnosticProviderSection, DiagnosticProviderStatus,
+            DiagnosticResult, DiagnosticResultState, DiagnosticSelection, DiagnosticSuppression,
+            DiagnosticSuppressionReason, DiagnosticSuppressionSource,
+        };
+        let result =
+            |complete: bool, reason: Option<DiagnosticSuppressionReason>| DiagnosticResult {
+                ok: true,
+                action: DiagnosticAction::Analyze,
+                selection: DiagnosticSelection {
+                    source_set: "main".to_string(),
+                    metadata_path: None,
+                    target_kind: None,
+                    providers: vec!["bsl-analyzer"],
+                    filter: None,
+                    limit: None,
+                },
+                state: if complete {
+                    DiagnosticResultState::Completed
+                } else {
+                    DiagnosticResultState::Partial
+                },
+                complete,
+                providers: vec![DiagnosticProviderSection {
+                    id: "bsl-analyzer",
+                    status: DiagnosticProviderStatus::Completed,
+                    complete,
+                    version: None,
+                    capabilities: None,
+                    readiness: None,
+                    items_total: Some(0),
+                    items_returned: Some(0),
+                    resource_failures: Some(0),
+                    truncated: Some(false),
+                    error: None,
+                    suppression: Some(DiagnosticSuppression {
+                        by: DiagnosticSuppressionSource::Baseline,
+                        known: Some(2),
+                        new: Some(0),
+                        reason,
+                    }),
+                }],
+                items_total: Some(0),
+                items_returned: Some(0),
+                truncated: Some(false),
+                items: Vec::new(),
+            };
+
+        let filtered = result(true, None);
+        assert!(super::bsl_result_proves_full_verdict(&filtered));
+        assert!(super::bsl_findings_passed(&filtered.items));
+        assert_eq!(
+            super::bsl_suppression_facts(&filtered),
+            vec![serde_json::json!({
+                "provider": "bsl-analyzer", "by": "baseline", "known": 2, "new": 0
+            })]
+        );
+
+        let broken = result(
+            false,
+            Some(DiagnosticSuppressionReason {
+                code: "invalid_schema".to_string(),
+                detail: Some("baseline schema 7 is newer".to_string()),
+            }),
+        );
+        assert!(!super::bsl_result_proves_full_verdict(&broken));
+        assert_eq!(
+            super::bsl_incomplete_message(&broken),
+            "BSL analysis did not complete, so the module is unproven: \
+             diagnostics baseline invalid_schema: baseline schema 7 is newer"
+        );
+
+        // Без названной причины отказ остаётся прежним.
+        let mut unnamed = result(false, None);
+        unnamed.providers[0].suppression = None;
+        assert_eq!(
+            super::bsl_incomplete_message(&unnamed),
+            super::BSL_INCOMPLETE_MESSAGE
+        );
     }
 
     #[test]

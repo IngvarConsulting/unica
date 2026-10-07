@@ -18,6 +18,9 @@ use crate::domain::source_roots::ResolvedSourceRoot;
 use crate::domain::source_target::{SourceTarget, SourceTargetErrorCode, TargetKind};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::bundled_tool_version;
+use crate::infrastructure::diagnostics_baseline::{
+    baseline_verdict, BaselineFacts, BaselineIssue, BaselineState, BaselineVerdict,
+};
 use crate::infrastructure::diagnostics_jsonl::AnalyzerDiagnosticsBatch;
 use crate::infrastructure::internal_adapters::BslAnalyzerMcpAdapter;
 use crate::infrastructure::platform_xml_source_targets::{
@@ -325,7 +328,7 @@ struct BslDiagnosticResidentReply {
 
 #[derive(Debug, Clone, PartialEq)]
 enum BslDiagnosticBackendReply {
-    Analyze(AnalyzerDiagnosticsBatch),
+    Analyze(Box<AnalyzerDiagnosticsBatch>),
     Resident(BslDiagnosticResidentReply),
 }
 
@@ -361,7 +364,7 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
                     timeout,
                     cancellation,
                 )
-                .map(BslDiagnosticBackendReply::Analyze),
+                .map(|batch| BslDiagnosticBackendReply::Analyze(Box::new(batch))),
             BslDiagnosticBackendRequest::Resident {
                 source_root,
                 tool_name,
@@ -422,7 +425,7 @@ pub(crate) mod analyze_timeout_probe {
             self.timeouts.lock().unwrap().push(timeout);
             match request {
                 BslDiagnosticBackendRequest::Analyze { .. } => {
-                    Ok(BslDiagnosticBackendReply::Analyze(AnalyzerDiagnosticsBatch {
+                    Ok(BslDiagnosticBackendReply::Analyze(Box::new(AnalyzerDiagnosticsBatch {
                         outcome: DiagnosticProviderOutcome {
                             status: DiagnosticProviderStatus::Empty,
                             complete: true,
@@ -431,6 +434,7 @@ pub(crate) mod analyze_timeout_probe {
                             rules: Vec::new(),
                             readiness: None,
                             error: None,
+                            suppression: None,
                         },
                         files: crate::infrastructure::diagnostics_jsonl::AnalyzerDiagnosticsFileTotals {
                             discovered: Some(1),
@@ -439,7 +443,7 @@ pub(crate) mod analyze_timeout_probe {
                         },
                         diagnostics_reported: Some(0),
                         elapsed_seconds: Some(0.0),
-                    }))
+                    })))
                 }
                 BslDiagnosticBackendRequest::Resident { .. } => {
                     Err("the analyze probe answers only analyze".to_string())
@@ -667,21 +671,46 @@ struct ResidentFindingsResult {
     findings: Vec<ResidentFinding>,
     error: Option<String>,
     detail: Option<String>,
-    /// bsl-analyzer 0.2.86+: a configured `[diagnostics.baseline]` removes
-    /// known findings from this reply.
+    /// bsl-analyzer 0.2.86+: the `[diagnostics.baseline]` that filtered this
+    /// reply. The resident reply adds bounded partition fields to the summary,
+    /// so only the fields the verdict reads are typed; the state is closed.
     baseline: Option<ResidentBaseline>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ResidentBaseline {
-    state: String,
+    state: BaselineState,
+    known: Option<usize>,
+    new: Option<usize>,
+    error_code: Option<String>,
+    detail: Option<String>,
+    #[serde(default)]
+    errors: Vec<ResidentBaselineError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResidentBaselineError {
+    code: String,
+    detail: String,
 }
 
 impl ResidentFindingsResult {
-    fn baseline_suppresses_findings(&self) -> bool {
+    fn baseline_verdict(&self) -> BaselineVerdict {
         self.baseline
             .as_ref()
-            .is_some_and(|baseline| baseline.state != "disabled")
+            .map_or_else(BaselineVerdict::disabled, |baseline| {
+                baseline_verdict(BaselineFacts {
+                    state: baseline.state,
+                    known: baseline.known,
+                    new: baseline.new,
+                    error_code: baseline.error_code.as_deref(),
+                    detail: baseline.detail.as_deref(),
+                    first_error: baseline.errors.first().map(|error| BaselineIssue {
+                        code: &error.code,
+                        detail: &error.detail,
+                    }),
+                })
+            })
     }
 }
 
@@ -750,9 +779,10 @@ fn parse_resident_findings(
             rules: Vec::new(),
             readiness: None,
             error: None,
+            suppression: None,
         });
     }
-    let baseline_suppression = envelope.result.baseline_suppresses_findings();
+    let baseline = envelope.result.baseline_verdict();
     let mut observations = Vec::with_capacity(envelope.result.findings.len());
     for finding in envelope.result.findings {
         observations.push(DiagnosticObservation::Diagnostic {
@@ -775,17 +805,23 @@ fn parse_resident_findings(
         });
     }
     Ok(DiagnosticProviderOutcome {
-        status: if observations.is_empty() && !envelope.result.truncated && !baseline_suppression {
+        // A configured baseline is named with the findings, so a list it
+        // emptied reads as filtered rather than as a payload-free "clean".
+        status: if observations.is_empty()
+            && !envelope.result.truncated
+            && baseline.suppression.is_none()
+        {
             DiagnosticProviderStatus::Empty
         } else {
             DiagnosticProviderStatus::Completed
         },
-        complete: !envelope.result.truncated && !baseline_suppression,
+        complete: !envelope.result.truncated && baseline.intact,
         version: reply.version,
         observations,
         rules: Vec::new(),
         readiness: None,
         error: None,
+        suppression: baseline.suppression,
     })
 }
 
@@ -842,6 +878,7 @@ fn parse_resident_status(
             ),
         }),
         error: None,
+        suppression: None,
     })
 }
 
@@ -891,6 +928,7 @@ fn parse_resident_catalog(
         rules,
         readiness: None,
         error: None,
+        suppression: None,
     })
 }
 
@@ -966,6 +1004,7 @@ fn provider_failed_with_status(
             message: message.into(),
             retryable,
         }),
+        suppression: None,
     }
 }
 
@@ -1204,7 +1243,7 @@ mod bsl_diagnostics_provider_tests {
     }
 
     fn empty_analyze() -> BslDiagnosticBackendReply {
-        BslDiagnosticBackendReply::Analyze(AnalyzerDiagnosticsBatch {
+        BslDiagnosticBackendReply::Analyze(Box::new(AnalyzerDiagnosticsBatch {
             outcome: DiagnosticProviderOutcome {
                 status: DiagnosticProviderStatus::Empty,
                 complete: true,
@@ -1213,6 +1252,7 @@ mod bsl_diagnostics_provider_tests {
                 rules: Vec::new(),
                 readiness: None,
                 error: None,
+                suppression: None,
             },
             files: AnalyzerDiagnosticsFileTotals {
                 discovered: Some(0),
@@ -1221,7 +1261,7 @@ mod bsl_diagnostics_provider_tests {
             },
             diagnostics_reported: Some(0),
             elapsed_seconds: Some(0.1),
-        })
+        }))
     }
 
     fn execute(
@@ -1356,33 +1396,71 @@ mod bsl_diagnostics_provider_tests {
         assert!(outcome.observations.is_empty());
     }
 
+    /// The resident reply carries the same baseline summary as `analyze`, in
+    /// the shapes upstream `diagnostics file` publishes: a file answer is
+    /// always `partial` with exact `known`/`new`, and a broken baseline is an
+    /// `error` branch with `error_code`/`detail` and no findings.
     #[test]
-    fn baseline_suppressed_resident_findings_are_incomplete_not_empty() {
-        for (state, complete, status) in [
-            ("disabled", true, DiagnosticProviderStatus::Empty),
-            ("full", false, DiagnosticProviderStatus::Completed),
-            ("partial", false, DiagnosticProviderStatus::Completed),
-        ] {
+    fn resident_baseline_is_a_named_filter_and_a_broken_one_names_its_cause() {
+        let reply = |baseline: Value| {
+            let mut result = json!({"kind": "full", "baseline": baseline});
+            if baseline["state"] != "error" {
+                result["truncated"] = json!(false);
+                result["findings"] = json!([]);
+            }
+            FakeBackend::resident(json!({
+                "revision": 1, "stale": false, "reload": "none", "result": result
+            }))
+        };
+        let run = |baseline: Value| {
             let fixture = ProviderFixture::new();
-            let backend = FakeBackend::new(vec![FakeBackend::resident(json!({
-                "revision": 1,
-                "stale": false,
-                "reload": "none",
-                "result": {
-                    "kind": "full",
-                    "truncated": false,
-                    "findings": [],
-                    "baseline": {"state": state, "complete": true, "known": 2}
-                }
-            }))]);
+            let backend = FakeBackend::new(vec![reply(baseline)]);
             let provider = BslAnalyzerDiagnosticProvider::with_backend(&backend);
+            execute(&provider, &fixture, DiagnosticAction::Findings)
+        };
 
-            let outcome = execute(&provider, &fixture, DiagnosticAction::Findings);
+        let disabled = run(json!({"state": "disabled", "complete": true}));
+        assert_eq!(disabled.status, DiagnosticProviderStatus::Empty);
+        assert!(disabled.complete);
+        assert!(disabled.suppression.is_none());
 
-            assert_eq!(outcome.status, status, "{state}");
-            assert_eq!(outcome.complete, complete, "{state}");
-            assert!(outcome.observations.is_empty(), "{state}");
+        for state in ["full", "partial"] {
+            let filtered = run(json!({
+                "state": state, "complete": state == "full", "new": 0, "known": 2,
+                "path": "baseline.json", "partitions": [], "partitions_total": 0,
+                "partitions_returned": 0, "partitions_truncated": false
+            }));
+            assert_eq!(
+                filtered.status,
+                DiagnosticProviderStatus::Completed,
+                "{state}"
+            );
+            assert!(filtered.complete, "{state}");
+            assert!(filtered.observations.is_empty(), "{state}");
+            let suppression = filtered.suppression.expect("filter is named");
+            assert_eq!((suppression.known, suppression.new), (Some(2), Some(0)));
+            assert!(suppression.reason.is_none(), "{state}");
         }
+
+        let broken = run(json!({
+            "state": "error", "complete": false, "path": "baseline.json",
+            "error_code": "invalid_schema", "detail": "baseline schema 7 is newer; token=abc",
+            "errors_total": 1,
+            "errors": [{"partition_id": null, "code": "invalid_schema", "detail": "baseline schema 7 is newer; token=abc"}]
+        }));
+        assert_eq!(broken.status, DiagnosticProviderStatus::Completed);
+        assert!(!broken.complete);
+        assert!(broken.error.is_none());
+        let reason = broken.suppression.unwrap().reason.expect("cause is named");
+        assert_eq!(reason.code, "invalid_schema");
+        let detail = reason.detail.unwrap();
+        assert!(detail.starts_with("baseline schema 7 is newer"), "{detail}");
+        assert!(!detail.contains("abc"), "{detail}");
+
+        // The state set is closed: an unknown state is a protocol change.
+        let unknown = run(json!({"state": "suppressed", "complete": true}));
+        assert_eq!(unknown.status, DiagnosticProviderStatus::Failed);
+        assert!(unknown.suppression.is_none());
     }
 
     #[test]

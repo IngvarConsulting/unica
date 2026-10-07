@@ -310,6 +310,9 @@ impl<'a, M: DiagnosticMapping + ?Sized> DiagnosticCoordinator<'a, M> {
                     .then_some(resource_failures),
                 truncated: action_has_items(request.action).then_some(false),
                 error,
+                // A filter is a fact about findings the section still owns; a
+                // section that lost them to a scope breach names none.
+                suppression: outcome.suppression.filter(|_| !scope_breach),
             });
         }
 
@@ -534,6 +537,7 @@ fn normalize_provider_outcome(
                 || !outcome.rules.is_empty()
                 || outcome.readiness.is_some()
                 || outcome.error.is_some()
+                || outcome.suppression.is_some()
             {
                 return provider_contract_failure(
                     outcome.version,
@@ -549,6 +553,7 @@ fn normalize_provider_outcome(
                 || !outcome.rules.is_empty()
                 || outcome.readiness.is_some()
                 || outcome.error.is_none()
+                || outcome.suppression.is_some()
             {
                 return provider_contract_failure(
                     outcome.version,
@@ -559,10 +564,13 @@ fn normalize_provider_outcome(
     }
     match action {
         DiagnosticAction::Status => {
-            if !outcome.observations.is_empty() || !outcome.rules.is_empty() {
+            if !outcome.observations.is_empty()
+                || !outcome.rules.is_empty()
+                || outcome.suppression.is_some()
+            {
                 return provider_contract_failure(
                     outcome.version,
-                    "status provider returned findings or rules",
+                    "status provider returned findings, rules, or a suppression",
                 );
             }
             if matches!(
@@ -579,10 +587,13 @@ fn normalize_provider_outcome(
             }
         }
         DiagnosticAction::Catalog => {
-            if !outcome.observations.is_empty() || outcome.readiness.is_some() {
+            if !outcome.observations.is_empty()
+                || outcome.readiness.is_some()
+                || outcome.suppression.is_some()
+            {
                 return provider_contract_failure(
                     outcome.version,
-                    "catalog provider returned findings or readiness",
+                    "catalog provider returned findings, readiness, or a suppression",
                 );
             }
         }
@@ -618,6 +629,7 @@ fn normalize_provider_outcome(
                             message: "diagnostic provider findings are not ready".to_string(),
                             retryable: true,
                         }),
+                        suppression: None,
                     };
                 }
             }
@@ -652,6 +664,7 @@ fn provider_failure_outcome(
             message: message.into(),
             retryable,
         }),
+        suppression: None,
     }
 }
 
@@ -684,6 +697,15 @@ fn sanitize_provider_outcome(outcome: &mut DiagnosticProviderOutcome, context: &
                 sanitize_public_diagnostic_error(error);
             }
         }
+    }
+    if let Some(reason) = outcome
+        .suppression
+        .as_mut()
+        .and_then(|suppression| suppression.reason.as_mut())
+    {
+        // The provider's own detail names the cause; it is published only
+        // with the physical roots replaced, like every other provider string.
+        reason.detail = reason.detail.take().map(|detail| roots.redact(&detail));
     }
     for rule in &mut outcome.rules {
         rule.code = roots.redact(&rule.code);
@@ -1600,6 +1622,7 @@ mod tests {
             rules: Vec::new(),
             readiness: None,
             error: None,
+            suppression: None,
         }
     }
 
@@ -1860,6 +1883,7 @@ mod tests {
             ],
             readiness: None,
             error: None,
+            suppression: None,
         };
         let (registry, calls) =
             fake_registry([analyzer, successful(Vec::new()), successful(Vec::new())]);
@@ -2158,6 +2182,7 @@ mod tests {
                 message: "provider failed".to_string(),
                 retryable: true,
             }),
+            suppression: None,
         }
     }
 
@@ -2173,6 +2198,7 @@ mod tests {
                 retryable: true,
             }),
             error: None,
+            suppression: None,
         }
     }
 
@@ -2211,6 +2237,89 @@ mod tests {
         assert!(complete.ok);
         assert_eq!(complete.state, DiagnosticResultState::Completed);
         assert!(complete.complete);
+    }
+
+    #[test]
+    fn diagnostics_baseline_suppression_is_a_named_filter_not_incompleteness() {
+        let filtered = |known: usize, reason: Option<DiagnosticSuppressionReason>| {
+            let mut outcome = successful(Vec::new());
+            outcome.status = DiagnosticProviderStatus::Completed;
+            outcome.complete = reason.is_none();
+            outcome.suppression = Some(DiagnosticSuppression {
+                by: DiagnosticSuppressionSource::Baseline,
+                known: Some(known),
+                new: Some(0),
+                reason,
+            });
+            outcome
+        };
+
+        // Every finding hidden by a proven baseline: a complete result whose
+        // section names the filter, not a contract breach and not "clean".
+        let (registry, _) = fake_registry([
+            filtered(2, None),
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+        let complete = run(registry, &findings_request()).unwrap();
+        assert!(complete.ok);
+        assert_eq!(complete.state, DiagnosticResultState::Completed);
+        assert!(complete.complete);
+        assert_eq!(
+            complete.providers[0].status,
+            DiagnosticProviderStatus::Completed
+        );
+        let serialized = serde_json::to_value(&complete).unwrap();
+        assert_eq!(
+            serialized["providers"][0]["suppression"],
+            json!({"by": "baseline", "known": 2, "new": 0})
+        );
+        assert!(serialized["providers"][1].get("suppression").is_none());
+
+        // A broken baseline: the section is incomplete and names the cause,
+        // with physical roots redacted like every provider string.
+        let (registry, _) = fake_registry([
+            filtered(
+                0,
+                Some(DiagnosticSuppressionReason {
+                    code: "invalid_schema".to_string(),
+                    detail: Some("workspace/.build/unica/baseline.json is newer".to_string()),
+                }),
+            ),
+            successful(Vec::new()),
+            successful(Vec::new()),
+        ]);
+        let partial = run(registry, &findings_request()).unwrap();
+        assert!(partial.ok);
+        assert_eq!(partial.state, DiagnosticResultState::Partial);
+        assert!(!partial.complete);
+        assert!(!partial.providers[0].complete);
+        let reason = partial.providers[0]
+            .suppression
+            .as_ref()
+            .and_then(|suppression| suppression.reason.as_ref())
+            .expect("cause is named");
+        assert_eq!(reason.code, "invalid_schema");
+        let detail = reason.detail.as_deref().unwrap();
+        assert!(detail.ends_with("is newer"), "{detail}");
+        assert!(!detail.contains(".build/unica"), "{detail}");
+
+        // A suppression cannot ride on a payload-free Empty or a failure.
+        let mut empty = filtered(1, None);
+        empty.status = DiagnosticProviderStatus::Empty;
+        let mut failure = failed("analyzer_failed");
+        failure.suppression = filtered(1, None).suppression;
+        for outcome in [empty, failure] {
+            let (registry, _) =
+                fake_registry([outcome, successful(Vec::new()), successful(Vec::new())]);
+            let result = run(registry, &findings_request()).unwrap();
+            assert_eq!(result.providers[0].status, DiagnosticProviderStatus::Failed);
+            assert_eq!(
+                result.providers[0].error.as_ref().unwrap().code,
+                "provider_contract_invalid"
+            );
+            assert!(result.providers[0].suppression.is_none());
+        }
     }
 
     #[test]
@@ -2636,6 +2745,7 @@ mod tests {
             rules: Vec::new(),
             readiness: None,
             error: None,
+            suppression: None,
         };
         let (registry, _) = fake_registry([
             malformed_failed,
@@ -2685,6 +2795,7 @@ mod tests {
             }],
             readiness: None,
             error: None,
+            suppression: None,
         };
         let (registry, _) = fake_registry([
             analyze_with_rule,
@@ -2724,6 +2835,7 @@ mod tests {
                     message: "provider failed".to_string(),
                     retryable: false,
                 }),
+                suppression: None,
             };
             let (registry, _) =
                 fake_registry([malformed, successful(Vec::new()), successful(Vec::new())]);
@@ -2790,6 +2902,7 @@ mod tests {
             rules: Vec::new(),
             readiness: None,
             error: None,
+            suppression: None,
         };
         let failed = DiagnosticProviderOutcome {
             status: DiagnosticProviderStatus::Failed,
@@ -2803,6 +2916,7 @@ mod tests {
                 message: format!("provider failed below {}", private_root.display()),
                 retryable: false,
             }),
+            suppression: None,
         };
         let (registry, _) = fake_registry([completed, failed, successful(Vec::new())]);
         let workspace = WorkspaceContext {

@@ -4,6 +4,9 @@ use crate::domain::diagnostics::{
     DiagnosticObservationLocation, DiagnosticProviderOutcome, DiagnosticProviderStatus,
     DiagnosticRange, DiagnosticSeverity, DiagnosticTag, BSL_ANALYZER_PROVIDER,
 };
+use crate::infrastructure::diagnostics_baseline::{
+    baseline_verdict, BaselineFacts, BaselineIssue, BaselineState, BaselineVerdict,
+};
 use crate::infrastructure::redaction::redactor;
 use crate::infrastructure::source_roots::normalize_path_identity;
 use serde::Deserialize;
@@ -47,7 +50,7 @@ pub(crate) struct DiagnosticsJsonlParser {
     reported: Option<usize>,
     done_files: Option<usize>,
     done_failures: Option<usize>,
-    baseline_suppression: bool,
+    baseline: BaselineVerdict,
 }
 
 impl DiagnosticsJsonlParser {
@@ -68,7 +71,7 @@ impl DiagnosticsJsonlParser {
             reported: None,
             done_files: None,
             done_failures: None,
-            baseline_suppression: false,
+            baseline: BaselineVerdict::disabled(),
         })
     }
 
@@ -173,9 +176,9 @@ impl DiagnosticsJsonlParser {
                 "bsl-analyzer did not report exactly the requested module".to_string(),
             );
         }
-        // An enabled baseline may have hidden every finding: no observations
-        // then do not prove the files clean, as in the resident reply.
-        let status = if self.observations.is_empty() && !self.baseline_suppression {
+        // A configured baseline is named with the result, so a list it emptied
+        // is reported as filtered, never as a payload-free "no findings".
+        let status = if self.observations.is_empty() && self.baseline.suppression.is_none() {
             DiagnosticProviderStatus::Empty
         } else {
             DiagnosticProviderStatus::Completed
@@ -183,14 +186,15 @@ impl DiagnosticsJsonlParser {
         AnalyzerDiagnosticsBatch {
             outcome: DiagnosticProviderOutcome {
                 status,
-                // A configured diagnostics baseline hides known findings: the
-                // set is not every finding of the analysed files.
-                complete: failed == 0 && !self.baseline_suppression,
+                // A baseline is the user's filter: it costs completeness only
+                // when it is broken or did not classify the findings.
+                complete: failed == 0 && self.baseline.intact,
                 version: self.version,
                 observations: self.observations,
                 rules: Vec::new(),
                 readiness: None,
                 error: None,
+                suppression: self.baseline.suppression,
             },
             files: AnalyzerDiagnosticsFileTotals {
                 discovered: Some(discovered),
@@ -279,9 +283,10 @@ impl DiagnosticsJsonlParser {
                 self.reported = Some(event.total_diagnostics);
                 self.done_files = Some(event.total_files);
                 self.done_failures = Some(event.failed_files);
-                self.baseline_suppression = event
+                self.baseline = event
                     .baseline
-                    .is_some_and(|baseline| baseline.state != BaselineState::Disabled);
+                    .as_deref()
+                    .map_or_else(BaselineVerdict::disabled, DoneBaseline::verdict);
                 self.validate_totals()?;
             }
         }
@@ -325,6 +330,7 @@ impl DiagnosticsJsonlParser {
                     message,
                     retryable,
                 }),
+                suppression: None,
             },
             files: AnalyzerDiagnosticsFileTotals {
                 discovered: self.discovered,
@@ -383,18 +389,21 @@ struct DoneEvent {
     total_files: usize,
     total_diagnostics: usize,
     failed_files: usize,
-    /// bsl-analyzer 0.2.86+ reports whether `[diagnostics.baseline]` of the
-    /// analysed project suppressed known findings.
+    /// bsl-analyzer 0.2.71+ always reports the `[diagnostics.baseline]` of
+    /// the analysed project here (`disabled` when none is configured).
     baseline: Option<Box<DoneBaseline>>,
 }
 
+/// Upstream `DiagnosticsBaselineSummary`, field for field: an unknown field
+/// is a protocol change and is rejected like any other.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DoneBaseline {
     state: BaselineState,
+    // Upstream's own completeness is project-wide coverage, which a scoped
+    // run never has; the verdict reads the fields below instead.
     #[allow(dead_code)]
     complete: bool,
-    // Upstream details of an enabled baseline; only their presence is checked.
     #[allow(dead_code)]
     selection: Option<serde_json::Value>,
     #[allow(dead_code)]
@@ -403,10 +412,9 @@ struct DoneBaseline {
     partitions_unsuppressed: Option<usize>,
     #[allow(dead_code)]
     unsuppressed: Option<usize>,
-    #[allow(dead_code)]
     new: Option<usize>,
-    #[allow(dead_code)]
     known: Option<usize>,
+    // Proven only for the files a run covered; never published as a count.
     #[allow(dead_code)]
     resolved: Option<usize>,
     #[allow(dead_code)]
@@ -415,25 +423,41 @@ struct DoneBaseline {
     schema_version: Option<u32>,
     #[allow(dead_code)]
     manifest_schema_version: Option<u32>,
-    #[allow(dead_code)]
     error_code: Option<String>,
-    #[allow(dead_code)]
     detail: Option<String>,
     #[allow(dead_code)]
     #[serde(default)]
     partitions: Vec<serde_json::Value>,
-    #[allow(dead_code)]
     #[serde(default)]
-    errors: Vec<serde_json::Value>,
+    errors: Vec<DoneBaselineError>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum BaselineState {
-    Disabled,
-    Full,
-    Partial,
-    Error,
+/// Upstream `DiagnosticsBaselineErrorSummary`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DoneBaselineError {
+    #[allow(dead_code)]
+    partition_id: Option<String>,
+    code: String,
+    detail: String,
+    #[allow(dead_code)]
+    epoch: String,
+}
+
+impl DoneBaseline {
+    fn verdict(&self) -> BaselineVerdict {
+        baseline_verdict(BaselineFacts {
+            state: self.state,
+            known: self.known,
+            new: self.new,
+            error_code: self.error_code.as_deref(),
+            detail: self.detail.as_deref(),
+            first_error: self.errors.first().map(|error| BaselineIssue {
+                code: &error.code,
+                detail: &error.detail,
+            }),
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -730,22 +754,96 @@ mod tests {
         );
     }
 
+    /// Each branch of the baseline verdict on a real `done` shape: a proven
+    /// filter keeps the batch complete and names what it hid; only a broken
+    /// or unclassified baseline costs completeness, and then names the cause.
     #[test]
-    fn done_baseline_disabled_keeps_completion_and_enabled_baseline_does_not() {
-        for (baseline, complete) in [
-            (r#"{"state":"disabled","complete":true}"#, true),
-            (
-                r#"{"state":"full","selection":{"mode":"all"},"unsuppressed":0,"known":3,"path":"baseline.json","complete":true}"#,
-                false,
-            ),
-            (
-                r#"{"state":"partial","complete":false,"partitions":[{"id":"p"}]}"#,
-                false,
-            ),
-        ] {
-            let file = diagnostic("LineLength", "Warning", 10);
+    fn done_baseline_is_a_named_filter_and_only_a_broken_one_is_incomplete() {
+        struct Case {
+            baseline: &'static str,
+            findings: usize,
+            status: DiagnosticProviderStatus,
+            complete: bool,
+            known: Option<usize>,
+            reason: Option<&'static str>,
+        }
+        let cases = [
+            // No baseline configured: nothing to name, an empty list is Empty.
+            Case {
+                baseline: r#"{"state":"disabled","complete":true}"#,
+                findings: 0,
+                status: DiagnosticProviderStatus::Empty,
+                complete: true,
+                known: None,
+                reason: None,
+            },
+            // A whole-project run: the filter hid three known findings.
+            Case {
+                baseline: r#"{"state":"full","selection":{"mode":"all"},"unsuppressed":0,"new":1,"known":3,"resolved":0,"path":"baseline.json","complete":true}"#,
+                findings: 1,
+                status: DiagnosticProviderStatus::Completed,
+                complete: true,
+                known: Some(3),
+                reason: None,
+            },
+            // The filter hid every finding: filtered, not "clean", and not a
+            // payload-free Empty that the coordinator would reject.
+            Case {
+                baseline: r#"{"state":"full","new":0,"known":2,"resolved":0,"path":"baseline.json","complete":true}"#,
+                findings: 0,
+                status: DiagnosticProviderStatus::Completed,
+                complete: true,
+                known: Some(2),
+                reason: None,
+            },
+            // A scoped run (the `--diff-filter` of a module check) is always
+            // `partial` upstream, yet `known`/`new` are exact for its files.
+            Case {
+                baseline: r#"{"state":"partial","new":0,"known":2,"resolved":0,"path":"baseline.json","complete":false}"#,
+                findings: 0,
+                status: DiagnosticProviderStatus::Completed,
+                complete: true,
+                known: Some(2),
+                reason: None,
+            },
+            // `partial` without `known`: the classification was interrupted.
+            Case {
+                baseline: r#"{"state":"partial","path":"baseline.json","complete":false}"#,
+                findings: 0,
+                status: DiagnosticProviderStatus::Completed,
+                complete: false,
+                known: None,
+                reason: Some("baseline_interrupted"),
+            },
+            // A broken baseline names the analyzer's own code.
+            Case {
+                baseline: r#"{"state":"error","path":"baseline.json","complete":false,"error_code":"invalid_path","detail":"baseline path escapes the project","errors":[{"code":"invalid_path","detail":"baseline path escapes the project","epoch":"e"}]}"#,
+                findings: 0,
+                status: DiagnosticProviderStatus::Completed,
+                complete: false,
+                known: None,
+                reason: Some("invalid_path"),
+            },
+            // A partition error breaks a summary that is otherwise full.
+            Case {
+                baseline: r#"{"state":"full","known":1,"new":0,"complete":true,"errors":[{"partition_id":"extension:Ext","code":"missing_partition","detail":"no object","epoch":"e"}]}"#,
+                findings: 1,
+                status: DiagnosticProviderStatus::Completed,
+                complete: false,
+                known: Some(1),
+                reason: Some("missing_partition"),
+            },
+        ];
+        for case in cases {
+            let baseline = case.baseline;
+            let file = if case.findings == 0 {
+                r#"{"type":"file","path":"Module.bsl","diagnostics":[]}"#.to_string()
+            } else {
+                diagnostic("LineLength", "Warning", 10)
+            };
             let done = format!(
-                r#"{{"type":"done","elapsed_secs":0.4,"total_files":1,"total_diagnostics":1,"failed_files":0,"baseline":{baseline}}}"#
+                r#"{{"type":"done","elapsed_secs":0.4,"total_files":1,"total_diagnostics":{},"failed_files":0,"baseline":{baseline}}}"#,
+                case.findings
             );
             let mut parser = parser();
             feed(
@@ -758,48 +856,29 @@ mod tests {
             );
 
             let batch = parser.finish();
+            assert_eq!(batch.outcome.status, case.status, "{baseline}");
+            assert!(batch.outcome.error.is_none(), "{baseline}");
+            assert_eq!(batch.outcome.complete, case.complete, "{baseline}");
             assert_eq!(
-                batch.outcome.status,
-                DiagnosticProviderStatus::Completed,
+                batch.outcome.observations.len(),
+                case.findings,
                 "{baseline}"
             );
-            assert!(batch.outcome.error.is_none(), "{baseline}");
-            assert_eq!(batch.outcome.complete, complete, "{baseline}");
-            assert_eq!(batch.outcome.observations.len(), 1, "{baseline}");
-        }
-    }
-
-    #[test]
-    fn baseline_that_hid_every_finding_is_not_reported_empty() {
-        for (baseline, status, complete) in [
-            (
-                r#"{"state":"disabled","complete":true}"#,
-                DiagnosticProviderStatus::Empty,
-                true,
-            ),
-            (
-                r#"{"state":"full","unsuppressed":0,"known":2,"complete":true}"#,
-                DiagnosticProviderStatus::Completed,
-                false,
-            ),
-        ] {
-            let done = format!(
-                r#"{{"type":"done","elapsed_secs":0.1,"total_files":1,"total_diagnostics":0,"failed_files":0,"baseline":{baseline}}}"#
+            let suppression = batch.outcome.suppression;
+            if case.status == DiagnosticProviderStatus::Empty {
+                assert!(suppression.is_none(), "{baseline}");
+                continue;
+            }
+            let suppression = suppression.expect(baseline);
+            assert_eq!(suppression.known, case.known, "{baseline}");
+            assert_eq!(
+                suppression
+                    .reason
+                    .as_ref()
+                    .map(|reason| reason.code.as_str()),
+                case.reason,
+                "{baseline}"
             );
-            let mut parser = parser();
-            feed(
-                &mut parser,
-                &[
-                    r#"{"type":"start","total_files":1,"version":"0.2.86"}"#,
-                    r#"{"type":"file","path":"Module.bsl","diagnostics":[]}"#,
-                    &done,
-                ],
-            );
-
-            let batch = parser.finish();
-            assert!(batch.outcome.observations.is_empty(), "{baseline}");
-            assert_eq!(batch.outcome.status, status, "{baseline}");
-            assert_eq!(batch.outcome.complete, complete, "{baseline}");
         }
     }
 
