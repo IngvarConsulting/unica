@@ -2767,7 +2767,9 @@ fn parse_web_operation(
             "DataLockControlMode",
             format!("{base}.dataLockControlMode"),
         )?;
-        if !matches!(mode.as_str(), "Automatic" | "Managed") {
+        if !super::validation::meta_validate_property_enum("DataLockControlMode")
+            .contains(&mode.as_str())
+        {
             return Err(ProjectionError::malformed(
                 format!("{base}.dataLockControlMode"),
                 "Web service operation data lock control mode is outside the platform enum"

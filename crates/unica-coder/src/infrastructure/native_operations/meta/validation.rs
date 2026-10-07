@@ -4386,7 +4386,7 @@ pub(super) fn meta_validate_valid_transfer_directions() -> &'static [&'static st
     meta_validate_property_enum("TransferDirection")
 }
 
-fn meta_validate_property_enum(property: &str) -> &'static [&'static str] {
+pub(super) fn meta_validate_property_enum(property: &str) -> &'static [&'static str] {
     meta_validate_property_values()
         .iter()
         .find(|(name, _)| *name == property)

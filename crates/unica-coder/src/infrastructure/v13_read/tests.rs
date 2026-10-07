@@ -1047,6 +1047,52 @@ fn configurator_http_service_view_lists_its_templates_and_methods() {
     assert_eq!(method["props"]["handler"], json!("ПринятьДанныеPOST"));
 }
 
+/// Веб-сервис в том виде, в каком его выгружает Конфигуратор 8.3.27:
+/// у операции есть `Synonym`, `<Comment/>` и `DataLockControlMode`,
+/// у параметра — `Synonym` и `<Comment/>`.
+#[test]
+fn configurator_web_service_view_opens_its_operations_and_parameters() {
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture.source.join("WebServices/Exchange.xml"),
+        &fixture_text("platform_8_3_27/meta_info/edge/web-service-configurator.xml")
+            .replace("<Name>ОбменДанными</Name>", "<Name>Exchange</Name>"),
+    );
+    let service = fixture.view_service();
+
+    let web = service.view(ViewRequest::new("main:WebService.Exchange").unwrap());
+    assert!(web.ok, "{:?}", refusal_codes(&web));
+    let node = web.data.as_ref().unwrap();
+    assert!(
+        node["branches"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"at": "main:WebService.Exchange.Operation", "count": 2})),
+        "{node:#}"
+    );
+    assert!(node.get("limits").is_none(), "{node:#}");
+
+    let operation =
+        service.view(ViewRequest::new("main:WebService.Exchange.Operation.ПринятьПакет").unwrap());
+    assert!(operation.ok, "{:?}", refusal_codes(&operation));
+    let operation = operation.data.as_ref().unwrap();
+    assert_eq!(operation["props"]["procedure"], json!("ПринятьПакет"));
+    assert_eq!(
+        operation["branches"],
+        json!([{"at": "main:WebService.Exchange.Operation.ПринятьПакет.Parameter", "count": 3}]),
+    );
+
+    let parameter = service.view(
+        ViewRequest::new("main:WebService.Exchange.Operation.ПринятьПакет.Parameter.Ошибка")
+            .unwrap(),
+    );
+    assert!(parameter.ok, "{:?}", refusal_codes(&parameter));
+    assert_eq!(
+        parameter.data.as_ref().unwrap()["props"]["direction"],
+        json!("out")
+    );
+}
+
 /// Непрочитанный шаблон не выдаётся за пустой сервис: узел называет поле
 /// в `limits`, а ветвь шаблонов отказывает с причиной вместо «нет такой».
 #[test]
