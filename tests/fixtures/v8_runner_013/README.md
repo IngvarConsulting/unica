@@ -37,13 +37,13 @@ shapes match the 0.12.0 captures they replace.
 
 Provider designer. Project `A` created the infobase, pulled it (`pull --force`)
 and pushed a change. Project `B` declared the same infobase by its absolute
-path; both declared it with `shared: true`. Then:
+path. Then:
 
-- `push-infobase-held-preview.json`: `push --dry-run` in `B` before
-  `shared: true` was set — `infobase_held`, the base is held by `A`.
-- `push-no-memory-preview.json`: `push --dry-run` in `B` after both copies
-  shared the base — `no_memory`, `B` has no memory of the base.
-- `B` ran `push --force` (full load into the shared infobase).
+- `push-infobase-held-preview.json`: `push --dry-run` in `B` — `infobase_held`,
+  the base is held by `A`.
+- `push-no-memory-preview.json`: `push --dry-run` in `B` once the runner let `B`
+  write to that base — `no_memory`, `B` has no memory of the base.
+- `B` ran `push --force` (full load over `A`'s configuration).
 - `push-skipped-preview.json`, `push-skipped-apply.json`: `push --dry-run` and
   `push` in `A` — every set `skipped` by `A`'s memory; the platform was not
   started and the generation was not read, although the infobase held `B`'s
@@ -54,3 +54,10 @@ path; both declared it with `shared: true`. Then:
   generations.
 - `push-infobase-busy-apply.json`: `push --full` in `B` while `A` ran
   `pull --force` on the same infobase — `infobase_busy`.
+
+The runner let `B` write to `A`'s infobase through an ownership opt-out of
+runner 0.13 that its next release removes. Unica neither writes nor reads that
+key, and the tests do not depend on it; runner prose in
+`push-infobase-held-preview.json`, `push-no-memory-preview.json` and
+`push-non-fast-forward-apply.json` still names it, because these are captured
+bytes.
