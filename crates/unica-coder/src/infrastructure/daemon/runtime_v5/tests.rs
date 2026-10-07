@@ -5988,7 +5988,19 @@ fn assert_unretirable_record_stays_confined(step: V5RetirementStep) {
     );
     // Reading the record that could not be retired does not close the daemon
     // either, even when its Task is already deleted and only the link remains.
-    let _ = runtime.resolve_task(store.foreign, Instant::now() + Duration::from_secs(5));
+    let foreign = runtime.resolve_task(store.foreign, Instant::now() + Duration::from_secs(5));
+    if step == V5RetirementStep::Finalize {
+        assert!(
+            matches!(foreign, Err(ReceiptLedgerError::ReceiptNotFound)),
+            "{step:?}: a deleted Task under its retirement intent must read as absent: {foreign:?}"
+        );
+    } else {
+        assert!(
+            matches!(&foreign, Ok(V5DaemonTaskSnapshot::Completed { result, .. })
+                if result.summary == "expired foreign"),
+            "{step:?}: the record that could not be retired lost its result: {foreign:?}"
+        );
+    }
     assert_live_task_answers(
         runtime,
         store.live,

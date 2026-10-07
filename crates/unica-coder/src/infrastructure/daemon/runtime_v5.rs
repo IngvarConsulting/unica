@@ -913,10 +913,13 @@ impl V5TaskProjection {
                 }
                 Err(failure) => failure,
             };
-            // A failed step may have left the durable link catalog ahead of
+            // A store failure may have left the durable link catalog ahead of
             // the copy in memory (its commit is uncertain). Adopt the durable
-            // catalog before any other Task is served from it.
-            self.reload_after_retirement_failure()?;
+            // catalog before any other Task is served from it. A rejection
+            // without a store failure (deadline, record size) changed nothing.
+            if failure.fail_stop {
+                self.reload_after_retirement_failure()?;
+            }
             let failures = deferrals
                 .get(&task_id)
                 .map_or(1, |deferral| deferral.failures.saturating_add(1));
