@@ -7,14 +7,26 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_without_prior_preview_creates_and_confirms_the_provider_receipt
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_an_infobase_created_elsewhere
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_a_receipt_that_still_plans_to_create
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::captured_runner_013_create_is_confirmed_by_its_repeated_preview
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_first_push_after_create_loads_in_full_without_no_memory
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Создание базы подтверждается повторным опросом раннера
 
-Адаптер раннера создаёт только пустую отсутствующую базу. Исходники
-и память синхронизации не инициализируются; результат явно сообщает
-`initializesSources: false` и `generationProtection: false`.
+Адаптер раннера создаёт только пустую отсутствующую базу. Unica исходники
+не загружает и базовой линии синхронизации не обещает; результат явно
+сообщает `initializesSources: false`. Защита поколения — свойство `push`
+([план импорта исходников](source-import-plan.md)), поэтому план создания
+поля `generationProtection` не содержит.
+
+Раннер 0.13 при создании записывает пустую память каждого набора,
+объявленного на этот момент. Первый `push` после создания грузит такие наборы
+целиком и не отказывает `no_memory`. Записи поколения после создания ещё нет,
+и этот `push` поколение базы не сверяет: его `generationProtection: true`
+называет режим, а не состоявшуюся сверку. Набор, объявленный позже, памяти
+не получает. Живой замер снят на одном наборе конфигурации с провайдером
+`designer` и файловой базой.
 
 `infobase.create` берёт соединение из проектного файла и не принимает
 аргументов соединения. Операция доступна без исходников и требует явный
@@ -36,5 +48,6 @@ preview раннера в текущем вызове. Их изменение �
 провайдера источником сведений о состоянии базы; пути базы и установки
 платформы наружу не передаются.
 
-Проверки используют управляемые ответы раннера. Они не проверяют состояние
-настоящей информационной базы.
+Проверки используют управляемые ответы раннера, в том числе снятые
+с раннера 0.13.0 вживую. Они не проверяют состояние настоящей
+информационной базы.

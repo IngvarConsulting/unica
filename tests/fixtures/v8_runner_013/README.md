@@ -33,6 +33,26 @@ Project file: `providers: {extensions: ibcmd, infobase.create: ibcmd}` and one
 Separate `info` calls verified false/true activity after each change. The
 shapes match the 0.12.0 captures they replace.
 
+## Creating an infobase and the first push
+
+Captured 2026-10-08 with the same binary. Provider designer (the default), one
+`CONFIGURATION` source set `main`; the infobase, absent before the capture, was
+declared in `v8project.local.yaml` as `infobases.origin`. Then:
+
+- `push --dry-run` before creation refused `no_memory`; that shape is
+  `push-no-memory-preview.json`, so it is not kept twice.
+- `infobase-create-preview.json`: `infobase create --dry-run` — the infobase
+  step is `planned`, the EDT step `skipped`.
+- `infobase-create-apply.json`: `infobase create`. Afterwards `workPath` held
+  `infobases/origin/hashes/main.redb` — an empty memory of the declared set —
+  and no `generation.json`.
+- `infobase-create-receipt-preview.json`: `infobase create --dry-run` again —
+  the infobase step is `skipped`, the infobase exists.
+- `push-after-create-preview.json`, `push-after-create-apply.json`:
+  `push --dry-run` and `push` without `--force` — the set is loaded `full`, no
+  `no_memory`. With no generation record the runner did not check the
+  generation; `generation.json` appeared only after this load.
+
 ## Push against another working copy
 
 Provider designer. Project `A` created the infobase, pulled it (`pull --force`)

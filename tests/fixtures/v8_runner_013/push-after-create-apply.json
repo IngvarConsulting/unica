@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "command": "push",
+  "duration_ms": 15165,
+  "data": {
+    "provider": {
+      "selected": "designer",
+      "origin": {
+        "kind": "default"
+      }
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "source_set": "main",
+        "mode": "full",
+        "ok": true,
+        "message": "full load selected by partial-load rules",
+        "duration_ms": 15142
+      }
+    ],
+    "duration_ms": 15165
+  },
+  "warnings": [],
+  "steps": []
+}

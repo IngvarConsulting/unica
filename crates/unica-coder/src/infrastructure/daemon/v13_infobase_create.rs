@@ -14,6 +14,12 @@
 //! ответить, что базу создавать больше нечего. Состояние базы Unica иначе не
 //! проверяет и называет его засвидетельствованным провайдером. Путь к базе,
 //! платформе и командная строка наружу не идут.
+//!
+//! Раннер 0.13 при создании записывает пустую память каждого набора,
+//! объявленного на этот момент, поэтому первый `push` грузит наборы целиком и не отказывает
+//! `no_memory`. Записи поколения после создания нет: первый `push` поколение
+//! не сверяет. Unica исходники не грузит и базовой линии синхронизации
+//! не обещает.
 
 use super::protocol::InvocationRequest;
 use super::runner_013::Runner013ProcessRunner;
@@ -250,8 +256,9 @@ fn execute_with_resolved_runner(
                 "action": "create",
                 "connectionFrom": CONFIG_NAME,
                 "edtWorkspace": "skipped",
+                // Исходники создание не грузит. Защита поколения — свойство
+                // `push`, а не создания: поля `generationProtection` здесь нет.
                 "initializesSources": false,
-                "generationProtection": false,
                 // Что превью узнать не может, названо, а не умолчано.
                 "targetStateKnownBeforeApply": false,
             },
@@ -805,6 +812,53 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("still plans to create"));
+    }
+
+    fn captured(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/v8_runner_013")
+            .join(name);
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Конверты раннера 0.13.0, снятые вживую: превью планирует базу,
+    /// применение создаёт её, повторное превью видит её существующей.
+    /// Ответ не называет путь базы и платформы и не обещает защиту поколения:
+    /// она — свойство `push`, а не создания.
+    #[test]
+    fn captured_runner_013_create_is_confirmed_by_its_repeated_preview() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![process(
+            captured("infobase-create-preview.json"),
+            true,
+        )]);
+        let preview = run(root.path(), &prepared(root.path(), true), &runner);
+        assert!(preview.ok, "{preview:?}");
+        let plan = &preview.data.as_ref().unwrap()["plan"];
+        assert_eq!(plan["initializesSources"], false);
+        assert!(plan.get("generationProtection").is_none(), "{plan}");
+
+        let runner = SequenceRunner::new(vec![
+            process(captured("infobase-create-preview.json"), true),
+            process(captured("infobase-create-apply.json"), true),
+            process(captured("infobase-create-receipt-preview.json"), true),
+        ]);
+        let result = run(root.path(), &prepared(root.path(), false), &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 3);
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["state"], "created");
+        assert_eq!(data["initializesSources"], false);
+        assert_eq!(data["targetStateAttestedBy"], "provider");
+        assert!(data.get("generationProtection").is_none(), "{data}");
+        for encoded in [
+            serde_json::to_string(&preview).unwrap(),
+            serde_json::to_string(&result).unwrap(),
+        ] {
+            for leaked in ["/workspace", "1Cv8.1CD", "1cv8", "/platform"] {
+                assert!(!encoded.contains(leaked), "{leaked} leaked: {encoded}");
+            }
+        }
     }
 
     #[test]

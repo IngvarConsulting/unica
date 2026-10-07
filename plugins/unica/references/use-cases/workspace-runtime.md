@@ -104,7 +104,7 @@ source-set path itself has no stronger structural evidence.
 
 | Intent | `unica.run` operation |
 | --- | --- |
-| Create an absent empty infobase | `infobase.create`, empty args; then send sources separately; no sync baseline |
+| Create an absent empty infobase | `infobase.create`, empty args; it loads no sources; the first `push` then loads every declared set in full, without `no_memory` |
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |

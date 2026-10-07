@@ -1743,6 +1743,42 @@ mod tests {
             .contains("did not report whether"));
     }
 
+    /// Первый `push` после `infobase create` раннера 0.13.0, снятый вживую
+    /// (`tests/fixtures/v8_runner_013/README.md`): создание записало пустую
+    /// память набора, поэтому `push` без `force` не отказывает `no_memory`,
+    /// а грузит набор целиком.
+    #[test]
+    fn captured_first_push_after_create_loads_in_full_without_no_memory() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-after-create-preview.json"), true),
+            process(captured("push-after-create-apply.json"), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), false, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(!runner.joined_args(1).contains("--force"));
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["force"], false);
+        assert_eq!(data["providerDispatched"], true);
+        assert_eq!(data["steps"][0]["mode"], "full");
+        assert_eq!(data["targetStateAttestedBy"], "provider");
+        assert_eq!(result.changed.len(), 1, "{result:?}");
+        assert_eq!(result.changed[0]["sourceSet"], "main");
+        assert_eq!(result.changed[0]["mode"], "full");
+        assert!(result.warnings.is_empty(), "{result:?}");
+        // Режим защиты включён, но записи поколения у раннера ещё нет:
+        // ответ не выдаёт эту загрузку за сверенную.
+        assert_eq!(data["generationProtection"], true);
+        assert_eq!(
+            result.summary,
+            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider"
+        );
+    }
+
     #[test]
     fn apply_refuses_a_dispatch_flag_that_contradicts_the_steps() {
         let root = workspace();
