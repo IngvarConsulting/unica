@@ -309,6 +309,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
                     "edge/http-service.xml",
                     "edge/http-service-configurator.xml",
                     "edge/web-service.xml",
+                    "edge/web-service-configurator.xml",
                     "edge/task-addressing.xml",
                     "edge/catalog-child-kinds.xml",
                     "edge/document-journal-child-kinds.xml",

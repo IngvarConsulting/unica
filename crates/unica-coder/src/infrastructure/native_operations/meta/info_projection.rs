@@ -2748,13 +2748,33 @@ fn parse_web_operation(
         properties,
         &[
             "Name",
+            "Synonym",
+            "Comment",
             "XDTOReturningValueType",
             "Nillable",
             "Transactioned",
             "ProcedureName",
+            "DataLockControlMode",
         ],
         &base,
     )?;
+    ensure_nested_descriptive_properties(properties, &base)?;
+    // Режим блокировок Конфигуратор пишет у каждой операции; в ответ он
+    // не попадает, но значение вне перечисления платформы отклоняется.
+    if direct_md_child(properties, "DataLockControlMode").is_some() {
+        let mode = required_child_text(
+            properties,
+            "DataLockControlMode",
+            format!("{base}.dataLockControlMode"),
+        )?;
+        if !matches!(mode.as_str(), "Automatic" | "Managed") {
+            return Err(ProjectionError::malformed(
+                format!("{base}.dataLockControlMode"),
+                "Web service operation data lock control mode is outside the platform enum"
+                    .to_string(),
+            ));
+        }
+    }
     let name = required_child_text(properties, "Name", format!("{base}.name"))?;
     let return_node = direct_md_child(properties, "XDTOReturningValueType").ok_or_else(|| {
         ProjectionError::unsupported(
@@ -2830,9 +2850,17 @@ fn parse_web_parameter(
     })?;
     ensure_unique_direct_md_children(
         properties,
-        &["Name", "XDTOValueType", "Nillable", "TransferDirection"],
+        &[
+            "Name",
+            "Synonym",
+            "Comment",
+            "XDTOValueType",
+            "Nillable",
+            "TransferDirection",
+        ],
         &base,
     )?;
+    ensure_nested_descriptive_properties(properties, &base)?;
     let name = required_child_text(properties, "Name", format!("{base}.name"))?;
     let type_node = direct_md_child(properties, "XDTOValueType").ok_or_else(|| {
         ProjectionError::unsupported(
