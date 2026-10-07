@@ -43,6 +43,27 @@ class ActionPinTests(unittest.TestCase):
                     self.assertRegex(found["ref"], r"^[0-9a-f]{40}$", line)
                     self.assertIsNotNone(found["version"], line)
 
+    def test_rust_toolchain_is_pinned_to_a_release_tag_with_the_toolchain_named(self) -> None:
+        # Ветки `stable`, `nightly`, `1.89` у dtolnay/rust-toolchain собираются
+        # заново на каждый коммит master и перезаписываются: хеш с такой ветки
+        # выпадает из истории, и zizmor видит подменённый коммит. Пин идёт
+        # по тегу `vN` из master, а без ветки-тулчейна `toolchain` обязателен.
+        for path in WORKFLOWS:
+            text = path.read_text(encoding="utf-8")
+            for line in text.splitlines():
+                uses = USES_LINE.match(line)
+                found = PINNED.match(uses["spec"]) if uses else None
+                if not found or found["action"] != "dtolnay/rust-toolchain":
+                    continue
+                with self.subTest(workflow=path.name, line=line.strip()):
+                    self.assertRegex(found["version"] or "", r"^v\d+$")
+            for job_name, job in yaml.safe_load(text)["jobs"].items():
+                for index, step in enumerate(job.get("steps", [])):
+                    if not step.get("uses", "").startswith("dtolnay/rust-toolchain@"):
+                        continue
+                    with self.subTest(workflow=path.name, job=job_name, step=index):
+                        self.assertTrue((step.get("with") or {}).get("toolchain"))
+
     def test_every_checkout_leaves_no_token_in_the_tree(self) -> None:
         for path in WORKFLOWS:
             workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
