@@ -24,3 +24,17 @@ Each ran first with `--dry-run`, then without:
 Separate `info` calls verified false/true activity after each change.
 These fixtures attest the runner boundary, not a portable guarantee that every
 host has a working platform installation.
+
+## Push with every source set skipped
+
+`push-skipped-preview.json` and `push-skipped-apply.json` were captured
+2026-10-07 from the same binary (SHA-256 above), platform 1C 8.3.27.2074,
+provider designer, for issue #1240. Two project directories `A` and `B` with
+their own `workPath` declared the same isolated file infobase as
+`infobases.origin` and one `CONFIGURATION` source set `main` whose sources
+differed only by the configuration comment. Sequence: `push` in `A` (full
+load), `push` in `B` (full load into the same infobase), then
+`push --dry-run` and `push` in `A`. The last two are these fixtures: the
+runner skipped `main` by its memory of `A`'s earlier load and did not
+dispatch the platform, while the infobase held `B`'s configuration
+(checked by `ibcmd infobase config export`). The envelopes are captured bytes.

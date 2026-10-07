@@ -12,8 +12,9 @@
 //! значит, что исходники изменились между превью и применением.
 //!
 //! Состояние базы после импорта Unica не проверяет — оно засвидетельствовано
-//! провайдером, и ответ называет это прямо. Проза шагов раннера наружу не
-//! идёт.
+//! провайдером, и ответ называет это прямо. Набор, который раннер пропустил
+//! по своей памяти, загружен не был: такой ответ называет состояние базы
+//! непроверенным, а не импортом. Проза шагов раннера наружу не идёт.
 
 use super::protocol::InvocationRequest;
 use super::runner_012::Runner012ProcessRunner;
@@ -402,10 +403,30 @@ fn execute_with_resolved_runner(
     }
 
     if prepared.dry_run {
-        let mut result = DomainResult::success(format!(
-            "push planned importing {} without touching the infobase",
-            subject_summary(&plan)
-        ));
+        let nothing_planned = plan.iter().all(|step| step.mode == StepMode::Skipped);
+        let summary = if nothing_planned {
+            format!(
+                "push planned no load for {}: the runner found no changes against its own memory; executing will not verify the infobase state",
+                subject_summary(&plan)
+            )
+        } else {
+            let mut summary = format!(
+                "push planned importing {} without touching the infobase",
+                subject_summary(&plan)
+            );
+            let skipped_count = plan
+                .iter()
+                .filter(|step| step.mode == StepMode::Skipped)
+                .count();
+            if skipped_count > 0 {
+                summary.push_str(&format!(
+                    "; {skipped_count} of them skipped by the runner's memory and will not be loaded"
+                ));
+            }
+            summary
+        };
+        let mut result = DomainResult::success(summary);
+        result.warnings.extend(skipped_warning(&plan));
         result.data = Some(json!({
             "op": OPERATION,
             "dryRun": true,
@@ -421,8 +442,18 @@ fn execute_with_resolved_runner(
                 "args": public_arguments(prepared),
                 "dryRun": false,
             },
-            "reason": "execute with the current arguments"
+            "reason": if nothing_planned {
+                "execute with the current arguments; it loads nothing and does not verify the infobase state"
+            } else {
+                "execute with the current arguments"
+            }
         }));
+        // Исполнение пустого плана ничего не загрузит. Полная загрузка нужна,
+        // только если базу могли изменить вне этой рабочей копии, поэтому она
+        // идёт второй и с условием.
+        if nothing_planned {
+            result.next.push(full_preview_hint(prepared));
+        }
         return result;
     }
     if cancellation.is_cancelled() {
@@ -435,16 +466,29 @@ fn execute_with_resolved_runner(
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    if applied["data"]["provider_dispatched"] != true {
-        return reject(
-            RefusalCode::InvalidResult,
-            "v8-runner reported success without dispatching the platform",
-        );
-    }
     let performed = match planned_steps(&applied) {
         Ok(steps) => steps,
         Err(result) => return result,
     };
+    // Раннер запускает платформу, только если какому-то набору есть что
+    // грузить. Все наборы пропущены — платформы нет; иначе она обязана быть.
+    let anything_loaded = performed.iter().any(|step| step.mode != StepMode::Skipped);
+    let Some(dispatched) = applied["data"]["provider_dispatched"].as_bool() else {
+        return reject(
+            RefusalCode::InvalidResult,
+            "v8-runner push did not report whether it dispatched the platform",
+        );
+    };
+    if dispatched != anything_loaded {
+        return reject(
+            RefusalCode::InvalidResult,
+            if anything_loaded {
+                "v8-runner reported success without dispatching the platform"
+            } else {
+                "v8-runner reported dispatching the platform although it skipped every source set"
+            },
+        );
+    }
     if performed != plan {
         // Иной состав или режим значит, что раннер импортировал не тот план,
         // который одобрен: исходники или проектный файл сменились после превью.
@@ -453,13 +497,28 @@ fn execute_with_resolved_runner(
             "push performed a different plan than previewed: the sources changed between preview and apply; run dryRun: true again",
         );
     }
+    if !anything_loaded {
+        return nothing_loaded(prepared, &plan);
+    }
     // **Улику о состоянии базы Unica не подделывает.** База живёт за
     // соединением, и её состояние здесь засвидетельствовано провайдером, а не
     // проверено нами; источник признания назван прямо.
-    let mut result = DomainResult::success(format!(
+    let loaded: Vec<PlannedStep> = plan
+        .iter()
+        .filter(|step| step.mode != StepMode::Skipped)
+        .cloned()
+        .collect();
+    let skipped_count = plan.len() - loaded.len();
+    let mut summary = format!(
         "push imported {}; the infobase state is attested by the provider",
-        subject_summary(&plan)
-    ));
+        subject_summary(&loaded)
+    );
+    if skipped_count > 0 {
+        summary.push_str(&format!(
+            "; {skipped_count} skipped source set(s) were not loaded and their infobase state was not verified"
+        ));
+    }
+    let mut result = DomainResult::success(summary);
     result.data = Some(json!({
         "op": OPERATION,
         "dryRun": false,
@@ -468,15 +527,12 @@ fn execute_with_resolved_runner(
         "force": true,
         "generationProtection": false,
         "appliesDatabaseConfiguration": true,
-        "steps": plan.iter().map(|step| {
-            let mut value = step.mode.public();
-            value["sourceSet"] = json!(step.source_set);
-            value
-        }).collect::<Vec<_>>(),
+        "steps": public_steps(&plan),
         "targetStateAttestedBy": "provider",
     }));
     // Изменилась база, а не файл рабочего пространства: путь сюда не кладётся.
-    for step in &plan {
+    // Пропущенный набор раннер в базу не грузил — его в `changed` нет.
+    for step in &loaded {
         result.changed.push(json!({
             "infobase": true,
             "kind": "configuration",
@@ -484,8 +540,79 @@ fn execute_with_resolved_runner(
             "mode": step.mode.as_str(),
         }));
     }
+    if let Some(warning) = skipped_warning(&plan) {
+        result.warnings.push(warning);
+    }
 
     result
+}
+
+/// Код предупреждения о наборах, которые раннер не загрузил.
+const SKIPPED_WARNING_CODE: &str = "infobase_state_unverified";
+
+/// Раннер пропускает набор, когда исходники совпали с его памятью о прошлой
+/// загрузке. Память лежит в рабочем каталоге раннера, а не в базе: другой
+/// worktree, другой инструмент или отказ на полпути могли изменить базу,
+/// не тронув её. Пропуск поэтому не свидетельствует о состоянии базы.
+fn skipped_warning(plan: &[PlannedStep]) -> Option<Value> {
+    let skipped: Vec<&str> = plan
+        .iter()
+        .filter(|step| step.mode == StepMode::Skipped)
+        .map(|step| step.source_set.as_str())
+        .collect();
+    (!skipped.is_empty()).then(|| {
+        json!({
+            "code": SKIPPED_WARNING_CODE,
+            "sourceSets": skipped,
+            "message": "these source sets were neither loaded nor applied: the runner found no changes against its own memory of earlier loads, which it does not check against the infobase; the infobase state was not verified. If the infobase may have been changed outside this working copy (another worktree, the Designer, a manual load), only a full push restores it; if only this working copy loads it, nothing needs to be done",
+        })
+    })
+}
+
+/// Исполнение, в котором раннер пропустил все наборы: загрузки не было, базу
+/// никто не проверял. Ответ так и говорит и не выдаёт пропуск за импорт.
+fn nothing_loaded(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> DomainResult {
+    let mut result = DomainResult::success(format!(
+        "push loaded nothing into the infobase for {}: the runner found no changes against its own memory; the infobase state was not verified",
+        subject_summary(plan)
+    ));
+    result.data = Some(json!({
+        "op": OPERATION,
+        "dryRun": false,
+        "providerDispatched": false,
+        "full": prepared.arguments.full_rebuild,
+        "force": true,
+        "generationProtection": false,
+        "steps": public_steps(plan),
+        "targetStateKnownAfterApply": false,
+    }));
+    result.warnings.extend(skipped_warning(plan));
+    result.next.push(full_preview_hint(prepared));
+    result
+}
+
+/// Полная загрузка не смотрит в память раннера: это путь к известному
+/// состоянию базы. Нужна она, только если базу могли изменить вне этой
+/// рабочей копии; обычный повтор без правок её не требует. Поэтому причина
+/// названа с условием, и предлагается превью, не исполнение.
+fn full_preview_hint(prepared: &PreparedSourceImport) -> Value {
+    let mut args = public_arguments(prepared);
+    args["full"] = Value::Bool(true);
+    json!({
+        "tool": "unica.run",
+        "args": {"op": OPERATION, "args": args, "dryRun": true},
+        "reason": "only if the infobase may have been changed outside this working copy: preview a full push, which loads the sources regardless of the runner's memory"
+    })
+}
+
+fn public_steps(plan: &[PlannedStep]) -> Vec<Value> {
+    plan.iter()
+        .map(|step| {
+            let mut value = step.mode.public();
+            value["sourceSet"] = json!(step.source_set);
+            value
+        })
+        .collect()
 }
 
 fn validate_preview(
@@ -630,11 +757,7 @@ fn public_plan(prepared: &PreparedSourceImport, plan: &[PlannedStep]) -> Value {
         "force": true,
         "generationProtection": false,
         "appliesDatabaseConfiguration": true,
-        "steps": plan.iter().map(|step| {
-            let mut value = step.mode.public();
-            value["sourceSet"] = json!(step.source_set);
-            value
-        }).collect::<Vec<_>>(),
+        "steps": public_steps(plan),
         // Что превью узнать не может, названо, а не умолчано.
         "targetStateKnownBeforeApply": false,
     })
@@ -1090,8 +1213,275 @@ mod tests {
         assert!(result.changed[0].get("path").is_none());
         assert!(result.artifacts.is_empty());
         assert!(result.rev.is_none());
+        // Настоящая загрузка всех наборов отвечает как прежде: импорт,
+        // засвидетельствованный провайдером, без оговорок о пропуске.
+        assert_eq!(
+            result.summary,
+            "push imported 2 source sets; the infobase state is attested by the provider"
+        );
+        assert!(result.warnings.is_empty(), "{result:?}");
+        assert!(result.next.is_empty(), "{result:?}");
+        assert!(data.get("targetStateKnownAfterApply").is_none());
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
+    }
+
+    fn skipped() -> Value {
+        json!("skipped")
+    }
+
+    /// Пропуск раннера 0.12.0, снятый вживую (#1240): шаг `skipped` с
+    /// `no changes`, платформа не запускалась.
+    fn skipped_envelope(sets: &[&str]) -> Value {
+        let mut envelope = envelope(
+            &sets.iter().map(|set| (*set, skipped())).collect::<Vec<_>>(),
+            false,
+        );
+        for step in envelope["data"]["steps"].as_array_mut().unwrap() {
+            step["message"] = json!("no changes");
+        }
+        envelope
+    }
+
+    #[test]
+    fn apply_where_the_runner_skipped_every_set_names_the_infobase_state_unverified() {
+        let root = workspace();
+        let sets = ["main", "ext-sales"];
+        let runner = SequenceRunner::new(vec![
+            process(skipped_envelope(&sets), true),
+            process(skipped_envelope(&sets), true),
+        ]);
+
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, false),
+            &runner,
+        );
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 2);
+        assert_eq!(
+            result.summary,
+            "push loaded nothing into the infobase for 2 source sets: the runner found no changes against its own memory; the infobase state was not verified"
+        );
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["providerDispatched"], false);
+        assert_eq!(data["targetStateKnownAfterApply"], false);
+        assert!(data.get("targetStateAttestedBy").is_none(), "{data}");
+        assert!(data.get("appliesDatabaseConfiguration").is_none(), "{data}");
+        assert_eq!(data["steps"][0]["mode"], "skipped");
+        assert_eq!(data["steps"][1]["mode"], "skipped");
+        assert!(result.changed.is_empty(), "{result:?}");
+        assert_eq!(result.warnings.len(), 1, "{result:?}");
+        assert_eq!(result.warnings[0]["code"], "infobase_state_unverified");
+        assert_eq!(
+            result.warnings[0]["sourceSets"],
+            json!(["main", "ext-sales"])
+        );
+        // Полная загрузка нужна не всегда: предупреждение называет условие.
+        let message = result.warnings[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("changed outside this working copy")
+                && message.contains("nothing needs to be done"),
+            "{message}"
+        );
+        assert!(result.diagnostics.is_empty(), "{result:?}");
+        // Путь к известному состоянию — превью полной загрузки, а не исполнение.
+        assert_eq!(result.next.len(), 1, "{result:?}");
+        assert_eq!(result.next[0]["args"]["dryRun"], true);
+        assert_eq!(
+            result.next[0]["args"]["args"],
+            json!({"force": true, "full": true})
+        );
+        assert!(
+            result.next[0]["reason"].as_str().unwrap().starts_with(
+                "only if the infobase may have been changed outside this working copy"
+            ),
+            "{:?}",
+            result.next[0]
+        );
+
+        // Превью того же пропуска говорит то же заранее.
+        let runner = SequenceRunner::new(vec![process(skipped_envelope(&sets), true)]);
+        let preview = run(
+            root.path(),
+            &prepared(root.path(), None, false, true),
+            &runner,
+        );
+        assert!(preview.ok, "{preview:?}");
+        assert!(
+            preview
+                .summary
+                .starts_with("push planned no load for 2 source sets"),
+            "{}",
+            preview.summary
+        );
+        assert_eq!(preview.warnings[0]["code"], "infobase_state_unverified");
+        // Первой идёт исполнение текущих аргументов, полная загрузка — второй
+        // и с условием.
+        assert_eq!(preview.next[0]["args"]["dryRun"], false);
+        assert!(preview.next[0]["args"]["args"].get("full").is_none());
+        assert_eq!(preview.next[1]["args"]["args"]["full"], true);
+        assert_eq!(preview.next[1]["args"]["dryRun"], true);
+        assert!(preview.next[1]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("only if"));
+    }
+
+    #[test]
+    fn apply_that_skips_a_previewed_load_is_a_concurrent_change() {
+        let root = workspace();
+        let sets = ["main", "ext-sales"];
+        let runner = SequenceRunner::new(vec![
+            process(
+                envelope(&[("main", full()), ("ext-sales", partial(3))], false),
+                true,
+            ),
+            process(skipped_envelope(&sets), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, false),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "concurrent_change",
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn apply_names_only_loaded_sets_as_changed_and_the_skipped_ones_as_unverified() {
+        let root = workspace();
+        let plan = [("main", full()), ("ext-sales", skipped())];
+        let runner = SequenceRunner::new(vec![
+            process(envelope(&plan, false), true),
+            process(envelope(&plan, true), true),
+        ]);
+
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, false),
+            &runner,
+        );
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.data.as_ref().unwrap()["targetStateAttestedBy"],
+            "provider"
+        );
+        assert_eq!(result.changed.len(), 1, "{result:?}");
+        assert_eq!(result.changed[0]["sourceSet"], "main");
+        assert_eq!(result.warnings.len(), 1, "{result:?}");
+        assert_eq!(result.warnings[0]["code"], "infobase_state_unverified");
+        assert_eq!(result.warnings[0]["sourceSets"], json!(["ext-sales"]));
+        assert_eq!(
+            result.summary,
+            "push imported source set `main`; the infobase state is attested by the provider; 1 skipped source set(s) were not loaded and their infobase state was not verified"
+        );
+    }
+
+    fn captured(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/v8_runner_012")
+            .join(name);
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Конверты раннера 0.12.0, снятые вживую на сценарии #1240: в базе
+    /// конфигурация другого рабочего каталога, а раннер пропустил набор.
+    #[test]
+    fn captured_runner_skip_is_answered_as_an_unverified_infobase_state() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-skipped-preview.json"), true),
+            process(captured("push-skipped-apply.json"), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), false, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(
+            result.summary.starts_with("push loaded nothing"),
+            "{result:?}"
+        );
+        assert!(result.changed.is_empty(), "{result:?}");
+        assert_eq!(result.warnings[0]["code"], "infobase_state_unverified");
+        assert_eq!(result.warnings[0]["sourceSets"], json!(["main"]));
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["targetStateKnownAfterApply"], false);
+        assert!(data.get("targetStateAttestedBy").is_none(), "{data}");
+
+        // Без признака запуска платформы ответ раннера не принимается.
+        let mut apply = captured("push-skipped-apply.json");
+        apply["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("provider_dispatched");
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-skipped-preview.json"), true),
+            process(apply, true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), false, false),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("did not report whether"));
+    }
+
+    #[test]
+    fn apply_refuses_a_dispatch_flag_that_contradicts_the_steps() {
+        let root = workspace();
+        // Все наборы пропущены, а раннер говорит, что запускал платформу.
+        let sets = [("main", skipped()), ("ext-sales", skipped())];
+        let runner = SequenceRunner::new(vec![
+            process(envelope(&sets, false), true),
+            process(envelope(&sets, true), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, false),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("although it skipped every source set"));
+
+        // Набор загружен, а платформа не запускалась.
+        let plan = [("main", full()), ("ext-sales", skipped())];
+        let runner = SequenceRunner::new(vec![
+            process(envelope(&plan, false), true),
+            process(envelope(&plan, false), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, false),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("without dispatching the platform"));
     }
 
     #[test]
