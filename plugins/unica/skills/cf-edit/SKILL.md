@@ -13,7 +13,7 @@ allowed-tools:
 
 ## MCP routing
 
-- Preferred path: use MCP `unica` tool `unica.apply` по адресу корня набора (`<набор>:Configuration`): свойства правит `props.set`, состав — `object.create`/`object.remove`, порядок подсистем верхнего уровня — `subsystemOrder.set`. Видимость, размещение и порядок команд и групп корень не принимает: они правятся на интерфейсе подсистемы `<набор>:Subsystem.<Имя>.Interface` через `/unica:interface-edit`.
+- Preferred path: use MCP `unica` tool `unica.apply` по адресу корня набора (`<набор>:Configuration`): свойства правит `props.set`, состав — `object.create`/`object.remove`, порядок подсистем верхнего уровня — `subsystemOrder.set`; остальной командный интерфейс — на интерфейсе подсистемы через `/unica:interface-edit`.
 - Do not call internal MCP/CLI adapters directly. They are hidden behind `unica` and synchronized by the orchestrator.
 - Сначала вызови `unica.apply` с `at` и `ops`: это план без записи.
   Когда пользователь поручил внести эту правку, вызови `unica.apply` только
@@ -31,8 +31,8 @@ allowed-tools:
 | Операция | Предмет |
 |---|---|
 | `props.set` | свойства корня: версия, поставщик, режим совместимости и прочие пары «ключ — значение» |
-| `object.create`, `object.remove` | состав конфигурации: объект метаданных заводится и снимается по имени |
-| `subsystemOrder.set` | порядок подсистем верхнего уровня: `values: {subsystems: […]}` — перестановка сохранённого состава |
+| `object.create`, `object.remove` | состав конфигурации: объект метаданных заводится по виду и имени, снимается по своему адресу |
+| `subsystemOrder.set` | порядок подсистем верхнего уровня: `values: {subsystems: […]}`; правила перестановки — в `/unica:interface-edit` |
 
 ```json
 {
@@ -54,9 +54,9 @@ allowed-tools:
 
 `commandVisibility.set`, `commandPlacement.set`, `commandOrder.set` и
 `groupOrder.set` на `<набор>:Configuration` отклоняются: их адрес —
-интерфейс подсистемы, например `main:Subsystem.Продажи.Interface`. Маршрута
-`main:Interface` у корня нет. Эти правки описаны в
-`/unica:interface-edit`.
+интерфейс подсистемы, например `main:Subsystem.Продажи.Interface`; вложенная
+подсистема адресуется всей цепочкой. Маршрута `main:Interface` у корня нет.
+Эти правки описаны в `/unica:interface-edit`.
 
 **Роли по умолчанию, панели и стартовая страница** канонической операции не
 имеют: их правка — пробел контракта Unica MCP, сообщай о нём, а не подменяй
@@ -102,7 +102,7 @@ allowed-tools:
 ```json
 {
   "op": "object.remove",
-  "args": {"values": {"kind": "Catalog", "name": "Товары"}}
+  "args": {"at": "main:Catalog.Товары"}
 }
 ```
 
