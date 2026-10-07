@@ -289,6 +289,125 @@ fn web_service_details_preserve_packages_operations_and_expanded_qnames() {
     );
 }
 
+/// Конфигуратор 8.3.27 пишет у операции `Synonym`, `<Comment/>` и
+/// `DataLockControlMode`, а у параметра `Synonym` и `<Comment/>` всегда:
+/// так устроены все 192 операции и 523 параметра локальной выгрузки. Без них
+/// разбор отвечал `operations: null`, и `view` не открывал операцию.
+#[test]
+fn web_service_details_accept_the_configurator_operation_properties() {
+    let xml = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service-configurator.xml"
+    ));
+
+    let details = project(xml, MetadataKind::WebService, "WebService.ОбменДанными");
+
+    let xs = |local_name: &str| serde_json::json!({"namespace": "http://www.w3.org/2001/XMLSchema", "localName": local_name});
+    assert_eq!(
+        details["operations"],
+        serde_json::json!([
+            {
+                "name": "Пинг",
+                "returnType": xs("string"),
+                "nillable": false,
+                "transactioned": false,
+                "procedure": "Пинг",
+                "parameters": []
+            },
+            {
+                "name": "ПринятьПакет",
+                "returnType": xs("boolean"),
+                "nillable": false,
+                "transactioned": true,
+                "procedure": "ПринятьПакет",
+                "parameters": [
+                    {"name": "Отправитель", "type": xs("string"), "nillable": false, "direction": "in"},
+                    {"name": "Данные", "type": xs("base64Binary"), "nillable": true, "direction": "in"},
+                    {"name": "Ошибка", "type": xs("string"), "nillable": true, "direction": "out"}
+                ]
+            }
+        ])
+    );
+}
+
+#[test]
+fn web_service_operation_properties_still_reject_foreign_content() {
+    let original = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service-configurator.xml"
+    ));
+    let target =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.ОбменДанными").unwrap();
+    for (field, xml) in [
+        (
+            "details.operations[0].comment",
+            original.replacen(
+                "<Comment/>\n\t\t\t\t\t<XDTOReturningValueType>",
+                "<Comment><Hidden/></Comment>\n\t\t\t\t\t<XDTOReturningValueType>",
+                1,
+            ),
+        ),
+        (
+            "details.operations[0].synonym",
+            original.replacen(
+                "<v8:content>Пинг</v8:content>",
+                "<v8:content><Hidden/></v8:content>",
+                1,
+            ),
+        ),
+        (
+            "details.operations[0].dataLockControlMode",
+            original.replacen(
+                "<DataLockControlMode>Managed</DataLockControlMode>",
+                "<DataLockControlMode>AutomaticAndManaged</DataLockControlMode>",
+                1,
+            ),
+        ),
+        (
+            "details.operations[1].dataLockControlMode",
+            original.replacen(
+                "<DataLockControlMode>Automatic</DataLockControlMode>",
+                "<DataLockControlMode><Hidden/></DataLockControlMode>",
+                1,
+            ),
+        ),
+        (
+            "details.operations[1].parameters[0].comment",
+            original.replacen(
+                "<Comment/>\n\t\t\t\t\t\t\t<XDTOValueType>",
+                "<Comment><Hidden/></Comment>\n\t\t\t\t\t\t\t<XDTOValueType>",
+                1,
+            ),
+        ),
+        (
+            "details.operations[1].parameters[0].synonym",
+            original.replacen(
+                "<v8:content>Отправитель</v8:content>",
+                "<v8:content><Hidden/></v8:content>",
+                1,
+            ),
+        ),
+    ] {
+        assert_ne!(xml, original, "{field}: the probe must change the fixture");
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let object = document.root_element().first_element_child().unwrap();
+        let mut diagnostics = Vec::new();
+
+        let value = serde_json::to_value(project_meta_info_details(
+            MetadataKind::WebService,
+            meta_info_child(object, "Properties"),
+            meta_info_child(object, "ChildObjects"),
+            &target,
+            &mut diagnostics,
+        ))
+        .unwrap();
+
+        assert!(value["details"]["operations"].is_null(), "{field}: {value}");
+        assert_eq!(diagnostics.len(), 1, "{field}: {diagnostics:?}");
+        assert_eq!(diagnostics[0].field.as_deref(), Some(field));
+    }
+}
+
 #[test]
 fn manifest_edge_fixtures_keep_the_canonical_platform_wrapper() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(

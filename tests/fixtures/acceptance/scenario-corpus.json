@@ -8525,6 +8525,40 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S323",
+   "area": "XDTO и обмены",
+   "task": "Открыть операцию веб-сервиса из выгрузки Конфигуратора",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:WebService.ОбменДанными"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:WebService.ОбменДанными.Operation"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:WebService.ОбменДанными.Operation.ПринятьПакет"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
   }
  ]
 }
