@@ -1560,6 +1560,33 @@ pub(crate) fn restrict_stage_to_owner(_file: &fs::File) -> io::Result<()> {
     Ok(())
 }
 
+/// Делает каталог доступным только владельцу там, где режим доступа есть
+/// у файловой системы; на Windows каталог наследует права профиля.
+#[cfg(unix)]
+pub(crate) fn restrict_directory_to_owner(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restrict_directory_to_owner(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Закрыт ли каталог от группы и остальных; без режима доступа — да.
+#[cfg(all(test, unix))]
+pub(crate) fn directory_is_owner_only(path: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    Ok(fs::metadata(path)?.permissions().mode() & 0o077 == 0)
+}
+
+#[cfg(all(test, not(unix)))]
+pub(crate) fn directory_is_owner_only(_path: &Path) -> io::Result<bool> {
+    Ok(true)
+}
+
 #[cfg(unix)]
 pub(crate) fn hard_link_count(file: &fs::File) -> io::Result<u64> {
     use std::os::unix::fs::MetadataExt;

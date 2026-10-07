@@ -53,7 +53,8 @@ attached to is known to the machine, not to the project. v8-runner 0.13 reads
 the infobase map only from the local layer. An `infobases` section (or the
 legacy `infobase` key) in `v8project.yaml` is still accepted: the adapter
 moves it into a private copy of the local layer, where fields of the local
-file override it, and removes the temporary files after execution. Only
+file override it, and keeps that copy in `.build/unica/runner-project/` of the
+working copy (the runner names this directory as the holder of a file infobase). Only
 `origin` is supported; multiple named bases, raw connection argv and `infobase`
 mixed with `infobases` in one file are refused. `unica.run` accepts optional
 top-level `infobase: "origin"`; another target is never silently redirected to
@@ -69,9 +70,7 @@ a full load with `push` `full:true`. Unica refuses a config with this key; remov
 
 A file infobase is held by one working copy. The runner records the holder next
 to the infobase directory and refuses a write from another working copy with
-`infobase_held`; to share one file infobase, set `shared: true` at
-`infobases.origin` in `v8project.local.yaml` of every working copy that uses it.
-Unica has no argument for this: the runner reads it from the local layer.
+`infobase_held`; give each working copy its own infobase (`infobase.create`).
 
 `execution_timeout` is not supported. v8-runner 0.13 has no overall command
 deadline: a command runs to its terminal outcome, and limits belong to the
