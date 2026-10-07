@@ -7,7 +7,9 @@
 //!   Keychain на macOS, хранилище сертификатов на Windows, системный набор
 //!   корней на Linux (`SSL_CERT_FILE`/`SSL_CERT_DIR` его заменяют). Корень
 //!   корпоративного шлюза, установленный в ОС, принимается так же, как
-//!   браузером. Вшитого набора корней нет;
+//!   браузером. Вшитый набор корней Mozilla — только запас на случай, когда
+//!   в хранилище ОС нет ни одного корня (Linux-образ без `ca-certificates`);
+//!   два набора не смешиваются, см. [`TrustSource`];
 //! - прокси берётся из переменных окружения, порядок описан в [`proxy`];
 //! - редиректы проходятся здесь, а не в `ureq`: для каждого шага заново
 //!   выбирается маршрут по `NO_PROXY`, и ни один шаг не уводит с HTTPS на HTTP.
@@ -43,8 +45,40 @@ const READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// делят одну конфигурацию TLS.
 pub struct NetworkClient {
     settings: ProxySettings,
+    trust: TrustSource,
     direct: ureq::Agent,
     proxied: HashMap<String, ureq::Agent>,
+}
+
+/// Чему доверяет клиент при проверке цепочки сертификатов.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustSource {
+    /// Хранилище ОС через `rustls-platform-verifier`. Обычный случай.
+    OperatingSystem,
+    /// Вшитый набор корней Mozilla (`webpki-roots`): в хранилище ОС нет ни
+    /// одного корня. Так работал загрузчик до перехода на хранилище ОС, и
+    /// поэтому минимальный Linux-образ без `ca-certificates` не теряет сеть.
+    BundledMozillaRoots,
+}
+
+/// Так верификатор Linux сообщает, что из хранилища ОС не загружен ни один
+/// корень (`rustls-platform-verifier`, `verification/others.rs`). Сюда же
+/// попадают нечитаемые `SSL_CERT_FILE`/`SSL_CERT_DIR`: верификатор их ошибки
+/// только пишет в журнал, поэтому текст отказа называет и этот случай. Других
+/// причин отказа его конструктор с непустым хранилищем не даёт; на macOS
+/// и Windows конструктор хранилище не читает и этой ошибки не бывает.
+/// Если формулировка у верификатора изменится, запас перестанет включаться,
+/// и это поймает тест пустого хранилища на Linux.
+const EMPTY_OS_STORE: &str = "No CA certificates were loaded from the system";
+
+/// Выбрать доверие по исходу сборки верификатора ОС: пустое хранилище —
+/// вшитый набор, любая другая ошибка — отказ, успех — только ОС.
+fn select_trust<T>(platform: Result<T, rustls::Error>) -> Result<Option<T>, rustls::Error> {
+    match platform {
+        Ok(verified) => Ok(Some(verified)),
+        Err(rustls::Error::General(message)) if message == EMPTY_OS_STORE => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Заголовки запроса: имя и значение.
@@ -69,7 +103,7 @@ impl NetworkClient {
     /// Клиент с переменными прокси из `lookup` и доверием ОС.
     pub fn from_environment(lookup: EnvLookup<'_>) -> Result<Self, NetworkError> {
         let settings = ProxySettings::from_lookup(lookup);
-        let tls = platform_tls()?;
+        let (tls, trust) = tls_config()?;
         let build = |proxy: Option<&ProxyChoice>| {
             let mut builder = ureq::AgentBuilder::new()
                 .tls_config(Arc::clone(&tls))
@@ -89,10 +123,16 @@ impl NetworkClient {
                 .or_insert_with(|| build(Some(choice)));
         }
         Ok(Self {
+            trust,
             direct: build(None),
             proxied,
             settings,
         })
+    }
+
+    /// Чему доверяет этот клиент.
+    pub fn trust_source(&self) -> TrustSource {
+        self.trust
     }
 
     /// GET с проходом редиректов. Ответ `4xx`/`5xx` — отказ
@@ -115,9 +155,9 @@ impl NetworkClient {
             if let Some(deadline) = deadline {
                 request = request.timeout(deadline.saturating_duration_since(Instant::now()));
             }
-            let response = request
-                .call()
-                .map_err(|error| NetworkError::from_transport(error, host(&current), &route))?;
+            let response = request.call().map_err(|error| {
+                NetworkError::from_transport(error, host(&current), &route, self.trust)
+            })?;
             if !(300..400).contains(&response.status()) {
                 return Ok(response);
             }
@@ -149,9 +189,9 @@ impl NetworkClient {
         if let Some(timeout) = timeout {
             request = request.timeout(timeout);
         }
-        request
-            .send_string(body)
-            .map_err(|error| NetworkError::from_transport(error, host(&current), &route))
+        request.send_string(body).map_err(|error| {
+            NetworkError::from_transport(error, host(&current), &route, self.trust)
+        })
     }
 
     /// Агент и описание маршрута для текста отказа.
@@ -200,18 +240,32 @@ fn host(url: &url::Url) -> &str {
     url.host_str().unwrap_or("<no host>")
 }
 
-/// TLS поверх доверия ОС. Криптопровайдер — `ring`, как у самого `ureq`:
-/// второй провайдер в сборке сделал бы выбор по умолчанию неоднозначным.
-fn platform_tls() -> Result<Arc<rustls::ClientConfig>, NetworkError> {
-    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+/// Вшитый набор корней Mozilla — весь, без добавлений.
+fn bundled_roots() -> rustls::RootCertStore {
+    rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned())
+}
+
+/// TLS поверх доверия ОС, а при пустом хранилище ОС — поверх вшитого набора
+/// Mozilla. Криптопровайдер — `ring`, как у самого `ureq`: второй провайдер
+/// в сборке сделал бы выбор по умолчанию неоднозначным.
+fn tls_config() -> Result<(Arc<rustls::ClientConfig>, TrustSource), NetworkError> {
+    let builder = rustls::ClientConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
     .with_safe_default_protocol_versions()
-    .map_err(|error| NetworkError::trust_store(&error))?
-    .with_platform_verifier()
-    .map_err(|error| NetworkError::trust_store(&error))?
-    .with_no_client_auth();
-    Ok(Arc::new(config))
+    .map_err(|error| NetworkError::trust_store(&error))?;
+    let (config, trust) = match select_trust(builder.clone().with_platform_verifier())
+        .map_err(|error| NetworkError::trust_store(&error))?
+    {
+        Some(platform) => (platform.with_no_client_auth(), TrustSource::OperatingSystem),
+        None => (
+            builder
+                .with_root_certificates(bundled_roots())
+                .with_no_client_auth(),
+            TrustSource::BundledMozillaRoots,
+        ),
+    };
+    Ok((Arc::new(config), trust))
 }
 
 #[cfg(test)]
@@ -337,6 +391,27 @@ mod tests {
             proxy.targets(),
             vec!["http://proxied.example/final".to_owned()]
         );
+    }
+
+    #[test]
+    fn an_empty_os_store_falls_back_to_bundled_roots_and_nothing_else_does() {
+        // Пустое хранилище ОС — единственный повод взять вшитый набор.
+        assert_eq!(
+            select_trust::<()>(Err(rustls::Error::General(EMPTY_OS_STORE.to_owned()))),
+            Ok(None)
+        );
+        // Непустое хранилище — только ОС, без смешивания с вшитым набором.
+        assert_eq!(select_trust(Ok("platform")), Ok(Some("platform")));
+        // Любая другая ошибка верификатора — отказ, а не тихий запас.
+        let other = rustls::Error::General("verifier failed".to_owned());
+        assert_eq!(select_trust::<()>(Err(other.clone())), Err(other));
+    }
+
+    #[test]
+    fn the_fallback_trusts_exactly_the_bundled_mozilla_roots() {
+        let roots = bundled_roots();
+        assert!(!roots.is_empty());
+        assert_eq!(roots.len(), webpki_roots::TLS_SERVER_ROOTS.len());
     }
 
     #[test]

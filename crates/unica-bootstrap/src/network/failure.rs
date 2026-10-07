@@ -8,8 +8,8 @@ use rustls::CertificateError;
 /// Класс отказа. По нему загрузчик выбирает код выхода, а текст — совет.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NetworkFailure {
-    /// Запрос нельзя даже начать: неверная переменная прокси, адрес или пустое
-    /// хранилище корней ОС.
+    /// Запрос нельзя даже начать: неверная переменная прокси, адрес или
+    /// не собранная проверка сертификатов.
     Configuration,
     /// ОС не доверяет цепочке сертификатов сервера. Чаще всего это подмена
     /// сертификата средством защиты или шлюзом.
@@ -32,6 +32,9 @@ pub struct NetworkError {
     message: String,
     cure: Option<String>,
 }
+
+/// Почему проверку вёл вшитый набор.
+const BUNDLED_NOTE: &str = "the OS trust store yielded no certificates (none installed, or SSL_CERT_FILE/SSL_CERT_DIR could not be read), so Unica checked the chain against its bundled Mozilla roots";
 
 /// Совет одной строкой: параметры читаются при старте процесса.
 const RESTART_NOTE: &str = "proxy variables and the trust store are read when a Unica process starts: close every agent session that uses Unica and wait until its background process exits after 15 minutes without work, or end the background unica process, then start a new session";
@@ -89,12 +92,17 @@ impl NetworkError {
             format!("cannot verify TLS certificates with the operating system trust store: {error}"),
         )
         .with_cure(format!(
-            "install the system CA certificates (for example the ca-certificates package on Linux) or point SSL_CERT_FILE or SSL_CERT_DIR to a CA bundle. {RESTART_NOTE}"
+            "the TLS certificate verifier could not be built; check the operating system trust store settings. {RESTART_NOTE}"
         ))
     }
 
     /// Разобрать отказ `ureq`. `host` и `route` называют, куда и как шли.
-    pub(crate) fn from_transport(error: ureq::Error, host: &str, route: &str) -> Self {
+    pub(crate) fn from_transport(
+        error: ureq::Error,
+        host: &str,
+        route: &str,
+        trust: super::TrustSource,
+    ) -> Self {
         match error {
             ureq::Error::Status(code, response) => Self::new(
                 NetworkFailure::Status(code),
@@ -106,7 +114,7 @@ impl NetworkError {
             ),
             error => match find_tls_error(&error) {
                 Some(rustls::Error::InvalidCertificate(reason)) => {
-                    certificate_refusal(reason, &error.to_string(), host, route)
+                    certificate_refusal(reason, &error.to_string(), host, route, trust)
                 }
                 _ => Self::new(
                     NetworkFailure::Transport,
@@ -118,6 +126,33 @@ impl NetworkError {
 }
 
 fn certificate_refusal(
+    reason: &CertificateError,
+    error: &str,
+    host: &str,
+    route: &str,
+    trust: super::TrustSource,
+) -> NetworkError {
+    let refusal = certificate_refusal_by_os(reason, error, host, route);
+    match (trust, refusal.failure) {
+        // Проверку вёл вшитый набор: корень шлюза в хранилище ОС пока
+        // не поможет, и отказ говорит об этом прямо.
+        (super::TrustSource::BundledMozillaRoots, NetworkFailure::UntrustedCertificate) => {
+            NetworkError::new(
+                NetworkFailure::UntrustedCertificate,
+                format!(
+                    "TLS connection to {host} failed ({route}): the certificate chain is not issued by any bundled Mozilla root: {error}"
+                ),
+            )
+            .with_cure(format!(
+                "{BUNDLED_NOTE}. If HTTPS is intercepted by security software or a corporate gateway, install the system CA certificates together with the gateway root, or point SSL_CERT_FILE to a readable bundle that contains it. {RESTART_NOTE}"
+            ))
+        }
+        _ => refusal,
+    }
+}
+
+/// Почему верификатор отверг цепочку, когда ему доверяет ОС.
+fn certificate_refusal_by_os(
     reason: &CertificateError,
     error: &str,
     host: &str,
@@ -219,7 +254,13 @@ mod tests {
     use super::*;
 
     fn classify(reason: CertificateError) -> NetworkError {
-        certificate_refusal(&reason, "invalid peer certificate", "github.com", "direct")
+        certificate_refusal(
+            &reason,
+            "invalid peer certificate",
+            "github.com",
+            "direct",
+            crate::network::TrustSource::OperatingSystem,
+        )
     }
 
     #[test]
@@ -281,6 +322,22 @@ mod tests {
         assert_eq!(purpose.failure(), NetworkFailure::RejectedCertificate);
         let untrusted = classify(apple_other("“Root” certificate is not trusted: -67843"));
         assert_eq!(untrusted.failure(), NetworkFailure::UntrustedCertificate);
+    }
+
+    #[test]
+    fn with_bundled_roots_an_unknown_issuer_names_the_empty_os_store() {
+        let error = certificate_refusal(
+            &CertificateError::UnknownIssuer,
+            "invalid peer certificate",
+            "github.com",
+            "direct",
+            crate::network::TrustSource::BundledMozillaRoots,
+        );
+        assert_eq!(error.failure(), NetworkFailure::UntrustedCertificate);
+        assert!(!error.message().contains("operating system does not trust"));
+        let cure = error.cure().expect("cure");
+        assert!(cure.contains("bundled Mozilla roots"), "{cure}");
+        assert!(cure.contains("SSL_CERT_FILE"), "{cure}");
     }
 
     #[test]

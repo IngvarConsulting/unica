@@ -28,6 +28,7 @@ tar.workspace = true
 ureq.workspace = true
 rustls.workspace = true
 rustls-platform-verifier.workspace = true
+webpki-roots.workspace = true
 rcgen = { workspace = true, optional = true }
 url.workspace = true
 uuid.workspace = true

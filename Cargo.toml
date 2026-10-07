@@ -59,6 +59,9 @@ regex = "1"
 ureq = { version = "2.12", features = ["json"] }
 rustls = { version = "0.23.27", default-features = false, features = ["std", "ring", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
+# Запас, когда в хранилище ОС нет ни одного корня; тот же набор, что был
+# у ureq по умолчанию.
+webpki-roots = "1"
 # Только для стендов TLS в тестах: корень и сертификат сервера на лету.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 url = "2.5.4"

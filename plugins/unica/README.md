@@ -248,7 +248,11 @@ building an offline image, run:
 Core and engine downloads and the network documentation providers share one
 HTTP client. The operating system verifies certificates, so a corporate gateway
 root installed in the OS trust store is accepted; on Linux `SSL_CERT_FILE` and
-`SSL_CERT_DIR` replace the system bundle. HTTPS requests use `https_proxy` or
+`SSL_CERT_DIR` replace the system bundle. When Linux yields no
+certificates at all (for example, an image without `ca-certificates`, or an
+unreadable `SSL_CERT_FILE`),
+the chain is checked against bundled Mozilla roots instead; the two are never
+mixed. HTTPS requests use `https_proxy` or
 `HTTPS_PROXY`, then `all_proxy` or `ALL_PROXY`; only HTTP proxies are supported,
 and `NO_PROXY` lists hosts reached directly (no CIDR ranges). These settings
 are read when a Unica process starts; the background process is shared by all

@@ -30,11 +30,25 @@ fn network_trust_child_process() {
     let destination = PathBuf::from(std::env::var_os(DESTINATION).expect("destination"));
     let result = HttpDownloader::default().download(&url, &destination, &SilentDownload);
     match scenario.as_str() {
-        "download" => result.expect("загрузка с доверенным корнем"),
+        "download" => {
+            result.expect("загрузка с доверенным корнем");
+            println!(
+                "trust={:?}",
+                crate::network::NetworkClient::shared()
+                    .expect("client")
+                    .trust_source()
+            );
+        }
         "refuse" => {
             let error = result.expect_err("корень не доверен");
             assert_eq!(error.failure(), Failure::Network);
             println!("{}", error.diagnosis());
+            println!(
+                "trust={:?}",
+                crate::network::NetworkClient::shared()
+                    .expect("client")
+                    .trust_source()
+            );
         }
         other => panic!("неизвестный сценарий {other}"),
     }
@@ -203,4 +217,53 @@ fn a_root_missing_from_the_os_store_is_refused_with_the_interception_cure() {
         assert!(diagnosis.contains(expected), "{expected}: {diagnosis}");
     }
     assert!(stand.requests().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_non_empty_os_store_selects_the_os_branch() {
+    // Корень стенда есть только в хранилище ОС, во вшитом наборе его нет:
+    // загрузка проходит, и выбрана ветка ОС. Отсутствие смешивания с вшитым
+    // набором держит устройство `tls_config` и тест `select_trust`.
+    let scratch = Scratch::new("os-only");
+    let root = TestRoot::generate("Unica OS-only root");
+    let trusted = scratch.0.join("roots.pem");
+    root.write_pem(&trusted);
+    let stand = TlsStand::start(&root, body(), "application/octet-stream");
+
+    let output = run_child(
+        "download",
+        &stand.url("artifact.tar.gz"),
+        &scratch.0.join("artifact.tar.gz"),
+        &trusted,
+        &[],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("trust=OperatingSystem"), "{stdout}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_empty_os_store_falls_back_to_the_bundled_mozilla_roots() {
+    // Хранилище ОС пусто: клиент собирается на вшитом наборе, а корень,
+    // которого в наборе нет, по-прежнему отвергается с объяснением.
+    let scratch = Scratch::new("empty-store");
+    let empty = scratch.0.join("empty.pem");
+    std::fs::write(&empty, "").expect("empty store");
+    let root = TestRoot::generate("Unica root outside Mozilla");
+    let stand = TlsStand::start(&root, body(), "application/octet-stream");
+
+    let output = run_child(
+        "refuse",
+        &stand.url("artifact.tar.gz"),
+        &scratch.0.join("artifact.tar.gz"),
+        &empty,
+        &[],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("trust=BundledMozillaRoots"), "{stdout}");
+    assert!(stdout.contains("bundled Mozilla roots"), "{stdout}");
+    assert!(stdout.contains("UnknownIssuer"), "{stdout}");
 }
