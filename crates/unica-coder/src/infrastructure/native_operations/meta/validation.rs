@@ -4422,15 +4422,8 @@ mod tests {
     /// уходит в проверку `cf` раньше общих перечислений объектов (#1271).
     #[test]
     fn configuration_accepts_automatic_and_managed_lock_mode_unlike_objects() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-config-lock-mode-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&root).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
         let workspace = WorkspaceContext {
             cwd: root.clone(),
             workspace_root: root.clone(),
@@ -4464,7 +4457,7 @@ mod tests {
             &workspace,
         );
         assert!(check.ok, "{check:?}");
-        let _ = fs::remove_dir_all(&root);
+        drop(temp);
 
         let (catalog, _) = super::super::template_catalog::minimal_metadata_xml_for_tests(
             MetadataKind::Catalog,
