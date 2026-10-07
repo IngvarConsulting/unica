@@ -716,17 +716,23 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
         payload.insert("collections".to_string(), collections);
-        // Ошибка проекции оставляет поле `null`, и без этой записи `view`
-        // выдал бы непрочитанное за отсутствующее: узел называет его в
-        // `limits`, а ветвь без данных отказывает, а не отвечает «нет такой».
+        // Ошибка проекции пофактовой части вида оставляет её поле `null`, и
+        // без этой записи `view` выдал бы непрочитанное за отсутствующее:
+        // узел называет его в `limits`, а ветвь без данных отказывает, а не
+        // отвечает пустым списком. Остальные диагностики читателя (например,
+        // значения заполнения реквизитов) сюда сознательно не входят: их поля
+        // не обнуляют ветвей и адресованы внутренним индексом, а не именем.
         let unreadable = local
             .diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
-            .map(|diagnostic| {
-                json!({
-                    "field": diagnostic.field.as_deref().unwrap_or("details"),
-                    "message": diagnostic.message,
+            .filter_map(|diagnostic| {
+                let field = diagnostic.field.as_deref()?;
+                field.starts_with("details.").then(|| {
+                    json!({
+                        "field": field,
+                        "message": diagnostic.message,
+                    })
                 })
             })
             .collect::<Vec<_>>();
