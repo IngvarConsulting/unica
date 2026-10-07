@@ -10,6 +10,7 @@ pub(crate) mod configuration_help;
 pub(crate) mod daemon;
 mod deadline_lock;
 pub(crate) mod diagnostics;
+pub(crate) mod diagnostics_baseline;
 pub(crate) mod diagnostics_jsonl;
 pub(crate) mod documentation_policy;
 pub(crate) mod documentation_retrieval;

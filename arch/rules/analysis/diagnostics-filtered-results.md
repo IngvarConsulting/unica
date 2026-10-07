@@ -6,6 +6,10 @@ check:
   - crates/unica-coder/src/application/diagnostics.rs::diagnostics_code_filters_do_not_select_execution_providers
   - crates/unica-coder/src/application/diagnostics.rs::diagnostics_result_assembly_filters_sorts_and_applies_one_global_limit
   - crates/unica-coder/src/application/diagnostics.rs::diagnostics_result_assembly_keeps_cross_provider_duplicates_and_metadata_focus_order
+  - crates/unica-coder/src/application/diagnostics.rs::diagnostics_baseline_suppression_is_a_named_filter_not_incompleteness
+  - crates/unica-coder/src/infrastructure/diagnostics_baseline.rs::baseline_verdict_is_a_filter_unless_broken_or_unclassified
+  - crates/unica-coder/src/infrastructure/diagnostics.rs::resident_baseline_is_a_named_filter_and_a_broken_one_names_its_cause
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_passes_under_a_proven_baseline_and_names_a_broken_one
 ---
 
 # Лимит диагностики применяется после отбора находок
@@ -21,5 +25,20 @@ check:
 
 Усечение ответа не означает неполноту анализа. Ошибки ресурсов считаются
 отдельно, даже если лимит скрыл соответствующий элемент.
-Проверки относятся к координатору и не вводят старые аргументы фильтрации
-в публичную поверхность.
+
+Базовая линия диагностик анализатора — фильтр по настройке пользователя,
+а не неполнота. Известные находки, которые она скрыла, секция поставщика
+называет фактом `suppression`: источник `baseline`, число скрытых известных
+(`known`) и оставленных новых (`new`). Число исправленных записей (`resolved`)
+не публикуется: в анализе части проекта апстрим его не доказывает. Пустой
+список под базовой линией — результат с фактом подавления, а не «чисто»
+и не пустой ответ. `check` модуля под исправной базовой линией выносит
+вердикт и называет подавление рядом с ним.
+
+Состояние `partial` у апстрима означает лишь, что анализ покрыл не весь
+проект; классификация найденного при этом точна. Неполной базовая линия
+делает секцию, только когда она сломана (`error`, непустой `errors`,
+`error_code`) или классификация не состоялась (`partial` без `known`).
+
+Проверки относятся к координатору, разбору ответа анализатора и вердикту
+`check`; они не вводят старые аргументы фильтрации в публичную поверхность.
