@@ -188,6 +188,42 @@ class ChannelCatalogTests(unittest.TestCase):
             channel_module.write_catalogs("stable", "v0.13.0-rc.3", self.payload, self.channel)
         self.assertFalse(self.channel.exists())
 
+    def test_install_check_catalogs_resolve_the_candidate_anchor(self) -> None:
+        # Тег vX появляется вместе с каталогом, который его называет, — после
+        # проверок установки. Сами проверки ставят из каталогов, называющих якорь.
+        write_payload(self.payload, "v0.13.0-rc.6")
+        self.assertEqual(channel_module.anchor("v0.13.0-rc.6"), "candidate-v0.13.0-rc.6")
+        self.assertEqual(run("anchor", "v0.13.0-rc.6")[:2], (0, "candidate-v0.13.0-rc.6\n"))
+
+        code, _, stderr = run(
+            "write-catalogs", "--ref", "candidate-v0.13.0-rc.6", "next", "v0.13.0-rc.6",
+            str(self.payload), str(self.channel),
+        )
+
+        self.assertEqual(code, 0, stderr)
+        codex, claude = read_catalogs(self.channel)
+        self.assertEqual(
+            (codex["plugins"][0]["source"]["ref"], claude["plugins"][0]["source"]["ref"]),
+            ("candidate-v0.13.0-rc.6", "candidate-v0.13.0-rc.6"),
+        )
+        self.assertEqual((codex["name"], claude["name"]), ("unica-next", "unica-next"))
+        # The version a host shows stays the release's own.
+        self.assertEqual(claude["plugins"][0]["version"], "0.13.0-rc.6")
+
+    def test_published_catalogs_name_the_release_tag_itself(self) -> None:
+        write_payload(self.payload, "v0.13.0")
+        channel_module.write_catalogs("stable", "v0.13.0", self.payload, self.channel)
+        self.assertEqual(channel_module.catalog_ref(*self.refs(self.channel)), "v0.13.0")
+
+    def test_catalogs_resolve_only_the_release_or_its_anchor(self) -> None:
+        write_payload(self.payload, "v0.13.0-rc.6")
+        for ref in ("main", "next", "v0.13.0-rc.5", "candidate-v0.13.0-rc.5", "candidate-main", "candidate/v0.13.0-rc.6", ""):
+            with self.subTest(ref=ref):
+                with self.assertRaises(channel_module.TagError):
+                    channel_module.write_catalogs("next", "v0.13.0-rc.6", self.payload, self.channel, ref)
+                self.assertFalse(self.channel.exists())
+        self.assertEqual(run("anchor", "main")[0], 2)
+
     def test_catalogs_are_written_only_for_the_release_they_pin(self) -> None:
         write_payload(self.payload, "v0.13.0-rc.2")
         with self.assertRaises(channel_module.TagError):

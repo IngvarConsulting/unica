@@ -75,6 +75,32 @@ claude plugin install unica@unica
 `tools/list` не заменяет этот тест через выбранную модель и провайдера.
 Подробности локальной проверки — в [CONTRIBUTING.md](CONTRIBUTING.md#проверка-локального-плагина-в-zcode).
 
+### Ветка или конкретная версия
+
+Маркетплейс добавляется по ветке или по тегу:
+
+- **Ветка** — `--ref main` у Codex и адрес без суффикса у Claude Code дают
+  последний стабильный выпуск; `--ref next` и `#next` — последний выпуск
+  [канала кандидатов](plugins/unica/README.md#release-candidates). Обновление
+  каталога приносит следующий выпуск канала.
+- **Тег** — `--ref vX.Y.Z` у Codex и `#vX.Y.Z` у Claude Code ставят ровно эту
+  версию и на ней остаются. Тег кандидата несёт каталог канала `next`, поэтому
+  плагин в нём называется `unica@unica-next`.
+
+```sh
+codex plugin marketplace add IngvarConsulting/unica-marketplace --ref v0.13.0-rc.6
+codex plugin add unica@unica-next
+```
+
+Теги с `v0.9.1` по `v0.13.0-rc.5` указывают на каталог предыдущей версии
+и ставят её, а не свою: эти версии ставьте по ветке. Начиная с `v0.13.0-rc.6`
+тег ставит свою версию.
+
+Если маркетплейс с тем же именем (`unica` или `unica-next`) уже добавлен по
+ветке, перед добавлением по тегу удалите его, подставив это имя:
+`codex plugin marketplace remove <unica|unica-next>` или
+`claude plugin marketplace remove <unica|unica-next>`.
+
 ### Доставка ядра и движков
 
 При старте MCP bootstrap скачивает только ядро `unica` из релиза

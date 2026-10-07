@@ -2,10 +2,13 @@ name: Publish Unica Marketplace
 
 # The linear delivery pipeline. One human action — the signed
 # source tag — starts the build; this workflow runs after it and carries the
-# release to consumers in one pass: stage the payload, create the resolve
-# anchor tag, verify the candidate the way a consumer installs it, and only
-# then move the catalog. Every stage is idempotent, so rerunning the whole
-# workflow resumes a partial publication instead of corrupting it.
+# release to consumers in one pass: stage the payload, create the candidate
+# anchor `candidate-vX` on it, verify the candidate the way a consumer installs
+# it from that anchor, and only then move the catalog. The release tag `vX` is
+# a snapshot of the published catalog — the catalogs inside it name `vX` — so
+# promote creates it on the promotion commit and pushes it atomically with the
+# channel branches. Every stage is idempotent, so rerunning the whole workflow
+# resumes a partial publication instead of corrupting it.
 #
 # Two channels share the marketplace repository. `main` is the stable catalog
 # (`unica`) and never names a prerelease. `next` is the candidate channel
@@ -255,7 +258,11 @@ jobs:
           fi
           echo "staging_sha=$(git -C marketplace rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-  tag:
+  anchor:
+    # Тег `vX` маркетплейса — снимок опубликованного каталога: каталоги внутри
+    # него называют `vX`, поэтому он появляется только вместе с продвижением.
+    # Проверкам установки неизменный ref на проверяемых байтах нужен раньше:
+    # это якорь `candidate-vX` на коммите stage.
     needs: stage
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -264,34 +271,47 @@ jobs:
       RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
       STAGING_SHA: ${{ needs.stage.outputs.staging_sha }}
     steps:
+      # Правила канала берутся из коммита самого workflow, а не из тега:
+      # код тега не должен исполняться рядом с токеном маркетплейса.
+      - name: Check out the release channel rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: rules
+          persist-credentials: false
+          sparse-checkout: scripts/ci/release-channel.py
+          sparse-checkout-cone-mode: false
       - name: Require explicit cross-repository credential
         run: test -n "$GH_TOKEN"
       - name: Configure Git credentials
         run: gh auth setup-git
-      - name: Create the resolve anchor at the staged payload
+      - name: Create the candidate anchor at the staged payload
         run: |
           set -euo pipefail
+          rules=rules/scripts/ci/release-channel.py
+          anchor="$(python3 "$rules" anchor "$RELEASE_TAG")"
           gh repo clone IngvarConsulting/unica-marketplace marketplace
+          staged_tree="$(git -C marketplace rev-parse "${STAGING_SHA}:plugins/unica")"
+          # A published tag never moves. A release tag that already carries
+          # other plugin bytes is a burnt version, not a retry: stop before the
+          # install checks instead of verifying bytes no catalog could name.
           if git -C marketplace rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" > /dev/null; then
-            # A published tag never moves (ADR-0008). A rerun may see it
-            # already present; that is fine exactly when it carries the same
-            # plugin bytes as the staged payload. Anything else is a burnt
-            # version, not a retry.
-            tagged_tree="$(git -C marketplace rev-parse "${RELEASE_TAG}^{commit}:plugins/unica")"
-            staged_tree="$(git -C marketplace rev-parse "${STAGING_SHA}:plugins/unica")"
-            test "$tagged_tree" = "$staged_tree"
+            test "$(git -C marketplace rev-parse "${RELEASE_TAG}^{commit}:plugins/unica")" = "$staged_tree"
+          fi
+          if git -C marketplace rev-parse --verify --quiet "refs/tags/${anchor}" > /dev/null; then
+            # A rerun may see the anchor already present; that is fine exactly
+            # when it carries the same plugin bytes as the staged payload.
+            test "$(git -C marketplace rev-parse "${anchor}^{commit}:plugins/unica")" = "$staged_tree"
             exit 0
           fi
-          # The tag names the staging commit, which already carries the plugin
-          # bytes and exists before the catalog moves. The signed source tag in
-          # the source repository is the human approval; this one is the anchor
-          # the catalog resolves.
+          # The anchor names the staging commit: it carries the plugin bytes and
+          # the previous catalog, so nothing a consumer resolves changes here.
           git -C marketplace -c user.name=unica-release-bot -c user.email=actions@users.noreply.github.com \
-            tag -a "$RELEASE_TAG" "$STAGING_SHA" -m "Unica ${RELEASE_TAG}"
-          git -C marketplace push origin "refs/tags/${RELEASE_TAG}"
+            tag -a "$anchor" "$STAGING_SHA" -m "Unica ${RELEASE_TAG} candidate"
+          git -C marketplace push origin "refs/tags/${anchor}"
 
   verify-fresh-install:
-    needs: [gate, stage, tag]
+    needs: [gate, stage, anchor]
     strategy:
       fail-fast: false
       matrix:
@@ -340,8 +360,11 @@ jobs:
           set -euo pipefail
           GH_TOKEN="$DOWNLOAD_TOKEN" gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
           # The candidate is installed from the catalogs of its own channel,
-          # under the name a consumer of that channel adds.
-          "$PYTHON" rules/scripts/ci/release-channel.py write-catalogs "$CHANNEL" "$RELEASE_TAG" payload candidate
+          # under the name a consumer of that channel adds. They resolve the
+          # candidate anchor: the release tag appears only with the catalog
+          # that names it, after these checks.
+          anchor="$("$PYTHON" rules/scripts/ci/release-channel.py anchor "$RELEASE_TAG")"
+          "$PYTHON" rules/scripts/ci/release-channel.py write-catalogs --ref "$anchor" "$CHANNEL" "$RELEASE_TAG" payload candidate
       - name: Install the current locked Codex CLI
         uses: IngvarConsulting/unica-marketplace/.github/actions/setup-locked-codex@main
         with:
@@ -380,7 +403,7 @@ jobs:
           & $bootstrap verify --plugin-root $pluginRoot
 
   verify-upgrade:
-    needs: [gate, stage, tag]
+    needs: [gate, stage, anchor]
     strategy:
       fail-fast: false
       matrix:
@@ -456,8 +479,10 @@ jobs:
           set -euo pipefail
           GH_TOKEN="$DOWNLOAD_TOKEN" gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
           # The candidate is installed from the catalogs of its own channel,
-          # under the name a consumer of that channel adds.
-          "$PYTHON" rules/scripts/ci/release-channel.py write-catalogs "$CHANNEL" "$RELEASE_TAG" payload candidate
+          # under the name a consumer of that channel adds. They resolve the
+          # candidate anchor, as in the fresh install.
+          anchor="$("$PYTHON" rules/scripts/ci/release-channel.py anchor "$RELEASE_TAG")"
+          "$PYTHON" rules/scripts/ci/release-channel.py write-catalogs --ref "$anchor" "$CHANNEL" "$RELEASE_TAG" payload candidate
       - name: Upgrade to the candidate and verify MCP
         shell: pwsh
         env:
@@ -495,13 +520,15 @@ jobs:
 
   promote:
     # The single commit point (ADR-0008): consumers see nothing until this job
-    # moves a catalog, and it runs only behind green consumer installs.
-    needs: [gate, stage, tag, verify-fresh-install, verify-upgrade]
+    # moves a catalog, and it runs only behind green consumer installs. The
+    # release tag `vX` is born here, in the same push as the catalog naming it.
+    needs: [gate, stage, anchor, verify-fresh-install, verify-upgrade]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
       RELEASE_TAG: ${{ needs.stage.outputs.release_tag }}
+      STAGING_SHA: ${{ needs.stage.outputs.staging_sha }}
       SOURCE_RUN_ID: ${{ needs.stage.outputs.source_run_id }}
       CHANNEL: ${{ needs.gate.outputs.channel }}
     steps:
@@ -527,25 +554,18 @@ jobs:
           test -f payload/plugins/unica/.zcode-plugin/plugin.json
           test -f payload/.agents/plugins/marketplace.json
           test -f payload/.claude-plugin/marketplace.json
-      - name: Move the channel catalogs to the published tag
+      - name: Publish the channel catalogs and the release tag in one push
         run: |
           set -euo pipefail
           rules=rules/scripts/ci/release-channel.py
           codex=.agents/plugins/marketplace.json
           claude=.claude-plugin/marketplace.json
-          gh repo clone IngvarConsulting/unica-marketplace marketplace
-          git -C marketplace config user.name unica-release-bot
-          git -C marketplace config user.email actions@users.noreply.github.com
-          # The release both host catalogs serve at a revision, or in the working
-          # tree without one; they must agree. The value is always assigned
-          # before use, so a failed read stops the job instead of passing an
-          # empty ref for a first publication.
+          # The release both host catalogs in the working tree serve; they must
+          # agree. The value is always assigned before use, so a failed read
+          # stops the job instead of passing an empty ref for a first
+          # publication.
           served_ref() {
-            if [ -n "${1:-}" ]; then
-              python3 "$rules" catalog-ref <(git -C marketplace show "$1:$codex") <(git -C marketplace show "$1:$claude")
-            else
-              python3 "$rules" catalog-ref "marketplace/$codex" "marketplace/$claude"
-            fi
+            python3 "$rules" catalog-ref "marketplace/$codex" "marketplace/$claude"
           }
           # next рождается копией main: тот же выпуск под именем канала. Дальше
           # всё, кроме раздаваемого плагина и каталогов канала, next берёт из
@@ -585,9 +605,10 @@ jobs:
             python3 "$rules" forward "$current" "$RELEASE_TAG" || status=$?
             if [ "$status" -gt 1 ]; then exit "$status"; fi
           }
-          # Serves the release on the checked-out branch. next carries the
-          # plugin bytes as well, so its tree describes what it serves.
-          publish() {
+          # Commits the release on the checked-out branch without pushing it and
+          # queues the branch for the one push below. next carries the plugin
+          # bytes as well, so its tree describes what it serves.
+          serve() {
             branch="$1"
             if [ "$branch" = next ]; then
               rm -rf marketplace/plugins/unica
@@ -601,42 +622,73 @@ jobs:
             git -C marketplace add "$codex" "$claude"
             if git -C marketplace diff --cached --quiet; then
               echo "${branch} already serves ${RELEASE_TAG}"
-              git -C marketplace push -q origin "HEAD:${branch}"
-              return 0
+            else
+              git -C marketplace commit -q -m "promote: Unica ${RELEASE_TAG}"
             fi
-            git -C marketplace commit -q -m "promote: Unica ${RELEASE_TAG}"
-            if ! git -C marketplace push origin "HEAD:${branch}"; then
-              git -C marketplace pull -q --rebase origin "$branch"
-              # The rebase replayed this commit onto whatever the branch holds
-              # now (HEAD~1). A conflicting catalog already failed the rebase
-              # above; an unrelated edit rebases clean — prove the move is still
-              # forward against that state before publishing it.
-              after_rebase="$(served_ref HEAD~1)"
-              python3 "$rules" forward "$after_rebase" "$RELEASE_TAG"
-              git -C marketplace push origin "HEAD:${branch}"
+            head="$(git -C marketplace rev-parse HEAD)"
+            remote="$(git -C marketplace rev-parse --verify --quiet "refs/remotes/origin/${branch}" || true)"
+            if [ "$head" != "$remote" ]; then
+              refspecs+=("${head}:refs/heads/${branch}")
             fi
           }
-          # next moves first: at every moment it is not older than main, so a
-          # failure between the two pushes never leaves candidate testers
-          # behind stable consumers. A stable release older than the candidate
-          # next already serves leaves next alone; a stale straggler fails on
-          # main instead of serving a rollback.
-          checkout_next
-          compare
-          if [ "$status" -eq 0 ]; then
-            publish next
-          elif [ "$CHANNEL" = next ]; then
-            echo "next already serves a release newer than ${RELEASE_TAG}" >&2
-            exit 1
-          else
-            echo "next already serves a release newer than ${RELEASE_TAG} and keeps it"
-          fi
-          if [ "$CHANNEL" = stable ]; then
-            git -C marketplace checkout -q -B main origin/main
+          # Builds the whole publication from what the marketplace holds now:
+          # the promotion commits of the channel branches and the release tag
+          # on the commit whose catalogs name it — main for a stable release,
+          # next for a candidate. Nothing leaves the runner until the push.
+          prepare() {
+            refspecs=()
+            rm -rf marketplace
+            gh repo clone IngvarConsulting/unica-marketplace marketplace
+            git -C marketplace config user.name unica-release-bot
+            git -C marketplace config user.email actions@users.noreply.github.com
+            staged_tree="$(git -C marketplace rev-parse "${STAGING_SHA}:plugins/unica")"
+            # A stable release older than the candidate next already serves
+            # leaves next alone; a stale straggler fails instead of serving a
+            # rollback.
+            checkout_next
             compare
-            if [ "$status" -ne 0 ]; then
-              echo "main already serves a release newer than ${RELEASE_TAG}" >&2
+            if [ "$status" -eq 0 ]; then
+              serve next
+            elif [ "$CHANNEL" = next ]; then
+              echo "next already serves a release newer than ${RELEASE_TAG}" >&2
               exit 1
+            else
+              echo "next already serves a release newer than ${RELEASE_TAG} and keeps it"
             fi
-            publish main
+            if [ "$CHANNEL" = stable ]; then
+              git -C marketplace checkout -q -B main origin/main
+              compare
+              if [ "$status" -ne 0 ]; then
+                echo "main already serves a release newer than ${RELEASE_TAG}" >&2
+                exit 1
+              fi
+              serve main
+            fi
+            release_commit="$(git -C marketplace rev-parse HEAD)"
+            if git -C marketplace rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" > /dev/null; then
+              # A published tag never moves. A rerun finds it with the bytes the
+              # install checks verified; anything else is a burnt version.
+              test "$(git -C marketplace rev-parse "${RELEASE_TAG}^{commit}:plugins/unica")" = "$staged_tree"
+            else
+              test "$(git -C marketplace rev-parse "${release_commit}:plugins/unica")" = "$staged_tree"
+              git -C marketplace tag -a "$RELEASE_TAG" "$release_commit" -m "Unica ${RELEASE_TAG}"
+              refspecs+=("refs/tags/${RELEASE_TAG}")
+            fi
+          }
+          # One atomic push moves every branch the release reaches together with
+          # its tag: the tag never exists without the catalog that names it, a
+          # catalog never names a tag that is not there, and next never falls
+          # behind main. A rejected push changed nothing; it is rebuilt once on
+          # the state the remote holds now, which proves the order again.
+          publish() {
+            if [ "${#refspecs[@]}" -eq 0 ]; then
+              echo "the marketplace already serves ${RELEASE_TAG}"
+              return 0
+            fi
+            git -C marketplace push --atomic origin "${refspecs[@]}"
+          }
+          prepare
+          if ! publish; then
+            prepare
+            publish
           fi
