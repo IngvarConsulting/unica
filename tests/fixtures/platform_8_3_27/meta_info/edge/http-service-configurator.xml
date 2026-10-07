@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<HTTPService uuid="761b4e01-68a6-4c68-bee4-5c4a01ab2c81">
+		<Properties>
+			<Name>ПроверкаСвязи</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Проверка связи</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+			<RootURL>health</RootURL>
+			<ReuseSessions>AutoUse</ReuseSessions>
+			<SessionMaxAge>20</SessionMaxAge>
+		</Properties>
+		<ChildObjects>
+			<URLTemplate uuid="b822ddd3-f0ba-400c-bbbb-3fb9db51d31d">
+				<Properties>
+					<Name>Пинг</Name>
+					<Synonym>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Пинг</v8:content>
+						</v8:item>
+					</Synonym>
+					<Comment/>
+					<Template>/ping/</Template>
+				</Properties>
+				<ChildObjects>
+					<Method uuid="444ae0b3-dda9-4302-b1e6-1855f65a8a64">
+						<Properties>
+							<Name>GET</Name>
+							<Synonym>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>GET</v8:content>
+								</v8:item>
+							</Synonym>
+							<Comment/>
+							<HTTPMethod>GET</HTTPMethod>
+							<Handler>ПингGET</Handler>
+						</Properties>
+					</Method>
+				</ChildObjects>
+			</URLTemplate>
+			<URLTemplate uuid="88260aa2-a2f8-4c3f-829c-912746827636">
+				<Properties>
+					<Name>ПринятьДанные</Name>
+					<Synonym>
+						<v8:item>
+							<v8:lang>ru</v8:lang>
+							<v8:content>Принять данные</v8:content>
+						</v8:item>
+					</Synonym>
+					<Comment/>
+					<Template>/data/{id}/</Template>
+				</Properties>
+				<ChildObjects>
+					<Method uuid="e330819a-ca68-42bf-a248-3aad844f2e31">
+						<Properties>
+							<Name>POST</Name>
+							<Synonym>
+								<v8:item>
+									<v8:lang>ru</v8:lang>
+									<v8:content>POST</v8:content>
+								</v8:item>
+							</Synonym>
+							<Comment/>
+							<HTTPMethod>POST</HTTPMethod>
+							<Handler>ПринятьДанныеPOST</Handler>
+						</Properties>
+					</Method>
+				</ChildObjects>
+			</URLTemplate>
+		</ChildObjects>
+	</HTTPService>
+</MetaDataObject>

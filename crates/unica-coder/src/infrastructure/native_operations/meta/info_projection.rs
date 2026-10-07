@@ -2423,6 +2423,35 @@ fn parse_bool(value: &str, field: impl Into<String>) -> Result<bool, ProjectionE
     }
 }
 
+/// Синоним и комментарий вложенного объекта платформа пишет всегда, даже
+/// пустыми (`<Comment/>`). В ответ они не попадают, но разметка внутри них
+/// означает чужую структуру и отклоняется, а не пропускается молча.
+fn ensure_nested_descriptive_properties(
+    properties: roxmltree::Node<'_, '_>,
+    field: &str,
+) -> Result<(), ProjectionError> {
+    if let Some(synonym) = direct_md_child(properties, "Synonym") {
+        if !meta_info_property_value_is_valid(
+            synonym,
+            MetaInfoPropertyValueKind::LegacyLocalizedString,
+        ) {
+            return Err(ProjectionError::malformed(
+                format!("{field}.synonym"),
+                "nested metadata synonym is malformed",
+            ));
+        }
+    }
+    if let Some(comment) = direct_md_child(properties, "Comment") {
+        if !strict_text_leaf_is_valid(comment) {
+            return Err(ProjectionError::malformed(
+                format!("{field}.comment"),
+                "nested metadata comment contains nested markup",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn parse_http_template(
     node: roxmltree::Node<'_, '_>,
     index: usize,
@@ -2432,7 +2461,12 @@ fn parse_http_template(
     let properties = direct_md_child(node, "Properties").ok_or_else(|| {
         ProjectionError::unsupported(base.clone(), "URL template has no Properties")
     })?;
-    ensure_unique_direct_md_children(properties, &["Name", "Template"], &base)?;
+    ensure_unique_direct_md_children(
+        properties,
+        &["Name", "Synonym", "Comment", "Template"],
+        &base,
+    )?;
+    ensure_nested_descriptive_properties(properties, &base)?;
     let name = required_child_text(properties, "Name", format!("{base}.name"))?;
     if !metadata_identifier_is_valid(&name) {
         return Err(ProjectionError::malformed(
@@ -2459,9 +2493,10 @@ fn parse_http_template(
             })?;
             ensure_unique_direct_md_children(
                 properties,
-                &["Name", "HTTPMethod", "Handler"],
+                &["Name", "Synonym", "Comment", "HTTPMethod", "Handler"],
                 &field,
             )?;
+            ensure_nested_descriptive_properties(properties, &field)?;
             let name = required_child_text(properties, "Name", format!("{field}.name"))?;
             let http_method =
                 required_child_text(properties, "HTTPMethod", format!("{field}.httpMethod"))?;

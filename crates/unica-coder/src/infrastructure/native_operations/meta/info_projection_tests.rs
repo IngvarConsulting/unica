@@ -156,6 +156,102 @@ fn http_service_details_preserve_templates_and_methods() {
     );
 }
 
+/// Конфигуратор 8.3.27 пишет у шаблона и метода `Synonym` и `<Comment/>`
+/// всегда, даже пустыми: так устроены все 55 шаблонов и 61 метод локальной
+/// выгрузки. Без них разбор отвечал `urlTemplates: null`, и `view` не видел
+/// ни одного шаблона настоящего сервиса (#634).
+#[test]
+fn http_service_details_accept_the_configurator_synonym_and_comment() {
+    let xml = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service-configurator.xml"
+    ));
+
+    let details = project(xml, MetadataKind::HTTPService, "HTTPService.ПроверкаСвязи");
+
+    assert_eq!(
+        details["urlTemplates"],
+        serde_json::json!([
+            {
+                "name": "Пинг",
+                "template": "/ping/",
+                "methods": [{"name": "GET", "httpMethod": "GET", "handler": "ПингGET"}]
+            },
+            {
+                "name": "ПринятьДанные",
+                "template": "/data/{id}/",
+                "methods": [{"name": "POST", "httpMethod": "POST", "handler": "ПринятьДанныеPOST"}]
+            }
+        ])
+    );
+}
+
+#[test]
+fn http_service_descriptive_properties_still_reject_nested_markup() {
+    let original = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service-configurator.xml"
+    ));
+    let target =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ПроверкаСвязи")
+            .unwrap();
+    for (field, xml) in [
+        (
+            "details.urlTemplates[0].comment",
+            original.replacen(
+                "<Comment/>\n\t\t\t\t\t<Template>",
+                "<Comment><Hidden/></Comment>\n\t\t\t\t\t<Template>",
+                1,
+            ),
+        ),
+        (
+            "details.urlTemplates[0].synonym",
+            original.replacen(
+                "<v8:content>Пинг</v8:content>",
+                "<v8:content><Hidden/></v8:content>",
+                1,
+            ),
+        ),
+        (
+            "details.urlTemplates[0].methods[0].comment",
+            original.replacen(
+                "<Comment/>\n\t\t\t\t\t\t\t<HTTPMethod>",
+                "<Comment><Hidden/></Comment>\n\t\t\t\t\t\t\t<HTTPMethod>",
+                1,
+            ),
+        ),
+        (
+            "details.urlTemplates[0].methods[0].synonym",
+            original.replacen(
+                "<v8:content>GET</v8:content>",
+                "<v8:content><Hidden/></v8:content>",
+                1,
+            ),
+        ),
+    ] {
+        assert_ne!(xml, original, "{field}: the probe must change the fixture");
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let object = document.root_element().first_element_child().unwrap();
+        let mut diagnostics = Vec::new();
+
+        let value = serde_json::to_value(project_meta_info_details(
+            MetadataKind::HTTPService,
+            meta_info_child(object, "Properties"),
+            meta_info_child(object, "ChildObjects"),
+            &target,
+            &mut diagnostics,
+        ))
+        .unwrap();
+
+        assert!(
+            value["details"]["urlTemplates"].is_null(),
+            "{field}: {value}"
+        );
+        assert_eq!(diagnostics.len(), 1, "{field}: {diagnostics:?}");
+        assert_eq!(diagnostics[0].field.as_deref(), Some(field));
+    }
+}
+
 #[test]
 fn web_service_details_preserve_packages_operations_and_expanded_qnames() {
     let xml = include_str!(concat!(

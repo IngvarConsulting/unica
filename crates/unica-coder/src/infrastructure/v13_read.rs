@@ -4,7 +4,7 @@ use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, Vi
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
-use crate::domain::metadata::MetadataKind;
+use crate::domain::metadata::{MetaDiagnosticSeverity, MetadataKind};
 use crate::domain::module_projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
@@ -716,6 +716,29 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
         payload.insert("collections".to_string(), collections);
+        // Ошибка проекции пофактовой части вида оставляет её поле `null`, и
+        // без этой записи `view` выдал бы непрочитанное за отсутствующее:
+        // узел называет его в `limits`, а ветвь без данных отказывает, а не
+        // отвечает пустым списком. Остальные диагностики читателя (например,
+        // значения заполнения реквизитов) сюда сознательно не входят: их поля
+        // не обнуляют ветвей и адресованы внутренним индексом, а не именем.
+        let unreadable = local
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
+            .filter_map(|diagnostic| {
+                let field = diagnostic.field.as_deref()?;
+                field.starts_with("details.").then(|| {
+                    json!({
+                        "field": field,
+                        "message": diagnostic.message,
+                    })
+                })
+            })
+            .collect::<Vec<_>>();
+        if !unreadable.is_empty() {
+            payload.insert("unreadable".to_string(), Value::Array(unreadable));
+        }
         // Заимствование отвечает только в наборе расширения; там оно есть у
         // всякого объекта, и «своё» — такой же ответ, как «заимствовано».
         if let Some(borrowing) = read.borrowing {

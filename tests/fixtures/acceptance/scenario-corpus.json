@@ -8491,6 +8491,40 @@
      "refusal": "bad_value: apply operation `subsystemOrder.set` does not apply to Interface"
     }
    ]
+  },
+  {
+   "id": "S322",
+   "area": "XDTO и обмены",
+   "task": "Открыть шаблоны URL и метод HTTP-сервиса из выгрузки Конфигуратора",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:HTTPService.ПроверкаСвязи"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:HTTPService.ПроверкаСвязи.URLTemplate"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:HTTPService.ПроверкаСвязи.URLTemplate.ПринятьДанные.Method.POST"
+     },
+     "expect": [
+      "ok"
+     ]
+    }
+   ]
   }
  ]
 }
