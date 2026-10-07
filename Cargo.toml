@@ -10,8 +10,8 @@ repository = "https://github.com/IngvarConsulting/unica"
 
 [workspace.dependencies]
 # Keep these revisions aligned with the bundled analyzer in tools.lock.json.
-bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "9a92766691bbd0191a5ff02c34fa9058e4570b85" }
-bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "9a92766691bbd0191a5ff02c34fa9058e4570b85" }
+bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
+bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
 diffy = "0.5.0"
 fs2 = "0.4"
 jsonschema = { version = "0.30", default-features = false }
