@@ -667,6 +667,22 @@ struct ResidentFindingsResult {
     findings: Vec<ResidentFinding>,
     error: Option<String>,
     detail: Option<String>,
+    /// bsl-analyzer 0.2.86+: a configured `[diagnostics.baseline]` removes
+    /// known findings from this reply.
+    baseline: Option<ResidentBaseline>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResidentBaseline {
+    state: String,
+}
+
+impl ResidentFindingsResult {
+    fn baseline_suppresses_findings(&self) -> bool {
+        self.baseline
+            .as_ref()
+            .is_some_and(|baseline| baseline.state != "disabled")
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -736,6 +752,7 @@ fn parse_resident_findings(
             error: None,
         });
     }
+    let baseline_suppression = envelope.result.baseline_suppresses_findings();
     let mut observations = Vec::with_capacity(envelope.result.findings.len());
     for finding in envelope.result.findings {
         observations.push(DiagnosticObservation::Diagnostic {
@@ -758,12 +775,12 @@ fn parse_resident_findings(
         });
     }
     Ok(DiagnosticProviderOutcome {
-        status: if observations.is_empty() && !envelope.result.truncated {
+        status: if observations.is_empty() && !envelope.result.truncated && !baseline_suppression {
             DiagnosticProviderStatus::Empty
         } else {
             DiagnosticProviderStatus::Completed
         },
-        complete: !envelope.result.truncated,
+        complete: !envelope.result.truncated && !baseline_suppression,
         version: reply.version,
         observations,
         rules: Vec::new(),
@@ -1337,6 +1354,35 @@ mod bsl_diagnostics_provider_tests {
         assert_eq!(outcome.status, DiagnosticProviderStatus::Completed);
         assert!(!outcome.complete);
         assert!(outcome.observations.is_empty());
+    }
+
+    #[test]
+    fn baseline_suppressed_resident_findings_are_incomplete_not_empty() {
+        for (state, complete, status) in [
+            ("disabled", true, DiagnosticProviderStatus::Empty),
+            ("full", false, DiagnosticProviderStatus::Completed),
+            ("partial", false, DiagnosticProviderStatus::Completed),
+        ] {
+            let fixture = ProviderFixture::new();
+            let backend = FakeBackend::new(vec![FakeBackend::resident(json!({
+                "revision": 1,
+                "stale": false,
+                "reload": "none",
+                "result": {
+                    "kind": "full",
+                    "truncated": false,
+                    "findings": [],
+                    "baseline": {"state": state, "complete": true, "known": 2}
+                }
+            }))]);
+            let provider = BslAnalyzerDiagnosticProvider::with_backend(&backend);
+
+            let outcome = execute(&provider, &fixture, DiagnosticAction::Findings);
+
+            assert_eq!(outcome.status, status, "{state}");
+            assert_eq!(outcome.complete, complete, "{state}");
+            assert!(outcome.observations.is_empty(), "{state}");
+        }
     }
 
     #[test]

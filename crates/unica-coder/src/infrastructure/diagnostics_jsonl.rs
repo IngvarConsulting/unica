@@ -47,6 +47,7 @@ pub(crate) struct DiagnosticsJsonlParser {
     reported: Option<usize>,
     done_files: Option<usize>,
     done_failures: Option<usize>,
+    baseline_suppression: bool,
 }
 
 impl DiagnosticsJsonlParser {
@@ -67,6 +68,7 @@ impl DiagnosticsJsonlParser {
             reported: None,
             done_files: None,
             done_failures: None,
+            baseline_suppression: false,
         })
     }
 
@@ -179,7 +181,9 @@ impl DiagnosticsJsonlParser {
         AnalyzerDiagnosticsBatch {
             outcome: DiagnosticProviderOutcome {
                 status,
-                complete: failed == 0,
+                // A configured diagnostics baseline hides known findings: the
+                // set is not every finding of the analysed files.
+                complete: failed == 0 && !self.baseline_suppression,
                 version: self.version,
                 observations: self.observations,
                 rules: Vec::new(),
@@ -273,6 +277,9 @@ impl DiagnosticsJsonlParser {
                 self.reported = Some(event.total_diagnostics);
                 self.done_files = Some(event.total_files);
                 self.done_failures = Some(event.failed_files);
+                self.baseline_suppression = event
+                    .baseline
+                    .is_some_and(|baseline| baseline.state != BaselineState::Disabled);
                 self.validate_totals()?;
             }
         }
@@ -374,6 +381,57 @@ struct DoneEvent {
     total_files: usize,
     total_diagnostics: usize,
     failed_files: usize,
+    /// bsl-analyzer 0.2.86+ reports whether `[diagnostics.baseline]` of the
+    /// analysed project suppressed known findings.
+    baseline: Option<Box<DoneBaseline>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DoneBaseline {
+    state: BaselineState,
+    #[allow(dead_code)]
+    complete: bool,
+    // Upstream details of an enabled baseline; only their presence is checked.
+    #[allow(dead_code)]
+    selection: Option<serde_json::Value>,
+    #[allow(dead_code)]
+    partitions_enabled: Option<usize>,
+    #[allow(dead_code)]
+    partitions_unsuppressed: Option<usize>,
+    #[allow(dead_code)]
+    unsuppressed: Option<usize>,
+    #[allow(dead_code)]
+    new: Option<usize>,
+    #[allow(dead_code)]
+    known: Option<usize>,
+    #[allow(dead_code)]
+    resolved: Option<usize>,
+    #[allow(dead_code)]
+    path: Option<String>,
+    #[allow(dead_code)]
+    schema_version: Option<u32>,
+    #[allow(dead_code)]
+    manifest_schema_version: Option<u32>,
+    #[allow(dead_code)]
+    error_code: Option<String>,
+    #[allow(dead_code)]
+    detail: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    partitions: Vec<serde_json::Value>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    errors: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BaselineState {
+    Disabled,
+    Full,
+    Partial,
+    Error,
 }
 
 #[derive(Debug, Deserialize)]
@@ -671,6 +729,45 @@ mod tests {
     }
 
     #[test]
+    fn done_baseline_disabled_keeps_completion_and_enabled_baseline_does_not() {
+        for (baseline, complete) in [
+            (r#"{"state":"disabled","complete":true}"#, true),
+            (
+                r#"{"state":"full","selection":{"mode":"all"},"unsuppressed":0,"known":3,"path":"baseline.json","complete":true}"#,
+                false,
+            ),
+            (
+                r#"{"state":"partial","complete":false,"partitions":[{"id":"p"}]}"#,
+                false,
+            ),
+        ] {
+            let file = diagnostic("LineLength", "Warning", 10);
+            let done = format!(
+                r#"{{"type":"done","elapsed_secs":0.4,"total_files":1,"total_diagnostics":1,"failed_files":0,"baseline":{baseline}}}"#
+            );
+            let mut parser = parser();
+            feed(
+                &mut parser,
+                &[
+                    r#"{"type":"start","total_files":1,"version":"0.2.86"}"#,
+                    &file,
+                    &done,
+                ],
+            );
+
+            let batch = parser.finish();
+            assert_eq!(
+                batch.outcome.status,
+                DiagnosticProviderStatus::Completed,
+                "{baseline}"
+            );
+            assert!(batch.outcome.error.is_none(), "{baseline}");
+            assert_eq!(batch.outcome.complete, complete, "{baseline}");
+            assert_eq!(batch.outcome.observations.len(), 1, "{baseline}");
+        }
+    }
+
+    #[test]
     fn parser_keeps_all_observations_and_redacts_resource_failures() {
         let mut parser = parser();
         let keep = diagnostic("Keep", "Information", 3);
@@ -776,6 +873,14 @@ mod tests {
             vec![
                 r#"{"type":"start","total_files":0,"version":"0.2.62"}"#,
                 r#"{"type":"done","elapsed_secs":0.0,"total_files":1,"total_diagnostics":0,"failed_files":0}"#,
+            ],
+            vec![
+                r#"{"type":"start","total_files":0,"version":"0.2.86"}"#,
+                r#"{"type":"done","elapsed_secs":0.0,"total_files":0,"total_diagnostics":0,"failed_files":0,"baseline":{"state":"suppressed","complete":true}}"#,
+            ],
+            vec![
+                r#"{"type":"start","total_files":0,"version":"0.2.86"}"#,
+                r#"{"type":"done","elapsed_secs":0.0,"total_files":0,"total_diagnostics":0,"failed_files":0,"baseline":{"state":"disabled","complete":true,"extra":1}}"#,
             ],
         ];
         for lines in cases {
