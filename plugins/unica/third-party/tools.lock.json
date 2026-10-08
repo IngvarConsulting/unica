@@ -156,7 +156,7 @@
     },
     {
       "name": "unica",
-      "version": "0.13.0-rc.6",
+      "version": "0.13.0-rc.7",
       "repository": "https://github.com/IngvarConsulting/unica",
       "sourceTag": "workspace",
       "sourceCommit": "workspace",
