@@ -377,7 +377,7 @@ fn main() {
             "--json-message",
             "push",
         ]
-        # Runner 0.13 refuses a push into an infobase it has no memory of
+        # Runner 0.14 refuses a push into an infobase it has no memory of
         # (`no_memory`); the baseline load is the explicit overwrite.
         initial = subprocess.run(
             [*command, "--force"],
@@ -701,7 +701,7 @@ def validate_v8_runner_external_build_calls(
     configuration_root: Path,
     work_path: Path,
 ) -> list[str]:
-    """Сверить шаги платформы, которыми раннер 0.13 собрал внешнюю обработку.
+    """Сверить шаги платформы, которыми раннер 0.14 собрал внешнюю обработку.
 
     Сборка идёт во временной базе: создание базы, загрузка основной конфигурации
     проекта без `-Extension`, затем загрузка и обратная выгрузка обработки.
@@ -979,7 +979,7 @@ def check_v8_runner_windows_external_publication_contract(
 
     with tempfile.TemporaryDirectory(prefix="unica-v8-runner-310-") as directory:
         root = Path(directory)
-        # Раннер 0.13 собирает внешнюю обработку во временной базе поверх основной
+        # Раннер 0.14 собирает внешнюю обработку во временной базе поверх основной
         # конфигурации проекта: без набора CONFIGURATION `make` отказывает.
         configuration_root = root / "src" / "main"
         source_root = root / "src" / "external-processors"

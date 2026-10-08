@@ -3,7 +3,7 @@
 //! Even inventory starts a platform session, so every operation is previewApply.
 
 use super::protocol::InvocationRequest;
-use super::runner_013::Runner013ProcessRunner;
+use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
@@ -149,7 +149,7 @@ impl PreparedExtensions {
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
         match resolve_bundled_runner(&self.context.cwd) {
             Ok(resolved) => self.execute_with(
-                &Runner013ProcessRunner,
+                &Runner014ProcessRunner,
                 &resolved.tool,
                 &resolved.version,
                 cancellation,
@@ -447,6 +447,7 @@ impl PreparedExtensions {
             result.data = Some(json!({"op":self.operation.name(),"dryRun":true,"plan":plan}));
 
             result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args,"dryRun":false},"reason":"execute with the current arguments; preview does not inspect infobase state"}));
+            super::v13_infobase_exports::note_another_copy(&mut result, &preview);
             return Ok(result);
         }
         let applied = self.invoke(runner, tool, &cancellation, false)?;
@@ -478,6 +479,7 @@ impl PreparedExtensions {
             );
         }
         result.data = Some(data);
+        super::v13_infobase_exports::note_another_copy(&mut result, &applied);
 
         Ok(result)
     }
@@ -489,7 +491,7 @@ fn validate_arguments(op: Operation, args: &Map<String, Value>) -> Result<(), &'
         Operation::Activate => &["name", "active"],
     };
     if args.keys().any(|key| !allowed.contains(&key.as_str())) {
-        return Err("unsupported argument for runner 0.13 extension operation");
+        return Err("unsupported argument for runner 0.14 extension operation");
     }
     if op != Operation::List
         && !args
@@ -627,7 +629,7 @@ mod tests {
         let result = prepared.execute_with(
             &SequenceRunner::new(vec![envelope(&prepared, true)]),
             &tool(root.path()),
-            super::super::runner_013::VERSION,
+            super::super::runner_014::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -646,7 +648,7 @@ mod tests {
             let result = prepared.execute_with(
                 &runner,
                 &tool,
-                super::super::runner_013::VERSION,
+                super::super::runner_014::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -662,7 +664,7 @@ mod tests {
             let result = prepared.execute_with(
                 &runner,
                 &tool,
-                super::super::runner_013::VERSION,
+                super::super::runner_014::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{op:?}: {result:?}");
@@ -691,7 +693,7 @@ mod tests {
             let preview = p.execute_with(
                 &SequenceRunner::new(vec![envelope(&p, true)]),
                 &tool,
-                super::super::runner_013::VERSION,
+                super::super::runner_014::VERSION,
                 CancellationToken::new(),
             );
             assert!(preview.ok);
@@ -717,7 +719,7 @@ mod tests {
             let version = if change == "version" {
                 "0.11.1"
             } else {
-                super::super::runner_013::VERSION
+                super::super::runner_014::VERSION
             };
             let result = p.execute_with(&runner, &tool, version, CancellationToken::new());
             assert!(result.ok, "{change}: {result:?}");
@@ -785,7 +787,7 @@ mod tests {
             let result = prepared.execute_with(
                 &SequenceRunner::new(vec![preview, applied]),
                 &tool,
-                super::super::runner_013::VERSION,
+                super::super::runner_014::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -816,7 +818,7 @@ mod tests {
             let result = prepared.execute_with(
                 &SequenceRunner::new(vec![preview, applied]),
                 &tool,
-                super::super::runner_013::VERSION,
+                super::super::runner_014::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -869,7 +871,7 @@ mod tests {
         let receipt = p1.execute_with(
             &SequenceRunner::new(vec![envelope(&p1, true)]),
             &tool(first.path()),
-            super::super::runner_013::VERSION,
+            super::super::runner_014::VERSION,
             CancellationToken::new(),
         );
         p2.dry_run = false;
@@ -878,7 +880,7 @@ mod tests {
         let result = p2.execute_with(
             &runner,
             &tool(second.path()),
-            super::super::runner_013::VERSION,
+            super::super::runner_014::VERSION,
             CancellationToken::new(),
         );
         assert!(
@@ -901,7 +903,7 @@ mod tests {
         let result = p.execute_with(
             &SequenceRunner::new(vec![envelope(&p, true)]),
             &tool(root.path()),
-            super::super::runner_013::VERSION,
+            super::super::runner_014::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -937,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn captured_runner_013_extension_envelopes_match_the_adapter() {
+    fn captured_runner_014_extension_envelopes_match_the_adapter() {
         let root = tempfile::tempdir().unwrap();
         for (op, label) in [
             (Operation::List, "list-final"),
@@ -959,13 +961,49 @@ mod tests {
             for preview in [true, false] {
                 let phase = if preview { "preview" } else { "apply" };
                 let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../tests/fixtures/v8_runner_013")
+                    .join("../../tests/fixtures/v8_runner_014")
                     .join(format!("{label}-{phase}.json"));
                 let envelope: Value =
                     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
                 assert!(p.validate(&envelope, preview).is_ok(), "{op:?} {phase}");
             }
         }
+    }
+
+    fn captured_014(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/v8_runner_014")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Живые конверты раннера 0.14.0: изменение расширения в базе другой
+    /// рабочей копии идёт с предупреждением раннера; ответ называет его своим
+    /// предупреждением и выходом к своей базе.
+    #[test]
+    fn captured_extension_change_in_the_infobase_of_another_copy_names_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut p = fixture(root.path(), Operation::Activate);
+        p.args.insert("name".into(), json!("UnicaOtherCopy"));
+        let preview = captured_014("other-copy-extensions-deactivate-preview.json");
+        let applied = captured_014("other-copy-extensions-deactivate-apply.json");
+        let result = p.execute_with(
+            &SequenceRunner::new(vec![preview.clone()]),
+            &tool(root.path()),
+            super::super::runner_014::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+        p.dry_run = false;
+        let result = p.execute_with(
+            &SequenceRunner::new(vec![preview, applied]),
+            &tool(root.path()),
+            super::super::runner_014::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
     }
 
     #[test]
@@ -979,7 +1017,7 @@ mod tests {
             !p.execute_with(
                 &runner,
                 &tool(root.path()),
-                super::super::runner_013::VERSION,
+                super::super::runner_014::VERSION,
                 cancellation
             )
             .ok
@@ -996,7 +1034,7 @@ mod tests {
         let result = p.execute_with(
             &runner,
             &tool(root.path()),
-            super::super::runner_013::VERSION,
+            super::super::runner_014::VERSION,
             CancellationToken::new(),
         );
         assert!(!result.ok);
@@ -1016,7 +1054,7 @@ mod tests {
                 "error": {"code": "invalid_argument", "message": known}
             })]),
             &tool(root.path()),
-            super::super::runner_013::VERSION,
+            super::super::runner_014::VERSION,
             CancellationToken::new(),
         );
         assert!(!exact.ok);
@@ -1035,7 +1073,7 @@ mod tests {
                     "error": {"code": code, "message": known}
                 })]),
                 &tool(root.path()),
-                super::super::runner_013::VERSION,
+                super::super::runner_014::VERSION,
                 CancellationToken::new(),
             );
             assert!(
@@ -1055,7 +1093,7 @@ mod tests {
                     "error": {"code": "invalid_argument", "message": message}
                 })]),
                 &tool(root.path()),
-                super::super::runner_013::VERSION,
+                super::super::runner_014::VERSION,
                 CancellationToken::new(),
             );
             let published = serde_json::to_string(&result).unwrap();

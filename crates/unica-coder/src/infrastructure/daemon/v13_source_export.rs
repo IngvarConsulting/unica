@@ -17,11 +17,11 @@
 //! строка наружу не идут.
 
 use super::protocol::InvocationRequest;
-use super::runner_013::Runner013ProcessRunner;
+use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
-    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
+    valid_1c_identifier, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
@@ -163,7 +163,7 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
     }
 }
 
@@ -389,6 +389,7 @@ fn execute_with_resolved_runner(
             },
             "reason": "execute with the current arguments"
         }));
+        note_another_copy(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -452,6 +453,7 @@ fn execute_with_resolved_runner(
         "kind": state,
     }));
 
+    note_another_copy(&mut result, &applied);
     result
 }
 
@@ -843,6 +845,46 @@ mod tests {
             &tool(root),
             "0.9.0",
         )
+    }
+
+    fn captured_014(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/v8_runner_014")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Живые конверты раннера 0.14.0: `pull` копии в базу другой рабочей копии
+    /// идёт с предупреждением раннера. Ответ называет его своим предупреждением
+    /// и выходом к своей базе, без прозы раннера.
+    #[test]
+    fn captured_pull_into_the_infobase_of_another_copy_names_it() {
+        let root = workspace();
+        fs::create_dir_all(root.path().join("main")).unwrap();
+        fs::write(root.path().join("main/Configuration.xml"), "<x/>").unwrap();
+        let target = normalize_path_identity(root.path()).unwrap().join("main");
+        let mut preview = captured_014("other-copy-pull-preview.json");
+        let mut applied = captured_014("other-copy-pull-apply.json");
+        for envelope in [&mut preview, &mut applied] {
+            envelope["data"]["target_path"] = json!(target);
+        }
+        let runner = SequenceRunner::new(vec![process(preview.clone(), true)]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, Some("main"), None, true),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+
+        let runner = SequenceRunner::new(vec![process(preview, true), process(applied, true)]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, Some("main"), None, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
     }
 
     #[test]

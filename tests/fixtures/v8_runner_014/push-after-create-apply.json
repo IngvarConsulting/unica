@@ -4,7 +4,7 @@
   "duration_ms": 13,
   "data": {
     "provider": {
-      "selected": "designer",
+      "selected": "agent",
       "origin": {
         "kind": "default"
       }

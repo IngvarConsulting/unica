@@ -1,0 +1,15 @@
+{
+  "ok": false,
+  "command": "push",
+  "duration_ms": 0,
+  "data": {
+    "message": "local config overlay contains unsupported key or value: unknown field `shared`, expected one of `connection`, `user`, `password`, `dbms`, `web`, `standalone`, `cluster`"
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "invalid_argument",
+    "kind": "validation",
+    "message": "local config overlay contains unsupported key or value: unknown field `shared`, expected one of `connection`, `user`, `password`, `dbms`, `web`, `standalone`, `cluster`"
+  }
+}

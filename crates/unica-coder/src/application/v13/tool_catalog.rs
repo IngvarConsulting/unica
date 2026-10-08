@@ -55,7 +55,7 @@ pub(crate) enum RunIntent {
 
 /// Why `upload`, `apply` and `reset` are unavailable with the pinned runner and
 /// what remains: the gap issue names the acceptance criteria.
-const RUNNER_LOAD_GAP: &str = "unavailable with v8-runner 0.13: the runner has no push --no-apply, apply or reset (v8-runner-rust#210, #235). Sources go through push, which applies the database configuration; loading a CF/CFE file through unica.run is unavailable until the runner gains them. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
+const RUNNER_LOAD_GAP: &str = "unavailable with v8-runner 0.14: the runner has no push --no-apply, apply or reset (v8-runner-rust#210, #235). Sources go through push, which applies the database configuration; loading a CF/CFE file through unica.run is unavailable until the runner gains them. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
 
 #[derive(Debug)]
 pub(crate) struct RunOperation {
@@ -87,7 +87,7 @@ impl RunOperation {
     pub(crate) const fn description(&self) -> &'static str {
         match self.intent {
             RunIntent::InfobaseCreate => {
-                "Create an absent empty infobase without loading sources. The runner records an empty memory of each source set declared at creation, so the first push loads every set in full instead of refusing no_memory."
+                "Create an absent infobase. A file infobase is created with the main configuration of the project (its CONFIGURATION source set) and the runner remembers that set, so the first push loads it only if it changed and loads the other sets in full; a cluster infobase is created empty and the first push loads every set in full."
             }
             RunIntent::SourceImport => {
                 "Push source sets and apply the database configuration, or delete an installed extension. Before loading a set the runner checks the infobase generation and refuses if the infobase moved ahead or this working copy has no memory of it; force:true overwrites the infobase instead. noApply is unavailable."
@@ -96,7 +96,7 @@ impl RunOperation {
                 "Fully replace a source set from the infobase with explicit force. Local-work protection and merge are unavailable."
             }
             RunIntent::ArtifactBuild => {
-                "Build a CF or CFE artifact from attached sources. EPF and ERF are unavailable with the runner 0.13 adapter."
+                "Build a CF or CFE artifact from attached sources. EPF and ERF are unavailable with the runner 0.14 adapter."
             }
             RunIntent::CfExport => {
                 "Export the working configuration, the database configuration, or an extension out of the infobase to a CF or CFE file."
@@ -125,7 +125,7 @@ impl RunOperation {
             }
             RunIntent::SourceImport => Some("source push applies the database configuration; the generation check covers only the sets the runner loads, force:true overwrites the infobase without it, and noApply:true is unavailable"),
             RunIntent::SourceExport => Some("pull requires force:true and replaces one full source set, deleting its uncommitted and untracked files without a copy; local-work protection and all mode are unavailable"),
-            RunIntent::InfobaseCreate => Some("creates an absent empty infobase without loading sources and without Unica promising a synchronization baseline; the first push loads every declared set in full"),
+            RunIntent::InfobaseCreate => Some("creates an absent infobase; a file infobase gets the main configuration of the project from its sources, a cluster infobase is created empty; the answer names whether sources were loaded (initializesSources)"),
             _ => None,
         }
     }
@@ -368,7 +368,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     input_schema: schema(
                         json!({
                             "op": {"type": "string", "description": "Runner 1.0 operation name; omit to list the target dictionary and adapter support."},
-                            "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The runner 0.13 adapter supports only origin."},
+                            "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The runner 0.14 adapter supports only origin."},
                             "args": data_object("Typed arguments for the selected operation."),
                             "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating preview; false executes with the current arguments without requiring a prior preview."},
                         }),
@@ -583,12 +583,12 @@ mod tests {
                 .unwrap();
             assert!(
                 op.support_reason().is_some(),
-                "{name} must not claim full 1.0 semantics with runner 0.13"
+                "{name} must not claim full 1.0 semantics with runner 0.14"
             );
             assert_eq!(
                 op.implemented,
                 !["upload", "apply", "reset"].contains(&name),
-                "{name}: only the proven runner 0.13 subset is executable"
+                "{name}: only the proven runner 0.14 subset is executable"
             );
         }
     }
@@ -1019,7 +1019,7 @@ mod tests {
                 "extensions.list",
                 "extensions.set",
             ],
-            "only operations whose target semantics are proven on runner 0.13 are executable"
+            "only operations whose target semantics are proven on runner 0.14 are executable"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -1175,7 +1175,7 @@ mod tests {
                 "extensions.list",
                 "extensions.set",
             ],
-            "only operations whose target semantics are proven on runner 0.13 are executable"
+            "only operations whose target semantics are proven on runner 0.14 are executable"
         );
     }
 
@@ -1201,7 +1201,7 @@ mod tests {
                 .filter(|operation| operation.implemented)
                 .count()
                 == 10,
-            "only the proven runner 0.13 subset is implemented"
+            "only the proven runner 0.14 subset is implemented"
         );
     }
 
@@ -1273,7 +1273,7 @@ mod tests {
             .expect("upload belongs to the v0.13 dictionary");
         assert!(
             !import.implemented,
-            "runner 0.13 cannot upload without applying (#1246)"
+            "runner 0.14 cannot upload without applying (#1246)"
         );
         assert_eq!(import.execution(), "previewApply");
         assert_eq!(import.effects(), &["infobase"]);

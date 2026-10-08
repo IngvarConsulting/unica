@@ -15,9 +15,9 @@
     "steps": [
       {
         "target": "UnicaRunnerProbe",
-        "action": "create",
+        "action": "delete",
         "ok": true,
-        "message": "would create 'UnicaRunnerProbe' in file infobase '/workspace/E/build/ib' with no configured infobase user via /platform/ibcmd",
+        "message": "would delete 'UnicaRunnerProbe' in file infobase '/workspace/ib-e' with no configured infobase user via /platform/ibcmd",
         "duration_ms": 0
       }
     ],

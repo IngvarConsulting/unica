@@ -1318,7 +1318,7 @@ class ProductContractTests(unittest.TestCase):
     def test_v8_runner_external_build_calls_accept_a_build_over_the_configuration(
         self,
     ) -> None:
-        """Раннер 0.13 собирает обработку во временной базе поверх конфигурации."""
+        """Раннер 0.14 собирает обработку во временной базе поверх конфигурации."""
         module = load_contract_module()
         validator = module.validate_v8_runner_external_build_calls
 

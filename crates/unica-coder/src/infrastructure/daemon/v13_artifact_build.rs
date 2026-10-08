@@ -18,7 +18,7 @@
 //! квитанцию: размер и дайджест файла. Путь к платформе наружу не идёт.
 
 use super::protocol::InvocationRequest;
-use super::runner_013::Runner013ProcessRunner;
+use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, configuration_source_set, digest_optional_workspace_file,
     digest_required_workspace_file, missing_runner_rejection, resolve_bundled_runner,
@@ -142,7 +142,7 @@ impl PreparedArtifactBuild {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
     }
 }
 
@@ -621,7 +621,7 @@ fn invoke_runner(
         RUNNER_COMMAND.to_string(),
     ];
     // Набор — позиционный аргумент: `--source-set` у раннера 0.12 скрытый синоним.
-    // Без набора и без `--extension` раннер 0.13 собирает все наборы в каталог
+    // Без набора и без `--extension` раннер 0.14 собирает все наборы в каталог
     // и путь к одному файлу отклоняет, поэтому `.cf` без набора заказывается по
     // имени набора основной конфигурации.
     args.extend(planned.map(str::to_string));
@@ -1033,7 +1033,7 @@ mod tests {
             !encoded.contains(&root_text),
             "absolute path leaked: {encoded}"
         );
-        // Без набора раннер 0.13 собрал бы все наборы в каталог и путь к файлу
+        // Без набора раннер 0.14 собрал бы все наборы в каталог и путь к файлу
         // отклонил бы: `.cf` заказывается по имени набора основной конфигурации.
         let args = runner.joined_args(0);
         assert!(
