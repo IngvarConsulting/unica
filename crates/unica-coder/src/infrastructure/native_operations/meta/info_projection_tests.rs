@@ -24,6 +24,17 @@ fn project(xml: &str, kind: MetadataKind, metadata_path: &str) -> serde_json::Va
     serde_json::to_value(details).unwrap()["details"].clone()
 }
 
+/// Фикстура в обоих концах строк. В репозитории она хранится в LF без BOM,
+/// Git для Windows выписывает её с CRLF, а сырая выгрузка 8.3.27 тоже пишет
+/// CRLF (см. `staged_dump_roots`). Поэтому пробы с переводом строки строятся
+/// от конца строки варианта и проверяются в обоих вариантах на любой ОС,
+/// а не в том, что выписал checkout.
+fn line_ending_variants(fixture: &str) -> [(&'static str, String); 2] {
+    let lf = fixture.replace("\r\n", "\n");
+    let crlf = lf.replace('\n', "\r\n");
+    [("\n", lf), ("\r\n", crlf)]
+}
+
 #[test]
 fn report_profile_observes_the_tracked_auxiliary_variant_form() {
     let xml = include_str!(concat!(
@@ -188,67 +199,71 @@ fn http_service_details_accept_the_configurator_synonym_and_comment() {
 
 #[test]
 fn http_service_descriptive_properties_still_reject_nested_markup() {
-    let original = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service-configurator.xml"
-    ));
     let target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "HTTPService.ПроверкаСвязи")
             .unwrap();
-    for (field, xml) in [
-        (
-            "details.urlTemplates[0].comment",
-            original.replacen(
-                "<Comment/>\n\t\t\t\t\t<Template>",
-                "<Comment><Hidden/></Comment>\n\t\t\t\t\t<Template>",
-                1,
+    for (eol, original) in line_ending_variants(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service-configurator.xml"
+    ))) {
+        for (field, xml) in [
+            (
+                "details.urlTemplates[0].comment",
+                original.replacen(
+                    &format!("<Comment/>{eol}\t\t\t\t\t<Template>"),
+                    &format!("<Comment><Hidden/></Comment>{eol}\t\t\t\t\t<Template>"),
+                    1,
+                ),
             ),
-        ),
-        (
-            "details.urlTemplates[0].synonym",
-            original.replacen(
-                "<v8:content>Пинг</v8:content>",
-                "<v8:content><Hidden/></v8:content>",
-                1,
+            (
+                "details.urlTemplates[0].synonym",
+                original.replacen(
+                    "<v8:content>Пинг</v8:content>",
+                    "<v8:content><Hidden/></v8:content>",
+                    1,
+                ),
             ),
-        ),
-        (
-            "details.urlTemplates[0].methods[0].comment",
-            original.replacen(
-                "<Comment/>\n\t\t\t\t\t\t\t<HTTPMethod>",
-                "<Comment><Hidden/></Comment>\n\t\t\t\t\t\t\t<HTTPMethod>",
-                1,
+            (
+                "details.urlTemplates[0].methods[0].comment",
+                original.replacen(
+                    &format!("<Comment/>{eol}\t\t\t\t\t\t\t<HTTPMethod>"),
+                    &format!("<Comment><Hidden/></Comment>{eol}\t\t\t\t\t\t\t<HTTPMethod>"),
+                    1,
+                ),
             ),
-        ),
-        (
-            "details.urlTemplates[0].methods[0].synonym",
-            original.replacen(
-                "<v8:content>GET</v8:content>",
-                "<v8:content><Hidden/></v8:content>",
-                1,
+            (
+                "details.urlTemplates[0].methods[0].synonym",
+                original.replacen(
+                    "<v8:content>GET</v8:content>",
+                    "<v8:content><Hidden/></v8:content>",
+                    1,
+                ),
             ),
-        ),
-    ] {
-        assert_ne!(xml, original, "{field}: the probe must change the fixture");
-        let document = roxmltree::Document::parse(&xml).unwrap();
-        let object = document.root_element().first_element_child().unwrap();
-        let mut diagnostics = Vec::new();
+        ] {
+            assert_ne!(
+                xml, original,
+                "{field}: the probe must change the {eol:?} fixture"
+            );
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let object = document.root_element().first_element_child().unwrap();
+            let mut diagnostics = Vec::new();
 
-        let value = serde_json::to_value(project_meta_info_details(
-            MetadataKind::HTTPService,
-            meta_info_child(object, "Properties"),
-            meta_info_child(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ))
-        .unwrap();
+            let value = serde_json::to_value(project_meta_info_details(
+                MetadataKind::HTTPService,
+                meta_info_child(object, "Properties"),
+                meta_info_child(object, "ChildObjects"),
+                &target,
+                &mut diagnostics,
+            ))
+            .unwrap();
 
-        assert!(
-            value["details"]["urlTemplates"].is_null(),
-            "{field}: {value}"
-        );
-        assert_eq!(diagnostics.len(), 1, "{field}: {diagnostics:?}");
-        assert_eq!(diagnostics[0].field.as_deref(), Some(field));
+            assert!(
+                value["details"]["urlTemplates"].is_null(),
+                "{field} ({eol:?}): {value}"
+            );
+            assert_eq!(diagnostics.len(), 1, "{field} ({eol:?}): {diagnostics:?}");
+            assert_eq!(diagnostics[0].field.as_deref(), Some(field));
+        }
     }
 }
 
@@ -332,79 +347,86 @@ fn web_service_details_accept_the_configurator_operation_properties() {
 
 #[test]
 fn web_service_operation_properties_still_reject_foreign_content() {
-    let original = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service-configurator.xml"
-    ));
     let target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "WebService.ОбменДанными").unwrap();
-    for (field, xml) in [
-        (
-            "details.operations[0].comment",
-            original.replacen(
-                "<Comment/>\n\t\t\t\t\t<XDTOReturningValueType>",
-                "<Comment><Hidden/></Comment>\n\t\t\t\t\t<XDTOReturningValueType>",
-                1,
+    for (eol, original) in line_ending_variants(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service-configurator.xml"
+    ))) {
+        for (field, xml) in [
+            (
+                "details.operations[0].comment",
+                original.replacen(
+                    &format!("<Comment/>{eol}\t\t\t\t\t<XDTOReturningValueType>"),
+                    &format!("<Comment><Hidden/></Comment>{eol}\t\t\t\t\t<XDTOReturningValueType>"),
+                    1,
+                ),
             ),
-        ),
-        (
-            "details.operations[0].synonym",
-            original.replacen(
-                "<v8:content>Пинг</v8:content>",
-                "<v8:content><Hidden/></v8:content>",
-                1,
+            (
+                "details.operations[0].synonym",
+                original.replacen(
+                    "<v8:content>Пинг</v8:content>",
+                    "<v8:content><Hidden/></v8:content>",
+                    1,
+                ),
             ),
-        ),
-        (
-            "details.operations[0].dataLockControlMode",
-            original.replacen(
-                "<DataLockControlMode>Managed</DataLockControlMode>",
-                "<DataLockControlMode>AutomaticAndManaged</DataLockControlMode>",
-                1,
+            (
+                "details.operations[0].dataLockControlMode",
+                original.replacen(
+                    "<DataLockControlMode>Managed</DataLockControlMode>",
+                    "<DataLockControlMode>AutomaticAndManaged</DataLockControlMode>",
+                    1,
+                ),
             ),
-        ),
-        (
-            "details.operations[1].dataLockControlMode",
-            original.replacen(
-                "<DataLockControlMode>Automatic</DataLockControlMode>",
-                "<DataLockControlMode><Hidden/></DataLockControlMode>",
-                1,
+            (
+                "details.operations[1].dataLockControlMode",
+                original.replacen(
+                    "<DataLockControlMode>Automatic</DataLockControlMode>",
+                    "<DataLockControlMode><Hidden/></DataLockControlMode>",
+                    1,
+                ),
             ),
-        ),
-        (
-            "details.operations[1].parameters[0].comment",
-            original.replacen(
-                "<Comment/>\n\t\t\t\t\t\t\t<XDTOValueType>",
-                "<Comment><Hidden/></Comment>\n\t\t\t\t\t\t\t<XDTOValueType>",
-                1,
+            (
+                "details.operations[1].parameters[0].comment",
+                original.replacen(
+                    &format!("<Comment/>{eol}\t\t\t\t\t\t\t<XDTOValueType>"),
+                    &format!("<Comment><Hidden/></Comment>{eol}\t\t\t\t\t\t\t<XDTOValueType>"),
+                    1,
+                ),
             ),
-        ),
-        (
-            "details.operations[1].parameters[0].synonym",
-            original.replacen(
-                "<v8:content>Отправитель</v8:content>",
-                "<v8:content><Hidden/></v8:content>",
-                1,
+            (
+                "details.operations[1].parameters[0].synonym",
+                original.replacen(
+                    "<v8:content>Отправитель</v8:content>",
+                    "<v8:content><Hidden/></v8:content>",
+                    1,
+                ),
             ),
-        ),
-    ] {
-        assert_ne!(xml, original, "{field}: the probe must change the fixture");
-        let document = roxmltree::Document::parse(&xml).unwrap();
-        let object = document.root_element().first_element_child().unwrap();
-        let mut diagnostics = Vec::new();
+        ] {
+            assert_ne!(
+                xml, original,
+                "{field}: the probe must change the {eol:?} fixture"
+            );
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            let object = document.root_element().first_element_child().unwrap();
+            let mut diagnostics = Vec::new();
 
-        let value = serde_json::to_value(project_meta_info_details(
-            MetadataKind::WebService,
-            meta_info_child(object, "Properties"),
-            meta_info_child(object, "ChildObjects"),
-            &target,
-            &mut diagnostics,
-        ))
-        .unwrap();
+            let value = serde_json::to_value(project_meta_info_details(
+                MetadataKind::WebService,
+                meta_info_child(object, "Properties"),
+                meta_info_child(object, "ChildObjects"),
+                &target,
+                &mut diagnostics,
+            ))
+            .unwrap();
 
-        assert!(value["details"]["operations"].is_null(), "{field}: {value}");
-        assert_eq!(diagnostics.len(), 1, "{field}: {diagnostics:?}");
-        assert_eq!(diagnostics[0].field.as_deref(), Some(field));
+            assert!(
+                value["details"]["operations"].is_null(),
+                "{field} ({eol:?}): {value}"
+            );
+            assert_eq!(diagnostics.len(), 1, "{field} ({eol:?}): {diagnostics:?}");
+            assert_eq!(diagnostics[0].field.as_deref(), Some(field));
+        }
     }
 }
 
