@@ -133,6 +133,26 @@ Then merge through a pull request into the branch the release is cut from.
 Keep the bump its own pull request: step 1 tags its merge commit, so that commit
 has to carry both the bump and everything else the version ships.
 
+### Run the large profile on the release commit
+
+Some contracts run only on the tag build and in the `large` profile: the
+Windows tool contracts in `scripts/ci/check-tool-contracts.py` and the
+Windows test lane. A pull request does not run them. Before tagging, run
+`large` on the branch the release is cut from, at the commit you are about to
+tag, and wait for it to finish green:
+
+```bash
+gh workflow run unica-plugin-release.yml --ref main -f profile=large
+gh run list --workflow unica-plugin-release.yml --limit 3 \
+  --json databaseId,headSha,status,conclusion
+```
+
+Check that the run's `headSha` is the commit you will tag. A tag is
+immutable and the build reads its checks from the tagged commit: a check that
+first fails on the tag build burns the version number, and the fix ships
+under the next one. That is how `v0.13.0-rc.6` was lost to a Windows-only
+`make` contract after the runner moved to 0.13.
+
 ## Step 1 — tag the source release
 
 Tag the merge commit of the version pull request in `unica` and push. On a
