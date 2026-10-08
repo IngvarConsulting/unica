@@ -1052,6 +1052,36 @@ pub(super) fn runner_rejection(
     }
 }
 
+/// Код, под которым Unica передаёт предупреждение раннера.
+pub(super) const RUNNER_WARNING_CODE: &str = "runner_warning";
+const RUNNER_WARNINGS_MAX: usize = 8;
+const RUNNER_WARNING_BYTES_MAX: usize = 4096;
+
+/// Предупреждения раннера из `warnings` его конверта, каждое отдельным
+/// предупреждением Unica. Раннер отдаёт их прозой без кода, поэтому Unica их
+/// не толкует и ничего по ним не решает: текст идёт через редактор секретов,
+/// число и длина ограничены.
+pub(super) fn runner_warnings(envelope: &Value) -> Vec<Value> {
+    envelope["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .take(RUNNER_WARNINGS_MAX)
+        .map(|text| {
+            let mut message = redactor(text);
+            if message.len() > RUNNER_WARNING_BYTES_MAX {
+                let mut end = RUNNER_WARNING_BYTES_MAX;
+                while !message.is_char_boundary(end) {
+                    end -= 1;
+                }
+                message.truncate(end);
+            }
+            json!({"code": RUNNER_WARNING_CODE, "message": message})
+        })
+        .collect()
+}
+
 pub(super) fn map_runner_code(code: &str) -> RefusalCode {
     match code {
         // Платформа сказала нет: авторизация, права, лицензия, занятая база.

@@ -19,13 +19,15 @@
 //! провайдером, и ответ называет это прямо. Набор, который раннер пропустил
 //! по своей памяти, загружен не был, и поколение базы для него не сверялось:
 //! такой ответ называет состояние базы непроверенным, а не импортом. Проза
-//! шагов раннера наружу не идёт.
+//! шагов раннера наружу не идёт; его предупреждения — идут, каждое отдельным
+//! `runner_warning`: так ответ называет, например, запись в базу другой
+//! рабочей копии, которую раннер 0.14 больше не отказывает.
 
 use super::protocol::InvocationRequest;
 use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, runner_start_rejection, CONFIG_NAME,
+    resolve_bundled_runner, runner_rejection, runner_start_rejection, runner_warnings, CONFIG_NAME,
     LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
@@ -444,6 +446,7 @@ fn execute_with_resolved_runner(
         let mut result = DomainResult::success(summary);
         result.warnings.extend(skipped_warning(&plan));
         result.warnings.extend(overwrite_warning(prepared, &plan));
+        result.warnings.extend(runner_warnings(&preview));
         result.data = Some(json!({
             "op": OPERATION,
             "dryRun": true,
@@ -538,10 +541,13 @@ fn execute_with_resolved_runner(
                 "mode": step.mode.as_str(),
             }));
         }
+        result.warnings.extend(runner_warnings(&applied));
         return result;
     }
     if !anything_loaded {
-        return nothing_loaded(prepared, &plan);
+        let mut result = nothing_loaded(prepared, &plan);
+        result.warnings.extend(runner_warnings(&applied));
+        return result;
     }
     // **Улику о состоянии базы Unica не подделывает.** База живёт за
     // соединением, и её состояние здесь засвидетельствовано провайдером, а не
@@ -594,6 +600,7 @@ fn execute_with_resolved_runner(
         result.warnings.push(warning);
     }
     result.warnings.extend(overwrite_warning(prepared, &plan));
+    result.warnings.extend(runner_warnings(&applied));
 
     result
 }
@@ -2022,6 +2029,23 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert!(runner.joined_args(1).ends_with("push main --force"));
         assert_eq!(result.warnings[0]["code"], "infobase_overwritten");
+        // Раннер 0.14 пишет в базу другой рабочей копии с предупреждением, и
+        // ответ его не теряет: ни в превью, ни после исполнения.
+        assert_eq!(result.warnings[1]["code"], "runner_warning", "{result:?}");
+        assert!(result.warnings[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("of another working copy"));
+        assert_eq!(result.warnings.len(), 2, "{result:?}");
+
+        let runner = SequenceRunner::new(vec![process(
+            captured("push-other-copy-force-preview.json"),
+            true,
+        )]);
+        forced.dry_run = true;
+        let preview = run(root.path(), &forced, &runner);
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(preview.warnings[1]["code"], "runner_warning", "{preview:?}");
     }
 
     /// Раннер 0.14.0 убрал ключ `shared` секции базы. Unica его не пишет и не
