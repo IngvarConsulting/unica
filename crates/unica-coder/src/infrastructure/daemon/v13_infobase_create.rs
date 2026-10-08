@@ -376,7 +376,7 @@ fn execute_with_resolved_runner(
         "sourceSet": contents.loaded_source_set(),
         "connectionFrom": CONFIG_NAME,
         "targetStateAttestedBy": "provider",
-        "receipt": "repeated preview reports that the infobase exists",
+        "receipt": "repeated preview reports nothing left to create",
     }));
     // Изменилась база, а не файл рабочего пространства: путь сюда не кладётся.
     result.changed.push(json!({
