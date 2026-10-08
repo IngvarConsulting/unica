@@ -405,17 +405,38 @@ pub(super) fn origin_kind(root: &Path) -> Result<OriginKind, String> {
     let file = origin
         .get("connection")
         .and_then(Value::as_str)
-        .is_some_and(|connection| {
-            connection.split(';').any(|part| {
-                part.trim()
-                    .get(..5)
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file="))
-            })
-        });
+        .is_some_and(declares_a_file_infobase);
     Ok(if file {
         OriginKind::File
     } else {
         OriginKind::Cluster
+    })
+}
+
+/// The runner's reading of a declared connection (`declared_parameters`):
+/// non-empty `;` parts, each `key=value` with the key trimmed and compared
+/// without case; a part without `=` makes the string undeclared, and a file
+/// infobase has a non-empty `File` value. Raw argv names it with `/F`.
+fn declares_a_file_infobase(connection: &str) -> bool {
+    let text = connection.trim();
+    if text.starts_with(['/', '-']) {
+        return text
+            .split_whitespace()
+            .any(|token| token.eq_ignore_ascii_case("/F"));
+    }
+    let parts: Option<Vec<(String, &str)>> = text
+        .split(';')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.split_once('=')
+                .map(|(key, value)| (key.trim().to_ascii_lowercase(), value.trim()))
+        })
+        .collect();
+    parts.is_some_and(|parts| {
+        parts
+            .iter()
+            .any(|(key, value)| key == "file" && !value.is_empty())
     })
 }
 
@@ -1041,6 +1062,19 @@ mod tests {
         ] {
             let root = workspace(base, local);
             assert_eq!(origin_kind(root.path()).unwrap(), kind, "{base} {local:?}");
+        }
+        // Разбор строки — как у раннера: пробелы вокруг ключа и регистр не
+        // важны, часть без `=` делает строку не файловой.
+        for (connection, file) in [
+            ("File = build/ib", true),
+            ("fIlE  =  'db'", true),
+            ("File=ib;", true),
+            ("File=ib;junk", false),
+            ("File=", false),
+            ("Srvr=srv;Ref=demo", false),
+            ("/F /abs/ib", true),
+        ] {
+            assert_eq!(declares_a_file_infobase(connection), file, "{connection}");
         }
     }
 

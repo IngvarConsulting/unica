@@ -275,6 +275,9 @@ fn execute_with_resolved_runner(
             "requiresPlatform": true,
         }));
 
+        if contents.kind == OriginKind::Cluster {
+            result.warnings.push(cluster_database_warning(true));
+        }
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
@@ -327,6 +330,29 @@ fn execute_with_resolved_runner(
         }
         Err(result) => return result,
     }
+    // Базу в кластере раннер 0.14 до создания не видит: его превью планирует её
+    // всегда, и повторное превью квитанцией быть не может. Ответ это называет.
+    if contents.kind == OriginKind::Cluster {
+        let mut result = DomainResult::success(
+            "infobase.create created an empty infobase in the cluster; the first push loads every source set in full; the creation is attested by the provider alone: the runner cannot observe a cluster infobase before creating it, so no repeated preview confirms it".to_string(),
+        );
+        result.data = Some(json!({
+            "op": OPERATION,
+            "dryRun": false,
+            "target": "infobase",
+            "state": "created",
+            "initializesSources": false,
+            "sourceSet": Value::Null,
+            "connectionFrom": CONFIG_NAME,
+            "targetStateAttestedBy": "provider",
+            "receipt": "provider step only; a cluster infobase is not observable by a repeated preview",
+        }));
+        result.warnings.push(cluster_database_warning(false));
+        result
+            .changed
+            .push(json!({"infobase": true, "kind": "created"}));
+        return result;
+    }
     // Квитанция у раннера, не со слов применения: повторное превью обязано
     // сказать, что создавать больше нечего.
     // A cancellation after creation cannot discard the confirmation that the
@@ -344,7 +370,7 @@ fn execute_with_resolved_runner(
         Err(result) => return result,
     };
     // Раннер 0.14 на существующей файловой базе отказывает ещё в превью. Пропуск
-    // шага — квитанция прежних раннеров и цели, которую раннер видит иначе.
+    // шага — квитанция прежних раннеров.
     let confirmed = refuses_an_existing_file_infobase(&receipt, &contents)
         || (receipt["ok"] == true
             && matches!(
@@ -429,6 +455,23 @@ fn existing_infobase_rejection() -> DomainResult {
         RefusalCode::InvalidState,
         "the infobase at the configured connection already exists; infobase.create only creates an absent one, use infobase.restore with mode replace to overwrite its data",
     )
+}
+
+/// Код предупреждения о базе данных кластера.
+const CLUSTER_DATABASE_WARNING_CODE: &str = "cluster_database_unverified";
+
+/// Раннер 0.14 создаёт базу в кластере с `CrSQLDB=Y`: база данных СУБД с тем же
+/// именем, если она есть, берётся молча, а существование самой базы до
+/// создания не видно. Это называют и превью, и ответ.
+fn cluster_database_warning(preview: bool) -> Value {
+    json!({
+        "code": CLUSTER_DATABASE_WARNING_CODE,
+        "message": if preview {
+            "a cluster infobase is created with CrSQLDB=Y: an existing DBMS database with the same name is taken silently, even one of another infobase, and whether the infobase already exists is not observable before creation; check infobases.origin.dbms.name before executing"
+        } else {
+            "the cluster infobase was created with CrSQLDB=Y: an existing DBMS database with the same name would have been taken silently; whether it existed before was not observable"
+        },
+    })
 }
 
 /// Что создание кладёт в новую базу: вид цели и основная конфигурация проекта.
@@ -1032,6 +1075,23 @@ mod tests {
         let plan = &result.data.as_ref().unwrap()["plan"];
         assert_eq!(plan["initializesSources"], false);
         assert!(plan["sourceSet"].is_null(), "{plan}");
+        assert_eq!(result.warnings[0]["code"], "cluster_database_unverified");
+
+        // Повторное превью кластера снова планирует создание: квитанцией оно
+        // не служит, ответ держится на шаге провайдера и говорит это.
+        let runner = SequenceRunner::new(vec![
+            process(envelope(root.path(), "planned", "skipped", false), true),
+            process(envelope(root.path(), "ok", "skipped", true), true),
+        ]);
+        let result = run(root.path(), &prepared(root.path(), false), &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 2);
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["state"], "created");
+        assert_eq!(data["initializesSources"], false);
+        assert_eq!(data["targetStateAttestedBy"], "provider");
+        assert!(data["receipt"].as_str().unwrap().contains("not observable"));
+        assert_eq!(result.warnings[0]["code"], "cluster_database_unverified");
     }
 
     #[test]

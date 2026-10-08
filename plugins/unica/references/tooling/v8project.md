@@ -215,7 +215,7 @@ the runner can load without applying and apply separately
   `unica.view {}` and write `v8project.yaml` yourself: no tool creates it.
 - Prefer `source-set` names over ad hoc source directories.
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
-- Do not write `execution_timeout` or `push.partialLoadThreshold`: v8-runner 0.13 has neither an overall command
+- Do not write `execution_timeout` or `push.partialLoadThreshold`: v8-runner 0.14 has neither an overall command
   deadline nor a partial-load threshold, and Unica refuses a config with either key. Unica exposes no `timeoutMs` argument.
 - `upload`, `apply` and `reset` are unavailable: report loading a CF/CFE as a Unica MCP contract gap ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) and do not call the runner directly.
 - Designer/EDT conversion is not on the surface: Unica reads platform XML only.
