@@ -1,10 +1,10 @@
 {
   "ok": true,
   "command": "push",
-  "duration_ms": 16,
+  "duration_ms": 20,
   "data": {
     "provider": {
-      "selected": "designer",
+      "selected": "agent",
       "origin": {
         "kind": "default"
       }
@@ -14,13 +14,13 @@
     "steps": [
       {
         "source_set": "main",
-        "mode": "skipped",
+        "mode": "full",
         "ok": true,
-        "message": "no changes",
+        "message": "full load selected by partial-load rules; planned, agent not dispatched",
         "duration_ms": 0
       }
     ],
-    "duration_ms": 16
+    "duration_ms": 20
   },
   "warnings": [],
   "steps": []

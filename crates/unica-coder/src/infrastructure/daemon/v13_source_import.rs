@@ -7,7 +7,7 @@
 //! импортируются все); `full` — сбросить кэш изменений раннера и загрузить всё
 //! целиком; `force:true` — перезаписать базу (`push --force`): каждый набор
 //! грузится целиком без сверки памяти и поколения базы, сделанное в базе
-//! теряется. Без `force` раннер 0.13 перед загрузкой набора сверяет поколение
+//! теряется. Без `force` раннер 0.14 перед загрузкой набора сверяет поколение
 //! базы с записью о прошлом обмене и отказывает `non_fast_forward`, если база
 //! ушла вперёд, или `no_memory`, если памяти о базе нет. Превью зовёт
 //! `push --dry-run`: раннер выбирает для каждого набора режим, не запуская
@@ -22,7 +22,7 @@
 //! шагов раннера наружу не идёт.
 
 use super::protocol::InvocationRequest;
-use super::runner_013::Runner013ProcessRunner;
+use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, runner_start_rejection, CONFIG_NAME,
@@ -146,7 +146,7 @@ impl PreparedSourceImport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
     }
 }
 
@@ -1686,12 +1686,12 @@ mod tests {
 
     fn captured(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_013")
+            .join("../../tests/fixtures/v8_runner_014")
             .join(name);
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
-    /// Конверты раннера 0.13.0, снятые вживую на сценарии #1240: базу
+    /// Конверты раннера 0.14.0, снятые вживую на сценарии #1240: базу
     /// перезаписала другая рабочая копия, а раннер этой копии пропустил набор
     /// по своей памяти и поколение базы не сверял.
     #[test]
@@ -1743,16 +1743,35 @@ mod tests {
             .contains("did not report whether"));
     }
 
-    /// Первый `push` после `infobase create` раннера 0.13.0, снятый вживую
-    /// (`tests/fixtures/v8_runner_013/README.md`): создание записало пустую
-    /// память набора, поэтому `push` без `force` не отказывает `no_memory`,
-    /// а грузит набор целиком.
+    /// Первые `push` после `infobase create` раннера 0.14.0, снятые вживую
+    /// (`tests/fixtures/v8_runner_014/README.md`). Создание собрало базу
+    /// с основной конфигурацией и записало память о наборе: первый `push` без
+    /// правок ничего не грузит и честно называет состояние базы непроверенным,
+    /// а `push` после правки грузит набор без отказа `no_memory`. Записи
+    /// поколения до этой загрузки нет, и ответ не выдаёт её за сверенную.
     #[test]
-    fn captured_first_push_after_create_loads_in_full_without_no_memory() {
+    fn captured_first_pushes_after_create_skip_the_assembled_set_and_load_an_edit() {
         let root = workspace();
         let runner = SequenceRunner::new(vec![
             process(captured("push-after-create-preview.json"), true),
             process(captured("push-after-create-apply.json"), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), false, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(
+            result.summary.starts_with("push loaded nothing"),
+            "{result:?}"
+        );
+        assert!(result.changed.is_empty(), "{result:?}");
+        assert_eq!(result.warnings[0]["code"], "infobase_state_unverified");
+
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-after-edit-preview.json"), true),
+            process(captured("push-after-edit-apply.json"), true),
         ]);
         let result = run(
             root.path(),
@@ -1769,7 +1788,6 @@ mod tests {
         assert_eq!(result.changed.len(), 1, "{result:?}");
         assert_eq!(result.changed[0]["sourceSet"], "main");
         assert_eq!(result.changed[0]["mode"], "full");
-        assert!(result.warnings.is_empty(), "{result:?}");
         // Режим защиты включён, но записи поколения у раннера ещё нет:
         // ответ не выдаёт эту загрузку за сверенную.
         assert_eq!(data["generationProtection"], true);
@@ -1875,7 +1893,6 @@ mod tests {
             ),
             ("workspace_busy", "concurrent_change", Outcome::RetryAsIs),
             ("infobase_busy", "concurrent_change", Outcome::RetryAsIs),
-            ("infobase_held", "invalid_state", Outcome::NeedsHuman),
             ("non_fast_forward", "invalid_state", Outcome::NeedsHuman),
             ("no_memory", "invalid_state", Outcome::NeedsHuman),
             ("invalid_argument", "bad_value", Outcome::FixCall),
@@ -1892,7 +1909,7 @@ mod tests {
         }
     }
 
-    /// Живые отказы раннера 0.13.0 (`tests/fixtures/v8_runner_013/`): база ушла
+    /// Живые отказы раннера 0.14.0 (`tests/fixtures/v8_runner_014/`): база ушла
     /// вперёд записи и памяти о базе нет. Unica ничего не перезаписывает сама:
     /// отказ несёт оба поколения и два выхода превью — выгрузку набора и
     /// перезапись базы через `force:true`.
@@ -1925,11 +1942,11 @@ mod tests {
         assert_eq!(data["sourceSet"], "main");
         assert_eq!(
             data["baseGeneration"],
-            "19ece0d79ec27b48af3a501835b1d59900000000"
+            "cff9bf3b55c7644487128a9f7787059000000000"
         );
         assert_eq!(
             data["localGeneration"],
-            "5d598420fd015846aeb614e7a2b98cf500000000"
+            "ed175a7e431ea74a9b3d8def289ced9700000000"
         );
         assert!(result.changed.is_empty(), "{result:?}");
         assert_eq!(result.next.len(), 2, "{result:?}");
@@ -1970,9 +1987,9 @@ mod tests {
         );
     }
 
-    /// Живые отказы занятой базы (раннер 0.13.0): другая команда держит базу —
-    /// повтор; другая рабочая копия держит базу — нужен человек, первый выход —
-    /// своя чистая база.
+    /// Живой отказ занятой базы (раннер 0.14.0): другая команда держит базу —
+    /// повтор. База другой рабочей копии отказом больше не бывает: раннер 0.14
+    /// пишет в неё с предупреждением, а `force:true` называет перезапись.
     #[test]
     fn captured_base_contention_refusals_keep_their_outcomes() {
         let root = workspace();
@@ -1995,24 +2012,36 @@ mod tests {
             .unwrap()
             .contains("retry when it finishes"));
 
-        let runner = SequenceRunner::new(vec![process(
-            captured("push-infobase-held-preview.json"),
-            false,
-        )]);
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-other-copy-force-preview.json"), true),
+            process(captured("push-other-copy-force-apply.json"), true),
+        ]);
+        let mut forced = prepared(root.path(), Some("main"), false, false);
+        forced.arguments.force = true;
+        let result = run(root.path(), &forced, &runner);
+        assert!(result.ok, "{result:?}");
+        assert!(runner.joined_args(1).ends_with("push main --force"));
+        assert_eq!(result.warnings[0]["code"], "infobase_overwritten");
+    }
+
+    /// Раннер 0.14.0 убрал ключ `shared` секции базы. Unica его не пишет и не
+    /// толкует: старый местный слой с ним доходит до вызывающего типизированным
+    /// отказом раннера, а не сбоем и не молчаливым пропуском.
+    #[test]
+    fn captured_removed_shared_key_is_a_typed_refusal() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![process(captured("shared-key-refused.json"), false)]);
         let result = run(
             root.path(),
             &prepared(root.path(), None, false, true),
             &runner,
         );
-        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
-        assert_eq!(result.diagnostics[0]["outcome"], "needsHuman");
+        assert_eq!(runner.call_count(), 1);
+        assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
         assert!(result.diagnostics[0]["message"]
             .as_str()
             .unwrap()
-            .contains("is held by the working copy"));
-        assert_eq!(result.next.len(), 1, "{result:?}");
-        assert_eq!(result.next[0]["args"]["op"], "infobase.create");
-        assert_eq!(result.next[0]["args"]["dryRun"], true);
+            .contains("unknown field `shared`"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! The pinned 0.13 executable stays behind the runner 1.0 operation contract.
+//! The pinned 0.14 executable stays behind the runner 1.0 operation contract.
 //!
 //! The workspace keeps the Unica vocabulary of `v8project.yaml` and
 //! `v8project.local.yaml`; the runner reads its own. When the two differ, a
@@ -6,18 +6,19 @@
 //! `<workspace>/.build/unica/runner-project/` and the runner reads that copy.
 //! The originals are never written.
 //!
-//! The directory is stable on purpose: runner 0.13 records the directory of the
+//! The directory is stable on purpose: runner 0.14 records the directory of the
 //! config it read as the working copy that holds a file infobase, and checks
 //! later whether that directory still declares the infobase. A copy removed after
 //! each command would leave a gone owner that any other working copy silently
-//! replaces. One directory per workspace root keeps the owner alive while the
+//! replaces, without the warning a live owner gives a write of another copy.
+//! One directory per workspace root keeps the owner alive while the
 //! working copy exists. Each projected command rewrites the copy atomically; a
 //! command that needs no projection removes it, so the workspace itself becomes
 //! the owner and its former projection is a gone owner of the same copy.
 //!
-//! The 0.13 loader resolves relative paths from the directory of the primary
+//! The 0.14 loader resolves relative paths from the directory of the primary
 //! config, and source-set paths from `basePath`, which it always sets to that
-//! directory: the project schema of 0.13 has no `basePath` key. The private copy
+//! directory: the project schema of 0.14 has no `basePath` key. The private copy
 //! lives elsewhere, so every such path is made absolute against the workspace
 //! root before the copy is written.
 use super::v13_workspace_bootstrap::read_yaml_config;
@@ -29,7 +30,7 @@ use crate::infrastructure::source_roots::normalize_path_identity;
 use serde_yaml::{Mapping, Value};
 use std::path::{Path, PathBuf};
 
-pub(super) const VERSION: &str = "0.13.0";
+pub(super) const VERSION: &str = "0.14.0";
 pub(super) fn check_version(version: &str) -> Result<(), String> {
     if version == VERSION {
         Ok(())
@@ -58,7 +59,7 @@ const BASE_NAME: &str = "v8project.yaml";
 const LOCAL_NAME: &str = "v8project.local.yaml";
 /// The only named infobase this adapter serves.
 const ORIGIN: &str = "origin";
-/// Provider keys renamed by runner 0.12 and kept by 0.13: previous name, canonical name.
+/// Provider keys renamed by runner 0.12 and kept by 0.14: previous name, canonical name.
 const RENAMED_PROVIDERS: [(&str, &str); 5] = [
     ("build", "push"),
     ("dump", "pull"),
@@ -67,8 +68,8 @@ const RENAMED_PROVIDERS: [(&str, &str); 5] = [
     ("infobase.configuration.export", "download"),
 ];
 
-pub(super) struct Runner013ProcessRunner;
-impl ProcessRunner for Runner013ProcessRunner {
+pub(super) struct Runner014ProcessRunner;
+impl ProcessRunner for Runner014ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
         run_projected(&SystemProcessRunner, command)
     }
@@ -216,20 +217,20 @@ fn mapping<'a>(value: &'a Value, file: &str) -> Result<&'a Mapping, String> {
 fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
     let map = mapping(value, file)?;
     if map.contains_key(Value::from("basePath")) {
-        // 0.13 rejects the key and always resolves source sets from the
+        // 0.14 rejects the key and always resolves source sets from the
         // directory of v8project.yaml.
         return Err(refuse(format!(
-            "basePath is not supported by v8-runner 0.13: source-set paths are resolved from the directory of {BASE_NAME}; remove basePath from {file}"
+            "basePath is not supported by v8-runner 0.14: source-set paths are resolved from the directory of {BASE_NAME}; remove basePath from {file}"
         )));
     }
     for key in ["execution_timeout", "execution_timeout_seconds"] {
         if map.contains_key(Value::from(key)) {
             return Err(refuse(format!(
-                "{key} is not supported by v8-runner 0.13: a command has no overall deadline, only individual steps do; remove {key} from {file}"
+                "{key} is not supported by v8-runner 0.14: a command has no overall deadline, only individual steps do; remove {key} from {file}"
             )));
         }
     }
-    // 0.13 has no partial-load threshold and refuses the key by name; the
+    // 0.14 has no partial-load threshold and refuses the key by name; the
     // legacy `build` section is the same setting under its previous name.
     for section in ["push", "build"] {
         if map
@@ -238,7 +239,7 @@ fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
             .is_some_and(|settings| settings.contains_key(Value::from("partialLoadThreshold")))
         {
             return Err(refuse(format!(
-                "{section}.partialLoadThreshold is not supported by v8-runner 0.13: the runner has no partial-load threshold, and a full load is requested with push full:true; remove the key from {file}"
+                "{section}.partialLoadThreshold is not supported by v8-runner 0.14: the runner has no partial-load threshold, and a full load is requested with push full:true; remove the key from {file}"
             )));
         }
     }
@@ -253,7 +254,7 @@ fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
             .ok_or_else(|| refuse(format!("infobases in {file} must be a mapping")))?;
         if bases.keys().any(|name| name.as_str() != Some(ORIGIN)) {
             return Err(refuse(format!(
-                "{file} declares an infobase other than {ORIGIN}; the runner 0.13 adapter serves only infobases.{ORIGIN}"
+                "{file} declares an infobase other than {ORIGIN}; the runner 0.14 adapter serves only infobases.{ORIGIN}"
             )));
         }
     }
@@ -266,20 +267,20 @@ fn validate_layer(value: &Value, file: &str) -> Result<(), String> {
                 .filter(|k| matches!(*k, "apply" | "reset" | "diff"))
         }) {
             return Err(refuse(format!(
-                "providers.{command} in {file} cannot be represented by runner 0.13"
+                "providers.{command} in {file} cannot be represented by runner 0.14"
             )));
         }
     }
     Ok(())
 }
 
-/// Without projection 0.13 reads the workspace files itself, so the fast path
+/// Without projection 0.14 reads the workspace files itself, so the fast path
 /// is taken only when it would read them exactly as the projection would.
 fn needs_projection(base: &Value, local: Option<&Value>) -> bool {
     let layers = || std::iter::once(base).chain(local);
     base.get("infobase").is_some()
         || base.get("infobases").is_some()
-        // 0.13 requires workPath; the projection supplies the default.
+        // 0.14 requires workPath; the projection supplies the default.
         || !layers().any(|layer| layer.get("workPath").is_some())
         || layers().any(|layer| {
             layer.get("infobase").is_some()
@@ -312,7 +313,7 @@ fn needs_projection(base: &Value, local: Option<&Value>) -> bool {
 /// Projects both layers. The infobase description of either layer, legacy
 /// `infobase:` or `infobases.origin`, is merged field by field (local wins, as
 /// the runner merges layers) and written only into the private local layer:
-/// 0.13 refuses `infobases` in the project file.
+/// 0.14 refuses `infobases` in the project file.
 fn project(
     mut base: Value,
     mut local: Option<Value>,
@@ -363,6 +364,59 @@ fn take_origin(layer: &mut Value, file: &str) -> Result<Option<Value>, String> {
         ))),
         None => Ok(None),
     }
+}
+
+/// The kind of the `origin` infobase, read the way the runner reads it: the
+/// section of both layers merged (local wins), `standalone` declares a
+/// standalone server, otherwise a `File=` connection a file infobase, otherwise
+/// a cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OriginKind {
+    Undeclared,
+    File,
+    Cluster,
+    Standalone,
+}
+
+pub(super) fn origin_kind(root: &Path) -> Result<OriginKind, String> {
+    let mut origin: Option<Value> = None;
+    for file in [BASE_NAME, LOCAL_NAME] {
+        let Some(mut layer) = read_yaml_config(root, file)? else {
+            continue;
+        };
+        if let Some(section) = take_origin(&mut layer, file)
+            .map_err(|error| config_refusal(&error).map(str::to_owned).unwrap_or(error))?
+        {
+            match origin.as_mut() {
+                Some(merged) => merge_yaml_values(merged, section),
+                None => origin = Some(section),
+            }
+        }
+    }
+    let Some(origin) = origin else {
+        return Ok(OriginKind::Undeclared);
+    };
+    if origin
+        .get("standalone")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Ok(OriginKind::Standalone);
+    }
+    let file = origin
+        .get("connection")
+        .and_then(Value::as_str)
+        .is_some_and(|connection| {
+            connection.split(';').any(|part| {
+                part.trim()
+                    .get(..5)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("file="))
+            })
+        });
+    Ok(if file {
+        OriginKind::File
+    } else {
+        OriginKind::Cluster
+    })
 }
 
 /// The runner's own layer merge: mappings merge key by key, anything else is
@@ -455,7 +509,7 @@ fn project_layer(mut value: Value, root: &Path, file: &str) -> Result<Value, Str
         }
     }
     // These are exactly the config-directory-relative paths normalized by the
-    // 0.13 loader outside the infobase sections (`normalize_config_paths`).
+    // 0.14 loader outside the infobase sections (`normalize_config_paths`).
     for parts in [
         &["workPath"][..],
         &["tools", "platform", "path"],
@@ -496,7 +550,7 @@ fn project_layer(mut value: Value, root: &Path, file: &str) -> Result<Value, Str
     Ok(value)
 }
 
-/// The paths of one infobase section the 0.13 loader resolves from the config
+/// The paths of one infobase section the 0.14 loader resolves from the config
 /// directory (`normalize_infobase_paths`).
 fn absolutize_infobase(infobase: &mut Value, root: &Path) -> Result<(), String> {
     for parts in [
@@ -681,7 +735,7 @@ mod tests {
         path.display().to_string()
     }
 
-    /// Раннер 0.13 записывает владельцем файловой базы каталог прочитанного
+    /// Раннер 0.14 записывает владельцем файловой базы каталог прочитанного
     /// конфига. Каталог проекции поэтому постоянный и один на рабочую копию:
     /// повтор пишет туда же, лишний местный слой убирается, а команда без
     /// проекции убирает сам каталог, и владельцем становится рабочая копия.
@@ -844,7 +898,7 @@ mod tests {
         assert_eq!(base["source-set"][1]["path"], sales.to_string());
         assert!(
             base.get("basePath").is_none(),
-            "0.13 closed schema rejects basePath"
+            "0.14 closed schema rejects basePath"
         );
         assert_eq!(base["tools"]["edt_cli"]["path"], "1cedtcli");
         assert_eq!(
@@ -910,7 +964,7 @@ mod tests {
         ] {
             let reason = refused(base, local);
             assert!(
-                reason.contains("not supported by v8-runner 0.13"),
+                reason.contains("not supported by v8-runner 0.14"),
                 "{reason}"
             );
             assert!(reason.contains("no overall deadline"), "{reason}");
@@ -918,7 +972,7 @@ mod tests {
         }
     }
 
-    /// Раннер 0.13 отклоняет порог частичной загрузки по имени. Unica
+    /// Раннер 0.14 отклоняет порог частичной загрузки по имени. Unica
     /// отвечает до запуска раннера, в обоих слоях и в прежней секции `build`,
     /// и тогда, когда проекция не нужна и раннер читал бы файлы сам.
     #[test]
@@ -946,12 +1000,47 @@ mod tests {
             let reason = refused(base, local);
             assert!(
                 reason.contains(&format!(
-                    "{section}.partialLoadThreshold is not supported by v8-runner 0.13"
+                    "{section}.partialLoadThreshold is not supported by v8-runner 0.14"
                 )),
                 "{reason}"
             );
             assert!(reason.contains("full:true"), "{reason}");
             assert!(reason.contains(&format!("from {file}")), "{reason}");
+        }
+    }
+
+    /// Вид базы `origin` читается так же, как его читает раннер: секции обоих
+    /// слоёв сливаются (местный побеждает), `standalone` — автономный сервер,
+    /// строка с `File=` — файловая база, иначе кластер.
+    #[test]
+    fn the_origin_kind_follows_the_merged_infobase_section() {
+        for (base, local, kind) in [
+            ("workPath: build\n", None, OriginKind::Undeclared),
+            (
+                "infobase: {connection: 'File=ib'}\n",
+                None,
+                OriginKind::File,
+            ),
+            (
+                "workPath: build\n",
+                Some("infobases: {origin: {connection: 'File=\"/abs/ib\"'}}\n"),
+                OriginKind::File,
+            ),
+            (
+                "infobase: {connection: 'File=ib'}\n",
+                Some("infobases: {origin: {connection: 'Srvr=srv;Ref=demo'}}\n"),
+                OriginKind::Cluster,
+            ),
+            (
+                "workPath: build\n",
+                Some(
+                    "infobases: {origin: {connection: 'Srvr=srv:1541;Ref=demo', standalone: {}}}\n",
+                ),
+                OriginKind::Standalone,
+            ),
+        ] {
+            let root = workspace(base, local);
+            assert_eq!(origin_kind(root.path()).unwrap(), kind, "{base} {local:?}");
         }
     }
 
@@ -963,7 +1052,8 @@ mod tests {
             "0.11.3",
             "0.11.4",
             "0.12.0",
-            "0.13.1",
+            "0.13.0",
+            "0.14.1",
             "1.0.0",
             "1.0.0-rc.1",
             "",

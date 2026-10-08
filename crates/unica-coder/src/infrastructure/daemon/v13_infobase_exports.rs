@@ -3,7 +3,7 @@
 // that value intact avoids a second error model at this adapter boundary.
 
 use super::protocol::InvocationRequest;
-use super::runner_013::Runner013ProcessRunner;
+use super::runner_014::Runner014ProcessRunner;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
@@ -222,7 +222,7 @@ impl PreparedInfobaseExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
     }
 }
 
@@ -425,7 +425,7 @@ fn capture_inputs(prepared: &PreparedInfobaseExport) -> Result<StableInputs, Dom
 /// Набор основной конфигурации, объявленный в `v8project.yaml`, или `None`,
 /// если такого набора нет.
 ///
-/// Раннер 0.13 без имени набора у `make` и `download` обходит все наборы и
+/// Раннер 0.14 без имени набора у `make` и `download` обходит все наборы и
 /// пишет пакеты в каталог; путь к одному файлу без набора он отклоняет. Пакет
 /// основной конфигурации поэтому заказывается по имени её набора. Тип набора
 /// сравнивается без учёта регистра: Unica принимает и прежнее написание
@@ -792,7 +792,7 @@ fn invoke_runner(
     match prepared.operation {
         ExportOperation::Configuration => {
             args.push("download".to_string());
-            // Основную конфигурацию раннер 0.13 пишет в один файл только по имени
+            // Основную конфигурацию раннер 0.14 пишет в один файл только по имени
             // её набора: без набора он обходит все наборы в каталог. Без имени
             // он пишет файл, только если в проекте нет ни одного набора
             // конфигурации или расширения.
@@ -805,7 +805,7 @@ fn invoke_runner(
                     return Err(reject(
                         prepared.operation,
                         RefusalCode::UnsupportedOperation,
-                        format!("download of the main configuration is unavailable with v8-runner 0.13 in a project that declares extension source sets but no configuration source set: the runner writes the main configuration into one file only by the name of its configuration source set; declare one in {CONFIG_NAME}"),
+                        format!("download of the main configuration is unavailable with v8-runner 0.14 in a project that declares extension source sets but no configuration source set: the runner writes the main configuration into one file only by the name of its configuration source set; declare one in {CONFIG_NAME}"),
                     ));
                 }
                 args.extend(source_set);
@@ -945,12 +945,12 @@ fn parse_runner_output(
 
 /// Полный словарь кодов, которые раннер кладёт в `error.code`.
 ///
-/// Он закрытый: семнадцать значений `ErrorCode` конверта раннера 0.13, одни и те же
+/// Он закрытый: шестнадцать значений `ErrorCode` конверта раннера 0.14, одни и те же
 /// у CLI и у его MCP-поверхности. Набор существует только для стража ниже: в
 /// продуктовом пути отображение обязано иметь запасную ветку на случай кода, которого
 /// мы ещё не знаем, поэтому сам список ему не нужен.
 #[cfg(test)]
-const RUNNER_WIRE_CODES: [&str; 17] = [
+const RUNNER_WIRE_CODES: [&str; 16] = [
     "capability_unavailable",
     "subject",
     "target",
@@ -965,7 +965,6 @@ const RUNNER_WIRE_CODES: [&str; 17] = [
     "timed_out",
     "workspace_busy",
     "infobase_busy",
-    "infobase_held",
     "non_fast_forward",
     "no_memory",
 ];
@@ -1005,7 +1004,7 @@ pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, String
         resolve_bundled_tool(&plugin_root, "v8-runner", true).map_err(|error| redactor(&error))?;
     let version =
         bundled_tool_version(&plugin_root, "v8-runner").map_err(|error| redactor(&error))?;
-    super::runner_013::check_version(&version)?;
+    super::runner_014::check_version(&version)?;
     Ok(BundledRunner { tool, version })
 }
 
@@ -1021,7 +1020,7 @@ pub(super) fn missing_runner_rejection(
 
 /// Отказ до запуска раннера: отмена, отказ проектного файла или раннер не стартовал.
 ///
-/// Маршрут один на все операции `run`: проектный файл, который адаптер 0.13 не может
+/// Маршрут один на все операции `run`: проектный файл, который адаптер 0.14 не может
 /// передать раннеру, правится человеком или агентом в рабочем пространстве, и отказ
 /// говорит об этом, а не о пропавшем поставщике.
 pub(super) fn runner_start_rejection(at: Option<String>, error: &str) -> DomainResult {
@@ -1032,7 +1031,7 @@ pub(super) fn runner_start_rejection(at: Option<String>, error: &str) -> DomainR
             "cancelled before provider launch",
         );
     }
-    if let Some(reason) = super::runner_013::config_refusal(error) {
+    if let Some(reason) = super::runner_014::config_refusal(error) {
         return DomainResult::canonical_rejection(at, RefusalCode::InvalidSource, redactor(reason));
     }
     missing_runner_rejection(
@@ -1047,21 +1046,10 @@ pub(super) fn runner_rejection(
     code: &str,
     message: impl Into<String>,
 ) -> DomainResult {
-    let mut result = match map_runner_detail(code) {
+    match map_runner_detail(code) {
         Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, message),
         None => DomainResult::canonical_rejection(at, map_runner_code(code), message),
-    };
-    if code == "infobase_held" {
-        // Базу держит другая рабочая копия; кто и как её освободить, называет
-        // текст раннера. Первый безопасный выход — своя чистая база: её
-        // соединение объявляется в местном слое, создание идёт через превью.
-        result.next.push(json!({
-            "tool": "unica.run",
-            "args": {"op": "infobase.create", "args": {}, "dryRun": true},
-            "reason": "the infobase is held by another working copy: declare infobases.origin with a connection of this working copy's own in v8project.local.yaml, then preview creating that clean infobase"
-        }));
     }
-    result
 }
 
 pub(super) fn map_runner_code(code: &str) -> RefusalCode {
@@ -1080,9 +1068,6 @@ pub(super) fn map_runner_code(code: &str) -> RefusalCode {
         // Рабочий каталог или файловую базу держит другая команда: занятость
         // проходит, тот же вызов можно повторить, когда та закончит.
         "workspace_busy" | "infobase_busy" => RefusalCode::ConcurrentChange,
-        // Файловую базу держит другая рабочая копия: повтор этого не меняет,
-        // а освобождение базы или своя база — решение над средой.
-        "infobase_held" => RefusalCode::InvalidState,
         // Память копии о базе и сама база разошлись: база ушла вперёд записанного
         // поколения или памяти о ней нет. Правкой вызова это не снять, повтором —
         // тоже: выбрать между выгрузкой базы и её перезаписью должен тот, кто
@@ -1486,7 +1471,6 @@ mod tests {
             ("capability_unavailable", Outcome::GoElsewhere),
             ("workspace_busy", Outcome::RetryAsIs),
             ("infobase_busy", Outcome::RetryAsIs),
-            ("infobase_held", Outcome::NeedsHuman),
             ("non_fast_forward", Outcome::NeedsHuman),
             ("no_memory", Outcome::NeedsHuman),
             ("timed_out", Outcome::RetryAsIs),
@@ -1714,7 +1698,7 @@ mod tests {
     }
 
     #[test]
-    fn runner_013_provider_receipt_replaces_selection_for_all_three_operations() {
+    fn runner_014_provider_receipt_replaces_selection_for_all_three_operations() {
         let root = tempfile::tempdir().unwrap();
         for operation in [
             ExportOperation::Configuration,
@@ -2193,7 +2177,7 @@ mod tests {
         assert!(validate_apply(&prepared, &plan, &other).is_err());
     }
 
-    /// Раннер 0.13 без имени набора обходит все наборы в каталог и путь к одному
+    /// Раннер 0.14 без имени набора обходит все наборы в каталог и путь к одному
     /// файлу отклоняет (снято вживую: `download --output out/main.cf` —
     /// `invalid_argument`). Основная конфигурация заказывается по имени её набора;
     /// пакет расширения — по `--extension`, без набора.
@@ -2293,7 +2277,7 @@ mod tests {
         let error = invoke_runner(
             &prepared,
             &tool,
-            &Runner013ProcessRunner,
+            &Runner014ProcessRunner,
             &CancellationToken::new(),
             true,
         )

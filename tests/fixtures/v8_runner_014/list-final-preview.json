@@ -12,15 +12,11 @@
     },
     "ok": true,
     "provider_dispatched": false,
-    "steps": [
-      {
-        "target": "UnicaRunnerProbe",
-        "action": "delete",
-        "ok": true,
-        "message": "would delete 'UnicaRunnerProbe' in file infobase '/workspace/E/build/ib' with no configured infobase user via /platform/ibcmd",
-        "duration_ms": 0
-      }
-    ],
+    "requested": {
+      "kind": "all"
+    },
+    "plan": "would read every installed extension of file infobase '/workspace/ib-e' with no configured infobase user via /platform/ibcmd",
+    "extensions": [],
     "duration_ms": 8
   },
   "warnings": [],
