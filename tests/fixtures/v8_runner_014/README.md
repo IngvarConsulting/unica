@@ -85,6 +85,8 @@ declared the same infobase by its absolute path. Then:
   `other-copy-restore-preview.json`, `other-copy-restore-apply.json`:
   `infobase restore --input <C's dump>.dt --replace` in `D`. Each goes ahead
   with the same warning about the infobase of another working copy.
+  Unica recognizes that warning by its wording, which has no code: recapture
+  `push-other-copy-*` and `other-copy-*` whenever the pinned runner changes.
 - `shared-key-refused.json`: `push --dry-run` in `D` with `shared: true` added
   to `infobases.origin` of its local layer — refused `invalid_argument`
   (unknown field): 0.14.0 removed the key.

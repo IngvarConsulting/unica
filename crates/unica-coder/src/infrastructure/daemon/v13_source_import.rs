@@ -446,7 +446,6 @@ fn execute_with_resolved_runner(
         let mut result = DomainResult::success(summary);
         result.warnings.extend(skipped_warning(&plan));
         result.warnings.extend(overwrite_warning(prepared, &plan));
-        note_another_copy(&mut result, &preview);
         result.data = Some(json!({
             "op": OPERATION,
             "dryRun": true,
@@ -474,6 +473,9 @@ fn execute_with_resolved_runner(
         if nothing_planned {
             result.next.push(full_preview_hint(prepared));
         }
+        // Выход к своей базе идёт после исполнения: первый `next` превью —
+        // всегда исполнение этого же плана.
+        note_another_copy(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -565,7 +567,7 @@ fn execute_with_resolved_runner(
         )
     } else {
         format!(
-            "push imported {}; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider",
+            "push imported {}; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one made by the same tool; the infobase state is attested by the provider",
             subject_summary(&loaded)
         )
     };
@@ -1481,7 +1483,7 @@ pub(super) mod tests {
         // засвидетельствованный провайдером, без оговорок о пропуске.
         assert_eq!(
             result.summary,
-            "push imported 2 source sets; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider"
+            "push imported 2 source sets; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one made by the same tool; the infobase state is attested by the provider"
         );
         assert_eq!(data["force"], false);
         assert_eq!(data["generationProtection"], true);
@@ -1690,7 +1692,7 @@ pub(super) mod tests {
         assert_eq!(result.warnings[0]["sourceSets"], json!(["ext-sales"]));
         assert_eq!(
             result.summary,
-            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider; 1 skipped source set(s) were not loaded and their infobase state was not verified"
+            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one made by the same tool; the infobase state is attested by the provider; 1 skipped source set(s) were not loaded and their infobase state was not verified"
         );
     }
 
@@ -1803,7 +1805,7 @@ pub(super) mod tests {
         assert_eq!(data["generationProtection"], true);
         assert_eq!(
             result.summary,
-            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider"
+            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one made by the same tool; the infobase state is attested by the provider"
         );
     }
 
@@ -2045,6 +2047,9 @@ pub(super) mod tests {
         let preview = run(root.path(), &forced, &runner);
         assert!(preview.ok, "{preview:?}");
         assert_another_copy_is_named(&preview);
+        // Первый выход превью — исполнение этого же плана, своя база — после.
+        assert_eq!(preview.next[0]["args"]["op"], "push");
+        assert_eq!(preview.next[0]["args"]["dryRun"], false);
 
         // Отказ без памяти в чужой копии называет её так же, третьим выходом.
         let runner = SequenceRunner::new(vec![process(

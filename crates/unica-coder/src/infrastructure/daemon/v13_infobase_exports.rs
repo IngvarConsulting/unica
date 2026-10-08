@@ -1077,7 +1077,7 @@ pub(super) fn another_copy_warning(envelope: &Value) -> Option<Value> {
         .then(|| {
             json!({
                 "code": ANOTHER_COPY_WARNING_CODE,
-                "message": "this command writes a file infobase that another working copy on this machine holds: it changes that copy's infobase, and that copy's next load into it is refused as moved ahead. Give this working copy an infobase of its own: declare infobases.origin with its own connection in v8project.local.yaml, then create it with infobase.create",
+                "message": "this command writes a file infobase that another working copy holds: it changes that copy's infobase, and when it changes the configuration, that copy's next load into it may be refused as moved ahead. Give this working copy an infobase of its own: declare infobases.origin with its own connection in v8project.local.yaml, then create it with infobase.create",
             })
         })
 }
