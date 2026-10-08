@@ -1315,6 +1315,84 @@ class ProductContractTests(unittest.TestCase):
         self.assertTrue(any("unexpected bytes" in error for error in errors), errors)
         self.assertTrue(any("temporary state" in error for error in errors), errors)
 
+    def test_v8_runner_external_build_calls_accept_a_build_over_the_configuration(
+        self,
+    ) -> None:
+        """Раннер 0.13 собирает обработку во временной базе поверх конфигурации."""
+        module = load_contract_module()
+        validator = module.validate_v8_runner_external_build_calls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            configuration = root / "src" / "main"
+            work = root / "work"
+            (work / "temp" / "throwaway-infobases").mkdir(parents=True)
+            calls = [
+                "create",
+                f"load-config\t{configuration}\textension=false",
+                "load-external",
+                "dump-external",
+            ]
+
+            self.assertEqual(validator(calls, configuration, work), [])
+
+    def test_v8_runner_external_build_calls_reject_a_wrong_or_leaky_build(
+        self,
+    ) -> None:
+        module = load_contract_module()
+        validator = module.validate_v8_runner_external_build_calls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            configuration = root / "src" / "main"
+            work = root / "work"
+            retained = work / "temp" / "throwaway-infobases" / "base-1"
+            retained.mkdir(parents=True)
+
+            cases = {
+                "no configuration load": (
+                    ["create", "load-external", "dump-external"],
+                    "platform steps",
+                ),
+                "load after the external package": (
+                    [
+                        "create",
+                        "load-external",
+                        f"load-config\t{configuration}\textension=false",
+                        "dump-external",
+                    ],
+                    "platform steps",
+                ),
+                "another source-set": (
+                    [
+                        "create",
+                        f"load-config\t{root / 'src' / 'other'}\textension=false",
+                        "load-external",
+                        "dump-external",
+                    ],
+                    "CONFIGURATION source-set",
+                ),
+                "loaded as an extension": (
+                    [
+                        "create",
+                        f"load-config\t{configuration}\textension=true",
+                        "load-external",
+                        "dump-external",
+                    ],
+                    "-Extension",
+                ),
+            }
+            for name, (calls, expected) in cases.items():
+                with self.subTest(name=name):
+                    errors = validator(calls, configuration, work)
+                    self.assertTrue(
+                        any(expected in error for error in errors), errors
+                    )
+                    self.assertTrue(
+                        any("throwaway infobase was retained" in error for error in errors),
+                        errors,
+                    )
+
     def test_targeted_tool_contracts_run_both_v8_runner_behavioral_smokes(self) -> None:
         module = load_contract_module()
 

@@ -696,6 +696,60 @@ def validate_v8_runner_windows_external_publication_result(
     return errors
 
 
+def validate_v8_runner_external_build_calls(
+    calls: list[str],
+    configuration_root: Path,
+    work_path: Path,
+) -> list[str]:
+    """Сверить шаги платформы, которыми раннер 0.13 собрал внешнюю обработку.
+
+    Сборка идёт во временной базе: создание базы, загрузка основной конфигурации
+    проекта без `-Extension`, затем загрузка и обратная выгрузка обработки.
+    Временная база после прогона убрана.
+    """
+
+    errors: list[str] = []
+    steps = [call.split("\t", 1)[0] for call in calls]
+    expected_steps = ["create", "load-config", "load-external", "dump-external"]
+    if steps != expected_steps:
+        errors.append(
+            f"platform steps must be {expected_steps}, got {steps}"
+        )
+    for call in calls:
+        if not call.startswith("load-config\t"):
+            continue
+        fields = call.split("\t")
+        if len(fields) != 3:
+            errors.append(f"configuration load call is malformed: {call!r}")
+            continue
+        _, source, extension = fields
+        try:
+            source_matches = Path(source).resolve() == configuration_root.resolve()
+        except OSError as error:
+            errors.append(f"configuration load source could not be resolved: {error}")
+        else:
+            if not source_matches:
+                errors.append(
+                    "configuration load must read the CONFIGURATION source-set "
+                    f"{configuration_root}, got {source}"
+                )
+        if extension != "extension=false":
+            errors.append("configuration load must not pass -Extension")
+    try:
+        retained = sorted(
+            str(base.relative_to(work_path))
+            for root in work_path.rglob("throwaway-infobases")
+            if root.is_dir()
+            for base in root.iterdir()
+        )
+    except OSError as error:
+        errors.append(f"throwaway infobase root could not be inspected: {error}")
+    else:
+        if retained:
+            errors.append(f"throwaway infobase was retained: {retained}")
+    return errors
+
+
 def check_v8_runner_bounded_external_epf_contract(
     runner: Path,
     target: str,
@@ -917,12 +971,21 @@ def check_v8_runner_windows_external_publication_contract(
 
     with tempfile.TemporaryDirectory(prefix="unica-v8-runner-310-") as directory:
         root = Path(directory)
+        # Раннер 0.13 собирает внешнюю обработку во временной базе поверх основной
+        # конфигурации проекта: без набора CONFIGURATION `make` отказывает.
+        configuration_root = root / "src" / "main"
         source_root = root / "src" / "external-processors"
         work_path = root / "work"
         infobase_path = root / "ib"
         platform_root = root / "platform"
         platform_bin = platform_root / "bin"
         platform_marker = root / "platform-stub.marker"
+        call_log = root / "platform-calls.log"
+        configuration_root.mkdir(parents=True)
+        (configuration_root / "Configuration.xml").write_text(
+            RLM_CONTRACT_CONFIGURATION_XML,
+            encoding="utf-8",
+        )
         source_root.mkdir(parents=True)
         work_path.mkdir()
         infobase_path.mkdir()
@@ -936,15 +999,37 @@ def check_v8_runner_windows_external_publication_contract(
         stub_source = root / "platform-stub.rs"
         stub_source.write_text(
             r'''
-use std::{env, error::Error, fs};
+use std::{env, error::Error, fs, io::Write};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<_> = env::args_os().skip(1).collect();
     if let Some(marker) = env::var_os("UNICA_V8_RUNNER_310_PLATFORM_MARKER") {
         fs::write(marker, b"issue-310-platform-ok\n")?;
     }
+    let mut calls = match env::var_os("UNICA_V8_RUNNER_310_CALL_LOG") {
+        Some(path) => Some(fs::OpenOptions::new().create(true).append(true).open(path)?),
+        None => None,
+    };
     for (index, argument) in arguments.iter().enumerate() {
         let argument = argument.to_string_lossy();
+        let step = if argument.eq_ignore_ascii_case("CREATEINFOBASE") {
+            Some("create".to_owned())
+        } else if argument.eq_ignore_ascii_case("/LoadConfigFromFiles") {
+            let source = arguments[index + 1].to_string_lossy();
+            let extension = arguments
+                .iter()
+                .any(|value| value.to_string_lossy().eq_ignore_ascii_case("-Extension"));
+            Some(format!("load-config\t{source}\textension={extension}"))
+        } else if argument.eq_ignore_ascii_case("/LoadExternalDataProcessorOrReportFromFiles") {
+            Some("load-external".to_owned())
+        } else if argument.eq_ignore_ascii_case("/DumpExternalDataProcessorOrReportToFiles") {
+            Some("dump-external".to_owned())
+        } else {
+            None
+        };
+        if let (Some(step), Some(calls)) = (step, calls.as_mut()) {
+            writeln!(calls, "{step}")?;
+        }
         if argument.eq_ignore_ascii_case("/LoadExternalDataProcessorOrReportFromFiles") {
             fs::write(&arguments[index + 2], b"issue-310-current")?;
         }
@@ -997,6 +1082,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     "format: DESIGNER",
                     "providers: {push: designer, make: designer}",
                     "source-set:",
+                    "  - name: main",
+                    "    type: CONFIGURATION",
+                    f"    path: '{yaml_path(configuration_root)}'",
                     "  - name: external-processors",
                     "    type: EXTERNAL_DATA_PROCESSORS",
                     f"    path: '{yaml_path(source_root)}'",
@@ -1024,6 +1112,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         def run_make() -> tuple[object | None, list[str]]:
             try:
                 platform_marker.unlink(missing_ok=True)
+                call_log.unlink(missing_ok=True)
             except OSError as error:
                 return None, [f"{label}: failed to reset platform marker: {error}"]
             try:
@@ -1033,6 +1122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     env={
                         **os.environ,
                         "UNICA_V8_RUNNER_310_PLATFORM_MARKER": str(platform_marker),
+                        "UNICA_V8_RUNNER_310_CALL_LOG": str(call_log),
                     },
                     text=True,
                     encoding="utf-8",
@@ -1060,6 +1150,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return None, [
                     f"{label}: runner succeeded without invoking the platform stub"
                 ]
+            try:
+                calls = call_log.read_text(encoding="utf-8").splitlines()
+            except OSError as error:
+                return None, [f"{label}: platform call log could not be read: {error}"]
+            call_errors = validate_v8_runner_external_build_calls(
+                calls,
+                configuration_root,
+                work_path,
+            )
+            if call_errors:
+                return None, [f"{label}: {error}" for error in call_errors]
             try:
                 return json.loads(result.stdout), []
             except json.JSONDecodeError as error:
