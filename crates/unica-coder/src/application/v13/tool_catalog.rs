@@ -87,7 +87,7 @@ impl RunOperation {
     pub(crate) const fn description(&self) -> &'static str {
         match self.intent {
             RunIntent::InfobaseCreate => {
-                "Create an absent infobase. The compatibility adapter does not establish a synchronization baseline; inspect the preview for source initialization."
+                "Create an absent empty infobase without loading sources. The runner records an empty memory of each source set declared at creation, so the first push loads every set in full instead of refusing no_memory."
             }
             RunIntent::SourceImport => {
                 "Push source sets and apply the database configuration, or delete an installed extension. Before loading a set the runner checks the infobase generation and refuses if the infobase moved ahead or this working copy has no memory of it; force:true overwrites the infobase instead. noApply is unavailable."
@@ -125,7 +125,7 @@ impl RunOperation {
             }
             RunIntent::SourceImport => Some("source push applies the database configuration; the generation check covers only the sets the runner loads, force:true overwrites the infobase without it, and noApply:true is unavailable"),
             RunIntent::SourceExport => Some("pull requires force:true and replaces one full source set, deleting its uncommitted and untracked files without a copy; local-work protection and all mode are unavailable"),
-            RunIntent::InfobaseCreate => Some("creates an absent infobase without establishing runner 1.0 synchronization state"),
+            RunIntent::InfobaseCreate => Some("creates an absent empty infobase without loading sources and without Unica promising a synchronization baseline; the first push loads every declared set in full"),
             _ => None,
         }
     }
