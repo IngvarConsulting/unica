@@ -70,7 +70,7 @@ a full load with `push` `full:true`. Unica refuses a config with this key; remov
 
 A file infobase is held by one working copy. The runner records the holder next
 to the infobase directory. A write from another working copy is not refused: it
-changes that copy's infobase, and the runner warns about it. Give each working
+changes that copy's infobase, and the answer warns `infobase_of_another_copy`. Give each working
 copy its own infobase (`infobase.create`).
 
 `execution_timeout` is not supported. v8-runner 0.14 has no overall command

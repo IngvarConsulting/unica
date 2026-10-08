@@ -6,6 +6,9 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::runner_refusals_keep_their_outcome
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_base_contention_refusals_keep_their_outcomes
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_exchange_refusals_name_both_ways_out_and_the_generations
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::captured_pull_into_the_infobase_of_another_copy_names_it
+  - crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs::captured_extension_change_in_the_infobase_of_another_copy_names_it
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::captured_restore_into_the_infobase_of_another_copy_names_it
 ---
 
 # Отказ раннера о базе называет, кто действует дальше
@@ -25,13 +28,14 @@ check:
   верна; Unica `force` сама не добавляет.
 
 Запись в файловую базу другой рабочей копии раннер 0.14 отказом не считает:
-команда идёт, а метка владельца остаётся прежней. Ответ `push` передаёт
-предупреждение раннера об этом отдельным `runner_warning` и в превью, и после
-исполнения: Unica его не толкует, потому что раннер отдаёт его прозой без кода,
-и передаёт текст раннера с путями и его командами, скрывая только секреты.
-Предупреждения на отказах `push` и у других операций не передаются.
-Загрузка набора
+команда идёт, а метка владельца остаётся прежней. Загрузка набора
 копией-владельцем после этого видит, что база ушла вперёд её записи, и
 получает `non_fast_forward`; набор, пропущенный по памяти, базу не сверяет.
+О такой записи раннер предупреждает прозой без кода. Unica опознаёт это
+предупреждение по его устойчивой части и отвечает своим предупреждением
+`infobase_of_another_copy` с выходом к превью `infobase.create`: текст свой,
+без путей чужой копии, метки владельца и команд раннера. Так отвечают
+`push`, `pull`, изменение расширений и `infobase.restore` — в превью, после
+исполнения и на отказе `push`. Прочие предупреждения раннера наружу не идут.
 
 Код раннера, которого словарь не знает, идёт запасным `provider_failed`.

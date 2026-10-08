@@ -19,16 +19,16 @@
 //! провайдером, и ответ называет это прямо. Набор, который раннер пропустил
 //! по своей памяти, загружен не был, и поколение базы для него не сверялось:
 //! такой ответ называет состояние базы непроверенным, а не импортом. Проза
-//! шагов раннера наружу не идёт; его предупреждения — идут, каждое отдельным
-//! `runner_warning`: так ответ называет, например, запись в базу другой
-//! рабочей копии, которую раннер 0.14 больше не отказывает.
+//! шагов и предупреждений раннера наружу не идёт. Запись в базу другой
+//! рабочей копии, которую раннер 0.14 больше не отказывает, ответ называет
+//! своим предупреждением `infobase_of_another_copy`.
 
 use super::protocol::InvocationRequest;
 use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, runner_start_rejection, runner_warnings, CONFIG_NAME,
-    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
+    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
@@ -446,7 +446,7 @@ fn execute_with_resolved_runner(
         let mut result = DomainResult::success(summary);
         result.warnings.extend(skipped_warning(&plan));
         result.warnings.extend(overwrite_warning(prepared, &plan));
-        result.warnings.extend(runner_warnings(&preview));
+        note_another_copy(&mut result, &preview);
         result.data = Some(json!({
             "op": OPERATION,
             "dryRun": true,
@@ -541,12 +541,12 @@ fn execute_with_resolved_runner(
                 "mode": step.mode.as_str(),
             }));
         }
-        result.warnings.extend(runner_warnings(&applied));
+        note_another_copy(&mut result, &applied);
         return result;
     }
     if !anything_loaded {
         let mut result = nothing_loaded(prepared, &plan);
-        result.warnings.extend(runner_warnings(&applied));
+        note_another_copy(&mut result, &applied);
         return result;
     }
     // **Улику о состоянии базы Unica не подделывает.** База живёт за
@@ -600,7 +600,7 @@ fn execute_with_resolved_runner(
         result.warnings.push(warning);
     }
     result.warnings.extend(overwrite_warning(prepared, &plan));
-    result.warnings.extend(runner_warnings(&applied));
+    note_another_copy(&mut result, &applied);
 
     result
 }
@@ -794,8 +794,11 @@ fn invoke_runner(
             },
         })
         .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
-    parse_runner_output(output)
-        .map_err(|(rejection, error)| exchange_refusal(prepared, rejection, &error))
+    parse_runner_output(output).map_err(|(rejection, envelope)| {
+        let mut result = exchange_refusal(prepared, rejection, &envelope["error"]);
+        note_another_copy(&mut result, &envelope);
+        result
+    })
 }
 
 /// Отказ обмена с базой: `non_fast_forward` — база ушла вперёд записанного
@@ -926,7 +929,7 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, (DomainResult, Va
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err((
             runner_rejection(Some(OPERATION.to_string()), code, message),
-            envelope["error"].clone(),
+            envelope,
         ));
     }
     Ok(envelope)
@@ -976,7 +979,7 @@ fn reject_absent_runner(message: impl Into<String>) -> DomainResult {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
     use crate::domain::refusal::Outcome;
@@ -2029,14 +2032,10 @@ mod tests {
         assert!(result.ok, "{result:?}");
         assert!(runner.joined_args(1).ends_with("push main --force"));
         assert_eq!(result.warnings[0]["code"], "infobase_overwritten");
-        // Раннер 0.14 пишет в базу другой рабочей копии с предупреждением, и
-        // ответ его не теряет: ни в превью, ни после исполнения.
-        assert_eq!(result.warnings[1]["code"], "runner_warning", "{result:?}");
-        assert!(result.warnings[1]["message"]
-            .as_str()
-            .unwrap()
-            .contains("of another working copy"));
-        assert_eq!(result.warnings.len(), 2, "{result:?}");
+        // Раннер 0.14 пишет в базу другой рабочей копии с предупреждением.
+        // Ответ называет его своим предупреждением и выходом к своей базе —
+        // ни в превью, ни после исполнения не теряет и прозы раннера не несёт.
+        assert_another_copy_is_named(&result);
 
         let runner = SequenceRunner::new(vec![process(
             captured("push-other-copy-force-preview.json"),
@@ -2045,7 +2044,59 @@ mod tests {
         forced.dry_run = true;
         let preview = run(root.path(), &forced, &runner);
         assert!(preview.ok, "{preview:?}");
-        assert_eq!(preview.warnings[1]["code"], "runner_warning", "{preview:?}");
+        assert_another_copy_is_named(&preview);
+
+        // Отказ без памяти в чужой копии называет её так же, третьим выходом.
+        let runner = SequenceRunner::new(vec![process(
+            captured("push-no-memory-preview.json"),
+            false,
+        )]);
+        let refused = run(
+            root.path(),
+            &prepared(root.path(), None, false, true),
+            &runner,
+        );
+        assert_eq!(refused.diagnostics[0]["code"], "invalid_state");
+        assert_another_copy_is_named(&refused);
+        assert_eq!(refused.next[0]["args"]["op"], "pull");
+        assert_eq!(refused.next[1]["args"]["op"], "push");
+    }
+
+    /// Своё предупреждение Unica о базе другой копии: код, текст без путей,
+    /// метки владельца и команд раннера, выход — превью `infobase.create`.
+    /// Прочие предупреждения раннера наружу не идут.
+    pub(in super::super) fn assert_another_copy_is_named(result: &DomainResult) {
+        let named: Vec<&Value> = result
+            .warnings
+            .iter()
+            .filter(|warning| warning["code"] == "infobase_of_another_copy")
+            .collect();
+        assert_eq!(named.len(), 1, "{result:?}");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .all(|warning| warning["code"] != "runner_warning"),
+            "{result:?}"
+        );
+        let encoded = serde_json::to_string(result).unwrap();
+        for leaked in [
+            "/workspace",
+            "owners.json",
+            "v8-runner",
+            "--from",
+            "init --infobase",
+            "held by the working copy",
+        ] {
+            assert!(!encoded.contains(leaked), "{leaked} leaked: {encoded}");
+        }
+        let create = result
+            .next
+            .iter()
+            .find(|next| next["args"]["op"] == "infobase.create")
+            .unwrap_or_else(|| panic!("no infobase.create preview: {result:?}"));
+        assert_eq!(create["args"]["dryRun"], true);
+        assert_eq!(create["args"]["args"], json!({}));
     }
 
     /// Раннер 0.14.0 убрал ключ `shared` секции базы. Unica его не пишет и не

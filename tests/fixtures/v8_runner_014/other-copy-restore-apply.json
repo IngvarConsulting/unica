@@ -1,0 +1,42 @@
+{
+  "ok": true,
+  "command": "infobase.restore",
+  "duration_ms": 9679,
+  "data": {
+    "mode": "apply",
+    "subject": {
+      "kind": "infobase"
+    },
+    "provider": {
+      "selected": "agent",
+      "origin": {
+        "kind": "default"
+      },
+      "endpoint": {
+        "mode": "managed",
+        "address": "127.0.0.1:62562"
+      }
+    },
+    "artifact_kind": "dt",
+    "input": "/workspace/out/c-base.dt",
+    "target_mode": "replace",
+    "restored": true,
+    "target_state": "replaced",
+    "execution": {
+      "status": "succeeded"
+    }
+  },
+  "warnings": [
+    "infobase.restore writes the infobase '/workspace/ib-c' of another working copy: it is held by the working copy '/workspace/C' on this machine. The command changes that working copy's infobase, and its owner stays as it is in the owner marker '/workspace/.ib-c.v8-runner.owners.json'. To free the infobase: remove the infobase from v8project.local.yaml of '/workspace/C' or remove that working copy. Ways to an infobase of this working copy's own (`init --infobase` keeps the previous section as upstream): its own clean infobase built from the sources — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create`; a copy of an infobase with its data — `v8-runner init --infobase <connection string>`, then `v8-runner infobase create --from upstream`; an infobase deployed from a reference image — `v8-runner init --infobase <connection string>`, then `v8-runner infobase restore --input <reference>.dt --create`"
+  ],
+  "steps": [
+    {
+      "name": "provider command",
+      "ok": true,
+      "status": "succeeded",
+      "kind": "platform_command",
+      "duration_ms": 9666,
+      "target": "/workspace/out/c-base.dt"
+    }
+  ]
+}

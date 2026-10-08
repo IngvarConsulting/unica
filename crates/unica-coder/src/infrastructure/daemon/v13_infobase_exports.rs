@@ -641,6 +641,7 @@ fn execute_with_resolved_runner(
             },
             "reason": "execute with the current arguments plan"
         }));
+        note_another_copy(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -732,6 +733,7 @@ fn execute_with_resolved_runner(
             "infobase": true,
             "kind": applied["data"]["target_state"],
         }));
+        note_another_copy(&mut result, &applied);
 
         return result;
     }
@@ -1052,34 +1054,53 @@ pub(super) fn runner_rejection(
     }
 }
 
-/// Код, под которым Unica передаёт предупреждение раннера.
-pub(super) const RUNNER_WARNING_CODE: &str = "runner_warning";
-const RUNNER_WARNINGS_MAX: usize = 8;
-const RUNNER_WARNING_BYTES_MAX: usize = 4096;
+/// Код предупреждения Unica о записи в файловую базу другой рабочей копии.
+pub(super) const ANOTHER_COPY_WARNING_CODE: &str = "infobase_of_another_copy";
 
-/// Предупреждения раннера из `warnings` его конверта, каждое отдельным
-/// предупреждением Unica. Раннер отдаёт их прозой без кода, поэтому Unica их
-/// не толкует и ничего по ним не решает: текст идёт через редактор секретов,
-/// число и длина ограничены.
-pub(super) fn runner_warnings(envelope: &Value) -> Vec<Value> {
+/// Устойчивая часть предупреждения раннера 0.14 о базе другой рабочей копии
+/// (`use_cases::infobase_owner`: «<команда> writes the infobase '<путь>' of
+/// another working copy: it is held by …»). Машинного кода у предупреждения
+/// нет: опознание по этой части — решение владельца, оно закреплено тестами на
+/// живых конвертах push, pull, extensions и infobase.restore. Сменит раннер
+/// прозу — тесты на конвертах упадут при следующем переходе.
+const ANOTHER_COPY_RUNNER_FRAGMENT: &str = " of another working copy: it is held by ";
+
+/// Своё предупреждение Unica вместо прозы раннера: без путей чужой копии, без
+/// метки владельца и без команд раннера. Прочие предупреждения раннера наружу
+/// не идут.
+pub(super) fn another_copy_warning(envelope: &Value) -> Option<Value> {
     envelope["warnings"]
-        .as_array()
-        .into_iter()
-        .flatten()
+        .as_array()?
+        .iter()
         .filter_map(Value::as_str)
-        .take(RUNNER_WARNINGS_MAX)
-        .map(|text| {
-            let mut message = redactor(text);
-            if message.len() > RUNNER_WARNING_BYTES_MAX {
-                let mut end = RUNNER_WARNING_BYTES_MAX;
-                while !message.is_char_boundary(end) {
-                    end -= 1;
-                }
-                message.truncate(end);
-            }
-            json!({"code": RUNNER_WARNING_CODE, "message": message})
+        .any(|text| text.contains(ANOTHER_COPY_RUNNER_FRAGMENT))
+        .then(|| {
+            json!({
+                "code": ANOTHER_COPY_WARNING_CODE,
+                "message": "this command writes a file infobase that another working copy on this machine holds: it changes that copy's infobase, and that copy's next load into it is refused as moved ahead. Give this working copy an infobase of its own: declare infobases.origin with its own connection in v8project.local.yaml, then create it with infobase.create",
+            })
         })
-        .collect()
+}
+
+/// Добавляет к ответу предупреждение о базе другой копии и выход к своей базе —
+/// превью `infobase.create`, — если раннер о ней предупредил.
+pub(super) fn note_another_copy(result: &mut DomainResult, envelope: &Value) {
+    let Some(warning) = another_copy_warning(envelope) else {
+        return;
+    };
+    if result
+        .warnings
+        .iter()
+        .any(|existing| existing["code"] == ANOTHER_COPY_WARNING_CODE)
+    {
+        return;
+    }
+    result.warnings.push(warning);
+    result.next.push(json!({
+        "tool": "unica.run",
+        "args": {"op": "infobase.create", "args": {}, "dryRun": true},
+        "reason": "the infobase belongs to another working copy: declare infobases.origin with this working copy's own connection in v8project.local.yaml, then preview creating that infobase"
+    }));
 }
 
 pub(super) fn map_runner_code(code: &str) -> RefusalCode {
@@ -1893,6 +1914,69 @@ mod tests {
             fs::read(root.path().join("transfer/base.dt")).unwrap(),
             b"transfer bytes"
         );
+    }
+
+    fn captured_014(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/v8_runner_014")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Живые конверты раннера 0.14.0: загрузка `.dt` в базу другой рабочей
+    /// копии идёт с предупреждением раннера; ответ называет его своим
+    /// предупреждением и выходом к своей базе.
+    #[test]
+    fn captured_restore_into_the_infobase_of_another_copy_names_it() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(CONFIG_NAME), "format: DESIGNER\n").unwrap();
+        fs::create_dir_all(root.path().join("transfer")).unwrap();
+        let input = root.path().join("transfer/base.dt");
+        fs::write(&input, b"transfer bytes").unwrap();
+        let tool = BundledTool {
+            program: root.path().join("v8-runner"),
+            warnings: Vec::new(),
+            missing: None,
+        };
+        let mut preview = captured_014("other-copy-restore-preview.json");
+        let mut applied = captured_014("other-copy-restore-apply.json");
+        let input_text = json!(input.display().to_string());
+        preview["data"]["input"] = input_text.clone();
+        preview["data"]["plan"]["input"] = input_text.clone();
+        applied["data"]["input"] = input_text;
+        let process = |envelope: Value| ProcessOutput {
+            status_success: true,
+            status: "exit status: 0".to_string(),
+            stdout: serde_json::to_string(&envelope).unwrap(),
+            stderr: String::new(),
+            timed_out: false,
+            cancelled: false,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_had_invalid_utf8: false,
+            stderr_had_invalid_utf8: false,
+        };
+        let runner = SequenceRunner::new(vec![process(preview.clone())]);
+        let result = execute_with_resolved_runner(
+            &prepared_restore(root.path(), true, RestoreMode::Replace),
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.14.0",
+        );
+        assert!(result.ok, "{result:?}");
+        super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+
+        let runner = SequenceRunner::new(vec![process(preview), process(applied)]);
+        let result = execute_with_resolved_runner(
+            &prepared_restore(root.path(), false, RestoreMode::Replace),
+            &runner,
+            CancellationToken::new(),
+            &tool,
+            "0.14.0",
+        );
+        assert!(result.ok, "{result:?}");
+        super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
     }
 
     #[test]

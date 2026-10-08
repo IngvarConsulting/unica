@@ -77,6 +77,14 @@ declared the same infobase by its absolute path. Then:
   generations.
 - `push-infobase-busy-apply.json`: `push --full` in `D` while `C` ran
   `pull --force` on the same infobase — `infobase_busy`.
+- `other-copy-pull-preview.json`, `other-copy-pull-apply.json`:
+  `pull main --force --dry-run` and `pull main --force` in `D`;
+  `other-copy-extensions-deactivate-preview.json`,
+  `other-copy-extensions-deactivate-apply.json`: `extensions activate --name
+  UnicaOtherCopy --active no` in `D` after `C` created the extension;
+  `other-copy-restore-preview.json`, `other-copy-restore-apply.json`:
+  `infobase restore --input <C's dump>.dt --replace` in `D`. Each goes ahead
+  with the same warning about the infobase of another working copy.
 - `shared-key-refused.json`: `push --dry-run` in `D` with `shared: true` added
   to `infobases.origin` of its local layer — refused `invalid_argument`
   (unknown field): 0.14.0 removed the key.

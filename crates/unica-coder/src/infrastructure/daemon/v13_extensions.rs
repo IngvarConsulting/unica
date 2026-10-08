@@ -447,6 +447,7 @@ impl PreparedExtensions {
             result.data = Some(json!({"op":self.operation.name(),"dryRun":true,"plan":plan}));
 
             result.next.push(json!({"tool":"unica.run","args":{"op":self.operation.name(),"args":self.args,"dryRun":false},"reason":"execute with the current arguments; preview does not inspect infobase state"}));
+            super::v13_infobase_exports::note_another_copy(&mut result, &preview);
             return Ok(result);
         }
         let applied = self.invoke(runner, tool, &cancellation, false)?;
@@ -478,6 +479,7 @@ impl PreparedExtensions {
             );
         }
         result.data = Some(data);
+        super::v13_infobase_exports::note_another_copy(&mut result, &applied);
 
         Ok(result)
     }
@@ -966,6 +968,42 @@ mod tests {
                 assert!(p.validate(&envelope, preview).is_ok(), "{op:?} {phase}");
             }
         }
+    }
+
+    fn captured_014(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/v8_runner_014")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Живые конверты раннера 0.14.0: изменение расширения в базе другой
+    /// рабочей копии идёт с предупреждением раннера; ответ называет его своим
+    /// предупреждением и выходом к своей базе.
+    #[test]
+    fn captured_extension_change_in_the_infobase_of_another_copy_names_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut p = fixture(root.path(), Operation::Activate);
+        p.args.insert("name".into(), json!("UnicaOtherCopy"));
+        let preview = captured_014("other-copy-extensions-deactivate-preview.json");
+        let applied = captured_014("other-copy-extensions-deactivate-apply.json");
+        let result = p.execute_with(
+            &SequenceRunner::new(vec![preview.clone()]),
+            &tool(root.path()),
+            super::super::runner_014::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
+        p.dry_run = false;
+        let result = p.execute_with(
+            &SequenceRunner::new(vec![preview, applied]),
+            &tool(root.path()),
+            super::super::runner_014::VERSION,
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
     }
 
     #[test]
