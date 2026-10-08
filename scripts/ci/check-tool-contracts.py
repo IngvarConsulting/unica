@@ -735,16 +735,24 @@ def validate_v8_runner_external_build_calls(
                 )
         if extension != "extension=false":
             errors.append("configuration load must not pass -Extension")
+    # Корень временных баз остаётся после прогона: его отсутствие значит, что база
+    # создавалась не под workPath, и проверка остатка прошла бы вхолостую.
     try:
-        retained = sorted(
-            str(base.relative_to(work_path))
+        roots = [
+            root
             for root in work_path.rglob("throwaway-infobases")
             if root.is_dir()
+        ]
+        retained = sorted(
+            str(base.relative_to(work_path))
+            for root in roots
             for base in root.iterdir()
         )
     except OSError as error:
         errors.append(f"throwaway infobase root could not be inspected: {error}")
     else:
+        if not roots:
+            errors.append(f"throwaway infobase root was not found under {work_path}")
         if retained:
             errors.append(f"throwaway infobase was retained: {retained}")
     return errors
@@ -1114,7 +1122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 platform_marker.unlink(missing_ok=True)
                 call_log.unlink(missing_ok=True)
             except OSError as error:
-                return None, [f"{label}: failed to reset platform marker: {error}"]
+                return None, [f"{label}: failed to reset platform stub state: {error}"]
             try:
                 result = subprocess.run(
                     command,

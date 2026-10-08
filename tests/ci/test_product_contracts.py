@@ -1393,6 +1393,42 @@ class ProductContractTests(unittest.TestCase):
                         errors,
                     )
 
+    def test_v8_runner_external_build_calls_reject_each_defect_alone(self) -> None:
+        """Каждое нарушение ловится само по себе, а не за компанию с другим."""
+        module = load_contract_module()
+        validator = module.validate_v8_runner_external_build_calls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            configuration = root / "src" / "main"
+            good = [
+                "create",
+                f"load-config\t{configuration}\textension=false",
+                "load-external",
+                "dump-external",
+            ]
+            clean = root / "clean"
+            (clean / "temp" / "throwaway-infobases").mkdir(parents=True)
+            leaky = root / "leaky"
+            (leaky / "temp" / "throwaway-infobases" / "base-1").mkdir(parents=True)
+            rootless = root / "rootless"
+            rootless.mkdir()
+
+            cases = {
+                "retained base": (good, leaky, "throwaway infobase was retained"),
+                "no throwaway root": (good, rootless, "root was not found"),
+                "malformed load": (
+                    ["create", f"load-config\t{configuration}", "load-external", "dump-external"],
+                    clean,
+                    "malformed",
+                ),
+            }
+            for name, (calls, work, expected) in cases.items():
+                with self.subTest(name=name):
+                    errors = validator(calls, configuration, work)
+                    self.assertEqual(len(errors), 1, errors)
+                    self.assertIn(expected, errors[0])
+
     def test_targeted_tool_contracts_run_both_v8_runner_behavioral_smokes(self) -> None:
         module = load_contract_module()
 
