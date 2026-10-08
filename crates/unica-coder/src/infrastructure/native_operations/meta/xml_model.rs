@@ -1251,19 +1251,17 @@ pub(crate) fn meta_default_text_language(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "the configuration has no DefaultLanguage".to_string())?;
     let name = default.strip_prefix("Language.").unwrap_or(&default);
-    let relative = std::path::Path::new("Languages").join(format!("{name}.xml"));
-    let bytes = read(&relative)?.ok_or_else(|| {
-        format!(
-            "the default language descriptor {} was not found",
-            relative.display()
-        )
-    })?;
+    let path = std::path::Path::new("Languages").join(format!("{name}.xml"));
+    // Messages name the descriptor by its source-set path with `/` on every OS;
+    // `Path::display` would print `Languages\English.xml` on Windows.
+    let descriptor = format!("Languages/{name}.xml");
+    let bytes = read(&path)?
+        .ok_or_else(|| format!("the default language descriptor {descriptor} was not found"))?;
     let (language, code) = super::validation_context::inspect_metadata_language_image(&bytes)?
-        .ok_or_else(|| format!("{} is not a Language descriptor", relative.display()))?;
+        .ok_or_else(|| format!("{descriptor} is not a Language descriptor"))?;
     if language != name {
         return Err(format!(
-            "{} describes language `{language}`, not the default `{name}`",
-            relative.display()
+            "{descriptor} describes language `{language}`, not the default `{name}`"
         ));
     }
     Ok(code)
@@ -1589,7 +1587,11 @@ mod tests {
                 english.replace("<Name>English", "<Name>Other").into_bytes(),
             ))
         });
-        assert!(renamed.is_err());
+        assert!(renamed.unwrap_err().contains("Languages/English.xml"));
+        let foreign = meta_default_text_language(configuration.as_bytes(), |_| {
+            Ok(Some(configuration.clone().into_bytes()))
+        });
+        assert!(foreign.unwrap_err().contains("Languages/English.xml"));
     }
 
     fn metadata_path(value: &str) -> MetadataAddress {
