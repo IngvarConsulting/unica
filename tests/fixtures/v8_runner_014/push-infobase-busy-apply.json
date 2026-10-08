@@ -1,0 +1,24 @@
+{
+  "ok": false,
+  "command": "push",
+  "duration_ms": 0,
+  "data": {
+    "message": "cannot start push: infobase '/workspace/ib-c' is in use by 'pull' of the working copy with workPath '/workspace/C/build' (pid 69774, started at 2026-10-08T07:29:33.049983+00:00); retry when it finishes; lock is already held: /workspace/.ib-c.v8-runner.infobase.lock"
+  },
+  "warnings": [],
+  "steps": [
+    {
+      "name": "infobase lock",
+      "ok": false,
+      "status": "failed",
+      "kind": "resolve_target",
+      "duration_ms": 0,
+      "message": "cannot start push: infobase '/workspace/ib-c' is in use by 'pull' of the working copy with workPath '/workspace/C/build' (pid 69774, started at 2026-10-08T07:29:33.049983+00:00); retry when it finishes; lock is already held: /workspace/.ib-c.v8-runner.infobase.lock"
+    }
+  ],
+  "error": {
+    "code": "infobase_busy",
+    "kind": "workspace",
+    "message": "cannot start push: infobase '/workspace/ib-c' is in use by 'pull' of the working copy with workPath '/workspace/C/build' (pid 69774, started at 2026-10-08T07:29:33.049983+00:00); retry when it finishes; lock is already held: /workspace/.ib-c.v8-runner.infobase.lock"
+  }
+}

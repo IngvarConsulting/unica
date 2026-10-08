@@ -1,10 +1,10 @@
 {
   "ok": true,
   "command": "infobase create",
-  "duration_ms": 16,
+  "duration_ms": 14,
   "data": {
     "provider": {
-      "selected": "designer",
+      "selected": "ibcmd",
       "origin": {
         "kind": "default"
       }
@@ -16,7 +16,7 @@
         "target": "infobase",
         "action": "create",
         "status": "planned",
-        "message": "would create a file infobase at '/workspace/ib' via /platform/1cv8",
+        "message": "would create a file infobase at '/workspace/ib-c' with the main configuration of source-set 'main' via /platform/ibcmd",
         "duration_ms": 6
       },
       {
@@ -27,7 +27,7 @@
         "duration_ms": 0
       }
     ],
-    "duration_ms": 16
+    "duration_ms": 14
   },
   "warnings": [],
   "steps": []

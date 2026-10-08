@@ -1,10 +1,10 @@
 {
   "ok": true,
   "command": "push",
-  "duration_ms": 10,
+  "duration_ms": 6,
   "data": {
     "provider": {
-      "selected": "designer",
+      "selected": "agent",
       "origin": {
         "kind": "default"
       }
@@ -16,11 +16,11 @@
         "source_set": "main",
         "mode": "full",
         "ok": true,
-        "message": "forced full rebuild; planned, Designer not dispatched",
+        "message": "forced full rebuild; planned, agent not dispatched",
         "duration_ms": 0
       }
     ],
-    "duration_ms": 10
+    "duration_ms": 6
   },
   "warnings": [],
   "steps": []

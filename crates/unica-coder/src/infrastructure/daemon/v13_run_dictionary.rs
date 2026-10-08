@@ -73,7 +73,7 @@ pub(super) fn reject_unavailable_run_before_admission(
         .get("infobase")
         .is_some_and(|v| v.as_str() != Some("origin"))
     {
-        return Some(reject_run_operation(op, "runner 0.13 adapter supports only the named infobase origin; no fallback to another target"));
+        return Some(reject_run_operation(op, "runner 0.14 adapter supports only the named infobase origin; no fallback to another target"));
     }
     if is_test_seam_operation(op) {
         return None;
@@ -142,7 +142,7 @@ pub(super) fn run_dictionary_result() -> DomainResult {
                 "execution": operation.execution(),
                 "effects": operation.effects(),
                 "implemented": operation.implemented,
-                "support": {"adapter":format!("v8-runner/{}", super::runner_013::VERSION), "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
+                "support": {"adapter":format!("v8-runner/{}", super::runner_014::VERSION), "state": if !operation.implemented {"unavailable"} else if operation.support_reason().is_some() {"limited"} else {"supported"}, "reason":operation.support_reason(), "supportedInfobases":["origin"], "supportedArgs": operation.args_schema()},
                 "terminal": operation.terminal,
                 "rejectsSessions": operation.rejects_sessions,
                 "previewRequired": false,
@@ -187,11 +187,11 @@ mod runner_one_tests {
         }
     }
 
-    /// Раннер 0.13, как и 0.12, не загружает CF/CFE без применения и не знает `apply` и `reset`:
+    /// Раннер 0.14, как и 0.12, не загружает CF/CFE без применения и не знает `apply` и `reset`:
     /// словарь называет операции недоступными, а вызов получает типизированный
     /// отказ с разрывом до рабочего пространства и процесса.
     #[test]
-    fn runner_013_refuses_upload_apply_and_reset_naming_the_gap() {
+    fn runner_014_refuses_upload_apply_and_reset_naming_the_gap() {
         let dictionary = run_dictionary_result();
         let operations = dictionary.data.as_ref().unwrap()["operations"]
             .as_array()
@@ -223,7 +223,7 @@ mod runner_one_tests {
                 .as_str()
                 .unwrap()
                 .contains("https://github.com/IngvarConsulting/unica/issues/1246"));
-            assert_eq!(published["support"]["adapter"], "v8-runner/0.13.0");
+            assert_eq!(published["support"]["adapter"], "v8-runner/0.14.0");
         }
     }
 
