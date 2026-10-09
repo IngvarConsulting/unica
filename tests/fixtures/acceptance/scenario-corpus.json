@@ -8559,6 +8559,24 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S324",
+   "area": "Код BSL",
+   "task": "Поиск отсутствующего символа возвращает пустой результат или ожидание индекса",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "E03aDefinitelyAbsentSymbol987654321",
+      "role": "symbol"
+     },
+     "expect": [
+      "ok",
+      "provider"
+     ]
+    }
+   ]
   }
  ]
 }
