@@ -935,7 +935,13 @@
      },
      "expect": [
       "ok"
-     ]
+     ],
+     "captures": {
+      "beforeComment": {
+       "file": "src/Enums/ВажностьПроблемыУчета.xml",
+       "kind": "sha256"
+      }
+     }
     },
     {
      "tool": "unica.apply",
@@ -954,6 +960,13 @@
      },
      "expect": [
       "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Enums/ВажностьПроблемыУчета.xml",
+       "kind": "sha256",
+       "eq": "$capture.beforeComment"
+      }
      ]
     },
     {
@@ -963,6 +976,38 @@
      },
      "expect": [
       "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Enums/ВажностьПроблемыУчета.xml",
+       "kind": "sha256",
+       "notEq": "$capture.beforeComment"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/Comment",
+       "eq": "по executionToken"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Enums/ВажностьПроблемыУчета.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+       "eq": [
+        "по executionToken"
+       ]
+      }
      ]
     }
    ],
@@ -8574,6 +8619,96 @@
      "expect": [
       "ok",
       "provider"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S325",
+   "name": "acceptance-profile-content-and-gap-controls",
+   "issue": 1245,
+   "area": "Формы",
+   "task": "Показать известный дефект #791: проверка формы принимает трёхпараметровый обработчик выбора вместо пяти параметров",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "ОбработкаВыбора",
+          "handler": "ПолеНаименованиеОбработкаВыбора",
+          "element": "ПолеНаименование"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ПолеНаименованиеОбработкаВыбора(Элемент, ВыбранноеЗначение, СтандартнаяОбработка)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "gap"
+     ],
+     "gap": "#791: связанный ChoiceProcessing имеет три параметра вместо пяти; check ошибочно отвечает passed. Исправление должно дать failed и требует снять gap.",
+     "knownGap": {
+      "name": "form-handler-signature-unchecked",
+      "observedClass": "ok",
+      "issue": 791
+     },
+     "status": "passed",
+     "validators": [
+      "form"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
+      }
      ]
     }
    ]

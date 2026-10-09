@@ -36,7 +36,17 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+from tests.ci.acceptance_controls import (
+    capture_values,
+    content_mismatches,
+    load_corpus,
+    matches_step,
+    substitute_capture,
+    validate_controls,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS = REPO_ROOT / "tests/fixtures/acceptance/scenario-corpus.json"
@@ -60,6 +70,8 @@ EXPECT_CLASSES = {
 
 
 def substitute(value, context):
+    if isinstance(value, str) and value.startswith("$capture."):
+        return substitute_capture(value, context)
     if isinstance(value, str):
         if value == "$task":
             return context.get("task", "00000000-0000-4000-8000-000000000000")
@@ -219,6 +231,7 @@ class AcceptanceServer:
     job until an external timeout."""
 
     def __init__(self, cwd: Path, state: Path, protocol: str):
+        self.workspace = cwd
         env = dict(os.environ)
         env["UNICA_PROVIDER_STATE_DIR"] = str(state)
         # Демон переживает сессию: без назначенной паузы он остаётся на
@@ -343,6 +356,12 @@ class AcceptanceServer:
 
 
 class SavedPlanWireTests(unittest.TestCase):
+    def test_capture_values_are_opaque_even_when_they_look_like_template_tokens(self):
+        context = {"captures": {"text": "$executionToken", "object": {"at": "$rev"}},
+                   "executionToken": "saved-plan", "rev": "current-revision"}
+        self.assertEqual(substitute({"text": "$capture.text", "object": "$capture.object"}, context),
+                         {"text": "$executionToken", "object": {"at": "$rev"}})
+
     def test_execute_uses_the_preview_token_and_reads_do_not_replace_it(self):
         context = {}
         plan = {"result": {"structuredContent": {
@@ -366,17 +385,17 @@ class SavedPlanWireTests(unittest.TestCase):
 class AcceptanceCorpusShapeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+        cls.corpus = load_corpus(CORPUS)
 
     def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 324)
+        self.assertEqual(len(scenarios), 325)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 393,
-            "a wire step went missing: the corpus freezes 393 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 399,
+            "a wire step went missing: the corpus freezes 399 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 325)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 326)])
 
     def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -389,6 +408,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
+            declared = set()
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
@@ -397,6 +417,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             )
             for index, step in enumerate(scenario["wire"]):
                 with self.subTest(scenario=scenario["id"], step=index):
+                    validate_controls(step, declared)
                     self.assertTrue(step["tool"].startswith("unica."))
                     expected = step["expect"]
                     self.assertTrue(expected, "every step freezes an expectation")
@@ -482,7 +503,11 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             cwd=REPO_ROOT,
             check=True,
         )
-        cls.corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+        cls.corpus = load_corpus(CORPUS)
+        for scenario in cls.corpus["scenarios"]:
+            declared = set()
+            for step in scenario["wire"]:
+                validate_controls(step, declared)
 
     def test_s047_publishes_the_planned_comment_after_reading_the_object(self) -> None:
         scenario = next(s for s in self.corpus["scenarios"] if s["id"] == "S047")
@@ -519,6 +544,31 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             finally:
                 server.close()
                 server.process.stdout.close()
+
+    def test_content_mismatch_stops_calls_and_does_not_commit_captures(self) -> None:
+        self.corpus = {**self.corpus, "scenarios": [{
+            "id": "content-counterexample", "area": "Properties", "task": "Counterexample",
+            "wire": [
+                {"tool": "unica.view", "args": {"at": "main:Enum.ВажностьПроблемыУчета"},
+                 "expect": ["ok"], "captures": {"address": {"pointer": "/at"}},
+                 "assertions": [{"pointer": "/data/props/Comment", "eq": "sentinel-never-published"}]},
+                {"tool": "unica.view", "args": {"at": "$capture.address"}, "expect": ["ok"]},
+            ],
+        }]}
+        original = AcceptanceServer.call
+        called = []
+
+        def observed(server, tool, arguments, label=None):
+            called.append(tool)
+            return original(server, tool, arguments, label)
+
+        with patch.object(AcceptanceServer, "call", observed), patch(
+            "tests.ci.test_acceptance_scenarios.capture_values", wraps=capture_values
+        ) as capture:
+            with self.assertRaisesRegex(AssertionError, "sentinel-never-published"):
+                self.test_every_wire_answers_its_frozen_classes()
+            self.assertEqual(called, ["unica.view"])
+            capture.assert_not_called()
 
     def test_every_wire_answers_its_frozen_classes(self) -> None:
         corpus = self.corpus
@@ -557,8 +607,8 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                     broken = False
                     for index, step in enumerate(scenario["wire"]):
                         label = f"{scenario['id']} step {index} {step['tool']}"
-                        arguments = substitute(step["args"], context)
                         try:
+                            arguments = substitute(step["args"], context)
                             if step.get("form"):
                                 arguments = form_arguments(
                                     server.input_schema(step["tool"]), arguments
@@ -573,52 +623,30 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                             )
                             broken = True
                             break
-                        actual, note = classify(response, context)
-                        if not matches(step["expect"], actual):
+                        candidate = dict(context)
+                        actual, note = classify(response, candidate)
+                        if not matches_step(step, actual):
                             mismatches.append(
                                 f"{label}: expected {step['expect']}, got {actual} :: {note[:160]}"
                             )
-                            continue
+                            broken = True
+                            break
                         # A refusal proves its exact answer, and a check over a
                         # node proves the verdict it froze; without these two
                         # checks a typo in an address or a failing validator
                         # would pass as the intended outcome.
-                        if actual == "refused" and note != step.get("refusal"):
-                            mismatches.append(
-                                f"{label}: expected refusal {step.get('refusal')!r}, got {note!r}"
-                            )
-                        if "status" in step and actual == "ok":
-                            structured = response.get("result", {}).get("structuredContent") or {}
-                            verdict = (structured.get("data") or {}).get("status")
-                            if verdict != step["status"]:
-                                mismatches.append(
-                                    f"{label}: expected validation status {step['status']!r}, "
-                                    f"got {verdict!r}"
-                                )
-                        if "validators" in step and actual == "ok":
-                            structured = response.get("result", {}).get("structuredContent") or {}
-                            validators = (structured.get("data") or {}).get("validators")
-                            if validators != step["validators"]:
-                                mismatches.append(
-                                    f"{label}: expected validators {step['validators']!r}, "
-                                    f"got {validators!r}"
-                                )
-                        if "diagnostic" in step and actual == "ok":
-                            # A validation step may freeze one diagnostic code it
-                            # expects next to the verdict: the export-format guard
-                            # of a root outside the active profile.
-                            structured = response.get("result", {}).get("structuredContent") or {}
-                            codes = [
-                                diagnostic.get("code")
-                                for diagnostic in (
-                                    (structured.get("data") or {}).get("diagnostics") or []
-                                )
-                            ]
-                            if step["diagnostic"] not in codes:
-                                mismatches.append(
-                                    f"{label}: expected diagnostic {step['diagnostic']!r}, "
-                                    f"got {codes!r}"
-                                )
+                        structured = response.get("result", {}).get("structuredContent") or {}
+                        failures = content_mismatches(step, structured, actual, note, server.workspace, context)
+                        if not failures:
+                            try:
+                                candidate["captures"] = capture_values(step, structured, server.workspace, context)
+                            except (ValueError, OSError) as error:
+                                failures.append(str(error))
+                        if failures:
+                            mismatches.extend(f"{label}: {failure}" for failure in failures)
+                            broken = True
+                            break
+                        context = candidate
                     # A scenario that published changes leaves its mark on the
                     # workspace; the next one starts from the pristine fixture
                     # so results never depend on corpus order. The old run
