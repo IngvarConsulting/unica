@@ -53,7 +53,7 @@ from tests.ci.acceptance_controls import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS = REPO_ROOT / "tests/fixtures/acceptance/scenario-corpus.json"
 BINARY = (
-    Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
+    (REPO_ROOT / Path(os.environ.get("CARGO_TARGET_DIR", "target"))).resolve()
     / "debug"
     / ("unica.exe" if os.name == "nt" else "unica")
 )
@@ -237,6 +237,7 @@ class AcceptanceServer:
     job until an external timeout."""
 
     def __init__(self, cwd: Path, state: Path, protocol: str, environment=None):
+        self.binary = BINARY
         self.workspace = cwd
         env = dict(os.environ if environment is None else environment)
         env["UNICA_PROVIDER_STATE_DIR"] = str(state)
@@ -247,7 +248,7 @@ class AcceptanceServer:
         self.stderr_path = state / "unica-stderr.log"
         self.stderr_file = open(self.stderr_path, "wb")  # noqa: SIM115 - lives as long as the process
         self.process = subprocess.Popen(
-            [str(BINARY)],
+            [str(self.binary)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self.stderr_file,

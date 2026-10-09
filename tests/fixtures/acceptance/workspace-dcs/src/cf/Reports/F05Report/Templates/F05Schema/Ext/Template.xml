@@ -4,7 +4,7 @@
  <dataSet xsi:type="DataSetQuery"><name>F05Data</name>
   <field xsi:type="DataSetFieldField"><dataPath>Category</dataPath><field>Category</field></field>
   <field xsi:type="DataSetFieldField"><dataPath>Amount</dataPath><field>Amount</field></field>
-  <dataSource>LocalSource</dataSource><query>ВЫБРАТЬ "Test" КАК Category, 1 КАК Amount, 2 КАК Added</query>
+  <dataSource>LocalSource</dataSource><query>ВЫБРАТЬ "<!-- preserve-query-note -->Test"<?preserve query?> КАК Category, 1 КАК Amount, 2 КАК Added</query>
  </dataSet>
  <settingsVariant><dcsset:name>F05Variant</dcsset:name><dcsset:settings>
   <dcsset:selection><dcsset:item xsi:type="dcsset:SelectedItemAuto"/></dcsset:selection>

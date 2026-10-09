@@ -3140,7 +3140,10 @@ pub(crate) fn dcs_find_all_path<'a, 'input>(
 }
 
 pub(crate) fn dcs_inner_text(node: roxmltree::Node<'_, '_>) -> String {
-    node.text().unwrap_or("").to_string()
+    node.children()
+        .filter(|child| child.is_text())
+        .filter_map(|child| child.text())
+        .collect()
 }
 
 pub(crate) fn dcs_text_of(node: roxmltree::Node<'_, '_>) -> String {
@@ -10059,11 +10062,17 @@ pub(crate) fn dcs_edit_patch_query(
                 && node.range().end >= query_range.end
         })
         .ok_or_else(|| "Query element not found".to_string())?;
-    let current = query
-        .children()
-        .filter(|node| node.is_text())
-        .filter_map(|node| node.text())
-        .collect::<String>();
+    let mut current = String::new();
+    let mut markup = Vec::new();
+    for node in query.children() {
+        if node.is_text() {
+            current.push_str(node.text().unwrap_or_default());
+        } else if node.is_comment() || node.is_pi() {
+            markup.push((current.len(), &xml_text[node.range()]));
+        } else {
+            return Err("Query text contains an unsupported XML child element".to_string());
+        }
+    }
     let count = current.matches(old).count();
     if count == 0 {
         return Err(format!(
@@ -10081,7 +10090,33 @@ pub(crate) fn dcs_edit_patch_query(
         ));
     }
     let patched = current.replace(old, new);
-    xml_text.replace_range(query_range, &escape_xml(&patched));
+    // Keep comments and processing instructions byte-for-byte. A marker within
+    // replaced text anchors to the beginning of that replacement; others keep
+    // their position relative to the surrounding query text.
+    let replacements = current
+        .match_indices(old)
+        .map(|(start, _)| start)
+        .collect::<Vec<_>>();
+    let mut inner = String::new();
+    let mut copied = 0;
+    for (position, raw) in markup {
+        let mut transformed = position;
+        for &start in &replacements {
+            if position >= start + old.len() {
+                transformed = transformed - old.len() + new.len();
+            } else if position > start {
+                transformed -= position - start;
+                break;
+            } else {
+                break;
+            }
+        }
+        inner.push_str(&escape_xml(&patched[copied..transformed]));
+        inner.push_str(raw);
+        copied = transformed;
+    }
+    inner.push_str(&escape_xml(&patched[copied..]));
+    xml_text.replace_range(query_range, &inner);
     Ok(count)
 }
 
@@ -12886,7 +12921,7 @@ pub(crate) mod tests {
             "ВЫБРАТЬ \" X \" КАК Category, 1 &lt; 2",
             "ВЫБРАТЬ &quot; X &quot; КАК Category, 1 &lt; 2",
             "<![CDATA[ВЫБРАТЬ \" X \" КАК Category, 1 < 2]]>",
-            "ВЫБРАТЬ <![CDATA[\" X \"]]><!-- ignored --> КАК Category, 1 &lt; 2",
+            "ВЫБРАТЬ <![CDATA[\" X \"]]> КАК Category, 1 &lt; 2",
         ] {
             let mut xml = format!(
                 "<DataCompositionSchema xmlns=\"{DCS_SCHEMA_NS}\"><dataSet><name>Data</name><query>{encoded}</query></dataSet></DataCompositionSchema>"
@@ -12901,6 +12936,43 @@ pub(crate) mod tests {
                 .find(|node| node.has_tag_name((DCS_SCHEMA_NS, "query")))
                 .unwrap();
             assert_eq!(query.text(), Some("ВЫБРАТЬ \"\" КАК Category, 1 < 2"));
+        }
+    }
+
+    #[test]
+    fn dcs_query_patch_keeps_comments_and_processing_instructions() {
+        let encoded = "А<!-- before -->Б<![CDATA[В]]><?keep original?>Г<!-- after -->Д";
+        for (find, replacement, expected) in [
+            (
+                "А",
+                "ЯЯ",
+                "ЯЯ<!-- before -->БВ<?keep original?>Г<!-- after -->Д",
+            ),
+            (
+                "БВГ",
+                "Ж",
+                "А<!-- before --><?keep original?>Ж<!-- after -->Д",
+            ),
+            (
+                "БВГ",
+                "",
+                "А<!-- before --><?keep original?><!-- after -->Д",
+            ),
+        ] {
+            let mut xml = format!("<DataCompositionSchema xmlns=\"{DCS_SCHEMA_NS}\"><dataSet><name>Data</name><query>{encoded}</query><untouched>value</untouched></dataSet></DataCompositionSchema>");
+            let original = xml.clone();
+            assert_eq!(
+                dcs_edit_patch_query(&mut xml, "Data", find, replacement, true).unwrap(),
+                1
+            );
+            assert_eq!(xml, original.replace(encoded, expected));
+            let document = Document::parse(&xml).unwrap();
+            let query = document
+                .descendants()
+                .find(|node| node.has_tag_name((DCS_SCHEMA_NS, "query")))
+                .unwrap();
+            let text = dcs_inner_text(query);
+            assert_eq!(text, "АБВГД".replace(find, replacement));
         }
     }
 

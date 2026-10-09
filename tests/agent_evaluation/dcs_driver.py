@@ -37,7 +37,7 @@ def packager():
     return module
 
 
-def prepare_packet(root):
+def prepare_packet(root, source_binary):
     builder = packager()
     lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())
     target = host_target(lock, platform.system(), platform.machine())
@@ -48,7 +48,7 @@ def prepare_packet(root):
         raise ValueError("evaluated packet still delivers retired DCS skills")
     binary = packet / "bin" / target / ("unica.exe" if os.name == "nt" else "unica")
     binary.parent.mkdir(parents=True)
-    shutil.copy2(REPO / "target/debug" / binary.name, binary)
+    shutil.copy2(source_binary, binary)
     for host in ("codex", "claude", "zcode"):
         builder.write_local_debug_mcp_launcher(packet, target, host=host)
         mcp = json.loads((packet / ".mcp.json").read_text())["mcpServers"]["unica"]
@@ -251,8 +251,10 @@ def audit_mcp(records):
             else:
                 raise ValueError("unobserved asynchronous apply")
     operations = {op for op, _ in executed}
+    # A preview may be abandoned or become stale after another publication.
+    # Only consumed plans prove effects; every publication was checked above.
     if (not {"field.add"} <= operations or not operations & {"query.set", "query.patch"}
-            or not operations & {"structure.set", "structure.patch"} or plans):
+            or not operations & {"structure.set", "structure.patch"}):
         raise ValueError("agent did not publish the requested field, query and grouping effects")
     last = max(done for _, done in executed)
     if not any(call["index"] > last and call["params"]["name"] == "unica.check"
@@ -307,16 +309,23 @@ def terminal_calls(calls):
 def stop_owned_daemons(state, binary):
     for endpoint in state.glob("daemon-p5-*/endpoint.json"):
         pid = json.loads(endpoint.read_text())["pid"]
-        def owned_alive():
-            result = subprocess.run(["ps", "-p", str(pid), "-o", "args="], capture_output=True, text=True)
+        def owned_alive(require_owned=False):
+            result = subprocess.run(["ps", "-p", str(pid), "-o", "stat=,args="], capture_output=True, text=True)
             if result.returncode != 0:
                 return False
-            parts = shlex.split(result.stdout.strip())
+            observation = result.stdout.strip().split(None, 1)
+            if not observation or observation[0].startswith("Z"):
+                return False
+            parts = shlex.split(observation[1] if len(observation) > 1 else "")
             expected = [str(binary), "--daemon", "--state-root", str(state)]
             if parts[:4] != expected:
-                raise ValueError("daemon endpoint PID no longer belongs to this evaluation")
+                if require_owned:
+                    raise ValueError("daemon endpoint PID no longer belongs to this evaluation")
+                # After a verified signal, an unrelated process at the same PID
+                # means our daemon exited. It must never receive the next signal.
+                return False
             return True
-        if owned_alive():
+        if owned_alive(require_owned=True):
             os.kill(pid, signal.SIGTERM)
             deadline = time.monotonic() + 5
             while owned_alive() and time.monotonic() < deadline:
@@ -336,7 +345,7 @@ def evaluate(server, scenario, proof_root):
     (proof / "scenario.json").write_text(json.dumps(scenario, ensure_ascii=False, indent=2))
     state = proof / "state"
     state.mkdir()
-    packet, binary, package_hash = prepare_packet(proof)
+    packet, binary, package_hash = prepare_packet(proof, server.binary)
     source_before = {path.relative_to(server.workspace).as_posix(): packager().sha256(path)
                      for path in (server.workspace / "src").rglob("*") if path.is_file()}
     skills = disabled_skills()

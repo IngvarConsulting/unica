@@ -158,7 +158,7 @@ impl OperationContract {
             "query.patch" => ("values",object(&[("dataSet",text(false)),("find",text(true)),
                 ("replace",json!({"type":"string","default":""})),("once",json!({"type":"boolean","default":false}))], &["find"]),data,
                 "Replace matching query text; no matches fail. once=true requires exactly one match.",
-                "Empty replace deletes the matching text. dataSet overrides the address dataset. find/replace are text; editor control tokens ' => ' and @once are refused.",
+                "Empty replace deletes the matching text. dataSet overrides the address dataset. Matching uses decoded XML text; CDATA may become escaped text. XML comments/PI remain byte-for-byte; a marker within replaced text anchors to the replacement start. find/replace are text; editor control tokens ' => ' and @once are refused.",
                 json!({"values":{"find":"1 КАК Amount","replace":"2 КАК Amount","once":true}})),
             "structure.set" | "structure.patch" => ("values",object(&[("variant",text(false)),
                 ("groupBy",json!({"type":"array","items":{"type":"string","pattern":r"\S"},"default":[]})),

@@ -1,13 +1,82 @@
 """A forbidden evidence path cannot become a passing agent evaluation."""
 import unittest
+import tempfile
+import json
+import hashlib
+import os
+from unittest.mock import patch
 from pathlib import Path
 
 from tests.agent_evaluation.dcs_driver import DCS_TEMPLATE, allowed_help_command, audit_cli, audit_mcp, audit_review, terminal_calls
 
 
 class AgentEvaluationAuditTests(unittest.TestCase):
+    def test_cleanup_accepts_a_terminated_daemon_and_never_signals_a_reused_pid(self):
+        import signal
+        import subprocess
+        from tests.agent_evaluation.dcs_driver import stop_owned_daemons
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            endpoint = state / "daemon-p5-test/endpoint.json"
+            endpoint.parent.mkdir()
+            endpoint.write_text(json.dumps({"pid": 42}))
+            binary = state / "plugin/bin/unica"
+            owned = f"{binary} --daemon --state-root {state}"
+            for terminal in ("Z <defunct>", "S /unrelated/process"):
+                observations = iter([f"S {owned}", terminal])
+                def observe(command, **kwargs):
+                    observation = next(observations, terminal)
+                    if command[-1] == "args=":
+                        observation = observation.split(" ", 1)[1]
+                    return subprocess.CompletedProcess(command, 0, observation, "")
+                with self.subTest(terminal=terminal), \
+                     patch("tests.agent_evaluation.dcs_driver.subprocess.run", side_effect=observe), \
+                     patch("tests.agent_evaluation.dcs_driver.os.kill") as kill:
+                    stop_owned_daemons(state, binary)
+                    kill.assert_called_once_with(42, signal.SIGTERM)
+            with patch("tests.agent_evaluation.dcs_driver.subprocess.run", return_value=
+                       subprocess.CompletedProcess([], 0, "S /unrelated/process", "")), \
+                 patch("tests.agent_evaluation.dcs_driver.os.kill") as kill:
+                with self.assertRaisesRegex(ValueError, "no longer belongs"):
+                    stop_owned_daemons(state, binary)
+                kill.assert_not_called()
+
+    def test_packet_uses_the_same_binary_as_the_verifying_server(self):
+        from tests.agent_evaluation.dcs_driver import prepare_packet
+        binary_name = "unica.exe" if os.name == "nt" else "unica"
+        class Builder:
+            @staticmethod
+            def copy_tracked_plugin_source(repo, source, packet):
+                packet.mkdir()
+            @staticmethod
+            def assert_host_manifests_present(packet):
+                pass
+            @staticmethod
+            def write_local_debug_mcp_launcher(packet, target, host):
+                command = f"./bin/test/{binary_name}" if host == "codex" else f"${{CLAUDE_PLUGIN_ROOT}}/bin/test/{binary_name}"
+                (packet / ".mcp.json").write_text(json.dumps({"mcpServers": {"unica": {
+                    "command": command, "env": {"UNICA_HOST_CONTEXT_REQUIRED": "1"}}}}))
+            @staticmethod
+            def package_tree_sha256(packet):
+                return hashlib.sha256((packet / "bin/test" / binary_name).read_bytes()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "target/debug").mkdir(parents=True)
+            (root / "target/debug/unica").write_bytes(b"stale-default-binary")
+            (root / "plugins/unica/third-party").mkdir(parents=True)
+            (root / "plugins/unica/third-party/tools.lock.json").write_text("{}")
+            current = root / "custom-target/debug/unica"
+            current.parent.mkdir(parents=True)
+            current.write_bytes(b"actual-server-binary")
+            with patch("tests.agent_evaluation.dcs_driver.REPO", root), \
+                 patch("tests.agent_evaluation.dcs_driver.host_target", return_value="test"), \
+                 patch("tests.agent_evaluation.dcs_driver.packager", return_value=Builder):
+                _, copied, digest = prepare_packet(root, current)
+            self.assertEqual(copied.read_bytes(), current.read_bytes())
+            self.assertEqual(digest, hashlib.sha256(current.read_bytes()).hexdigest())
+
     def test_failed_reread_or_check_of_other_node_cannot_prove_agent_verification(self):
-        def records(read_ok=True, check_at=DCS_TEMPLATE):
+        def records(read_ok=True, check_at=DCS_TEMPLATE, discarded_preview=False, omit_op=None):
             trace = []
             digest = "old"
             def exchange(method, params, result):
@@ -28,7 +97,11 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 exchange("tools/call", {"name": "unica.view", "arguments": {"at": target}}, {
                     "ok": True, "data": {"can": [{"op": op, "implemented": True, "contract": {"argsSchema": {"type": "object"}}}]}})
                 operations.append({"op": op, "args": {"at": target}})
-            exchange("tools/call", {"name": "unica.apply", "arguments": {"at": DCS_TEMPLATE, "ops": operations}},
+            if discarded_preview:
+                exchange("tools/call", {"name": "unica.apply", "arguments": {"at": DCS_TEMPLATE, "ops": operations}},
+                         {"ok": True, "data": {"mode": "preview", "effects": 1, "executionToken": "discarded"}})
+            selected = [op for op in operations if op["op"] != omit_op]
+            exchange("tools/call", {"name": "unica.apply", "arguments": {"at": DCS_TEMPLATE, "ops": selected}},
                      {"ok": True, "data": {"mode": "preview", "effects": 1, "executionToken": "p"}})
             exchange("tools/call", {"name": "unica.apply", "arguments": {"executionToken": "p"}},
                      {"ok": True, "data": {"mode": "published", "effects": 1}})
@@ -37,6 +110,9 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                      {"ok": True, "data": {"status": "passed"}})
             return trace
         audit_mcp(records())
+        audit_mcp(records(discarded_preview=True))
+        with self.assertRaisesRegex(ValueError, "requested field, query and grouping effects"):
+            audit_mcp(records(discarded_preview=True, omit_op="query.set"))
         with self.assertRaisesRegex(ValueError, "reread"):
             audit_mcp(records(read_ok=False))
         with self.assertRaisesRegex(ValueError, "check"):

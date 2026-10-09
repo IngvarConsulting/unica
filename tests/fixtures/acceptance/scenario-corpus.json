@@ -10221,7 +10221,7 @@
    "name": "dcs-query-text-preimage-contract",
    "issue": 1310,
    "area": "СКД",
-   "task": "Текст запроса одинаков при raw quotes/entities; once сохраняет пробелы и пустую замену; preview читается как исходная версия, устаревший токен не публикуется",
+   "task": "Текст запроса одинаков при raw quotes/entities; once сохраняет пробелы и пустую замену; preview читается как исходная версия, устаревший токен не публикуется; XML comments/PI сохраняются побайтно",
    "workspace": "tests/fixtures/acceptance/workspace-dcs",
    "wire": [
     {
@@ -10373,6 +10373,11 @@
        "kind": "sha256",
        "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
        "notEq": "$capture.image0"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "eq": "367028f1f5b21a89a9d0ff1df2a60f5bba367fddb3871411ad98025ce02dd8d3"
       }
      ],
      "captures": {
@@ -10477,6 +10482,11 @@
        "kind": "sha256",
        "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
        "notEq": "$capture.image1"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "eq": "d1314252174b58d409c18679f6a0b79ba472de55d377f51a648539d6bfaaf5a9"
       }
      ],
      "captures": {
