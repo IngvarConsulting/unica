@@ -403,7 +403,7 @@
       // блоком и той же раскраской — иначе она читается как подпись, а не как
       // фрагмент ответа.
       const seen = {};
-      for (const key of ['status', 'validators', 'diagnostic', 'refusal']) {
+      for (const key of ['status', 'validators', 'diagnostic', 'refusal', 'gap', 'knownGap', 'assertions', 'fileAssertions', 'captures']) {
         if (step[key] !== undefined) seen[key] = step[key];
       }
       const payload = Object.keys(seen).length ? document.createElement('pre') : null;
