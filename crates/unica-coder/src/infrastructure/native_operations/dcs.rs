@@ -10045,9 +10045,26 @@ pub(crate) fn dcs_edit_patch_query(
 ) -> Result<usize, String> {
     let range = dcs_edit_dataset_range(xml_text, data_set)?;
     let query_range = dcs_edit_child_text_range(xml_text, range, "query")?;
-    let current = &xml_text[query_range.clone()];
-    let escaped_old = escape_xml(old);
-    let count = current.matches(&escaped_old).count();
+    // The query is XML character data. Quotes, entities and CDATA have
+    // equivalent meanings, so matching their lexical encodings loses valid
+    // platform queries (e.g. a raw quote does not match `&quot;`).
+    let document =
+        Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
+    let query = document
+        .descendants()
+        .find(|node| {
+            node.is_element()
+                && node.tag_name().name() == "query"
+                && node.range().start <= query_range.start
+                && node.range().end >= query_range.end
+        })
+        .ok_or_else(|| "Query element not found".to_string())?;
+    let current = query
+        .children()
+        .filter(|node| node.is_text())
+        .filter_map(|node| node.text())
+        .collect::<String>();
+    let count = current.matches(old).count();
     if count == 0 {
         return Err(format!(
             "Substring not found in query of dataset '{}': {}",
@@ -10063,8 +10080,8 @@ pub(crate) fn dcs_edit_patch_query(
             count
         ));
     }
-    let patched = current.replace(&escaped_old, &escape_xml(new));
-    xml_text.replace_range(query_range, &patched);
+    let patched = current.replace(old, new);
+    xml_text.replace_range(query_range, &escape_xml(&patched));
     Ok(count)
 }
 
@@ -12860,6 +12877,30 @@ pub(crate) mod tests {
                 dcs_edit_extract_once_marker(&format!("{value} @once")),
                 (value.to_string(), true)
             );
+        }
+    }
+
+    #[test]
+    fn dcs_query_patch_matches_equivalent_xml_character_data() {
+        for encoded in [
+            "ВЫБРАТЬ \" X \" КАК Category, 1 &lt; 2",
+            "ВЫБРАТЬ &quot; X &quot; КАК Category, 1 &lt; 2",
+            "<![CDATA[ВЫБРАТЬ \" X \" КАК Category, 1 < 2]]>",
+            "ВЫБРАТЬ <![CDATA[\" X \"]]><!-- ignored --> КАК Category, 1 &lt; 2",
+        ] {
+            let mut xml = format!(
+                "<DataCompositionSchema xmlns=\"{DCS_SCHEMA_NS}\"><dataSet><name>Data</name><query>{encoded}</query></dataSet></DataCompositionSchema>"
+            );
+            assert_eq!(
+                dcs_edit_patch_query(&mut xml, "Data", " X ", "", true).unwrap(),
+                1
+            );
+            let parsed = Document::parse(&xml).unwrap();
+            let query = parsed
+                .descendants()
+                .find(|node| node.has_tag_name((DCS_SCHEMA_NS, "query")))
+                .unwrap();
+            assert_eq!(query.text(), Some("ВЫБРАТЬ \"\" КАК Category, 1 < 2"));
         }
     }
 

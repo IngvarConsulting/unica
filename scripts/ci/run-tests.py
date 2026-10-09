@@ -49,6 +49,7 @@ ECOSYSTEMS = ("rust", "python", "all")
 PYTHON_SUITES = (
     ("tests/ci", "small", ("--durations", "20")),
     ("tests/dev", "small", ("--durations", "20")),
+    ("tests/agent_evaluation", "large", ("--durations", "20")),
 )
 
 
@@ -240,7 +241,7 @@ def python_commands(
         if only_size:
             sizing += ["--lane", only_size]
         if results is None:
-            return sizing
+            return ([] if size == "small" else ["--size", size]) + sizing
         return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, "--sizes", str(PYTHON_SIZES), *sizing]
 
     return [

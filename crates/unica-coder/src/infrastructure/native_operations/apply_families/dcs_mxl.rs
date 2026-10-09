@@ -281,7 +281,11 @@ fn parse_dcs_operation(
             &format!("ops[{op_index}].args"),
         )
         .map_err(|error| {
-            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("{}: {}", error.path, error.message),
+            )
+            .at_path(error.path)
         })?;
     let args = normalized
         .as_object()
@@ -566,8 +570,9 @@ fn parse_dcs_operation(
         _ => return Ok(DcsMxlPlanKind::Unsupported),
     };
     if variant.is_empty() {
-        // Settings-level operations need a variant; the schema's first
-        // variant is the platform default.
+        // Settings-level operations need a variant. Основной is the
+        // conventional default name; it is not the first
+        // variant discovered in this schema.
         variant = "Основной".to_string();
     }
     Ok(DcsMxlPlanKind::Dcs(DcsEdit {

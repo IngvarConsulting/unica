@@ -1,7 +1,7 @@
 """Acceptance corpus: real developer tasks ride the canonical surface.
 
-The common corpus currently has source and pinned-analyzer delivery drivers.
-Runtime and agent-evaluation drivers are implemented with their surface tasks;
+The common corpus has source, pinned-analyzer delivery and real-agent drivers.
+Runtime drivers are implemented with their surface tasks;
 a profile without an executable driver is rejected.
 
 Every scenario in tests/fixtures/acceptance/scenario-corpus.json is a real
@@ -359,6 +359,10 @@ class AcceptanceServer:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait()
+        self.reader.join(timeout=10)
+        if self.reader.is_alive():
+            raise TimeoutError("source stdout reader did not stop after MCP exit")
+        self.process.stdout.close()
         try:
             self.stderr_file.close()
         except OSError:
@@ -399,19 +403,21 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 325)
+        self.assertEqual(len(scenarios), 330)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 401,
-            "a wire step went missing: the corpus freezes 401 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 456,
+            "a wire step went missing: the corpus freezes 456 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 326)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 331)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
         delivery = {s["id"] for s in select_profile(self.corpus, "delivery")["scenarios"]}
-        self.assertFalse(source & delivery)
-        self.assertEqual(source | delivery, {s["id"] for s in self.corpus["scenarios"]})
+        agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
+        self.assertFalse(source & delivery or source & agent or delivery & agent)
+        self.assertEqual(source | delivery | agent, {s["id"] for s in self.corpus["scenarios"]})
+        self.assertEqual(agent, {"S328"})
         self.assertEqual(delivery, {"S324"})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
@@ -420,7 +426,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE},
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -620,7 +626,7 @@ class DeliveredAcceptanceServer(AcceptanceServer):
             self._closed = True
 
 
-def run_corpus(test_case, corpus, plugin=None):
+def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
     default_workspace = corpus["workspace"]
     mismatches = []
     with tempfile.TemporaryDirectory(
@@ -658,6 +664,8 @@ def run_corpus(test_case, corpus, plugin=None):
                     server = fresh_server(current_workspace)
                 context = {}
                 broken = False
+                finish = scenario_driver(server, scenario) if scenario_driver else None
+                verification = []
                 for index, step in enumerate(scenario["wire"]):
                     label = f"{scenario['id']} step {index} {step['tool']}"
                     try:
@@ -690,6 +698,7 @@ def run_corpus(test_case, corpus, plugin=None):
                     # checks a typo in an address or a failing validator
                     # would pass as the intended outcome.
                     structured = response.get("result", {}).get("structuredContent") or {}
+                    verification.append({"tool": step["tool"], "args": arguments, "result": structured})
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
                     if not failures:
                         try:
@@ -701,6 +710,8 @@ def run_corpus(test_case, corpus, plugin=None):
                         broken = True
                         break
                     context = candidate
+                if finish is not None and not broken:
+                    finish(verification)
                 # A scenario that published changes leaves its mark on the
                 # workspace; the next one starts from the pristine fixture
                 # so results never depend on corpus order. The old run

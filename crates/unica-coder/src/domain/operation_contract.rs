@@ -356,7 +356,9 @@ mod tests {
             descriptor.family() == OperationFamily::Dcs
                 && IMPLEMENTED_APPLY_OPERATIONS.contains(&descriptor.name())
         }) {
-            let contract = descriptor.argument_contract().expect(descriptor.name());
+            let contract = descriptor
+                .argument_contract()
+                .unwrap_or_else(|| panic!("{} lacks its DCS contract", descriptor.name()));
             contract
                 .normalize(&contract.example_args, "args")
                 .unwrap_or_else(|error| panic!("{}: {error:?}", descriptor.name()));

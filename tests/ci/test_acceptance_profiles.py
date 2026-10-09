@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tests.ci.acceptance_profiles import (
-    REPO, SYMBOL_WORKSPACE, completed_delivery_call, host_target,
+    REPO, SYMBOL_WORKSPACE, DCS_WORKSPACE, completed_delivery_call, host_target,
     isolated_environment, select_profile, stage_analyzer, tools_builder,
 )
 
@@ -19,6 +19,9 @@ class AcceptanceProfileTests(unittest.TestCase):
             {"id": "delivery", "profile": "delivery", "driver": "bsl-analyzer",
              "workspace": SYMBOL_WORKSPACE, "wire": [
                  {"tool": "unica.search", "args": {"role": "symbol"}}]},
+            {"id": "agent", "profile": "agent-evaluation", "driver": "codex",
+             "evaluation": "dcs-contract", "workspace": DCS_WORKSPACE,
+             "wire": [{"tool": "unica.view", "args": {}}]},
         ]}
 
     def test_profiles_partition_without_omitting_or_duplicating_scenarios(self):
@@ -27,7 +30,10 @@ class AcceptanceProfileTests(unittest.TestCase):
         delivery = {s["id"] for s in select_profile(corpus, "delivery")["scenarios"]}
         self.assertEqual(source, {"source"})
         self.assertEqual(delivery, {"delivery"})
-        self.assertEqual(source | delivery, {s["id"] for s in corpus["scenarios"]})
+        agent = {s["id"] for s in select_profile(corpus, "agent-evaluation")["scenarios"]}
+        self.assertEqual(agent, {"agent"})
+        self.assertFalse(agent & (source | delivery))
+        self.assertEqual(source | delivery | agent, {s["id"] for s in corpus["scenarios"]})
         self.assertFalse(source & delivery)
 
     def test_unsupported_profile_driver_and_fixture_fail_even_when_not_selected(self):
@@ -49,7 +55,7 @@ class AcceptanceProfileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             select_profile(corpus, "source")
         with self.assertRaises(ValueError):
-            select_profile(self.corpus(), "agent-evaluation")
+            select_profile(self.corpus(), "unknown")
         for index, tool, args in [(0, "unica.run", {}), (1, "unica.search", {"role": "lexical"})]:
             corpus = self.corpus()
             corpus["scenarios"][index]["wire"] = [{"tool": tool, "args": args}]
