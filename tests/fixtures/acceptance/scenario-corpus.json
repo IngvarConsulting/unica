@@ -12334,6 +12334,3863 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S336",
+   "name": "skill-code-insert-address-and-position",
+   "pr": 1292,
+   "area": "Код BSL",
+   "task": "Module и Body: append в общем, объектном и собственном модуле расширения; точные BOM/CRLF, соседний код, повтор без записи и неизменный descriptor",
+   "workspace": "tests/fixtures/acceptance/workspace-code",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "text": "\nПроцедура Добавленный00() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append00": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append00"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "8e27b7700ea251e43c838bbe3924037de9f32131d3e681036f15b3397e6bd8da"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "text": "\nПроцедура Добавленный00() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "8e27b7700ea251e43c838bbe3924037de9f32131d3e681036f15b3397e6bd8da"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append00Repeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append00Repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "8e27b7700ea251e43c838bbe3924037de9f32131d3e681036f15b3397e6bd8da"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример.Body",
+         "text": "\nПроцедура Добавленный01() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "8e27b7700ea251e43c838bbe3924037de9f32131d3e681036f15b3397e6bd8da"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append01": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append01"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример.Body",
+         "text": "\nПроцедура Добавленный01() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append01Repeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append01Repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Пример.Module.Object",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:Catalog.Пример.Module.Object",
+         "text": "\nПроцедура Добавленный10() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append10": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append10"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "166082ca3a7ad7845118d44ac8059defd7b659d0163cdc306b23f4b78894d18d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Пример.Module.Object",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:Catalog.Пример.Module.Object",
+         "text": "\nПроцедура Добавленный10() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "166082ca3a7ad7845118d44ac8059defd7b659d0163cdc306b23f4b78894d18d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append10Repeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append10Repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "166082ca3a7ad7845118d44ac8059defd7b659d0163cdc306b23f4b78894d18d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Пример.Module.Object",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:Catalog.Пример.Module.Object.Body",
+         "text": "\nПроцедура Добавленный11() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "166082ca3a7ad7845118d44ac8059defd7b659d0163cdc306b23f4b78894d18d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append11": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append11"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Пример.Module.Object",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:Catalog.Пример.Module.Object.Body",
+         "text": "\nПроцедура Добавленный11() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append11Repeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append11Repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonModule.ПР_Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "ext:CommonModule.ПР_Пример",
+         "text": "\nПроцедура Добавленный20() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append20": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append20"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "cb2689599a4cc923bed81cd327287b214fc159f84c6692a40828ed164b100755"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonModule.ПР_Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "ext:CommonModule.ПР_Пример",
+         "text": "\nПроцедура Добавленный20() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "cb2689599a4cc923bed81cd327287b214fc159f84c6692a40828ed164b100755"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append20Repeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append20Repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "cb2689599a4cc923bed81cd327287b214fc159f84c6692a40828ed164b100755"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonModule.ПР_Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "ext:CommonModule.ПР_Пример.Body",
+         "text": "\nПроцедура Добавленный21() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "cb2689599a4cc923bed81cd327287b214fc159f84c6692a40828ed164b100755"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append21": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append21"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "e4c037002c520192e0b538de9c9722ed9928af5d624e5409ab9d144aabff134c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonModule.ПР_Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "ext:CommonModule.ПР_Пример.Body",
+         "text": "\nПроцедура Добавленный21() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "e4c037002c520192e0b538de9c9722ed9928af5d624e5409ab9d144aabff134c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "append21Repeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.append21Repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "e4c037002c520192e0b538de9c9722ed9928af5d624e5409ab9d144aabff134c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S337",
+   "name": "code-insert-method-and-anchor-line-boundaries",
+   "pr": 1292,
+   "area": "Код BSL",
+   "task": "Anchor before/after учитывает только методы; method before/after сохраняет аннотацию и соседей; точный post-image и повтор без записи",
+   "workspace": "tests/fixtures/acceptance/workspace-code",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "anchor": "// insertion point"
+         },
+         "position": "before",
+         "text": "    Сообщить(\"Перед\");\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "anchorbefore": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.anchorbefore"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "865b06acabb2261b60b7d751a1a2cbd563fb7fbfb9f202de0f8be65d6bf02332"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "anchor": "// insertion point"
+         },
+         "position": "before",
+         "text": "    Сообщить(\"Перед\");\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "865b06acabb2261b60b7d751a1a2cbd563fb7fbfb9f202de0f8be65d6bf02332"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "anchorbeforeRepeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.anchorbeforeRepeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "865b06acabb2261b60b7d751a1a2cbd563fb7fbfb9f202de0f8be65d6bf02332"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "anchor": "// insertion point"
+         },
+         "position": "after",
+         "text": "    Сообщить(\"После\");\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "865b06acabb2261b60b7d751a1a2cbd563fb7fbfb9f202de0f8be65d6bf02332"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "anchorafter": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.anchorafter"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "e6990e0343c6d60ee71c25bd422ec0cb69d0dc533509fa4968a54ad503c1ee5d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "anchor": "// insertion point"
+         },
+         "position": "after",
+         "text": "    Сообщить(\"После\");\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "e6990e0343c6d60ee71c25bd422ec0cb69d0dc533509fa4968a54ad503c1ee5d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "anchorafterRepeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.anchorafterRepeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "e6990e0343c6d60ee71c25bd422ec0cb69d0dc533509fa4968a54ad503c1ee5d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "method": "Выполнить"
+         },
+         "position": "before",
+         "text": "Процедура ПередМетодом() Экспорт\nКонецПроцедуры\n\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "e6990e0343c6d60ee71c25bd422ec0cb69d0dc533509fa4968a54ad503c1ee5d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "methodbefore": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.methodbefore"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "697494c664fa8f87dc687e036cdabc8d306c2a44af84812e42dbb2a8db59c496"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "method": "Выполнить"
+         },
+         "position": "before",
+         "text": "Процедура ПередМетодом() Экспорт\nКонецПроцедуры\n\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "697494c664fa8f87dc687e036cdabc8d306c2a44af84812e42dbb2a8db59c496"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "methodbeforeRepeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.methodbeforeRepeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "697494c664fa8f87dc687e036cdabc8d306c2a44af84812e42dbb2a8db59c496"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "method": "Выполнить"
+         },
+         "position": "after",
+         "text": "\nПроцедура ПослеМетода() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "697494c664fa8f87dc687e036cdabc8d306c2a44af84812e42dbb2a8db59c496"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "methodafter": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.methodafter"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "1a4c88aa640bfb77deff5763d3b4ed4bba7f92c231b639ee131e120b9383605e"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "method": "Выполнить"
+         },
+         "position": "after",
+         "text": "\nПроцедура ПослеМетода() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "1a4c88aa640bfb77deff5763d3b4ed4bba7f92c231b639ee131e120b9383605e"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "methodafterRepeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.methodafterRepeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "1a4c88aa640bfb77deff5763d3b4ed4bba7f92c231b639ee131e120b9383605e"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S338",
+   "name": "code-insert-refusal-and-method-body-replace",
+   "pr": 1292,
+   "area": "Код BSL",
+   "task": "Method/Method.Body insert, Body+selector и неполные position/selector отказывают без записи; замена Method.Body сохраняет подпись/BOM/CRLF/соседей и повтор",
+   "workspace": "tests/fixtures/acceptance/workspace-code",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример.Method.Выполнить",
+         "text": "// отказ"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: code.insert requires a module or its Body",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример.Method.Выполнить.Body",
+         "text": "// отказ"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: code.insert requires a module or its Body",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример.Body",
+         "selector": {
+          "method": "Выполнить"
+         },
+         "position": "after",
+         "text": "// отказ"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: an addressed BSL node cannot also have a selector",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "position": "before",
+         "text": "// отказ"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: position is unavailable without selector",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "at": "main:CommonModule.Пример",
+         "selector": {
+          "anchor": "// insertion point"
+         },
+         "text": "// отказ"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: position is required when selector is present",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "at": "main:CommonModule.Пример.Method.Выполнить.Body",
+         "text": "    Возврат Ложь;"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "replace": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.replace"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "cf65aef9ecc5706d22fcdcc25adf487d55cfe7fb4751069f5850b1a674ed9791"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.Пример",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "at": "main:CommonModule.Пример.Method.Выполнить.Body",
+         "text": "    Возврат Ложь;"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "cf65aef9ecc5706d22fcdcc25adf487d55cfe7fb4751069f5850b1a674ed9791"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "captures": {
+      "replaceRepeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.replaceRepeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример.xml",
+       "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример.xml",
+       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "cf65aef9ecc5706d22fcdcc25adf487d55cfe7fb4751069f5850b1a674ed9791"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Configuration.xml",
+       "eq": "5e3e24a4b808d505809d2a2d2e2e13517d3b86961b491d9fa6bc42abc7b18215"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример.xml",
+       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
+       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Configuration.xml",
+       "eq": "11638b1a89ccbf21e59d99e011dca192d76a3554c1e5c78c2f53032da972a152"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ext/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    }
+   ]
   }
  ]
 }

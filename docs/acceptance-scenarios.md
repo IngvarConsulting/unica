@@ -4,16 +4,16 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **335 сценариев** реальных задач разработчика конфигурации и **511 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД и MXL проверяются на отдельных `workspace-dcs/` и `workspace-mxl/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **338 сценариев** реальных задач разработчика конфигурации и **560 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 332 сценария; `delivery/bsl-analyzer` — 1; `agent-evaluation/codex` — 2. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 335 сценария; `delivery/bsl-analyzer` — 1; `agent-evaluation/codex` — 2. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 416 |
-| `refused` | умышленный типизированный отказ | 62 |
+| `ok` | результат | 460 |
+| `refused` | умышленный типизированный отказ | 67 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 20 |
 | `gap` | задокументированный пробел | 3 |
 | `provider` | провайдер недоступен | 3 |
@@ -230,8 +230,8 @@
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `code.insert` | `text` | да | S156, S159, S278, S314, S319, S325 |
-| `code.replace` | `text` | да | S157, S316 |
+| `code.insert` | `text` | да | S156, S159, S278, S314, S319, S325, S336, S337, S338 |
+| `code.replace` | `text` | да | S157, S316, S338 |
 
 ### События
 
@@ -257,7 +257,7 @@
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 187 |
+| `unica.apply` | 190 |
 | `unica.view` | 73 |
 | `unica.check` | 45 |
 | `unica.search` | 33 |
@@ -267,7 +267,7 @@
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (48) · Свойства объектов (27) · Реквизиты и состав (46) · Создание и удаление объектов (22) · Формы (26) · Код BSL (26) · Роли и права (15) · СКД (21) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (19) · Тесты и запуск (1) · Документация и стандарты (17) · Поддержка поставщика (16) · Расширения конфигурации (7) · Объекты метаданных (3) · Рабочее пространство (4)
+Области: Навигация и чтение (48) · Свойства объектов (27) · Реквизиты и состав (46) · Создание и удаление объектов (22) · Формы (26) · Код BSL (29) · Роли и права (15) · СКД (21) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (19) · Тесты и запуск (1) · Документация и стандарты (17) · Поддержка поставщика (16) · Расширения конфигурации (7) · Объекты метаданных (3) · Рабочее пространство (4)
 
 ### Навигация и чтение
 
@@ -493,6 +493,9 @@
 | S317 | Найти определение функции по смыслу | `source` | `search` | `provider` |
 | S318 | Найти определение функции по символу | `source` | `search` | `provider` |
 | S324 | После найденного метода отсутствующий символ дважды даёт завершённую пустую выдачу | `delivery/bsl-analyzer` | `search`<br>`search`<br>`search` | `ok`<br>`ok`<br>`ok` |
+| S336 | Module и Body: append в общем, объектном и собственном модуле расширения; точные BOM/CRLF, соседний код, повтор без записи и неизменный descriptor | `source` | `apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S337 | Anchor before/after учитывает только методы; method before/after сохраняет аннотацию и соседей; точный post-image и повтор без записи | `source` | `apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `code.insert`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S338 | Method/Method.Body insert, Body+selector и неполные position/selector отказывают без записи; замена Method.Body сохраняет подпись/BOM/CRLF/соседей и повтор | `source` | `apply` `code.insert`<br>`apply` `code.insert`<br>`apply` `code.insert`<br>`apply` `code.insert`<br>`apply` `code.insert`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace`<br>`apply` | `refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Роли и права
 

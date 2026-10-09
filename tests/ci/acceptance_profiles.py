@@ -17,6 +17,7 @@ AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPAC
 SOURCE_WORKSPACES = {
     DCS_WORKSPACE,
     MXL_WORKSPACE,
+    "tests/fixtures/acceptance/workspace-code",
     "tests/fixtures/acceptance/workspace",
     "tests/fixtures/acceptance/workspace-format",
     "tests/fixtures/acceptance/workspace-bare",

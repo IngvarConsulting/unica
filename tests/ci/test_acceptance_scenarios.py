@@ -405,13 +405,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 335)
+        self.assertEqual(len(scenarios), 338)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 511,
-            "a wire step went missing: the corpus freezes 511 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 560,
+            "a wire step went missing: the corpus freezes 560 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 336)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 339)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -428,7 +428,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl"},
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
