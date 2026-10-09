@@ -4,6 +4,20 @@
 
 use serde_json::{json, Map, Value};
 
+pub(crate) const MXL_MAX_ROW: i64 = 10_000;
+pub(crate) const MXL_MAX_COLUMN: i64 = 1_000;
+
+/// Preserve the existing integer spelling accepted at the apply boundary,
+/// including leading zeros and a leading plus; hints and planner share it.
+pub(crate) fn parse_mxl_cell_address(key: &str) -> Option<(i64, i64)> {
+    let rest = key.strip_prefix('R')?;
+    let (row, column) = rest.split_once('C')?;
+    let row = row.parse::<i64>().ok()?;
+    let column = column.parse::<i64>().ok()?;
+    ((1..=MXL_MAX_ROW).contains(&row) && (1..=MXL_MAX_COLUMN).contains(&column))
+        .then_some((row, column))
+}
+
 pub(crate) const DCS_ROLE_FLAGS: &[&str] = &[
     "period",
     "dimension",
@@ -190,6 +204,46 @@ impl OperationContract {
         })
     }
 
+    pub(crate) fn mxl(op: &str) -> Option<Self> {
+        let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
+        let (schema, target, effect, notes, example_args) = match op {
+            "mxl.set" => {
+                let cells = json!({"type":"object","minProperties":1,
+                    "propertyNames":{"type":"string","format":"unica-mxl-cell-address",
+                        "description":format!("R<row>C<column>, 1-based inside the area; row <= {MXL_MAX_ROW}, column <= {MXL_MAX_COLUMN}; leading zeros and plus are accepted")},
+                    "additionalProperties":scalar});
+                (object(&[("at",text(true)),("values",object(&[("area",text(true)),
+                    ("cells",cells),("columns",json!({"type":"integer","format":"unica-json-i64","minimum":1,"maximum":i64::MAX,
+                        "description":"Positive JSON integer serialized without a decimal point or exponent, in the signed 64-bit range; 1 is accepted, 1.0 and 1e0 are refused."}))], &["area","cells"]))], &["values"]),
+                "The existing SpreadsheetDocument Template itself: <source-set>:<Owner>.<name>.Template.<name>; not its Area or Body child.",
+                "Update an existing named Rows area or append a new area. Addressed parameter/template cells become ordinary text. Unaddressed cells and areas remain. Width grows to max(existing width, written column, columns); it never shrinks.",
+                "Read Template -> Area -> Body for ordered nonempty text cells; Body index is a reading ordinal, not RnCn. Parameter lists parameter names. Readability is broader than editability: drawings, non-Rows areas, overlapping/reordered areas, outside rows, multiple column sets and multilingual content the writer cannot preserve are refused before writing. Strings remain text; numbers/booleans are serialized as text; null is empty text. Full DSL, fonts, styles, merges and page properties are not public inputs. Create and execute template.add before addressing a new template.",
+                json!({"values":{"area":"Header","columns":4,"cells":{"R1C1":"Item","R1C2":"Amount","R2C1":true,"R2C2":null}}}))
+            }
+            "template.add" => {
+                let kinds: Vec<_> = crate::domain::metadata::MetaTemplateKind::ALL
+                    .iter()
+                    .map(|kind| kind.as_str())
+                    .collect();
+                let kind = json!({"default":"SpreadsheetDocument","anyOf":[{"type":"string","enum":kinds},{"not":{"type":"string"}}]});
+                (object(&[("at",text(true)),("items",json!({"type":"array","minItems":1,"items":object(&[
+                    ("name",text(true)),("templateType",kind),("synonym",json!({}))], &["name"])}))], &["items"]),
+                "An existing metadata owner that exposes template.add in can. Read its Template collection before choosing a new valid 1C identifier.",
+                "Register a new template and its initial content. The new address exists only after execution of the saved plan; preview does not create it.",
+                "The kind vocabulary comes from MetaTemplateKind. Current initial-content synthesis supports SpreadsheetDocument and DataCompositionSchema; HTMLDocument, TextDocument and BinaryData are typed refusals (tracked gap #992). Missing or non-string templateType uses SpreadsheetDocument for compatibility. synonym is accepted but currently ignored. A new DCS has no dataset. For MXL, execute creation first, then preview/execute mxl.set; view returns a node projection, not a round-trip JSON DSL.",
+                json!({"items":[{"name":"PrintLayout","templateType":"SpreadsheetDocument"}]}))
+            }
+            _ => return None,
+        };
+        Some(Self {
+            schema,
+            target,
+            effect,
+            notes,
+            example_args,
+        })
+    }
+
     pub(crate) fn normalize(&self, args: &Value, path: &str) -> Result<Value, ContractError> {
         validate(&self.schema, args, path)?;
         let mut args = args.clone();
@@ -201,7 +255,7 @@ impl OperationContract {
     pub(crate) fn details(&self) -> Value {
         json!({"argsSchema":self.schema,"target":self.target,"effect":self.effect,
             "notes":self.notes,"exampleArgs":self.example_args,
-            "exampleUse":"Choose existing names from view; this is an argument example, not a claim that its example fields or group already exist in this workspace.",
+            "exampleUse":"Read existing targets and required names through view. For creation, choose a new unused name. These argument examples do not establish that their names exist in this workspace.",
             "help":{"scope":"plugin","path":"references/use-cases/reports-printing.md"},
             "execution":"Preview with at/ops; execute only data.executionToken from the successful plan, then read the post-image and check. Observe the same Task to terminal state; never repeat a mutation to wait for it."})
     }
@@ -226,11 +280,29 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
         Some("array") => value.is_array(),
         Some("string") => value.is_string(),
         Some("boolean") => value.is_boolean(),
+        Some("number") => value.is_number(),
+        Some("integer") => value.as_i64().is_some(),
+        Some("null") => value.is_null(),
         None => true,
         other => unreachable!("unsupported internal schema type: {other:?}"),
     };
     if !valid_type {
         return Err(error(path, format!("expected {}", schema["type"])));
+    }
+    if let Some(minimum) = schema["minimum"].as_i64() {
+        if !value.as_i64().is_some_and(|number| number >= minimum) {
+            return Err(error(path, "integer is below the supported minimum"));
+        }
+    }
+    if schema["format"] == "unica-mxl-cell-address"
+        && !value
+            .as_str()
+            .is_some_and(|key| parse_mxl_cell_address(key).is_some())
+    {
+        return Err(error(
+            path,
+            format!("expected area-local R<row>C<column>, up to R{MXL_MAX_ROW}C{MXL_MAX_COLUMN}"),
+        ));
     }
     if let Some(pattern) = schema["pattern"].as_str() {
         if !value.as_str().is_some_and(|text| {
@@ -264,6 +336,28 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
         }
     }
     if let Some(object) = value.as_object() {
+        if schema["minProperties"]
+            .as_u64()
+            .is_some_and(|minimum| (object.len() as u64) < minimum)
+        {
+            return Err(error(path, "object must not be empty"));
+        }
+        if let Some(names) = schema.get("propertyNames") {
+            for key in object.keys() {
+                validate(names, &Value::String(key.clone()), &format!("{path}.{key}"))?;
+            }
+        }
+        if schema["additionalProperties"].is_object() {
+            for (key, value) in object {
+                if schema["properties"].get(key).is_none() {
+                    validate(
+                        &schema["additionalProperties"],
+                        value,
+                        &format!("{path}.{key}"),
+                    )?;
+                }
+            }
+        }
         if let Some(required) = schema["required"].as_array() {
             for key in required.iter().filter_map(Value::as_str) {
                 if !object.contains_key(key) {
@@ -284,6 +378,14 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
                     None => {}
                 }
             }
+        }
+    }
+    if let Some(values) = value.as_array() {
+        if schema["minItems"]
+            .as_u64()
+            .is_some_and(|minimum| (values.len() as u64) < minimum)
+        {
+            return Err(error(path, "array must not be empty"));
         }
     }
     if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
@@ -347,6 +449,92 @@ fn normalize_aliases(schema: &Value, value: &mut Value) {
 mod tests {
     use super::*;
     use crate::domain::apply::{OperationFamily, OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+
+    #[test]
+    fn mxl_and_template_contracts_cover_examples_and_keep_legacy_value_grammar() {
+        let registry = OperationRegistry::closed();
+        for name in ["mxl.set", "template.add"] {
+            let descriptor = registry
+                .descriptors()
+                .iter()
+                .find(|d| d.name() == name)
+                .unwrap();
+            let contract = descriptor.argument_contract().expect("shared contract");
+            assert!(contract.normalize(&contract.example_args, "args").is_ok());
+        }
+    }
+
+    #[test]
+    fn mxl_contract_checks_dynamic_keys_scalars_and_exact_integer_values() {
+        let contract = OperationContract::mxl("mxl.set").unwrap();
+        for key in ["R1C1", "R01C01", "R+1C+1", "R10000C1000"] {
+            assert!(
+                contract
+                    .normalize(
+                        &json!({"values":{"area":"A","cells":{key:null},"columns":1001}}),
+                        "args"
+                    )
+                    .is_ok(),
+                "{key}"
+            );
+        }
+        for values in [
+            json!({"area":"A","cells":[]}),
+            json!({"area":"A","cells":{}}),
+            json!({"area":"A","cells":{"R0C1":"x"}}),
+            json!({"area":"A","cells":{"R10001C1":"x"}}),
+            json!({"area":"A","cells":{"R1C1001":"x"}}),
+            json!({"area":"A","cells":{"R1C1":{}}}),
+            json!({"area":"A","cells":{"R1C1":"x"},"columns":0}),
+            json!({"area":"A","cells":{"R1C1":"x"},"columns":1.0}),
+            serde_json::from_str(r#"{"area":"A","cells":{"R1C1":"x"},"columns":1e0}"#).unwrap(),
+            json!({"area":"A","cells":{"R1C1":"x"},"columns":u64::MAX}),
+            json!({"area":"A","cells":{"R1C1":"x"},"style":"bold"}),
+        ] {
+            assert!(
+                contract
+                    .normalize(&json!({"values":values}), "args")
+                    .is_err(),
+                "{values}"
+            );
+        }
+        assert!(contract.normalize(&json!({"values":{"area":"A","cells":{"R1C1":"x","R1C2":42,"R1C3":true,"R1C4":null}}}), "args").is_ok());
+        assert!(contract
+            .normalize(
+                &json!({"values":{"area":"A","cells":{"R1C1":"x"},"columns":i64::MAX}}),
+                "args"
+            )
+            .is_ok());
+        let creation = OperationContract::mxl("template.add").unwrap();
+        for kind in [
+            Value::Null,
+            json!(7),
+            json!(true),
+            json!({}),
+            json!("SpreadsheetDocument"),
+        ] {
+            assert!(creation
+                .normalize(
+                    &json!({"items":[{"name":"Layout","templateType":kind,"synonym":7}]}),
+                    "args"
+                )
+                .is_ok());
+        }
+        assert_eq!(
+            creation
+                .normalize(&json!({"items":[{"name":"Layout"}]}), "args")
+                .unwrap()["items"][0]["templateType"],
+            "SpreadsheetDocument"
+        );
+        assert!(creation
+            .normalize(
+                &json!({"items":[{"name":"Layout","templateType":"Unknown"}]}),
+                "args"
+            )
+            .is_err());
+        assert!(creation.normalize(&json!({"items":[]}), "args").is_err());
+        assert_eq!(parse_mxl_cell_address("R01C+01"), Some((1, 1)));
+    }
 
     #[test]
     fn every_implemented_dcs_operation_has_a_valid_example_and_small_contract() {

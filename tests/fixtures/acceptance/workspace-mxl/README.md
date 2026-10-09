@@ -1,0 +1,1 @@
+Synthetic source-only spreadsheet fixture for public MXL acceptance. It is not evidence of platform import or printing. Unsafe templates retain the preimages of executed public counterexamples; the editable template uses writer-generated XML with disjoint row areas.

@@ -44,6 +44,7 @@ from pathlib import Path
 from tests.ci.acceptance_controls import (
     capture_values,
     content_mismatches,
+    file_value,
     load_corpus,
     matches_step,
     substitute_capture,
@@ -404,13 +405,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 330)
+        self.assertEqual(len(scenarios), 335)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 456,
-            "a wire step went missing: the corpus freezes 456 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 511,
+            "a wire step went missing: the corpus freezes 511 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 331)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 336)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -418,7 +419,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent, {s["id"] for s in self.corpus["scenarios"]})
-        self.assertEqual(agent, {"S328"})
+        self.assertEqual(agent, {"S328", "S335"})
         self.assertEqual(delivery, {"S324"})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
@@ -427,7 +428,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs"},
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -710,6 +711,14 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                         mismatches.extend(f"{label}: {failure}" for failure in failures)
                         broken = True
                         break
+                    # The independent evaluator needs the actual file values,
+                    # not merely the fact that this harness compared them.
+                    if step.get("fileAssertions"):
+                        verification[-1]["fileObservations"] = [
+                            {"descriptor": substitute(descriptor, context),
+                             "observed": file_value(server.workspace, descriptor)}
+                            for descriptor in step["fileAssertions"]
+                        ]
                     context = candidate
                 if finish is not None and not broken:
                     finish(verification)

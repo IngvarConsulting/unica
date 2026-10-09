@@ -584,19 +584,7 @@ fn parse_dcs_operation(
     }))
 }
 
-/// The largest area the cell editor addresses in one call; a spreadsheet
-/// template is a print form, not a data grid, and an unbounded row number
-/// would otherwise make the planner allocate that many rows.
-const MXL_MAX_ROW: i64 = 10_000;
-const MXL_MAX_COLUMN: i64 = 1_000;
-
-fn parse_cell_address(key: &str) -> Option<(i64, i64)> {
-    let rest = key.strip_prefix('R')?;
-    let (row, col) = rest.split_once('C')?;
-    let row = row.parse::<i64>().ok()?;
-    let col = col.parse::<i64>().ok()?;
-    ((1..=MXL_MAX_ROW).contains(&row) && (1..=MXL_MAX_COLUMN).contains(&col)).then_some((row, col))
-}
+use crate::domain::operation_contract::parse_mxl_cell_address as parse_cell_address;
 
 /// The legacy schema editor reads its values as a small text language with
 /// reserved tokens (`@on`, `@user`, `[title]`, `name:type`, ` => `). Typed
@@ -710,6 +698,108 @@ fn require_editable_spreadsheet(xml_text: &str, at_path: &str) -> Result<(), App
             .at_path(at_path.to_string()));
         }
     }
+    let root = document.root_element();
+    let refusal = |reason: &str| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            format!("the cell editor cannot preserve {reason}; edit this template in the Designer"),
+        )
+        .at_path(at_path.to_string())
+    };
+    fn child<'a, 'input>(
+        node: roxmltree::Node<'a, 'input>,
+        name: &str,
+    ) -> Option<roxmltree::Node<'a, 'input>> {
+        node.children()
+            .find(|item| item.is_element() && item.tag_name().name() == name)
+    }
+    let columns: Vec<_> = root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "columns")
+        .collect();
+    if columns.len() > 1
+        || root
+            .descendants()
+            .any(|node| node.is_element() && node.tag_name().name() == "columnsID")
+        || columns.iter().any(|node| child(*node, "id").is_some())
+    {
+        return Err(refusal("multiple or identified column sets"));
+    }
+    if let Some(settings) = child(root, "languageSettings") {
+        if ["currentLanguage", "defaultLanguage"].iter().any(|name| {
+            child(settings, name)
+                .and_then(|node| node.text())
+                .is_some_and(|text| text.trim() != "ru")
+        }) || settings
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "languageInfo")
+            .any(|info| child(info, "id").and_then(|node| node.text()) != Some("ru"))
+        {
+            return Err(refusal("non-Russian language settings"));
+        }
+    }
+    for node in root.descendants().filter(|node| node.is_element()) {
+        let translations: Vec<_> = node
+            .children()
+            .filter(|item| {
+                item.is_element()
+                    && item.tag_name().namespace() == Some("http://v8.1c.ru/8.1/data/core")
+                    && item.tag_name().name() == "item"
+            })
+            .collect();
+        if translations.len() > 1
+            || translations.iter().any(|item| {
+                item.children()
+                    .find(|part| part.is_element() && part.tag_name().name() == "lang")
+                    .and_then(|part| part.text())
+                    != Some("ru")
+            })
+        {
+            return Err(refusal("multilingual cell text or format translations"));
+        }
+    }
+    let rows: Vec<_> = root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "rowsItem")
+        .collect();
+    if crate::infrastructure::native_operations::mxl::is_platform_empty_mxl_sentinel(root, &rows) {
+        return Ok(());
+    }
+    let integer = |node, name| {
+        child(node, name)
+            .and_then(|item| item.text())
+            .and_then(|text| text.trim().parse::<i64>().ok())
+    };
+    let mut end = 0i64;
+    for named in root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "namedItem")
+    {
+        let area = child(named, "area").ok_or_else(|| refusal("an incomplete named area"))?;
+        let begin = integer(area, "beginRow").ok_or_else(|| refusal("an invalid area boundary"))?;
+        let last = integer(area, "endRow").ok_or_else(|| refusal("an invalid area boundary"))?;
+        if begin != end || last < begin {
+            return Err(refusal(
+                "outside rows, overlapping areas or a different physical area order",
+            ));
+        }
+        end = last
+            .checked_add(1)
+            .ok_or_else(|| refusal("an overflowing area boundary"))?;
+    }
+    if rows.iter().any(|row| {
+        let Some(index) = integer(*row, "index") else {
+            return true;
+        };
+        let last = if child(*row, "indexTo").is_some() {
+            integer(*row, "indexTo")
+        } else {
+            Some(index)
+        };
+        !last.is_some_and(|last| index >= 0 && last >= index && last < end)
+    }) {
+        return Err(refusal("rows outside the named areas"));
+    }
     Ok(())
 }
 
@@ -718,7 +808,28 @@ fn parse_mxl_set(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<DcsMxlPlanKind, ApplyPlanError> {
+    let normalized = crate::domain::operation_contract::OperationContract::mxl("mxl.set")
+        .expect("MXL contract")
+        .normalize(
+            &Value::Object(args.clone()),
+            &format!("ops[{op_index}].args"),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+        })?;
+    let args = normalized.as_object().expect("object contract");
     let address = qualified_target(args, op_index, binding)?;
+    if !address
+        .segments()
+        .last()
+        .is_some_and(|segment| segment.kind() == NodeKind::Template && segment.name().is_some())
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "mxl.set addresses the spreadsheet template itself: `Owner.Name.Template.T`",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
     let target = dcs_target(&address, op_index)?;
     if target.terminal.is_some() || !target.data_set.is_empty() || !target.variant.is_empty() {
         return Err(ApplyPlanError::new(
@@ -729,64 +840,20 @@ fn parse_mxl_set(
     }
     let values = required_values(args, op_index)?;
     let values_path = format!("ops[{op_index}].args.values");
-    if let Some(field) = values
-        .keys()
-        .find(|field| !["area", "cells", "columns"].contains(&field.as_str()))
-    {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!("mxl.set values accept `area`, `cells` and `columns`, not `{field}`"),
-        )
-        .at_path(format!("{values_path}.{field}")));
-    }
     let area = required_text(values, &["area"], &values_path)?.to_string();
-    let columns = match values.get("columns") {
-        None => None,
-        Some(Value::Number(number)) if number.as_i64().is_some_and(|value| value >= 1) => {
-            number.as_i64()
-        }
-        Some(_) => {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                "`columns` must be a positive integer",
-            )
-            .at_path(format!("{values_path}.columns")))
-        }
-    };
-    let cells_object = values
-        .get("cells")
-        .and_then(Value::as_object)
-        .filter(|cells| !cells.is_empty())
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                "`cells` must be a non-empty object keyed by cell address, e.g. {\"R1C1\": \"Валюта\"}",
-            )
-            .at_path(format!("{values_path}.cells"))
-        })?;
+    let columns = values.get("columns").and_then(Value::as_i64);
+    let cells_object = values["cells"]
+        .as_object()
+        .expect("shared contract requires cells object");
     let mut cells = Vec::with_capacity(cells_object.len());
     for (key, value) in cells_object {
-        let (row, col) = parse_cell_address(key).ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                format!(
-                    "`{key}` is not a cell address; use `R<row>C<column>` with 1-based numbers up to R{MXL_MAX_ROW}C{MXL_MAX_COLUMN}"
-                ),
-            )
-            .at_path(format!("{values_path}.cells.{key}"))
-        })?;
+        let (row, col) = parse_cell_address(key).expect("shared contract validates cell address");
         let text = match value {
             Value::String(text) => text.clone(),
             Value::Null => String::new(),
             Value::Number(number) => number.to_string(),
             Value::Bool(flag) => flag.to_string(),
-            _ => {
-                return Err(ApplyPlanError::new(
-                    ApplyPlanErrorKind::BadValue,
-                    "a cell value must be a string, number, boolean or null",
-                )
-                .at_path(format!("{values_path}.cells.{key}")))
-            }
+            _ => unreachable!("shared contract requires scalar cells"),
         };
         cells.push(MxlCellWrite { row, col, text });
     }
@@ -1121,6 +1188,28 @@ mod tests {
     const SCHEMA: &str = include_str!(
         "../../../../../../tests/fixtures/acceptance/workspace/src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
     );
+
+    #[test]
+    fn mxl_editor_refuses_proven_lossy_writer_shapes_before_decompilation() {
+        for (name, xml) in [
+            ("UnsafeOutsideRow", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml")),
+            ("UnsafeOverlappingAreas", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml")),
+            ("UnsafePhysicalAreaOrder", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml")),
+            ("UnsafeCellTranslations", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml")),
+            ("UnsafeMultipleColumnSets", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml")),
+            ("UnsafeColumnsId", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml")),
+            ("UnsafeLanguageSettings", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml")),
+            ("UnsafeDrawing", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml")),
+            ("UnsafeColumnArea", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeColumnArea/Ext/Template.xml")),
+            ("UnsafeFormatTranslations", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml")),
+            ("UnsafeCompressedOutsideRow", include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeCompressedOutsideRow/Ext/Template.xml")),
+        ] {
+            assert!(require_editable_spreadsheet(xml, "ops[0].args.at").is_err(), "{name} would lose untouched content");
+        }
+        let inside = include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/UnsafeCompressedOutsideRow/Ext/Template.xml")
+            .replace("<indexTo>4</indexTo>", "<indexTo>1</indexTo>");
+        assert!(require_editable_spreadsheet(&inside, "ops[0].args.at").is_ok());
+    }
 
     #[test]
     fn dcs_contract_refuses_ignored_arguments_instead_of_planning_another_edit() {
@@ -1507,7 +1596,7 @@ mod tests {
 
     #[test]
     fn spreadsheets_with_unmodeled_content_are_refused_as_invalid_source() {
-        let editable = "<?xml version=\"1.0\"?><document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"><languageSettings/><columns/><rowsItem/><namedItem><type>Rows</type></namedItem></document>";
+        let editable = include_str!("../../../../../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml");
         assert!(require_editable_spreadsheet(editable, "ops[0].args.at").is_ok());
         let with_drawing = "<?xml version=\"1.0\"?><document xmlns=\"http://v8.1c.ru/8.2/data/spreadsheet\"><columns/><drawing/></document>";
         let error = require_editable_spreadsheet(with_drawing, "ops[0].args.at").unwrap_err();

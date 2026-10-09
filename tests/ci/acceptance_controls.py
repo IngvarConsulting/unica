@@ -98,7 +98,7 @@ def relative_file(path):
     return value
 
 
-def read_file(workspace, path):
+def observation_path(workspace, path):
     relative = relative_file(path)
     root = Path(workspace).resolve(strict=True)
     current = root
@@ -106,8 +106,12 @@ def read_file(workspace, path):
         current /= part
         if current.is_symlink():
             raise ValueError("file observations must not follow symlinks")
-    current.resolve(strict=True).relative_to(root)
-    return current.read_bytes()
+    current.resolve(strict=False).relative_to(root)
+    return current
+
+
+def read_file(workspace, path):
+    return observation_path(workspace, path).read_bytes()
 
 
 def xml_root(raw):
@@ -118,6 +122,8 @@ def xml_root(raw):
 
 
 def file_value(workspace, descriptor):
+    if descriptor["kind"] == "exists":
+        return observation_path(workspace, descriptor["path"]).exists()
     raw = read_file(workspace, descriptor.get("path", descriptor.get("file")))
     if descriptor["kind"] == "sha256":
         return hashlib.sha256(raw).hexdigest()
@@ -159,7 +165,10 @@ def assert_value(value, assertion, context):
 
 def validate_file_operand(assertion, expected):
     op = operator(assertion)
-    if assertion["kind"] == "sha256":
+    if assertion["kind"] == "exists":
+        if op != "eq" or type(expected) is not bool:
+            raise ValueError("exists requires boolean eq")
+    elif assertion["kind"] == "sha256":
         if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
             raise ValueError("SHA256 operand must be a 64-character lowercase digest")
     elif op == "contains":
@@ -194,7 +203,10 @@ def validate_controls(step, declared=None):
             else:
                 relative_file(assertion.get("path"))
                 kind = assertion.get("kind")
-                if kind == "sha256":
+                if kind == "exists":
+                    if set(assertion) != {"path", "kind", "eq"}:
+                        raise ValueError("exists requires only boolean eq")
+                elif kind == "sha256":
                     if set(assertion) != {"path", "kind", op} or op not in {"eq", "notEq"}:
                         raise ValueError("sha256 requires eq or notEq")
                     expected = assertion[op]

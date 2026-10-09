@@ -12,8 +12,11 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DCS_WORKSPACE = "tests/fixtures/acceptance/workspace-dcs"
+MXL_WORKSPACE = "tests/fixtures/acceptance/workspace-mxl"
+AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
 SOURCE_WORKSPACES = {
     DCS_WORKSPACE,
+    MXL_WORKSPACE,
     "tests/fixtures/acceptance/workspace",
     "tests/fixtures/acceptance/workspace-format",
     "tests/fixtures/acceptance/workspace-bare",
@@ -43,7 +46,7 @@ def select_profile(corpus, profile):
                    for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: analyzer driver supports symbol search only")
         elif current == "agent-evaluation":
-            if driver != "codex" or workspace != DCS_WORKSPACE or scenario.get("evaluation") != "dcs-contract":
+            if driver != "codex" or AGENT_EVALUATIONS.get(scenario.get("evaluation")) != workspace:
                 raise ValueError(f"{scenario['id']}: invalid agent driver, evaluation or fixture")
             if any(step["tool"] not in {"unica.view", "unica.check"} for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: agent post-image wire must be read-only")

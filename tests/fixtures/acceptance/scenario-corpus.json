@@ -10740,6 +10740,1600 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S331",
+   "name": "mxl-reported-cells-example",
+   "issue": 1301,
+   "area": "Макеты",
+   "task": "Исходный сценарий #1301: создать макет, две адресованные cells читаются по порядку; check=mxl passed",
+   "workspace": "tests/fixtures/acceptance/workspace-mxl",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report",
+      "filter": {
+       "sections": [
+        "can"
+       ],
+       "can": {
+        "op": "template.add"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can/0/contract/argsSchema/properties/items/items/properties/templateType/default",
+       "eq": "SpreadsheetDocument"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "Reported",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/cf/Reports/F06Report/Templates/Reported/Ext/Template.xml",
+       "eq": false
+      }
+     ],
+     "captures": {
+      "create": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.create"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.Reported",
+      "filter": {
+       "sections": [
+        "can"
+       ],
+       "can": {
+        "op": "mxl.set"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can/0/contract/argsSchema/properties/values/required",
+       "eq": [
+        "area",
+        "cells"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.Reported",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "Header",
+          "cells": {
+           "R1C1": "Номенклатура",
+           "R1C2": "Сумма"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "captures": {
+      "fill": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.fill"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.Reported.Area.Header.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 1,
+         "template": false,
+         "text": "Номенклатура"
+        },
+        {
+         "index": 2,
+         "template": false,
+         "text": "Сумма"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Reported/Ext/Template.xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "Номенклатура",
+        "Сумма"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "cf:Report.F06Report.Template.Reported"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "mxl"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S332",
+   "name": "mxl-cell-contract-scalars-neighbors-and-revisions",
+   "issue": 1311,
+   "area": "Макеты",
+   "task": "Скалярные cells/null, замена параметра/шаблона, соседи, рост без уменьшения ширины, повтор без дубликата, новая область и stale token",
+   "workspace": "tests/fixtures/acceptance/workspace-mxl",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A.Parameter"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/title",
+       "eq": "Probe"
+      },
+      {
+       "pointer": "/data/items/1/title",
+       "eq": "Label [tpl]"
+      }
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"
+      },
+      "owner": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Stale"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "stale": {
+       "pointer": "/data/executionToken"
+      }
+     },
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C2": "ConvertedParam",
+           "R1C3": "ConvertedTemplate",
+           "R2C2": 42,
+           "R2C3": true,
+           "R2C4": null
+          },
+          "columns": 4
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "scalars": {
+       "pointer": "/data/executionToken"
+      }
+     },
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.scalars"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "after": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 1,
+         "template": false,
+         "text": "Changed"
+        },
+        {
+         "index": 2,
+         "template": false,
+         "text": "ConvertedParam"
+        },
+        {
+         "index": 3,
+         "template": false,
+         "text": "ConvertedTemplate"
+        },
+        {
+         "index": 4,
+         "template": false,
+         "text": "Shared"
+        },
+        {
+         "index": 5,
+         "template": false,
+         "text": "42"
+        },
+        {
+         "index": 6,
+         "template": false,
+         "text": "true"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}columns/{http://v8.1c.ru/8.2/data/spreadsheet}size",
+       "eq": [
+        "4"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "select": ".//{http://v8.1c.ru/8.2/data/spreadsheet}parameter",
+       "eq": []
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "Changed",
+        "ConvertedParam",
+        "ConvertedTemplate",
+        "Shared",
+        "42",
+        "true",
+        "",
+        "Shared",
+        "Last"
+       ]
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report.xml",
+       "eq": "$capture.owner"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A.Parameter"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.stale"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "stale_revision: retained apply preimage changed: Reports/F06Report/Templates/F06Template/Ext/Template.xml; request a fresh plan with apply(at, ops)",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.after"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report.xml",
+       "eq": "$capture.owner"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R01C+02": "ConvertedParam"
+          },
+          "columns": 2
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "repeat": {
+       "pointer": "/data/executionToken"
+      }
+     },
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.after"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.B.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 1,
+         "template": false,
+         "text": "Shared"
+        },
+        {
+         "index": 2,
+         "template": false,
+         "text": "Last"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}columns/{http://v8.1c.ru/8.2/data/spreadsheet}size",
+       "eq": [
+        "4"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}name",
+       "eq": [
+        "A",
+        "B"
+       ]
+      }
+     ],
+     "captures": {
+      "repeatImage": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "C",
+          "cells": {
+           "R1C1": "NewArea",
+           "R2C2": "Footer"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "newArea": {
+       "pointer": "/data/executionToken"
+      }
+     },
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.repeatImage"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.newArea"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.C.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 1,
+         "template": false,
+         "text": "NewArea"
+        },
+        {
+         "index": 2,
+         "template": false,
+         "text": "Footer"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}name",
+       "eq": [
+        "A",
+        "B",
+        "C"
+       ]
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report.xml",
+       "eq": "$capture.owner"
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "mxl"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S333",
+   "name": "mxl-readable-lossy-profiles-refuse-without-write",
+   "issue": 1311,
+   "area": "Макеты",
+   "task": "Чтение шире редактирования: соседние строки, пересечения и порядок областей, языки и наборы колонок не теряются при отказе",
+   "workspace": "tests/fixtures/acceptance/workspace-mxl",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeOutsideRow"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeOutsideRow",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve outside rows, overlapping areas or a different physical area order; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml",
+       "eq": "f1ac46633f0ae18db5a505d4d455674cd996eabea6aff43650faceb720578967"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeOverlappingAreas"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeOverlappingAreas",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve outside rows, overlapping areas or a different physical area order; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml",
+       "eq": "99d9b7184dd7451a7d1b271cea063952d66ecf18a979ee84c96356bc94b4d054"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafePhysicalAreaOrder"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafePhysicalAreaOrder",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve outside rows, overlapping areas or a different physical area order; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml",
+       "eq": "4b538e3b77d208c904a393dfab1980f97b433367429123d31a53c2883e4c9e3c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeCellTranslations"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeCellTranslations",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve multilingual cell text or format translations; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml",
+       "eq": "8fe1d34e5159efd275a70b3b82dcc46f5ea9b69662f7170058cc99b52178036a"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeMultipleColumnSets"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeMultipleColumnSets",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve multiple or identified column sets; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml",
+       "eq": "8cd998a7d55031ba9b175f78557c1c64b4ef2722e6b7d82f18a7a77e3b62c9da"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeColumnsId"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeColumnsId",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve multiple or identified column sets; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml",
+       "eq": "909d28947be628fc756b10ebaf33c6982755bb0c42e8e7db18e132a55c34df10"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeLanguageSettings"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeLanguageSettings",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve non-Russian language settings; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml",
+       "eq": "72b0945ff487f5b46c7a8088ba929e13bb508ead49a0551f7d1d15fc4bb00973"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeDrawing"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeDrawing",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the spreadsheet holds `drawing` content the cell editor cannot preserve; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml",
+       "eq": "bd3c443c1b825d82bca13566c831f334dfe3589171f77384e03f0beca9642eba"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeColumnArea"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeColumnArea",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the spreadsheet holds `namedItem` content the cell editor cannot preserve; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnArea/Ext/Template.xml",
+       "eq": "e91d7d425fc1bd31f8e9d520f14f8d217d98bfd2b5bc760afb50758f34aab4c1"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeFormatTranslations"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeFormatTranslations",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve multilingual cell text or format translations; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml",
+       "eq": "37012a5a2337626c4fa2ae462bc0d3c5bea8ba2887123387f45726c5bec6c52b"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeCompressedOutsideRow"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.UnsafeCompressedOutsideRow",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "Changed"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "invalid_source: the cell editor cannot preserve rows outside the named areas; edit this template in the Designer",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeCompressedOutsideRow/Ext/Template.xml",
+       "eq": "e5a25aa22346cbb898c72729cfaebca8b5baa4bd9999cb0bb439b65d90549745"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S334",
+   "name": "mxl-contract-refusals-preserve-source",
+   "issue": 1311,
+   "area": "Макеты",
+   "task": "Массив/пустые cells, координаты/типы, оформление, дробная ширина и адрес Area отказывают без записи",
+   "workspace": "tests/fixtures/acceptance/workspace-mxl",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": []
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: expected \"object\"",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {}
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: object must not be empty",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R0C1": "x"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: expected area-local R<row>C<column>, up to R10000C1000",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": {}
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: one of the supported argument alternatives must match",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "x"
+          },
+          "font": "Arial"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: unknown argument",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "x"
+          },
+          "columns": 1.0
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: expected \"integer\"",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "A",
+          "cells": {
+           "R1C1": "x"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: mxl.set addresses the spreadsheet template itself: `Owner.Name.Template.T`",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S335",
+   "name": "mxl-contract-guidance-without-skills",
+   "issue": 1311,
+   "area": "Макеты",
+   "task": "Реальный агент по can/справке создаёт MXL и заполняет область, сохраняет исходный макет, проверяет содержимое и честно объясняет предел DSL",
+   "workspace": "tests/fixtures/acceptance/workspace-mxl",
+   "profile": "agent-evaluation",
+   "driver": "codex",
+   "evaluation": "mxl-contract",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A.Parameter"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/title",
+       "eq": "Probe"
+      },
+      {
+       "pointer": "/data/items/1/title",
+       "eq": "Label [tpl]"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.Agent1311.Area.Header.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 1,
+         "template": false,
+         "text": "Товар"
+        },
+        {
+         "index": 2,
+         "template": false,
+         "text": "Сумма"
+        },
+        {
+         "index": 3,
+         "template": false,
+         "text": "Agent1311"
+        },
+        {
+         "index": 4,
+         "template": false,
+         "text": "12.5"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}content[.!='']",
+       "eq": [
+        "Товар",
+        "Сумма",
+        "Agent1311",
+        "12.5"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}columns/{http://v8.1c.ru/8.2/data/spreadsheet}size",
+       "eq": [
+        "4"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}name",
+       "eq": [
+        "Header"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem/{http://v8.1c.ru/8.2/data/spreadsheet}index",
+       "eq": [
+        "0",
+        "1"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}area/{http://v8.1c.ru/8.2/data/spreadsheet}beginRow",
+       "eq": [
+        "0"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}namedItem/{http://v8.1c.ru/8.2/data/spreadsheet}area/{http://v8.1c.ru/8.2/data/spreadsheet}endRow",
+       "eq": [
+        "1"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}i",
+       "eq": []
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem[{http://v8.1c.ru/8.2/data/spreadsheet}index='0']/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}tl/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content[.!='']",
+       "eq": [
+        "Товар",
+        "Сумма"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem[{http://v8.1c.ru/8.2/data/spreadsheet}index='1']/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}tl/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content[.!='']",
+       "eq": [
+        "Agent1311",
+        "12.5"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c[3]/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}tl/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content[.!='']",
+       "eq": []
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F06Report/Templates/Agent1311/Ext/Template.xml",
+       "select": "./{http://v8.1c.ru/8.2/data/spreadsheet}rowsItem/{http://v8.1c.ru/8.2/data/spreadsheet}row/{http://v8.1c.ru/8.2/data/spreadsheet}c[4]/{http://v8.1c.ru/8.2/data/spreadsheet}c/{http://v8.1c.ru/8.2/data/spreadsheet}tl/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content[.!='']",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "cf:Report.F06Report.Template.Agent1311"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "mxl"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
+      }
+     ]
+    }
+   ]
   }
  ]
 }
