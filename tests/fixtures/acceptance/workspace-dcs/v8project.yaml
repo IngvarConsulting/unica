@@ -1,0 +1,5 @@
+format: DESIGNER
+source-set:
+  - name: cf
+    type: CONFIGURATION
+    path: src/cf

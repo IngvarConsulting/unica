@@ -63,6 +63,18 @@ class SkillProvenanceTests(unittest.TestCase):
 
         self.assertEqual(report.errors, [])
 
+    def test_retired_prompt_marker_cannot_hide_an_active_skill_or_a_bad_type(self) -> None:
+        module = load_upstream_module()
+        for value, expected in [(False, "retired promptSkill still exists"), ("false", "promptSkill must be a boolean")]:
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temporary:
+                data = self.load_provenance()
+                entry = next(entry for upstream in data["upstreams"] for entry in upstream["entries"] if entry["skill"] == "meta-info")
+                entry["promptSkill"] = value
+                path = Path(temporary) / "skill-upstreams.json"
+                path.write_text(json.dumps(data), encoding="utf-8")
+                errors = module.validate_index(self.repo_root(), path).errors
+                self.assertTrue(any(expected in error for error in errors), errors)
+
     def test_tracking_ref_resolution_prefers_fetched_remote_branch(self) -> None:
         module = load_upstream_module()
 
@@ -476,6 +488,7 @@ class SkillProvenanceTests(unittest.TestCase):
             entry["skill"]
             for upstream in data["upstreams"]
             for entry in upstream["entries"]
+            if entry.get("promptSkill", True)
         }
         indexed_skills.update(entry["skill"] for entry in data.get("unicaOwnedSkills", []))
 

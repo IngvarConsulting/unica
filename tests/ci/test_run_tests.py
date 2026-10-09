@@ -52,12 +52,14 @@ class RunTestsSeamTests(unittest.TestCase):
         )
         runner_script = str(MODULE_PATH.with_name("run-unittest.py"))
         self.assertEqual(
-            python,
+            python[:2],
             [
                 ["python", runner_script, "-s", "tests/ci", "--durations", "20"],
                 ["python", runner_script, "-s", "tests/dev", "--durations", "20"],
             ],
         )
+        self.assertEqual(python[2:], [
+            ["python", runner_script, "-s", "tests/agent_evaluation", "--durations", "20", "--size", "large"]])
 
     def test_all_ecosystems_keep_rust_before_python(self) -> None:
         module = load_module()
@@ -68,7 +70,7 @@ class RunTestsSeamTests(unittest.TestCase):
         self.assertEqual([command[0] for command in planned[:3]], ["cargo"] * 3)
         self.assertTrue(all(command[0] == "python" for command in planned[3:]))
         self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[3:]))
-        self.assertEqual(len(planned), 5)
+        self.assertEqual(len(planned), 6)
 
     def test_results_directory_turns_emission_on_for_python_suites(self) -> None:
         """Без `--results` набор идёт как раньше; с ним пишет результаты и знает раннер."""
@@ -359,18 +361,16 @@ class GateProfileTests(unittest.TestCase):
 
         module.report_surviving_product_processes(run_query=missing_shell)
 
-    def test_every_gate_runs_every_python_suite_while_all_suites_are_small(self) -> None:
-        """Отбора пока нет: все наборы `small`, и любые ворота гоняют оба набора."""
+    def test_every_gate_runs_suites_of_its_admitted_sizes(self) -> None:
+        """Каждый набор запускается именно в воротах, допускающих его размер."""
         module = load_module()
 
         for gate in module.PROFILES:
-            if gate == "large":
-                continue
             with self.subTest(gate=gate):
                 suites = [command[3] for command in module.python_commands(gate, "python3")]
-                self.assertEqual(suites, [suite for suite, _, _ in module.PYTHON_SUITES])
-        # Ночной ярус принимает только `large`, а таких наборов пока нет.
-        self.assertEqual(module.python_commands("large", "python3"), [])
+                self.assertEqual(suites, [suite for suite, size, _ in module.PYTHON_SUITES
+                                         if size in module.ADMITTED[gate]])
+        self.assertEqual([command[3] for command in module.python_commands("large", "python3")], ["tests/agent_evaluation"])
 
     def test_plan_only_for_python_writes_the_composition_of_the_suite(self) -> None:
         """Состав набора — до запуска, тем же швом: джоба, умершая на середине, его не унесёт."""

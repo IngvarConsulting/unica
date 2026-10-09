@@ -90,6 +90,8 @@ def build(corpus: dict) -> dict[str, object]:
             "task": scenario["task"],
             "workspace": scenario.get("workspace", ""),
             "mode": scenario_mode(scenario),
+            "profile": scenario.get("profile", "source"),
+            "driver": scenario.get("driver", ""),
             "wire": [
                 {
                     "tool": step["tool"],
@@ -98,7 +100,8 @@ def build(corpus: dict) -> dict[str, object]:
                     # Целого ответа корпус не хранит — только то, что проверяет.
                     **{
                         key: step[key]
-                        for key in ("status", "validators", "refusal", "diagnostic")
+                        for key in ("status", "validators", "refusal", "diagnostic", "gap", "knownGap",
+                                    "assertions", "fileAssertions", "captures")
                         if key in step
                     },
                 }
@@ -112,6 +115,8 @@ def build(corpus: dict) -> dict[str, object]:
     return {
         "scenarios_total": f"{len(scenarios)}",
         "steps_total": f"{steps}",
+        "gap_steps_total": str(sum("gap" in step.get("expect", []) for scenario in scenarios for step in scenario["wire"])),
+        "gap_scenarios_total": str(sum(any("gap" in step.get("expect", []) for step in scenario["wire"]) for scenario in scenarios)),
         "areas_total": f"{len(areas)}",
         "ops_total": f"{len(ops)}",
         "areas": [

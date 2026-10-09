@@ -632,7 +632,7 @@
         {
           "skill": "dcs-compile",
           "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
+          "notes": "Native DCS transformations and migration-equivalence models retain the reviewed upstream origin. Owner issue #1310 removes the prompt-visible DCS skills: public unica.view can contracts share argument validation with unica.apply; domain guidance is reachable in reports-printing.md. Full JSON-DSL compilation remains an internal model, not a public tool.",
           "upstreamPaths": [
             ".claude/skills/skd-compile/**",
             "tests/skills/cases/skd-compile/**",
@@ -641,10 +641,11 @@
             "docs/1c-dcs-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/dcs-compile",
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-compile",
             "plugins/unica/references/specs/dcs-dsl-spec.md",
-            "plugins/unica/references/specs/1c-dcs-spec.md"
+            "plugins/unica/references/specs/1c-dcs-spec.md",
+            "plugins/unica/references/use-cases/reports-printing.md",
+            "crates/unica-coder/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -656,12 +657,13 @@
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
-          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+          "promptSkill": false
         },
         {
           "skill": "dcs-edit",
           "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
+          "notes": "Native DCS transformations and migration-equivalence models retain the reviewed upstream origin. Owner issue #1310 removes the prompt-visible DCS skills: public unica.view can contracts share argument validation with unica.apply; domain guidance is reachable in reports-printing.md. Full JSON-DSL compilation remains an internal model, not a public tool.",
           "upstreamPaths": [
             ".claude/skills/skd-edit/**",
             "docs/skd-guide.md",
@@ -669,10 +671,11 @@
             "docs/1c-dcs-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/dcs-edit",
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-edit",
             "plugins/unica/references/specs/dcs-dsl-spec.md",
-            "plugins/unica/references/specs/1c-dcs-spec.md"
+            "plugins/unica/references/specs/1c-dcs-spec.md",
+            "plugins/unica/references/use-cases/reports-printing.md",
+            "crates/unica-coder/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -683,7 +686,8 @@
           ],
           "decision": "ported",
           "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
-          "decisionReason": "Ported the documented donor operation semantics into canonical dcs-edit native Rust runtime behavior; Python remains only the parity reference fixture."
+          "decisionReason": "Ported the documented donor operation semantics into canonical dcs-edit native Rust runtime behavior; Python remains only the parity reference fixture.",
+          "promptSkill": false
         },
         {
           "skill": "subsystem-compile",

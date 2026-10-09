@@ -139,11 +139,15 @@ Rust items: например, функцию, модуль или `impl`. Не �
 
 `scripts/ci/run-tests.py` выбирает наборы целиком. `--profile pr` допускает
 `small`, `queue`/`main` — `small` и `medium`, `release`/`all` — все размеры.
-`--ecosystem rust|python|all` сужает экосистему; `--suite tests/ci|tests/dev`
+`--ecosystem rust|python|all` сужает экосистему; `--suite tests/ci|tests/dev|tests/agent_evaluation`
 и `--only-size` относятся только к Python. `--dry-run` лишь печатает команды.
 Профиль `large` на Linux/macOS выбирает тяжёлые Rust-тесты, а на Windows —
 весь Rust-набор, кроме одного явно исключённого теста; сверяй текущий override
-в `.config/nextest.toml`. Python-наборы сейчас в `large` не запускаются.
+в `.config/nextest.toml`. Python-набор `tests/agent_evaluation` целиком имеет
+размер `large`: runner выбирает его в `large`, `release` и `all`. Он запускает
+реальный Codex и отдельного смыслового reviewer; отсутствие CLI или авторизации
+не заменяется skip. Протоколы и привязанный к их hash вердикт сохраняются в
+`.session-temp/acceptance-agent/`. Успешный source-корпус не заменяет этот прогон.
 
 CI выбирает профиль по событию: pull request исполняет `pr`, очередь слияния
 в `main` — `queue`, push в релизную ветку — `main`; соответствие задаёт
