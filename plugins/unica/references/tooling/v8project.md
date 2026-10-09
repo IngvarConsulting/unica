@@ -49,12 +49,12 @@ infobases:
 ```
 
 The infobase belongs in `v8project.local.yaml`: which infobase a checkout is
-attached to is known to the machine, not to the project. v8-runner 0.13 reads
+attached to is known to the machine, not to the project. v8-runner 0.14 reads
 the infobase map only from the local layer. An `infobases` section (or the
 legacy `infobase` key) in `v8project.yaml` is still accepted: the adapter
 moves it into a private copy of the local layer, where fields of the local
 file override it, and keeps that copy in `.build/unica/runner-project/` of the
-working copy (the runner names this directory as the holder of a file infobase). Only
+working copy (the runner records this directory as the holder of a file infobase). Only
 `origin` is supported; multiple named bases, raw connection argv and `infobase`
 mixed with `infobases` in one file are refused. `unica.run` accepts optional
 top-level `infobase: "origin"`; another target is never silently redirected to
@@ -65,14 +65,16 @@ refuses a config that sets it. Relative `workPath`, infobase file paths, and
 source-set paths are resolved from the directory containing the primary config.
 
 `push.partialLoadThreshold` (and `build.partialLoadThreshold`) is not supported:
-v8-runner 0.13 has no partial-load threshold and chooses the mode itself; request
+v8-runner 0.14 has no partial-load threshold and chooses the mode itself; request
 a full load with `push` `full:true`. Unica refuses a config with this key; remove it.
 
 A file infobase is held by one working copy. The runner records the holder next
-to the infobase directory and refuses a write from another working copy with
-`infobase_held`; give each working copy its own infobase (`infobase.create`).
+to the infobase directory. A write from another working copy is not refused: it
+changes that copy's infobase, and the answer warns
+`infobase_of_another_copy`. Give each working copy its own infobase
+(`infobase.create`).
 
-`execution_timeout` is not supported. v8-runner 0.13 has no overall command
+`execution_timeout` is not supported. v8-runner 0.14 has no overall command
 deadline: a command runs to its terminal outcome, and limits belong to the
 steps that need them (`tools.edt_cli.command_timeout_ms`,
 `tests.execution_timeout_seconds`, `tools.client_mcp.wait_ready_timeout_ms`).
@@ -178,11 +180,11 @@ directory named `main` keeps it.
 
 | Intent | `unica.run` operation |
 | --- | --- |
-| Create an absent empty infobase | `infobase.create`, empty args; then send sources separately; no sync baseline |
+| Create an absent infobase | `infobase.create`, empty args; a file infobase is created with the main configuration of the `CONFIGURATION` source set (`initializesSources: true`), and the first `push` loads that set only if it changed and the other sets in full; a cluster infobase is created empty, and the first `push` loads every set in full |
 | Send sources / delete an extension | `push`, optional `sourceSet`, `full` and `force`; applies the database configuration after the generation check, `force:true` overwrites the infobase. Deletion uses only `delete: "InstalledName"` |
 | Replace one source set from the working configuration | `pull`, `force:true`, optional `sourceSet`, `extension`; no local-work protection |
 | Export the configuration or an extension as `.cf`/`.cfe` | `download`, `state=working` or `state=database`, `output`, optional `extension` |
-| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: v8-runner 0.13 has no load without applying the database configuration ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
+| Load a `.cf`/`.cfe` into the working configuration only | `upload` — unavailable: v8-runner 0.14 has no load without applying the database configuration ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) |
 | Build a `.cf`/`.cfe` from sources | `make`, `output`, optional `sourceSet`, `extension`; `.epf`/`.erf` are not published |
 | Export the whole infobase as `.dt` | `infobase.dump`, `output` |
 | Load a `.dt` | `infobase.restore`, `input`, `mode=create` or `mode=replace` |
@@ -214,7 +216,7 @@ the runner can load without applying and apply separately
   `unica.view {}` and write `v8project.yaml` yourself: no tool creates it.
 - Prefer `source-set` names over ad hoc source directories.
 - Treat a platform-generated CDFI sidecar `ConfigDumpInfo.xml` whose root is `ConfigDumpInfo` as local per-infobase runtime state: keep it out of Git and never use it as source-format evidence. A legitimate metadata descriptor (including an external EPF/ERF descriptor) for an object actually named `ConfigDumpInfo` remains source and belongs in Git.
-- Do not write `execution_timeout` or `push.partialLoadThreshold`: v8-runner 0.13 has neither an overall command
+- Do not write `execution_timeout` or `push.partialLoadThreshold`: v8-runner 0.14 has neither an overall command
   deadline nor a partial-load threshold, and Unica refuses a config with either key. Unica exposes no `timeoutMs` argument.
 - `upload`, `apply` and `reset` are unavailable: report loading a CF/CFE as a Unica MCP contract gap ([#1246](https://github.com/IngvarConsulting/unica/issues/1246)) and do not call the runner directly.
 - Designer/EDT conversion is not on the surface: Unica reads platform XML only.

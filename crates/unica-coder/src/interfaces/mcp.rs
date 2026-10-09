@@ -7717,7 +7717,7 @@ fn main() {
         let digest = format!("{:x}", Sha256::digest(&bytes));
         let mut core_targets = serde_json::Map::new();
         let mut runner_targets = serde_json::Map::new();
-        let runner_version = "0.13.0"; // Fixture pin must match the production runner contract.
+        let runner_version = "0.14.0"; // Fixture pin must match the production runner contract.
         for host in HostTarget::ALL {
             let target = host.as_str();
             let suffix = if target == "win-x64" { ".exe" } else { "" };

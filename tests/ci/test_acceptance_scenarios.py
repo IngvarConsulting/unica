@@ -1,7 +1,8 @@
 """Acceptance corpus: real developer tasks ride the canonical surface.
 
-The run dictionary and Task lifecycle are excluded on purpose: that half of
-the surface is being built separately and gets its own acceptance corpus.
+The common corpus has source, pinned-analyzer delivery and real-agent drivers.
+Runtime drivers are implemented with their surface tasks;
+a profile without an executable driver is rejected.
 
 Every scenario in tests/fixtures/acceptance/scenario-corpus.json is a real
 configuration-development task expressed as a wire of canonical unica.* calls
@@ -31,20 +32,36 @@ import json
 import queue
 import re
 import threading
+import time
 import os
 import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+from tests.ci.acceptance_controls import (
+    capture_values,
+    content_mismatches,
+    file_value,
+    load_corpus,
+    matches_step,
+    substitute_capture,
+    validate_controls,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS = REPO_ROOT / "tests/fixtures/acceptance/scenario-corpus.json"
 BINARY = (
-    Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
+    (REPO_ROOT / Path(os.environ.get("CARGO_TARGET_DIR", "target"))).resolve()
     / "debug"
     / ("unica.exe" if os.name == "nt" else "unica")
 )
+from tests.ci.acceptance_profiles import (
+    SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment, select_profile,
+)
+
 REFUSAL_CODES = {"bad_value", "not_found", "invalid_state", "invalid_source", "stale_revision"}
 
 EXPECT_CLASSES = {
@@ -60,6 +77,8 @@ EXPECT_CLASSES = {
 
 
 def substitute(value, context):
+    if isinstance(value, str) and value.startswith("$capture."):
+        return substitute_capture(value, context)
     if isinstance(value, str):
         if value == "$task":
             return context.get("task", "00000000-0000-4000-8000-000000000000")
@@ -218,8 +237,10 @@ class AcceptanceServer:
     a helper thread so a silent server fails the step instead of hanging the
     job until an external timeout."""
 
-    def __init__(self, cwd: Path, state: Path, protocol: str):
-        env = dict(os.environ)
+    def __init__(self, cwd: Path, state: Path, protocol: str, environment=None):
+        self.binary = BINARY
+        self.workspace = cwd
+        env = dict(os.environ if environment is None else environment)
         env["UNICA_PROVIDER_STATE_DIR"] = str(state)
         # Демон переживает сессию: без назначенной паузы он остаётся на
         # четверть часа, а сценариев в корпусе десятки — к концу набора их
@@ -228,7 +249,7 @@ class AcceptanceServer:
         self.stderr_path = state / "unica-stderr.log"
         self.stderr_file = open(self.stderr_path, "wb")  # noqa: SIM115 - lives as long as the process
         self.process = subprocess.Popen(
-            [str(BINARY)],
+            [str(self.binary)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=self.stderr_file,
@@ -277,10 +298,14 @@ class AcceptanceServer:
         except OSError:
             return ""
 
-    def receive(self, expected_id: int | None = None):
+    def receive(self, expected_id: int | None = None, timeout=None):
+        deadline = time.monotonic() + timeout if timeout is not None else None
         while True:
             try:
-                line = self.lines.get(timeout=RESPONSE_TIMEOUT_SECONDS)
+                remaining = deadline - time.monotonic() if deadline else RESPONSE_TIMEOUT_SECONDS
+                if remaining <= 0:
+                    raise queue.Empty
+                line = self.lines.get(timeout=remaining)
             except queue.Empty:
                 self.close()
                 raise TimeoutError(
@@ -295,7 +320,7 @@ class AcceptanceServer:
                 if "id" in payload and (expected_id is None or payload["id"] == expected_id):
                     return payload
 
-    def call(self, tool: str, arguments, label: str | None = None):
+    def call(self, tool: str, arguments, label: str | None = None, *, timeout=None):
         self.label = label or tool
         request_id = self.request_id()
         self.send(
@@ -306,7 +331,7 @@ class AcceptanceServer:
                 "params": {"name": tool, "arguments": arguments},
             }
         )
-        return self.receive(request_id)
+        return self.receive(request_id, timeout)
 
     def input_schema(self, tool: str):
         """The published inputSchema of one tool, read from tools/list."""
@@ -336,6 +361,10 @@ class AcceptanceServer:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait()
+        self.reader.join(timeout=10)
+        if self.reader.is_alive():
+            raise TimeoutError("source stdout reader did not stop after MCP exit")
+        self.process.stdout.close()
         try:
             self.stderr_file.close()
         except OSError:
@@ -343,6 +372,12 @@ class AcceptanceServer:
 
 
 class SavedPlanWireTests(unittest.TestCase):
+    def test_capture_values_are_opaque_even_when_they_look_like_template_tokens(self):
+        context = {"captures": {"text": "$executionToken", "object": {"at": "$rev"}},
+                   "executionToken": "saved-plan", "rev": "current-revision"}
+        self.assertEqual(substitute({"text": "$capture.text", "object": "$capture.object"}, context),
+                         {"text": "$executionToken", "object": {"at": "$rev"}})
+
     def test_execute_uses_the_preview_token_and_reads_do_not_replace_it(self):
         context = {}
         plan = {"result": {"structuredContent": {
@@ -366,37 +401,39 @@ class SavedPlanWireTests(unittest.TestCase):
 class AcceptanceCorpusShapeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+        cls.corpus = load_corpus(CORPUS)
 
-    def test_corpus_holds_the_run_free_scenario_set_uniquely_numbered(self) -> None:
+    def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 323)
+        self.assertEqual(len(scenarios), 335)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 392,
-            "a wire step went missing: the corpus freezes 392 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 511,
+            "a wire step went missing: the corpus freezes 511 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 324)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 336)])
 
-    def test_the_run_half_of_the_surface_stays_out_of_this_corpus(self) -> None:
-        for scenario in self.corpus["scenarios"]:
-            for step in scenario["wire"]:
-                self.assertNotIn(
-                    step["tool"],
-                    {"unica.run", "unica.task.get", "unica.task.result", "unica.task.cancel"},
-                    f"{scenario['id']}: run and Task acceptance lives in its own corpus",
-                )
+    def test_all_scenarios_have_an_executable_profile(self) -> None:
+        source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
+        delivery = {s["id"] for s in select_profile(self.corpus, "delivery")["scenarios"]}
+        agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
+        self.assertFalse(source & delivery or source & agent or delivery & agent)
+        self.assertEqual(source | delivery | agent, {s["id"] for s in self.corpus["scenarios"]})
+        self.assertEqual(agent, {"S328", "S335"})
+        self.assertEqual(delivery, {"S324"})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
+            declared = set()
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE},
-                f"{scenario['id']}: a scenario runs on one of the three fixture workspaces",
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl"},
+                f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
                 with self.subTest(scenario=scenario["id"], step=index):
+                    validate_controls(step, declared)
                     self.assertTrue(step["tool"].startswith("unica."))
                     expected = step["expect"]
                     self.assertTrue(expected, "every step freezes an expectation")
@@ -482,7 +519,11 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             cwd=REPO_ROOT,
             check=True,
         )
-        cls.corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+        cls.corpus = load_corpus(CORPUS)
+        for scenario in cls.corpus["scenarios"]:
+            declared = set()
+            for step in scenario["wire"]:
+                validate_controls(step, declared)
 
     def test_s047_publishes_the_planned_comment_after_reading_the_object(self) -> None:
         scenario = next(s for s in self.corpus["scenarios"] if s["id"] == "S047")
@@ -520,121 +561,204 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
                 server.close()
                 server.process.stdout.close()
 
+    def test_content_mismatch_stops_calls_and_does_not_commit_captures(self) -> None:
+        self.corpus = {**self.corpus, "scenarios": [{
+            "id": "content-counterexample", "area": "Properties", "task": "Counterexample",
+            "wire": [
+                {"tool": "unica.view", "args": {"at": "main:Enum.ВажностьПроблемыУчета"},
+                 "expect": ["ok"], "captures": {"address": {"pointer": "/at"}},
+                 "assertions": [{"pointer": "/data/props/Comment", "eq": "sentinel-never-published"}]},
+                {"tool": "unica.view", "args": {"at": "$capture.address"}, "expect": ["ok"]},
+            ],
+        }]}
+        original = AcceptanceServer.call
+        called = []
+
+        def observed(server, tool, arguments, label=None):
+            called.append(tool)
+            return original(server, tool, arguments, label)
+
+        with patch.object(AcceptanceServer, "call", observed), patch(
+            "tests.ci.test_acceptance_scenarios.capture_values", wraps=capture_values
+        ) as capture:
+            with self.assertRaisesRegex(AssertionError, "sentinel-never-published"):
+                self.test_every_wire_answers_its_frozen_classes()
+            self.assertEqual(called, ["unica.view"])
+            capture.assert_not_called()
+
     def test_every_wire_answers_its_frozen_classes(self) -> None:
-        corpus = self.corpus
-        default_workspace = corpus["workspace"]
-        mismatches = []
-        with tempfile.TemporaryDirectory(
-            prefix="unica-acceptance-", ignore_cleanup_errors=True
-        ) as raw:
-            root = Path(raw).resolve()
-            generation = 0
+        run_corpus(self, select_profile(self.corpus, "source"))
 
-            def fresh_server(workspace_relative: str) -> AcceptanceServer:
-                nonlocal generation
-                generation += 1
-                home = root / f"run-{generation}"
-                workspace = home / "workspace"
-                shutil.copytree(REPO_ROOT / workspace_relative, workspace)
-                if workspace_relative == FORMAT_WORKSPACE:
-                    derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
-                state = home / "state"
-                state.mkdir()
-                return AcceptanceServer(workspace, state, corpus["protocolVersion"])
 
-            current_workspace = default_workspace
-            server = fresh_server(current_workspace)
-            try:
-                for scenario in corpus["scenarios"]:
-                    wanted = scenario.get("workspace", default_workspace)
-                    if wanted != current_workspace:
-                        # A scenario may address another fixture workspace;
-                        # the session is bound to one, so it starts over.
-                        server.close()
-                        current_workspace = wanted
-                        server = fresh_server(current_workspace)
-                    context = {}
-                    broken = False
-                    for index, step in enumerate(scenario["wire"]):
-                        label = f"{scenario['id']} step {index} {step['tool']}"
+class DeliveredAcceptanceServer(AcceptanceServer):
+    def __init__(self, *args, **kwargs):
+        self._closed = False
+        try:
+            super().__init__(*args, **kwargs)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        if self._closed:
+            return
+        process = getattr(self, "process", None)
+        try:
+            if process is not None:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
+                reader = getattr(self, "reader", None)
+                if reader is not None:
+                    reader.join(timeout=10)
+                    if reader.is_alive():
+                        raise TimeoutError("delivery stdout reader did not stop after MCP exit")
+                process.stdout.close()
+        finally:
+            stderr = getattr(self, "stderr_file", None)
+            if stderr is not None:
+                stderr.close()
+            self._closed = True
+
+
+def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
+    default_workspace = corpus["workspace"]
+    mismatches = []
+    with tempfile.TemporaryDirectory(
+        prefix="unica-acceptance-", ignore_cleanup_errors=True
+    ) as raw:
+        root = Path(raw).resolve()
+        generation = 0
+
+        def fresh_server(workspace_relative: str) -> AcceptanceServer:
+            nonlocal generation
+            generation += 1
+            home = root / f"run-{generation}"
+            workspace = home / "workspace"
+            shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+            if workspace_relative == FORMAT_WORKSPACE:
+                derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
+            state = home / "state"
+            state.mkdir()
+            environment = isolated_environment(plugin, state) if plugin else None
+            server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
+            return server_type(workspace, state, corpus["protocolVersion"], environment)
+
+        if not corpus["scenarios"]:
+            raise ValueError("selected acceptance profile is empty")
+        current_workspace = corpus["scenarios"][0].get("workspace", default_workspace)
+        server = fresh_server(current_workspace)
+        try:
+            for scenario in corpus["scenarios"]:
+                wanted = scenario.get("workspace", default_workspace)
+                if wanted != current_workspace:
+                    # A scenario may address another fixture workspace;
+                    # the session is bound to one, so it starts over.
+                    server.close()
+                    current_workspace = wanted
+                    server = fresh_server(current_workspace)
+                context = {}
+                broken = False
+                finish = scenario_driver(server, scenario) if scenario_driver else None
+                verification = []
+                for index, step in enumerate(scenario["wire"]):
+                    label = f"{scenario['id']} step {index} {step['tool']}"
+                    try:
                         arguments = substitute(step["args"], context)
+                        if step.get("form"):
+                            arguments = form_arguments(
+                                server.input_schema(step["tool"]), arguments
+                            )
+                        response = (completed_delivery_call(server, step["tool"], arguments, label)
+                                    if plugin else server.call(step["tool"], arguments, label))
+                    except (TimeoutError, OSError, ValueError) as error:
+                        # The session is gone: record the step with the
+                        # daemon's own words and continue on a fresh one.
+                        mismatches.append(
+                            f"{label}: session failed :: {error} :: "
+                            f"stderr tail: {server.stderr_tail(400)}"
+                        )
+                        broken = True
+                        break
+                    candidate = dict(context)
+                    actual, note = classify(response, candidate)
+                    if not matches_step(step, actual):
+                        mismatches.append(
+                            f"{label}: expected {step['expect']}, got {actual} :: {note[:160]}"
+                        )
+                        broken = True
+                        break
+                    # A refusal proves its exact answer, and a check over a
+                    # node proves the verdict it froze; without these two
+                    # checks a typo in an address or a failing validator
+                    # would pass as the intended outcome.
+                    structured = response.get("result", {}).get("structuredContent") or {}
+                    verification.append({"tool": step["tool"], "args": arguments, "result": structured})
+                    failures = content_mismatches(step, structured, actual, note, server.workspace, context)
+                    if not failures:
                         try:
-                            if step.get("form"):
-                                arguments = form_arguments(
-                                    server.input_schema(step["tool"]), arguments
-                                )
-                            response = server.call(step["tool"], arguments, label)
-                        except (TimeoutError, OSError, ValueError) as error:
-                            # The session is gone: record the step with the
-                            # daemon's own words and continue on a fresh one.
-                            mismatches.append(
-                                f"{label}: session failed :: {error} :: "
-                                f"stderr tail: {server.stderr_tail(400)}"
-                            )
-                            broken = True
-                            break
-                        actual, note = classify(response, context)
-                        if not matches(step["expect"], actual):
-                            mismatches.append(
-                                f"{label}: expected {step['expect']}, got {actual} :: {note[:160]}"
-                            )
-                            continue
-                        # A refusal proves its exact answer, and a check over a
-                        # node proves the verdict it froze; without these two
-                        # checks a typo in an address or a failing validator
-                        # would pass as the intended outcome.
-                        if actual == "refused" and note != step.get("refusal"):
-                            mismatches.append(
-                                f"{label}: expected refusal {step.get('refusal')!r}, got {note!r}"
-                            )
-                        if "status" in step and actual == "ok":
-                            structured = response.get("result", {}).get("structuredContent") or {}
-                            verdict = (structured.get("data") or {}).get("status")
-                            if verdict != step["status"]:
-                                mismatches.append(
-                                    f"{label}: expected validation status {step['status']!r}, "
-                                    f"got {verdict!r}"
-                                )
-                        if "validators" in step and actual == "ok":
-                            structured = response.get("result", {}).get("structuredContent") or {}
-                            validators = (structured.get("data") or {}).get("validators")
-                            if validators != step["validators"]:
-                                mismatches.append(
-                                    f"{label}: expected validators {step['validators']!r}, "
-                                    f"got {validators!r}"
-                                )
-                        if "diagnostic" in step and actual == "ok":
-                            # A validation step may freeze one diagnostic code it
-                            # expects next to the verdict: the export-format guard
-                            # of a root outside the active profile.
-                            structured = response.get("result", {}).get("structuredContent") or {}
-                            codes = [
-                                diagnostic.get("code")
-                                for diagnostic in (
-                                    (structured.get("data") or {}).get("diagnostics") or []
-                                )
-                            ]
-                            if step["diagnostic"] not in codes:
-                                mismatches.append(
-                                    f"{label}: expected diagnostic {step['diagnostic']!r}, "
-                                    f"got {codes!r}"
-                                )
-                    # A scenario that published changes leaves its mark on the
-                    # workspace; the next one starts from the pristine fixture
-                    # so results never depend on corpus order. The old run
-                    # directory stays until the temporary directory is removed,
-                    # after the daemon's idle grace has passed.
-                    if broken or scenario_publishes(scenario):
-                        server.close()
-                        server = fresh_server(current_workspace)
-            finally:
-                server.close()
-        self.assertEqual(
-            mismatches,
-            [],
-            "the surface answered outside the frozen acceptance classes:\n"
-            + "\n".join(mismatches),
-        )
+                            candidate["captures"] = capture_values(step, structured, server.workspace, context)
+                        except (ValueError, OSError) as error:
+                            failures.append(str(error))
+                    if failures:
+                        mismatches.extend(f"{label}: {failure}" for failure in failures)
+                        broken = True
+                        break
+                    # The independent evaluator needs the actual file values,
+                    # not merely the fact that this harness compared them.
+                    if step.get("fileAssertions"):
+                        verification[-1]["fileObservations"] = [
+                            {"descriptor": substitute(descriptor, context),
+                             "observed": file_value(server.workspace, descriptor)}
+                            for descriptor in step["fileAssertions"]
+                        ]
+                    context = candidate
+                if finish is not None and not broken:
+                    finish(verification)
+                # A scenario that published changes leaves its mark on the
+                # workspace; the next one starts from the pristine fixture
+                # so results never depend on corpus order. The old run
+                # directory stays until the temporary directory is removed,
+                # after the daemon's idle grace has passed.
+                if broken or scenario_publishes(scenario):
+                    server.close()
+                    server = fresh_server(current_workspace)
+        finally:
+            server.close()
+    test_case.assertEqual(
+        mismatches,
+        [],
+        "the surface answered outside the frozen acceptance classes:\n"
+        + "\n".join(mismatches),
+    )
+
+
+class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        subprocess.run(["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"],
+                       cwd=REPO_ROOT, check=True)
+        cls.corpus = load_corpus(CORPUS)
+        for scenario in cls.corpus["scenarios"]:
+            declared = set()
+            for step in scenario["wire"]:
+                validate_controls(step, declared)
+
+    def test_analyzer_delivery_wires_have_terminal_content(self):
+        import sys
+        corpus = select_profile(self.corpus, "delivery")
+        with tempfile.TemporaryDirectory(prefix="unica-analyzer-delivery-") as raw:
+            plugin = Path(raw).resolve() / "plugin"
+            subprocess.run([sys.executable, "-m", "tests.ci.acceptance_profiles", "--stage-analyzer", str(plugin)],
+                           cwd=REPO_ROOT, timeout=90, check=True)
+            run_corpus(self, corpus, plugin)
 
 
 if __name__ == "__main__":

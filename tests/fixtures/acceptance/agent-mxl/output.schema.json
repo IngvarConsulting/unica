@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "result": {"type": "string"},
+    "fullDslSupport": {"type": "string"},
+    "explanation": {"type": "string"}
+  },
+  "required": ["result", "fullDslSupport", "explanation"]
+}

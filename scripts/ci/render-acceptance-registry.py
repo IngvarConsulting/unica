@@ -117,6 +117,9 @@ def step_wire(step: dict) -> str:
 
 
 def step_classes(step: dict) -> str:
+    if "knownGap" in step:
+        gap = step["knownGap"]
+        return f"`gap`: известный ошибочный `{gap['observedClass']}` (#{gap['issue']})"
     return " / ".join(f"`{name}`" for name in step["expect"])
 
 
@@ -145,6 +148,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         key = " / ".join(step["expect"])
         class_counts[key] = class_counts.get(key, 0) + 1
     gaps = [scenario["id"] for scenario in scenarios if any("gap" in step["expect"] for step in scenario["wire"])]
+    gap_steps = [(scenario["id"], step) for scenario in scenarios for step in scenario["wire"] if "gap" in step["expect"]]
 
     op_scenarios: dict[str, list[str]] = {}
     for scenario in scenarios:
@@ -173,16 +177,28 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     out(
         f"Корпус держит **{len(scenarios)} сценариев** реальных задач разработчика конфигурации "
         f"и **{len(steps)} шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из "
-        "классов ответа, и приёмочный тест `tests/ci/test_acceptance_scenarios.py` исполняет весь "
-        "корпус против собранного `target/debug/unica` на рабочем пространстве "
+        "классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется "
+        "против собранного `target/debug/unica`; основное рабочее пространство — "
         "`tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, "
         "без файла поддержки) идут на выведенном из него пространстве "
         "`tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом "
-        "`tests/fixtures/acceptance/workspace-bare/`. Источник истины — JSON корпуса; этот документ — его "
+        "`tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную "
+        "`tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. "
+        "СКД и MXL проверяются на отдельных `workspace-dcs/` и `workspace-mxl/`; "
+        "агентные сценарии выбираются большим набором `tests/agent_evaluation/`. "
+        "Источник истины — JSON корпуса; этот документ — его "
         "рендер для людей, и проверка на расхождение входит в тот же тест."
     )
     out("")
-    out("Словарь `run` и жизненный цикл задач в этот корпус не входят: у них будет собственный корпус.")
+    source_count = sum(s.get("profile", "source") == "source" for s in scenarios)
+    delivery_count = sum(s.get("profile") == "delivery" for s in scenarios)
+    agent_count = sum(s.get("profile") == "agent-evaluation" for s in scenarios)
+    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}. "
+        "Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной "
+        "синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. "
+        "Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, "
+        "проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. "
+        "Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.")
     out("")
     out("## Классы ответа шага")
     out("")
@@ -198,9 +214,19 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     out(
         "Провод проходной, когда каждый его шаг отвечает результатом или типизированным отказом своего "
         "класса. Сырой транспортный сбой и незадокументированный типизированный отказ роняют прогон. "
-        f"Задокументированных пробелов (`gap`) сейчас: **{len(gaps)}**"
+        f"Шагов с пробелом (`gap`) сейчас: **{len(gap_steps)}** в **{len(gaps)} сценариях**"
         + (f" ({', '.join(gaps)})." if gaps else ".")
     )
+    out("")
+    out("### Известные пробелы")
+    out("")
+    out("Потолок корпуса — восемь gap-шагов. Известный ошибочный вердикт остаётся дефектом и не означает поддержку сценария.")
+    out("")
+    out("| Сценарий | Наблюдение | Причина |")
+    out("| --- | --- | --- |")
+    for identifier, step in gap_steps:
+        reason = step["gap"].replace("|", "\\|").replace("\n", " ")
+        out(f"| {identifier} | {step_classes(step)} | {reason} |")
     out("")
     out("## Как предложить сценарий или операцию")
     out("")
@@ -295,13 +321,16 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     for name, items in areas.items():
         out(f"### {name}")
         out("")
-        out("| № | Задача | Провод | Классы шагов |")
-        out("| --- | --- | --- | --- |")
+        out("| № | Задача | Профиль | Провод | Классы шагов |")
+        out("| --- | --- | --- | --- | --- |")
         for scenario in items:
             wire = "<br>".join(step_wire(step) for step in scenario["wire"])
             classes = "<br>".join(step_classes(step) for step in scenario["wire"])
             task = scenario["task"].replace("|", "\\|")
-            out(f"| {scenario['id']} | {task} | {wire} | {classes} |")
+            execution = scenario.get("profile", "source")
+            if scenario.get("driver"):
+                execution += "/" + scenario["driver"]
+            out(f"| {scenario['id']} | {task} | `{execution}` | {wire} | {classes} |")
         out("")
     return "\n".join(line.rstrip() for line in lines).rstrip("\n") + "\n"
 

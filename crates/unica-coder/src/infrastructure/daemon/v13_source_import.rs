@@ -7,7 +7,7 @@
 //! импортируются все); `full` — сбросить кэш изменений раннера и загрузить всё
 //! целиком; `force:true` — перезаписать базу (`push --force`): каждый набор
 //! грузится целиком без сверки памяти и поколения базы, сделанное в базе
-//! теряется. Без `force` раннер 0.13 перед загрузкой набора сверяет поколение
+//! теряется. Без `force` раннер 0.14 перед загрузкой набора сверяет поколение
 //! базы с записью о прошлом обмене и отказывает `non_fast_forward`, если база
 //! ушла вперёд, или `no_memory`, если памяти о базе нет. Превью зовёт
 //! `push --dry-run`: раннер выбирает для каждого набора режим, не запуская
@@ -19,14 +19,16 @@
 //! провайдером, и ответ называет это прямо. Набор, который раннер пропустил
 //! по своей памяти, загружен не был, и поколение базы для него не сверялось:
 //! такой ответ называет состояние базы непроверенным, а не импортом. Проза
-//! шагов раннера наружу не идёт.
+//! шагов и предупреждений раннера наружу не идёт. Запись в базу другой
+//! рабочей копии, которую раннер 0.14 больше не отказывает, ответ называет
+//! своим предупреждением `infobase_of_another_copy`.
 
 use super::protocol::InvocationRequest;
-use super::runner_013::Runner013ProcessRunner;
+use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, runner_start_rejection, CONFIG_NAME,
-    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
+    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
@@ -146,7 +148,7 @@ impl PreparedSourceImport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
     }
 }
 
@@ -471,6 +473,9 @@ fn execute_with_resolved_runner(
         if nothing_planned {
             result.next.push(full_preview_hint(prepared));
         }
+        // Выход к своей базе идёт после исполнения: первый `next` превью —
+        // всегда исполнение этого же плана.
+        note_another_copy(&mut result, &preview);
         return result;
     }
     if cancellation.is_cancelled() {
@@ -538,10 +543,13 @@ fn execute_with_resolved_runner(
                 "mode": step.mode.as_str(),
             }));
         }
+        note_another_copy(&mut result, &applied);
         return result;
     }
     if !anything_loaded {
-        return nothing_loaded(prepared, &plan);
+        let mut result = nothing_loaded(prepared, &plan);
+        note_another_copy(&mut result, &applied);
+        return result;
     }
     // **Улику о состоянии базы Unica не подделывает.** База живёт за
     // соединением, и её состояние здесь засвидетельствовано провайдером, а не
@@ -559,7 +567,7 @@ fn execute_with_resolved_runner(
         )
     } else {
         format!(
-            "push imported {}; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider",
+            "push imported {}; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one made by the same tool; the infobase state is attested by the provider",
             subject_summary(&loaded)
         )
     };
@@ -594,6 +602,7 @@ fn execute_with_resolved_runner(
         result.warnings.push(warning);
     }
     result.warnings.extend(overwrite_warning(prepared, &plan));
+    note_another_copy(&mut result, &applied);
 
     result
 }
@@ -787,8 +796,11 @@ fn invoke_runner(
             },
         })
         .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
-    parse_runner_output(output)
-        .map_err(|(rejection, error)| exchange_refusal(prepared, rejection, &error))
+    parse_runner_output(output).map_err(|(rejection, envelope)| {
+        let mut result = exchange_refusal(prepared, rejection, &envelope["error"]);
+        note_another_copy(&mut result, &envelope);
+        result
+    })
 }
 
 /// Отказ обмена с базой: `non_fast_forward` — база ушла вперёд записанного
@@ -919,7 +931,7 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, (DomainResult, Va
             .unwrap_or_else(|| "v8-runner failed without a typed message".to_string());
         return Err((
             runner_rejection(Some(OPERATION.to_string()), code, message),
-            envelope["error"].clone(),
+            envelope,
         ));
     }
     Ok(envelope)
@@ -969,7 +981,7 @@ fn reject_absent_runner(message: impl Into<String>) -> DomainResult {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
     use crate::domain::refusal::Outcome;
@@ -1471,7 +1483,7 @@ mod tests {
         // засвидетельствованный провайдером, без оговорок о пропуске.
         assert_eq!(
             result.summary,
-            "push imported 2 source sets; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider"
+            "push imported 2 source sets; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one made by the same tool; the infobase state is attested by the provider"
         );
         assert_eq!(data["force"], false);
         assert_eq!(data["generationProtection"], true);
@@ -1680,18 +1692,18 @@ mod tests {
         assert_eq!(result.warnings[0]["sourceSets"], json!(["ext-sales"]));
         assert_eq!(
             result.summary,
-            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one; the infobase state is attested by the provider; 1 skipped source set(s) were not loaded and their infobase state was not verified"
+            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one made by the same tool; the infobase state is attested by the provider; 1 skipped source set(s) were not loaded and their infobase state was not verified"
         );
     }
 
     fn captured(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_013")
+            .join("../../tests/fixtures/v8_runner_014")
             .join(name);
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
-    /// Конверты раннера 0.13.0, снятые вживую на сценарии #1240: базу
+    /// Конверты раннера 0.14.0, снятые вживую на сценарии #1240: базу
     /// перезаписала другая рабочая копия, а раннер этой копии пропустил набор
     /// по своей памяти и поколение базы не сверял.
     #[test]
@@ -1741,6 +1753,60 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("did not report whether"));
+    }
+
+    /// Первые `push` после `infobase create` раннера 0.14.0, снятые вживую
+    /// (`tests/fixtures/v8_runner_014/README.md`). Создание собрало базу
+    /// с основной конфигурацией и записало память о наборе: первый `push` без
+    /// правок ничего не грузит и честно называет состояние базы непроверенным,
+    /// а `push` после правки грузит набор без отказа `no_memory`. Записи
+    /// поколения до этой загрузки нет, и ответ не выдаёт её за сверенную.
+    #[test]
+    fn captured_first_pushes_after_create_skip_the_assembled_set_and_load_an_edit() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-after-create-preview.json"), true),
+            process(captured("push-after-create-apply.json"), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), false, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(
+            result.summary.starts_with("push loaded nothing"),
+            "{result:?}"
+        );
+        assert!(result.changed.is_empty(), "{result:?}");
+        assert_eq!(result.warnings[0]["code"], "infobase_state_unverified");
+
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-after-edit-preview.json"), true),
+            process(captured("push-after-edit-apply.json"), true),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), Some("main"), false, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(!runner.joined_args(1).contains("--force"));
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["force"], false);
+        assert_eq!(data["providerDispatched"], true);
+        assert_eq!(data["steps"][0]["mode"], "full");
+        assert_eq!(data["targetStateAttestedBy"], "provider");
+        assert_eq!(result.changed.len(), 1, "{result:?}");
+        assert_eq!(result.changed[0]["sourceSet"], "main");
+        assert_eq!(result.changed[0]["mode"], "full");
+        // Режим защиты включён, но записи поколения у раннера ещё нет:
+        // ответ не выдаёт эту загрузку за сверенную.
+        assert_eq!(data["generationProtection"], true);
+        assert_eq!(
+            result.summary,
+            "push imported source set `main`; before loading, the runner compared the infobase generation with its record of the last exchange wherever it had one made by the same tool; the infobase state is attested by the provider"
+        );
     }
 
     #[test]
@@ -1839,7 +1905,6 @@ mod tests {
             ),
             ("workspace_busy", "concurrent_change", Outcome::RetryAsIs),
             ("infobase_busy", "concurrent_change", Outcome::RetryAsIs),
-            ("infobase_held", "invalid_state", Outcome::NeedsHuman),
             ("non_fast_forward", "invalid_state", Outcome::NeedsHuman),
             ("no_memory", "invalid_state", Outcome::NeedsHuman),
             ("invalid_argument", "bad_value", Outcome::FixCall),
@@ -1856,7 +1921,7 @@ mod tests {
         }
     }
 
-    /// Живые отказы раннера 0.13.0 (`tests/fixtures/v8_runner_013/`): база ушла
+    /// Живые отказы раннера 0.14.0 (`tests/fixtures/v8_runner_014/`): база ушла
     /// вперёд записи и памяти о базе нет. Unica ничего не перезаписывает сама:
     /// отказ несёт оба поколения и два выхода превью — выгрузку набора и
     /// перезапись базы через `force:true`.
@@ -1889,11 +1954,11 @@ mod tests {
         assert_eq!(data["sourceSet"], "main");
         assert_eq!(
             data["baseGeneration"],
-            "19ece0d79ec27b48af3a501835b1d59900000000"
+            "cff9bf3b55c7644487128a9f7787059000000000"
         );
         assert_eq!(
             data["localGeneration"],
-            "5d598420fd015846aeb614e7a2b98cf500000000"
+            "ed175a7e431ea74a9b3d8def289ced9700000000"
         );
         assert!(result.changed.is_empty(), "{result:?}");
         assert_eq!(result.next.len(), 2, "{result:?}");
@@ -1934,9 +1999,9 @@ mod tests {
         );
     }
 
-    /// Живые отказы занятой базы (раннер 0.13.0): другая команда держит базу —
-    /// повтор; другая рабочая копия держит базу — нужен человек, первый выход —
-    /// своя чистая база.
+    /// Живой отказ занятой базы (раннер 0.14.0): другая команда держит базу —
+    /// повтор. База другой рабочей копии отказом больше не бывает: раннер 0.14
+    /// пишет в неё с предупреждением, а `force:true` называет перезапись.
     #[test]
     fn captured_base_contention_refusals_keep_their_outcomes() {
         let root = workspace();
@@ -1959,24 +2024,104 @@ mod tests {
             .unwrap()
             .contains("retry when it finishes"));
 
+        let runner = SequenceRunner::new(vec![
+            process(captured("push-other-copy-force-preview.json"), true),
+            process(captured("push-other-copy-force-apply.json"), true),
+        ]);
+        let mut forced = prepared(root.path(), Some("main"), false, false);
+        forced.arguments.force = true;
+        let result = run(root.path(), &forced, &runner);
+        assert!(result.ok, "{result:?}");
+        assert!(runner.joined_args(1).ends_with("push main --force"));
+        assert_eq!(result.warnings[0]["code"], "infobase_overwritten");
+        // Раннер 0.14 пишет в базу другой рабочей копии с предупреждением.
+        // Ответ называет его своим предупреждением и выходом к своей базе —
+        // ни в превью, ни после исполнения не теряет и прозы раннера не несёт.
+        assert_another_copy_is_named(&result);
+
         let runner = SequenceRunner::new(vec![process(
-            captured("push-infobase-held-preview.json"),
+            captured("push-other-copy-force-preview.json"),
+            true,
+        )]);
+        forced.dry_run = true;
+        let preview = run(root.path(), &forced, &runner);
+        assert!(preview.ok, "{preview:?}");
+        assert_another_copy_is_named(&preview);
+        // Первый выход превью — исполнение этого же плана, своя база — после.
+        assert_eq!(preview.next[0]["args"]["op"], "push");
+        assert_eq!(preview.next[0]["args"]["dryRun"], false);
+
+        // Отказ без памяти в чужой копии называет её так же, третьим выходом.
+        let runner = SequenceRunner::new(vec![process(
+            captured("push-no-memory-preview.json"),
             false,
         )]);
+        let refused = run(
+            root.path(),
+            &prepared(root.path(), None, false, true),
+            &runner,
+        );
+        assert_eq!(refused.diagnostics[0]["code"], "invalid_state");
+        assert_another_copy_is_named(&refused);
+        assert_eq!(refused.next[0]["args"]["op"], "pull");
+        assert_eq!(refused.next[1]["args"]["op"], "push");
+    }
+
+    /// Своё предупреждение Unica о базе другой копии: код, текст без путей,
+    /// метки владельца и команд раннера, выход — превью `infobase.create`.
+    /// Прочие предупреждения раннера наружу не идут.
+    pub(in super::super) fn assert_another_copy_is_named(result: &DomainResult) {
+        let named: Vec<&Value> = result
+            .warnings
+            .iter()
+            .filter(|warning| warning["code"] == "infobase_of_another_copy")
+            .collect();
+        assert_eq!(named.len(), 1, "{result:?}");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .all(|warning| warning["code"] != "runner_warning"),
+            "{result:?}"
+        );
+        let encoded = serde_json::to_string(result).unwrap();
+        for leaked in [
+            "/workspace",
+            "owners.json",
+            "v8-runner",
+            "--from",
+            "init --infobase",
+            "held by the working copy",
+        ] {
+            assert!(!encoded.contains(leaked), "{leaked} leaked: {encoded}");
+        }
+        let create = result
+            .next
+            .iter()
+            .find(|next| next["args"]["op"] == "infobase.create")
+            .unwrap_or_else(|| panic!("no infobase.create preview: {result:?}"));
+        assert_eq!(create["args"]["dryRun"], true);
+        assert_eq!(create["args"]["args"], json!({}));
+    }
+
+    /// Раннер 0.14.0 убрал ключ `shared` секции базы. Unica его не пишет и не
+    /// толкует: старый местный слой с ним доходит до вызывающего типизированным
+    /// отказом раннера, а не сбоем и не молчаливым пропуском.
+    #[test]
+    fn captured_removed_shared_key_is_a_typed_refusal() {
+        let root = workspace();
+        let runner = SequenceRunner::new(vec![process(captured("shared-key-refused.json"), false)]);
         let result = run(
             root.path(),
             &prepared(root.path(), None, false, true),
             &runner,
         );
-        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
-        assert_eq!(result.diagnostics[0]["outcome"], "needsHuman");
+        assert_eq!(runner.call_count(), 1);
+        assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
         assert!(result.diagnostics[0]["message"]
             .as_str()
             .unwrap()
-            .contains("is held by the working copy"));
-        assert_eq!(result.next.len(), 1, "{result:?}");
-        assert_eq!(result.next[0]["args"]["op"], "infobase.create");
-        assert_eq!(result.next[0]["args"]["dryRun"], true);
+            .contains("unknown field `shared`"));
     }
 
     #[test]

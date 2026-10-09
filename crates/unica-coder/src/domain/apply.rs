@@ -560,6 +560,17 @@ impl OperationDescriptor {
         self.applicability.matches(kind)
     }
 
+    pub(crate) fn argument_contract(self) -> Option<super::operation_contract::OperationContract> {
+        match self.family {
+            OperationFamily::Dcs => super::operation_contract::OperationContract::dcs(self.name),
+            OperationFamily::Mxl => super::operation_contract::OperationContract::mxl(self.name),
+            OperationFamily::Metadata if self.name == "template.add" => {
+                super::operation_contract::OperationContract::mxl(self.name)
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn applies_to_operation_target(self, target: &QualifiedAddress) -> bool {
         let Some(terminal) = target.segments().last() else {
             return false;

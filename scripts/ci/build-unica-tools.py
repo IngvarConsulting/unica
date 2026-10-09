@@ -126,10 +126,11 @@ def verify_asset_size(path: Path, asset: dict, *, tool_name: str, target: str) -
         )
 
 
-def download(url: str, dest: Path) -> None:
+def download(url: str, dest: Path, *, timeout: float | None = None) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"download {url}", flush=True)
-    with urllib.request.urlopen(url) as response, dest.open("wb") as out:
+    response = urllib.request.urlopen(url) if timeout is None else urllib.request.urlopen(url, timeout=timeout)
+    with response, dest.open("wb") as out:
         shutil.copyfileobj(response, out)
 
 

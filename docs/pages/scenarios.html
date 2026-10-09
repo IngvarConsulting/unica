@@ -363,9 +363,9 @@
   function openDetails(scenario) {
     document.getElementById('details-id').textContent = scenario.id;
     document.getElementById('details-task').textContent = scenario.task;
-    document.getElementById('details-area').textContent = scenario.workspace
-      ? scenario.area + ' · ' + scenario.workspace
-      : scenario.area;
+    document.getElementById('details-area').textContent = [scenario.area,
+      (scenario.profile || 'source') + (scenario.driver ? '/' + scenario.driver : ''),
+      scenario.workspace].filter(Boolean).join(' · ');
     const wire = document.getElementById('details-wire');
     wire.replaceChildren(...scenario.wire.map((step, index) => {
       const block = document.createElement('div');
@@ -403,7 +403,7 @@
       // блоком и той же раскраской — иначе она читается как подпись, а не как
       // фрагмент ответа.
       const seen = {};
-      for (const key of ['status', 'validators', 'diagnostic', 'refusal']) {
+      for (const key of ['status', 'validators', 'diagnostic', 'refusal', 'gap', 'knownGap', 'assertions', 'fileAssertions', 'captures']) {
         if (step[key] !== undefined) seen[key] = step[key];
       }
       const payload = Object.keys(seen).length ? document.createElement('pre') : null;

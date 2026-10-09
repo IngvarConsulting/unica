@@ -16,6 +16,8 @@ check:
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_empty_results_with_ready_indexing_footer_are_empty
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_empty_marker_does_not_hide_untrusted_tail
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_at_one_source_quota_does_not_claim_exhaustion
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::bsl_analyzer_does_not_claim_complete_when_one_header_is_unreadable

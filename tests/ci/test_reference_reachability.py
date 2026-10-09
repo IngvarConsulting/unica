@@ -67,12 +67,7 @@ KNOWN_UNREACHABLE = frozenset(
         "README.md",
         "specs/1c-config-objects-spec.md",
         "specs/1c-configuration-spec.md",
-        "specs/1c-dcs-spec.md",
-        "specs/1c-epf-spec.md",
-        "specs/1c-erf-spec.md",
         "specs/1c-extension-spec.md",
-        "specs/1c-help-spec.md",
-        "specs/1c-spreadsheet-spec.md",
         "specs/1c-subsystem-spec.md",
         "specs/README.md",
         "specs/format-index.md",
@@ -83,7 +78,6 @@ KNOWN_UNREACHABLE = frozenset(
         "use-cases/extensions-cfe.md",
         "use-cases/integrations.md",
         "use-cases/metadata-modeling.md",
-        "use-cases/reports-printing.md",
         "use-cases/workspace-runtime.md",
     }
 )

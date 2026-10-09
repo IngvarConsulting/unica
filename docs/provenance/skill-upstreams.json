@@ -541,7 +541,7 @@
         {
           "skill": "mxl-compile",
           "status": "ported-to-unica",
-          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "Reviewed donor support-guard drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; Unica adapts it at the MCP application layer for this mutating tool using the shared ParentConfigurations.bin parser and .v8-project.json editingAllowedCheck deny|warn|off policy. Raw donor script wrapper path changes are not applicable because the prompt-visible skill routes through typed unica.*. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. Owner issue #1311 retires the prompt skill. Native implementation and frozen migration models retain provenance; public view can contracts own typed arguments and reports-printing.md preserves reachable domain guidance. Full DSL remains internal.",
           "upstreamPaths": [
             ".claude/skills/mxl-compile/**",
             "docs/mxl-guide.md",
@@ -549,8 +549,11 @@
             "docs/1c-spreadsheet-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/mxl-compile",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-compile"
+            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-compile",
+            "plugins/unica/references/specs/mxl-dsl-spec.md",
+            "plugins/unica/references/specs/1c-spreadsheet-spec.md",
+            "plugins/unica/references/use-cases/reports-printing.md",
+            "crates/unica-coder/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -558,12 +561,13 @@
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "promptSkill": false
         },
         {
           "skill": "mxl-decompile",
           "status": "ported-to-unica",
-          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "Reviewed current donor drift through 3d36c2026916d2ae8915f0aca0836d55e1ccaabe; no Unica behavior change is required because the changed donor surface is raw wrapper guidance not used by typed Unica MCP routing. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. Owner issue #1311 retires the prompt skill. Native implementation and frozen migration models retain provenance; public view can contracts own typed arguments and reports-printing.md preserves reachable domain guidance. Full DSL remains internal.",
           "upstreamPaths": [
             ".claude/skills/mxl-decompile/**",
             "docs/mxl-guide.md",
@@ -571,8 +575,11 @@
             "docs/1c-spreadsheet-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/mxl-decompile",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-decompile"
+            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-decompile",
+            "plugins/unica/references/specs/mxl-dsl-spec.md",
+            "plugins/unica/references/specs/1c-spreadsheet-spec.md",
+            "plugins/unica/references/use-cases/reports-printing.md",
+            "crates/unica-coder/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -580,12 +587,13 @@
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "promptSkill": false
         },
         {
           "skill": "mxl-info",
           "status": "ported-to-unica",
-          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through text-mode unica.mxl.info for the owner metadata object; JSON output contract stays structural. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface.",
+          "notes": "Support-state reporting from Ext/ParentConfigurations.bin was reviewed at current donor head and ported through text-mode unica.mxl.info for the owner metadata object; JSON output contract stays structural. 2026-06-26 cbde49 refresh: EOL-only, raw wrapper/guidance, shared docs, or donor-only capability drift reviewed and ignored for current Unica packaged MCP surface. Owner issue #1311 retires the prompt skill. Native implementation and frozen migration models retain provenance; public view can contracts own typed arguments and reports-printing.md preserves reachable domain guidance. Full DSL remains internal.",
           "upstreamPaths": [
             ".claude/skills/mxl-info/**",
             "docs/mxl-guide.md",
@@ -593,8 +601,11 @@
             "docs/1c-spreadsheet-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/mxl-info",
-            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-info"
+            "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-info",
+            "plugins/unica/references/specs/mxl-dsl-spec.md",
+            "plugins/unica/references/specs/1c-spreadsheet-spec.md",
+            "plugins/unica/references/use-cases/reports-printing.md",
+            "crates/unica-coder/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -605,7 +616,8 @@
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
-          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required."
+          "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
+          "promptSkill": false
         },
         {
           "skill": "role-compile",
@@ -632,7 +644,7 @@
         {
           "skill": "dcs-compile",
           "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
+          "notes": "Native DCS transformations and migration-equivalence models retain the reviewed upstream origin. Owner issue #1310 removes the prompt-visible DCS skills: public unica.view can contracts share argument validation with unica.apply; domain guidance is reachable in reports-printing.md. Full JSON-DSL compilation remains an internal model, not a public tool.",
           "upstreamPaths": [
             ".claude/skills/skd-compile/**",
             "tests/skills/cases/skd-compile/**",
@@ -641,10 +653,11 @@
             "docs/1c-dcs-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/dcs-compile",
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-compile",
             "plugins/unica/references/specs/dcs-dsl-spec.md",
-            "plugins/unica/references/specs/1c-dcs-spec.md"
+            "plugins/unica/references/specs/1c-dcs-spec.md",
+            "plugins/unica/references/use-cases/reports-printing.md",
+            "crates/unica-coder/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -656,12 +669,13 @@
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decisionReason": "Reviewed cbde49 drift as EOL normalization, raw PowerShell wrapper/guidance churn, shared donor docs, or donor-only capabilities outside the current Unica packaged surface; no prompt-visible Unica skill or typed MCP behavior change is required.",
-          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e"
+          "parityBaselineCommit": "e01688e764a3cf1c1b4a0ad5069ea885837cfb2e",
+          "promptSkill": false
         },
         {
           "skill": "dcs-edit",
           "status": "ported-to-unica",
-          "notes": "Runtime backend is native Rust (crates/unica-coder/src/infrastructure/native_operations/dcs.rs) behind unica.dcs.*; adapted script behavior is kept only as Unica-owned migration-equivalence models under tests/fixtures/unica_mcp_script_parity/unica_reference_models. Packaged legacy operation directories are intentionally absent.",
+          "notes": "Native DCS transformations and migration-equivalence models retain the reviewed upstream origin. Owner issue #1310 removes the prompt-visible DCS skills: public unica.view can contracts share argument validation with unica.apply; domain guidance is reachable in reports-printing.md. Full JSON-DSL compilation remains an internal model, not a public tool.",
           "upstreamPaths": [
             ".claude/skills/skd-edit/**",
             "docs/skd-guide.md",
@@ -669,10 +683,11 @@
             "docs/1c-dcs-spec.md"
           ],
           "localPaths": [
-            "plugins/unica/skills/dcs-edit",
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-edit",
             "plugins/unica/references/specs/dcs-dsl-spec.md",
-            "plugins/unica/references/specs/1c-dcs-spec.md"
+            "plugins/unica/references/specs/1c-dcs-spec.md",
+            "plugins/unica/references/use-cases/reports-printing.md",
+            "crates/unica-coder/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -683,7 +698,8 @@
           ],
           "decision": "ported",
           "baselineCommit": "78b5b73fa7f835462dc4073ae7a9fc841e7c62fb",
-          "decisionReason": "Ported the documented donor operation semantics into canonical dcs-edit native Rust runtime behavior; Python remains only the parity reference fixture."
+          "decisionReason": "Ported the documented donor operation semantics into canonical dcs-edit native Rust runtime behavior; Python remains only the parity reference fixture.",
+          "promptSkill": false
         },
         {
           "skill": "subsystem-compile",

@@ -58,12 +58,12 @@
     },
     {
       "name": "v8-runner",
-      "version": "0.13.0",
+      "version": "0.14.0",
       "repository": "https://github.com/IngvarConsulting/v8-runner-rust",
-      "sourceTag": "v0.13.0",
-      "sourceCommit": "e0b93d4114f2c5f7f5ea3b63ad08e3deaadd824e",
+      "sourceTag": "v0.14.0",
+      "sourceCommit": "d2944fe851541ce65bc3a202f401b92229386fc3",
       "assetRepository": "https://github.com/IngvarConsulting/v8-runner-rust",
-      "assetTag": "v0.13.0",
+      "assetTag": "v0.14.0",
       "license": "AGPL-3.0-only",
       "assetStrategy": "upstream-archive-release-asset",
       "binaryName": "v8-runner",
@@ -71,20 +71,20 @@
         "darwin-arm64": {
           "assetName": "v8-runner-macos-aarch64.tar.gz",
           "archiveBinary": "v8-runner-macos-aarch64/v8-runner",
-          "sha256": "70972d94a16cdfc23063e6f46aabf6296f7f5ff031cf936e3b0b39b6b3b16a2b",
-          "size": 4551011
+          "sha256": "600dc67b2566ae00d60bc151b0fb419ca0b5406427e799b590600d99bacfc4a5",
+          "size": 4588968
         },
         "linux-x64": {
           "assetName": "v8-runner-linux-x86_64-musl.tar.gz",
           "archiveBinary": "v8-runner-linux-x86_64-musl/v8-runner",
-          "sha256": "7a5f8fd35131c57ce25bce23f3ee7c8b28aade4d0af491a901cef97ec0167e32",
-          "size": 5137094
+          "sha256": "cf9756dc9508371983a81431bc2c458c1f129237169f2ff208dfc70c2d038bab",
+          "size": 5177955
         },
         "win-x64": {
           "assetName": "v8-runner-windows-x86_64.zip",
           "archiveBinary": "v8-runner-windows-x86_64/v8-runner.exe",
-          "sha256": "9b47c5b4a3adc3f37043bf5de96002e2feda613a6f04bf7be9bc8a762894e5d3",
-          "size": 4064313
+          "sha256": "67cc9e3d544129b7ff1770cdee4fca74ca03c19d04c01f7c641c0be10279f118",
+          "size": 4109205
         }
       }
     },
@@ -156,7 +156,7 @@
     },
     {
       "name": "unica",
-      "version": "0.13.0-rc.6",
+      "version": "0.13.0",
       "repository": "https://github.com/IngvarConsulting/unica",
       "sourceTag": "workspace",
       "sourceCommit": "workspace",

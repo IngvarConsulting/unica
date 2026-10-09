@@ -22,15 +22,30 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 затем исполняй запрос с `dryRun: false`. Preview не фиксирует входы между
 вызовами. Не обходи контракт прямым runner-ом.
 
-- `unica.dcs.*` for DCS/DCS schema info, compile, edit, and validation.
-- `unica.mxl.*` for MXL info, compile, decompile, and validation.
-- `unica.template.*` for adding/removing templates on metadata objects.
+- Read schemas and layouts through `unica.view`, change them through
+  `unica.apply`, and validate the template through `unica.check`.
+  Read the target's `can` section to discover its operations. For a DCS operation, `mxl.set` or `template.add`, explicitly request its argument contract:
+
+  ```json
+  {"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+   "filter":{"sections":["can"],"can":{"op":"query.set"}}}
+  ```
+
+  This is a `unica.view` argument example over the acceptance fixture;
+  choose actual source-set, template and dataset names from your workspace.
+  `implemented:false` means a registered operation has no implementation.
+  An unknown operation is refused. Use the returned `contract.argsSchema`,
+  target, effects and example arguments; this reference does not duplicate
+  the operation catalogue.
+- Add or remove metadata templates using the owning node's `can` dictionary.
 - `epf-init` and `erf-init` for make-ready artifact scaffolds inside external
   source-sets, with an optional managed form. These skills call
   `unica.epf.init` or `unica.erf.init`
   and do not synthesize `Configuration.xml` or a platform-generated CDFI sidecar.
 - `epf-bsp-init` and `epf-bsp-add-command` for BSP registration code.
-- `unica.run` currently refuses source `push` and `pull`; it also does not publish an `.epf`/`.erf` artifact.
+- For source transfer, inspect the `unica.run` dictionary of the current
+  source-set. External processor/report transfer and `.epf`/`.erf`
+  publication remain unavailable.
 
 Declare the generated directory in `v8project.yaml` as
 `EXTERNAL_DATA_PROCESSORS` or `EXTERNAL_REPORTS` under `format: DESIGNER` and
@@ -38,6 +53,89 @@ place descriptors directly in that source-set root, and report artifact
 publication as a Unica MCP contract gap.
 These scaffolds are platform XML and are rejected for EDT external-project
 layouts.
+
+## Reading and changing an existing DCS
+
+Open the template, then its `DataSet` and `Setting` collections. A variant
+need not be named `Основной`; use the name returned by the reader. Query and
+field operations address an existing dataset. Variant settings address an
+existing setting. The template itself can be read and checked but is not a
+DCS edit target.
+
+Read the complete query through `DataSet.<name>.Query`: join
+`data.items[].text` with newlines in page order. Query replacement takes text
+itself, not an `@file` path. Preserve the query fields required by the schema.
+A patch with `once:true` requires exactly one match; zero and multiple
+matches fail. An empty replacement deletes matching text. For the argument
+shape and literal-token restrictions, request the operation's contract.
+
+Read `Setting.<name>.Item` to see grouping structure in document order.
+Each row gives `index`, `parentIndex`, `axis`, `kind`, `name` and `groupBy`.
+Indices identify rows within this variant, not logical nodes. Names may be
+absent or repeated, and rows have no `at`. Table row/column and chart
+point/series axes remain visible. Patch only a real uniquely named group;
+an unknown or ambiguous name fails before any publication.
+
+Replacing structure removes the previous structure. Two fields in
+`groupBy` form one group by both fields, not two nested groups.
+`details:true` appends detail records under that group. An empty `groupBy`
+creates detail records even when `details:false`. Patching a named group
+preserves other groups; get its exact argument syntax from the contract.
+
+Adding a field or calculated field can also add it to the variant's selected
+fields. Duplicate fields may be skipped; inspect the post-image instead of
+treating a successful response as proof of a change. Removing a dataset
+field also removes its selection entry. A calculated expression describes
+a derived field; a total describes aggregation. Current total arguments do
+not expose grouping associations.
+
+Schema parameters are distinct from a variant's data parameters. Query
+references use `&Name`; expressions referring to data parameters use
+`ПараметрыДанных.Name`. A schema parameter's default value, availability,
+and a variant's choice to use it are separate facts. Existing StandardPeriod
+setups may derive start/end dates, but the typed operations do not expose
+the old autoDates, hidden, value-list or available-values flags. Read existing
+parameters before changing them; changing a name does not automatically
+rename every query reference.
+
+A filter tests a field against a value. Clearing filters, selection,
+sorting or conditional appearance clears the whole corresponding
+collection. It is not a substitute for removing one item. Group filters,
+user-setting presentation, selection folders and per-group selection from
+the old DSL are not promised by the typed argument schema.
+
+For a DataSetObject, `name` identifies the dataset in the schema while
+`objectName` identifies the data supplied to the processor at runtime.
+Do not turn such a dataset into a query dataset to work around a missing
+operation. Field types and role values are validated against the platform
+format; read the operation contract for supported values. A formatted
+presentation does not change the underlying field value used for drilldown.
+
+Preview the complete `ops` batch first. The plan writes no sources; execute
+only its successful `data.executionToken`. If the response contains a Task,
+observe that same Task to terminal state without repeating the mutation.
+After execution, read the changed fields, query and grouping rows, then
+check the template. A stale revision requires a new read and preview;
+the rejected plan must not publish partial changes.
+
+## Creating a new DCS: current boundary
+
+`template.add` with `templateType:DataCompositionSchema` creates a scaffold
+with a data source and a setting, but no dataset. Apply that plan before
+reading its children. The existing setting can be configured; query and
+field operations cannot populate an absent dataset. Full JSON-DSL
+compilation and adding datasets/links are unavailable on the public
+surface. State the gap; do not promise a full report or write XML manually
+to bypass it.
+
+The old DSL also describes variant data parameters, sorting insertion,
+conditional appearance insertion, output parameters, parameter renaming
+and reordering, individual filter/total/calculated-field removal,
+group templates and drilldown. These are format concepts, not additional
+MCP operations. The format references below preserve that knowledge,
+including parameter lists, filter groups, selection folders, table/chart
+structure, output templates and bindings. Their JSON is not an input to
+`unica.apply`.
 
 This is a fragment to merge into an existing valid `v8project.yaml`; it does
 not replace required `workPath`, `builder`, or `infobase.connection`. Preserve
@@ -54,6 +152,58 @@ source-set:
     type: EXTERNAL_REPORTS
     path: src/external-reports
 ```
+
+## Reading and changing a spreadsheet layout
+
+Find the source-set with `view {}` and the template with name search or its
+owner's Template branch. Read the template, its `Area` collection, then a
+named area's `Body` and `Parameter` branches. A supplied physical path can
+be translated by `resolve`; it is not a selector for `view`.
+
+The canonical Template node exposes the Area branch. Height, default width,
+column sets, outside-area contents and merge/drawing counts belong to the
+format/internal reader; the current canonical projection does not publish
+these as Template properties or extra branches. Area properties describe its kind (`Rows`, `Columns`, `Rectangle`, `Drawing`), boundaries,
+column/drawing identity and `contentCount`. `Body` lists nonempty text cells
+in reading order with `index`, `text` and `template`; the index is a reading
+ordinal, not a row/column coordinate. Empty and parameter-only cells are
+not text rows. `Parameter` lists parameters, including substitutions in
+text templates. The `[tpl]` display marker denotes a substitution from a text
+template; it is not part of the parameter's name. Inspect the Parameter
+collection rather than constructing a leaf address from that marker.
+Read actual names instead of inferring them from visible
+labels. A tabular document's `ПолучитьОбласть` can combine a row and a
+column area by their names; this does not make column areas editable.
+
+For exact arguments, request `filter.can.op: "mxl.set"` at the Template or
+`template.add` at its owner. Creation must be executed before the new
+Template is addressed. An addressed parameter or text-template cell becomes
+ordinary text when written. Unaddressed neighbors should be verified after
+publication. Width can grow but the operation does not shrink it.
+
+Reading does not establish writability. The current writer cannot preserve
+all platform constructs: drawings, non-Rows areas, outside rows, overlapping
+or differently ordered areas, identified/multiple column sets and
+multilingual text/format collections refuse before writing. Such a refusal
+requires editing in the Designer; do not bypass it with manual XML writes.
+Support-state rules of the metadata owner also apply.
+
+Full JSON-DSL compilation/decompilation, font/style definitions, rowStyle,
+merges, palettes and page properties are not public operations. The DSL
+reference preserves their format knowledge and historical conversion
+models, including generated font/style names and recognition of uniformly
+styled empty cells. Historical generated font names include `default`, `bold`,
+`header`, `small`, `italic`; style names describe properties, for example
+`bordered-center`, `bold-right`, `border-top`. Uniformly formatted cells with
+no parameter or text become `rowStyle` in the internal conversion model
+and are omitted from its explicit cells. These are format rules, not
+new canonical view fields. It is not a payload accepted by `mxl.set`, nor a JSON
+round-trip produced by `view`. An image may inform layout structure, but
+cannot supply capabilities missing from the public contract.
+
+Execute only the preview's own `executionToken`; reread Area/Body/Parameter
+and run `check` on the Template. Check infers `mxl` from the template kind.
+Observe a returned Task to terminal state without repeating the mutation.
 
 ## Related references
 

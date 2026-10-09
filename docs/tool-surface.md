@@ -138,10 +138,10 @@ List canonical runtime operations and their invocation contract, or preview/exec
 | --- | --- | --- | --- |
 | `args` | object | нет | Typed arguments for the selected operation. |
 | `dryRun` | boolean | нет | Required by previewApply operations: true returns a non-mutating preview; false executes with the current arguments without requiring a prior preview. |
-| `infobase` | string | нет | Named infobase; defaults to origin. The runner 0.13 adapter supports only origin. |
+| `infobase` | string | нет | Named infobase; defaults to origin. The runner 0.14 adapter supports only origin. |
 | `op` | string | нет | Runner 1.0 operation name; omit to list the target dictionary and adapter support. |
 
-**Результат сейчас:** 10 из 13 операций целевого словаря исполнимы через закреплённый адаптер 0.13.0; upload, apply и reset отвечают `unsupported_operation` (разрыв #1246): раннер 0.13 не загружает CF/CFE без применения и не знает apply/reset, исходники идут через push, который применяет конфигурацию БД. Плановые операции требуют явный boolean dryRun: true показывает план, false исполняет без предварительного preview. run не принимает ifRev и не выдаёт rev. push перед загрузкой набора сверяет поколение базы и отказывает, если база ушла вперёд или памяти о ней нет; force:true перезаписывает базу без сверки. pull требует force. infobase.create создаёт пустую базу. Три исполнимые операции ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
+**Результат сейчас:** 10 из 13 операций целевого словаря исполнимы через закреплённый адаптер 0.14.0; upload, apply и reset отвечают `unsupported_operation` (разрыв #1246): раннер 0.14 не загружает CF/CFE без применения и не знает apply/reset, исходники идут через push, который применяет конфигурацию БД. Плановые операции требуют явный boolean dryRun: true показывает план, false исполняет без предварительного preview. run не принимает ifRev и не выдаёт rev. push перед загрузкой набора сверяет поколение базы и отказывает, если база ушла вперёд или памяти о ней нет; force:true перезаписывает базу без сверки. pull требует force. infobase.create создаёт отсутствующую базу: файловую — сразу с основной конфигурацией проекта, и первый push грузит её набор, только если он изменился, а остальные наборы целиком; базу в кластере — пустой, и первый push грузит все наборы. Три исполнимые операции ограничены и публикуют поддержанную схему и отсутствующие гарантии. (отвечают типизированным `data`)
 
 **Целевой контракт:** Ограничены три операции разработки; upload, apply и reset вернутся, когда раннер получит push --no-apply, apply и reset (#1246). Адаптер 1.0 расширяет те же имена контролем поколений и синхронизацией; текущий dryRun не фиксирует состояние базы или исходников между вызовами.
 
@@ -238,7 +238,7 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 | --- | --- | --- | --- |
 | `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
 | `cursor` | string | нет | Continuation cursor from an earlier addressed view. |
-| `filter` | object | нет | Optional projection such as sections; valid only with at. |
+| `filter` | object | нет | Optional projection; valid only with at. sections:["can"] lists operation summaries; add can:{op:"query.set"} for one detailed supported argument contract. |
 | `limit` | integer | нет | Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole. |
 
 **Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) с целевым размером страницы 64 КиБ; неделимый элемент возвращается целиком до технического предела результата, `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает сохранённый снимок; ветвь графа вызовов сохраняет полученные связи для продолжения; с квалифицированным `at` узел содержит закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)

@@ -417,11 +417,6 @@ IN_SCOPE_TOOLS = {
     "interface-edit": "unica.apply",
     "subsystem-compile": "unica.apply",
     "subsystem-edit": "unica.apply",
-    "dcs-compile": "unica.apply",
-    "dcs-edit": "unica.apply",
-    "mxl-compile": "unica.apply",
-    "mxl-decompile": "unica.view",
-    "mxl-info": "unica.view",
     "role-compile": "unica.apply",
     "role-edit": "unica.apply",
 }
@@ -835,12 +830,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "interface-edit": ["at", "ops"],
     "subsystem-compile": ["at", "ops"],
     "subsystem-edit": ["at", "ops"],
-    "dcs-compile": ["at", "ops"],
-    "dcs-edit": ["at", "ops"],
-    "mxl-compile": ["at", "ops"],
-    "mxl-decompile": ["at"],
     # Читающий макет адресуется логически: файлового селектора у `view` нет.
-    "mxl-info": ["at"],
     "role-compile": ["at", "ops"],
     "role-edit": ["at", "ops"],
 }
@@ -853,10 +843,7 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "interface-edit": 3,
     "subsystem-compile": 3,
     "subsystem-edit": 2,
-    "dcs-compile": 5,
-    "mxl-info": 3,
     "role-edit": 1,
-    "dcs-edit": 4,
     "role-compile": 4,
 }
 
@@ -864,8 +851,6 @@ ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "cfe-borrow": {"unica.view"},
     "form-compile": {"unica.view", "unica.check"},
     "role-compile": {"unica.view", "unica.check"},
-    "dcs-compile": {"unica.view", "unica.check"},
-    "dcs-edit": {"unica.view", "unica.check"},
     "meta-info": {"unica.check"},
 }
 
@@ -963,23 +948,11 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.check"',
         '"name": "unica.view"',
     ],
-    "dcs-compile": [
-        '"templateType": "DataCompositionSchema"',
-        '"op": "query.set"',
-    ],
-    "dcs-edit": [
-        '"op": "field.add"',
-    ],
     # Eleven `Mode` values selected eleven reports. The typed answer carries
     # every section at once, so the scenarios are preserved by the sections the
     # skill names, not by the selector that no longer exists.
     # Содержимое ячеек стало отдельным адресом, а не признаком в аргументах,
     # поэтому сценарий сохраняется адресом ветви, а не селектором состава.
-    "mxl-info": [
-        "Area.Шапка.Body",
-        "columnSets",
-        "contentCount",
-    ],
 }
 
 # Arguments the MCP contract used to publish and now rejects. The packaged skill
@@ -993,14 +966,6 @@ SCENARIO_RETIRED_TOKENS = {
         '"Value"',
         '"DefinitionFile"',
         '"sourceSet"',
-    ],
-    "mxl-info": [
-        '"Format"',
-        '"MaxParams"',
-        '"Limit"',
-        '"Offset"',
-        '"TemplatePath"',
-        '"WithText"',
     ],
     "meta-info": [
         '"ObjectPath"',
@@ -1261,8 +1226,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_read_only_skills_do_not_offer_outfile(self) -> None:
         read_only_skills = [
             "meta-info",
-            "mxl-info",
-            "mxl-decompile",
         ]
 
         for skill in read_only_skills:
@@ -2135,58 +2098,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("powershell.exe", subsystem_compile)
         self.assertNotIn("subsystem-validate.ps1", subsystem_compile)
 
-    def test_dcs_skills_track_upstream_dsl_features_through_unica_boundary(self) -> None:
-        dcs_compile = (self.skill_root() / "dcs-compile" / "SKILL.md").read_text(
-            encoding="utf-8"
-        )
-        dcs_edit = (self.skill_root() / "dcs-edit" / "SKILL.md").read_text(encoding="utf-8")
-        dcs_dsl = (self.reference_root() / "specs" / "dcs-dsl-spec.md").read_text(
-            encoding="utf-8"
-        )
-        dcs_spec = (self.reference_root() / "specs" / "1c-dcs-spec.md").read_text(
-            encoding="utf-8"
-        )
-
-        for text in [dcs_compile, dcs_edit]:
-            self.assertIn("MCP `unica`", text)
-            self.assertNotIn("CLAUDE_SKILL_DIR", text)
-            self.assertNotIn("powershell.exe", text)
-            self.assertNotIn(".ps1", text)
-            self.assertNotIn(".py", text)
-
-        for token in [
-            "TypeSet",
-            "balanceGroupName",
-            "orderExpression",
-            "valueListAllowed",
-            "availableValues",
-            "dataSetLinks",
-            "additionalProperties",
-            "parameterListAllowed",
-            "startExpression",
-            "linkConditionExpression",
-            "viewMode",
-            "itemsViewMode",
-            "use: false",
-            "placement",
-        ]:
-            with self.subTest(token=token):
-                self.assertIn(token, dcs_dsl)
-
-        self.assertIn("Значение-список", dcs_spec)
-        self.assertIn("valueListAllowed", dcs_spec)
-        # `Raw` existed because pagination mangled the query; the canonical
-        # `Query` projection carries the exact text always, so the promise
-        # moved into the writer that consumes it.
-        self.assertNotIn('"Raw": true', dcs_edit)
-        self.assertIn("сырой текст запроса целиком", dcs_edit)
-        # Точечная правка запроса осталась возможностью скилла, но зовётся
-        # канонической операцией: прежнее имя DSL вызовом больше не выглядит.
-        self.assertIn("query.patch", dcs_edit)
-        self.assertNotIn("используй `patch-query`", dcs_edit)
-        self.assertIn("@once", dcs_edit)
-        self.assertIn("availableValue=", dcs_edit)
-        self.assertIn("value=", dcs_edit)
 
     def test_form_skills_track_upstream_dsl_features_through_unica_boundary(self) -> None:
         form_compile = (self.skill_root() / "form-compile" / "SKILL.md").read_text(
@@ -2283,7 +2194,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
         for skill in (
             "meta-info",
-            "mxl-info",
         ):
             with self.subTest(skill=skill):
                 text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
@@ -2558,7 +2468,8 @@ Use `.claude/commands/xdto.md` as the execution route.
         self.assertEqual(
             modelled_skills,
             set(IN_SCOPE_TOOLS)
-            - {"epf-init", "erf-init", "meta-add", "meta-edit", "role-edit"},
+            - {"epf-init", "erf-init", "meta-add", "meta-edit", "role-edit"}
+            | {"dcs-compile", "dcs-edit", "mxl-compile", "mxl-decompile", "mxl-info"},
         )
         allowed_suffixes = {".json", ".md", ".ps1", ".py"}
         for path in models_root.rglob("*"):

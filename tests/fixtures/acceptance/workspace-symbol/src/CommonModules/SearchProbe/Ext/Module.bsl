@@ -1,0 +1,2 @@
+Procedure AcceptanceExistingSymbol1306() Export
+EndProcedure

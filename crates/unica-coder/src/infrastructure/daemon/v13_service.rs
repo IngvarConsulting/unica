@@ -10,7 +10,7 @@ use super::v13_call_graph::{
     fetch_summary, module_file_for_placed, placed_for_module_file, unready_branch_result,
     CallGraphFetchError, CallGraphSummary, CompleteBranchError, CALL_GRAPH_SECTION,
 };
-use super::v13_read_modes::{filter_diff_data, project_view_sections, search_scope_prefix};
+use super::v13_read_modes::{filter_diff_data, project_view_operation, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::{
@@ -449,6 +449,10 @@ impl CanonicalV13ReadService {
             };
             request = request.with_filter(filter.clone());
         }
+        let can_operation = match request.filter().can_operation() {
+            Ok(operation) => operation.map(str::to_string),
+            Err(error) => return view_error_result(Some(at.to_string()), error),
+        };
         if let Some(limit) = arguments.get("limit") {
             let Some(limit) = bounded_usize(limit) else {
                 return error_result(
@@ -667,7 +671,7 @@ impl CanonicalV13ReadService {
             }
             self.resolve_borrowed_parent(invocation, &address, &mut data, cancellation);
             if let Some(sections) = sections {
-                project_view_sections(&data, sections)
+                project_view_operation(&data, sections, can_operation.as_deref())
                     .map_err(|error| ViewError::new(error.code(), error.to_string()))
             } else {
                 Ok(data)
@@ -707,7 +711,7 @@ impl CanonicalV13ReadService {
         }
         if result.ok && call_graph_requested {
             if let (Some(data), Some(sections)) = (result.data.as_ref(), sections) {
-                match project_view_sections(data, sections) {
+                match project_view_operation(data, sections, can_operation.as_deref()) {
                     Ok(projected) => result.data = Some(projected),
                     Err(error) => {
                         return error_result(Some(at.to_string()), error.code(), error.to_string())
@@ -5426,7 +5430,8 @@ mod tests {
             serde_json::to_vec(&result).unwrap().len()
                 <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
-        result.data = Some(super::project_view_sections(&data, &json!(["items", "can"])).unwrap());
+        result.data =
+            Some(super::project_view_operation(&data, &json!(["items", "can"]), None).unwrap());
         assert!(
             serde_json::to_vec(&result).unwrap().len()
                 > crate::application::v13::view::PREFERRED_PAGE_BYTES

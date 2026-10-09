@@ -203,7 +203,16 @@ fn parse_template_add(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("template.add", args, &["at", "items"], op_index)?;
+    let normalized = crate::domain::operation_contract::OperationContract::mxl("template.add")
+        .expect("template contract")
+        .normalize(
+            &Value::Object(args.clone()),
+            &format!("ops[{op_index}].args"),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+        })?;
+    let args = normalized.as_object().expect("object contract");
     let target = qualified_target(args, op_index, binding)?;
     let (owner, _) = metadata_owner(&target, op_index)?;
     let items = required_array(args, "items", op_index)?;
@@ -214,18 +223,6 @@ fn parse_template_add(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "each item must be an object")
                 .at_path(location.clone())
         })?;
-        if let Some(field) = item
-            .keys()
-            .find(|field| !["name", "templateType", "synonym"].contains(&field.as_str()))
-        {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                format!(
-                    "template items accept `name`, `templateType` and `synonym`, not `{field}`"
-                ),
-            )
-            .at_path(format!("{location}.{field}")));
-        }
         let name = item
             .get("name")
             .and_then(Value::as_str)

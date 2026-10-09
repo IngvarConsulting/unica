@@ -1,0 +1,39 @@
+{
+  "ok": false,
+  "command": "infobase create",
+  "duration_ms": 7,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "default"
+      }
+    },
+    "ok": false,
+    "provider_dispatched": false,
+    "steps": [
+      {
+        "target": "infobase",
+        "action": "create",
+        "status": "failed",
+        "message": "the file infobase '/workspace/ib-c' already exists: infobase create creates a new infobase and leaves an existing one untouched; push loads the sources into it (push --force when the runner has no memory of it), or remove the directory and run infobase create again",
+        "duration_ms": 0
+      },
+      {
+        "target": "edt_workspace",
+        "action": "import",
+        "status": "skipped",
+        "message": "EDT workspace initialization is not applicable for format=DESIGNER",
+        "duration_ms": 0
+      }
+    ],
+    "duration_ms": 7
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "invalid_argument",
+    "kind": "validation",
+    "message": "the file infobase '/workspace/ib-c' already exists: infobase create creates a new infobase and leaves an existing one untouched; push loads the sources into it (push --force when the runner has no memory of it), or remove the directory and run infobase create again"
+  }
+}

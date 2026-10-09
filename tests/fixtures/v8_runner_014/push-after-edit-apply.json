@@ -1,0 +1,31 @@
+{
+  "ok": true,
+  "command": "push",
+  "duration_ms": 3555,
+  "data": {
+    "provider": {
+      "selected": "agent",
+      "origin": {
+        "kind": "default"
+      },
+      "endpoint": {
+        "mode": "managed",
+        "address": "127.0.0.1:63010"
+      }
+    },
+    "ok": true,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "source_set": "main",
+        "mode": "full",
+        "ok": true,
+        "message": "full load selected by partial-load rules",
+        "duration_ms": 3533
+      }
+    ],
+    "duration_ms": 3555
+  },
+  "warnings": [],
+  "steps": []
+}

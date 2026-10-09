@@ -1,26 +1,35 @@
 #![allow(clippy::result_large_err)]
-//! `infobase.create` — создание пустой базы по соединению из `v8project.yaml`
+//! `infobase.create` — создание отсутствующей базы по соединению из `v8project.yaml`
 //! силами `v8-runner infobase create` (A-3 зонтика #871). Пара к `infobase.restore`: тот
-//! наполняет базу из DT, этот заводит пустую.
+//! наполняет базу из DT, этот заводит новую.
 //!
 //! Аргументов нет: соединение задаёт проектный файл, и словарь его не
 //! принимает — как у выгрузок. Превью зовёт `infobase create --dry-run` и читает шаги
 //! раннера по их статусам: базу можно создать только если шаг `infobase`
-//! запланирован; существующая база — отказ до применения, а не тихий пропуск.
-//! Шаг EDT-пространства обязан быть пропущен: Unica работает с выгрузкой
-//! Designer и проект другого формата не заводит.
+//! запланирован. Существующую файловую базу раннер 0.14 отвергает отказом
+//! проверки с проваленным шагом `infobase` ещё в превью; это отказ до применения,
+//! а не тихий пропуск. Шаг EDT-пространства обязан быть пропущен: Unica работает
+//! с выгрузкой Designer и проект другого формата не заводит.
 //!
 //! Квитанцию после создания даёт сам раннер: повторное превью обязано
-//! ответить, что базу создавать больше нечего. Состояние базы Unica иначе не
-//! проверяет и называет его засвидетельствованным провайдером. Путь к базе,
-//! платформе и командная строка наружу не идут.
+//! ответить, что база уже есть. Состояние базы Unica иначе не проверяет и
+//! называет его засвидетельствованным провайдером. Путь к базе, платформе и
+//! командная строка наружу не идут.
+//!
+//! Раннер 0.14 собирает файловую базу сразу с основной конфигурацией проекта —
+//! набором `CONFIGURATION` (`ibcmd infobase create --import`, запасной путь —
+//! Конфигуратор) — и записывает память об этом наборе: первый `push` его не
+//! грузит, а остальные наборы досылает целиком. База в кластере создаётся
+//! пустой, и первый `push` грузит все наборы. Ответ называет, загружает ли
+//! создание основную конфигурацию (`initializesSources`) и из какого набора.
+//! Записи поколения после создания нет: первый `push` поколение не сверяет.
 
 use super::protocol::InvocationRequest;
-use super::runner_013::Runner013ProcessRunner;
+use super::runner_014::{origin_kind, OriginKind, Runner014ProcessRunner};
 use super::v13_infobase_exports::{
-    digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
-    resolve_bundled_runner, runner_rejection, runner_start_rejection, CONFIG_NAME,
-    LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    configuration_source_set, digest_optional_workspace_file, digest_required_workspace_file,
+    missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
+    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::CancellationToken;
@@ -110,7 +119,7 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner013ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
     }
 }
 
@@ -220,7 +229,11 @@ fn execute_with_resolved_runner(
         Ok(inputs) => inputs,
         Err(result) => return result,
     };
-    let preview = match invoke_runner(prepared, tool, runner, &cancellation, true) {
+    let contents = match creation_contents(prepared) {
+        Ok(contents) => contents,
+        Err(result) => return result,
+    };
+    let preview = match invoke_runner(prepared, &contents, tool, runner, &cancellation, true) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
@@ -250,8 +263,11 @@ fn execute_with_resolved_runner(
                 "action": "create",
                 "connectionFrom": CONFIG_NAME,
                 "edtWorkspace": "skipped",
-                "initializesSources": false,
-                "generationProtection": false,
+                // Файловую базу раннер собирает с основной конфигурацией проекта.
+                // Защита поколения — свойство `push`, а не создания: поля
+                // `generationProtection` здесь нет.
+                "initializesSources": contents.initializes_sources(),
+                "sourceSet": contents.loaded_source_set(),
                 // Что превью узнать не может, названо, а не умолчано.
                 "targetStateKnownBeforeApply": false,
             },
@@ -259,6 +275,9 @@ fn execute_with_resolved_runner(
             "requiresPlatform": true,
         }));
 
+        if contents.kind == OriginKind::Cluster {
+            result.warnings.push(cluster_database_warning(true));
+        }
         result.next.push(json!({
             "tool": "unica.run",
             "args": {
@@ -276,10 +295,18 @@ fn execute_with_resolved_runner(
             "infobase.create cancelled before provider launch",
         );
     }
-    let applied = match invoke_runner(prepared, tool, runner, &cancellation, false) {
+    let applied = match invoke_runner(prepared, &contents, tool, runner, &cancellation, false) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
+    // Между превью и применением базу завёл кто-то другой: наш план
+    // исполнен не нами, и выдавать чужую базу за созданную нельзя.
+    if refuses_an_existing_file_infobase(&applied, &contents) {
+        return reject(
+            RefusalCode::ConcurrentChange,
+            "the infobase appeared between preview and apply; it was not created by this call",
+        );
+    }
     if applied["data"]["provider_dispatched"] != true {
         return reject(
             RefusalCode::InvalidResult,
@@ -288,8 +315,7 @@ fn execute_with_resolved_runner(
     }
     match step_status(&applied, INFOBASE_STEP) {
         Ok(StepStatus::Ok) => {}
-        // Между превью и применением базу завёл кто-то другой: наш план
-        // исполнен не нами, и выдавать чужую базу за созданную нельзя.
+        // Раннер, пропустивший создание на применении, базу не создавал.
         Ok(StepStatus::Skipped) => {
             return reject(
                 RefusalCode::ConcurrentChange,
@@ -304,37 +330,76 @@ fn execute_with_resolved_runner(
         }
         Err(result) => return result,
     }
+    // Базу в кластере раннер 0.14 до создания не видит: его превью планирует её
+    // всегда, и повторное превью квитанцией быть не может. Ответ это называет.
+    if contents.kind == OriginKind::Cluster {
+        let mut result = DomainResult::success(
+            "infobase.create created an empty infobase in the cluster; the first push loads every source set in full; the creation is attested by the provider alone: the runner cannot observe a cluster infobase before creating it, so no repeated preview confirms it".to_string(),
+        );
+        result.data = Some(json!({
+            "op": OPERATION,
+            "dryRun": false,
+            "target": "infobase",
+            "state": "created",
+            "initializesSources": false,
+            "sourceSet": Value::Null,
+            "connectionFrom": CONFIG_NAME,
+            "targetStateAttestedBy": "provider",
+            "receipt": "provider step only; a cluster infobase is not observable by a repeated preview",
+        }));
+        result.warnings.push(cluster_database_warning(false));
+        result
+            .changed
+            .push(json!({"infobase": true, "kind": "created"}));
+        return result;
+    }
     // Квитанция у раннера, не со слов применения: повторное превью обязано
     // сказать, что создавать больше нечего.
     // A cancellation after creation cannot discard the confirmation that the
     // infobase now exists. Finish the read-only receipt probe as part of this
     // already-dispatched mutation.
-    let receipt = match invoke_runner(prepared, tool, runner, &CancellationToken::new(), true) {
+    let receipt = match invoke_runner(
+        prepared,
+        &contents,
+        tool,
+        runner,
+        &CancellationToken::new(),
+        true,
+    ) {
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    match step_status(&receipt, INFOBASE_STEP) {
-        Ok(StepStatus::Skipped) => {}
-        Ok(_) => {
-            return reject(
+    // Раннер 0.14 на существующей файловой базе отказывает ещё в превью. Пропуск
+    // шага — квитанция прежних раннеров.
+    let confirmed = refuses_an_existing_file_infobase(&receipt, &contents)
+        || (receipt["ok"] == true
+            && matches!(
+                step_status(&receipt, INFOBASE_STEP),
+                Ok(StepStatus::Skipped)
+            ));
+    if !confirmed {
+        return match step_status(&receipt, INFOBASE_STEP) {
+            Ok(_) => reject(
                 RefusalCode::InvalidResult,
                 "v8-runner reported the infobase created, but its preview still plans to create it",
-            )
-        }
-        Err(result) => return result,
+            ),
+            Err(result) => result,
+        };
     }
     // **Улику о состоянии базы Unica не подделывает.** Файлы базы за
     // соединением Unica не читает; создание засвидетельствовано провайдером
     // и его же повторным превью, и источник признания назван прямо.
-    let mut result = DomainResult::success(
-        "infobase.create created the infobase; its state is attested by the provider and confirmed by a repeated preview".to_string(),
-    );
+    let mut result = DomainResult::success(match contents.loaded_source_set() {
+        Some(set) => format!("infobase.create created the infobase with the main configuration of source set `{set}`; the first push loads that set only if it changed since, and the other sets in full; the state is attested by the provider and confirmed by a repeated preview"),
+        None => "infobase.create created an empty infobase; the first push loads every source set in full; the state is attested by the provider and confirmed by a repeated preview".to_string(),
+    });
     result.data = Some(json!({
         "op": OPERATION,
         "dryRun": false,
         "target": "infobase",
         "state": "created",
-        "initializesSources": false,
+        "initializesSources": contents.initializes_sources(),
+        "sourceSet": contents.loaded_source_set(),
         "connectionFrom": CONFIG_NAME,
         "targetStateAttestedBy": "provider",
         "receipt": "repeated preview reports nothing left to create",
@@ -349,6 +414,10 @@ fn execute_with_resolved_runner(
 }
 
 fn validate_preview(envelope: &Value) -> Result<(), DomainResult> {
+    if envelope["ok"] != true {
+        // Сюда пропущен только отказ раннера на существующей файловой базе.
+        return Err(existing_infobase_rejection());
+    }
     let data = &envelope["data"];
     if data["provider_dispatched"] != false {
         return Err(reject(
@@ -358,14 +427,9 @@ fn validate_preview(envelope: &Value) -> Result<(), DomainResult> {
     }
     match step_status(envelope, INFOBASE_STEP)? {
         StepStatus::Planned => {}
-        StepStatus::Skipped => {
-            // Существующая база — не «нечего делать», а отказ: план создания
-            // применять нельзя, а замена содержимого — дело `infobase.restore`.
-            return Err(reject(
-                RefusalCode::InvalidState,
-                "the infobase at the configured connection already exists; infobase.create only creates an absent one, use infobase.restore with mode replace to overwrite its data",
-            ));
-        }
+        // Существующая база — не «нечего делать», а отказ: план создания
+        // применять нельзя.
+        StepStatus::Skipped => return Err(existing_infobase_rejection()),
         StepStatus::Ok | StepStatus::Failed => {
             return Err(reject(
                 RefusalCode::InvalidResult,
@@ -384,8 +448,82 @@ fn validate_preview(envelope: &Value) -> Result<(), DomainResult> {
     Ok(())
 }
 
+/// Существующая база — отказ до применения, а замена её содержимого — дело
+/// `infobase.restore`.
+fn existing_infobase_rejection() -> DomainResult {
+    reject(
+        RefusalCode::InvalidState,
+        "the infobase at the configured connection already exists; infobase.create only creates an absent one, use infobase.restore with mode replace to overwrite its data",
+    )
+}
+
+/// Код предупреждения о базе данных кластера.
+const CLUSTER_DATABASE_WARNING_CODE: &str = "cluster_database_unverified";
+
+/// Раннер 0.14 создаёт базу в кластере с `CrSQLDB=Y`: база данных СУБД с тем же
+/// именем, если она есть, берётся молча, а существование самой базы до
+/// создания не видно. Это называют и превью, и ответ.
+fn cluster_database_warning(preview: bool) -> Value {
+    json!({
+        "code": CLUSTER_DATABASE_WARNING_CODE,
+        "message": if preview {
+            "a cluster infobase is created with CrSQLDB=Y: an existing DBMS database with the same name is taken silently, even one of another infobase, and whether the infobase already exists is not observable before creation; check infobases.origin.dbms.name before executing"
+        } else {
+            "the cluster infobase was created with CrSQLDB=Y: an existing DBMS database with the same name would have been taken silently; whether it existed before was not observable"
+        },
+    })
+}
+
+/// Что создание кладёт в новую базу: вид цели и основная конфигурация проекта.
+#[derive(Debug, Clone)]
+struct CreationContents {
+    kind: OriginKind,
+    main_configuration: Option<String>,
+}
+
+impl CreationContents {
+    /// Раннер 0.14 собирает с основной конфигурацией только файловую базу.
+    fn loaded_source_set(&self) -> Option<&str> {
+        (self.kind == OriginKind::File)
+            .then_some(self.main_configuration.as_deref())
+            .flatten()
+    }
+
+    fn initializes_sources(&self) -> bool {
+        self.loaded_source_set().is_some()
+    }
+}
+
+fn creation_contents(prepared: &PreparedInfobaseCreate) -> Result<CreationContents, DomainResult> {
+    let root = &prepared.context.workspace_root;
+    let kind =
+        origin_kind(root).map_err(|error| reject(RefusalCode::InvalidSource, redactor(&error)))?;
+    let main_configuration = configuration_source_set(root)
+        .map_err(|error| reject(RefusalCode::InvalidSource, error))?;
+    Ok(CreationContents {
+        kind,
+        main_configuration,
+    })
+}
+
+/// Отказ раннера 0.14 на уже существующей файловой базе: отказ проверки до
+/// запуска платформы с проваленным шагом `infobase`. Других отказов проверки
+/// у этого шага файловой цели нет; у кластера тот же род значит нехватку
+/// реквизитов СУБД, поэтому признак читается только у файловой цели.
+fn refuses_an_existing_file_infobase(envelope: &Value, contents: &CreationContents) -> bool {
+    contents.kind == OriginKind::File
+        && envelope["ok"] == false
+        && envelope["error"]["kind"] == "validation"
+        && envelope["data"]["provider_dispatched"] == false
+        && envelope["data"]["steps"]
+            .as_array()
+            .and_then(|steps| steps.iter().find(|step| step["target"] == INFOBASE_STEP))
+            .is_some_and(|step| step["status"] == "failed")
+}
+
 fn invoke_runner(
     prepared: &PreparedInfobaseCreate,
+    contents: &CreationContents,
     tool: &BundledTool,
     runner: &dyn ProcessRunner,
     cancellation: &CancellationToken,
@@ -427,10 +565,15 @@ fn invoke_runner(
             },
         })
         .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
-    parse_runner_output(output)
+    parse_runner_output(output, contents)
 }
 
-fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
+/// Конверт раннера; неудачный — отказом, кроме отказа на существующей файловой
+/// базе: его значение решает вызывающий (превью, применение или квитанция).
+fn parse_runner_output(
+    output: ProcessOutput,
+    contents: &CreationContents,
+) -> Result<Value, DomainResult> {
     if output.cancelled {
         return Err(reject(RefusalCode::Cancelled, "v8-runner was cancelled"));
     }
@@ -457,6 +600,9 @@ fn parse_runner_output(output: ProcessOutput) -> Result<Value, DomainResult> {
             RefusalCode::InvalidResult,
             "v8-runner returned a result for a different operation",
         ));
+    }
+    if refuses_an_existing_file_infobase(&envelope, contents) {
+        return Ok(envelope);
     }
     if !output.status_success || envelope["ok"] != true {
         let code = envelope["error"]["code"]
@@ -805,6 +951,147 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("still plans to create"));
+    }
+
+    fn captured(name: &str) -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/v8_runner_014")
+            .join(name);
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Проект с основной конфигурацией, как у снятых конвертов раннера 0.14.0.
+    fn workspace_with_main(connection: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join(CONFIG_NAME),
+            "format: DESIGNER\nworkPath: build\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: ext-sales\n    type: EXTENSION\n    path: ext-sales\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join(LOCAL_CONFIG_NAME),
+            format!("infobases:\n  origin:\n    connection: '{connection}'\n"),
+        )
+        .unwrap();
+        root
+    }
+
+    /// Конверты раннера 0.14.0, снятые вживую (`tests/fixtures/v8_runner_014`):
+    /// превью планирует базу, применение собирает её с основной конфигурацией,
+    /// повторное превью отказывает на существующей базе — это и есть квитанция.
+    /// Ответ называет загруженный набор, не называет путь базы и платформы и
+    /// не обещает защиту поколения: она — свойство `push`, а не создания.
+    #[test]
+    fn captured_runner_014_create_is_confirmed_by_its_repeated_preview() {
+        let root = workspace_with_main("File=build/ib");
+        let runner = SequenceRunner::new(vec![process(
+            captured("infobase-create-preview.json"),
+            true,
+        )]);
+        let preview = run(root.path(), &prepared(root.path(), true), &runner);
+        assert!(preview.ok, "{preview:?}");
+        let plan = &preview.data.as_ref().unwrap()["plan"];
+        assert_eq!(plan["initializesSources"], true);
+        assert_eq!(plan["sourceSet"], "main");
+        assert!(plan.get("generationProtection").is_none(), "{plan}");
+
+        let runner = SequenceRunner::new(vec![
+            process(captured("infobase-create-preview.json"), true),
+            process(captured("infobase-create-apply.json"), true),
+            process(captured("infobase-create-receipt-preview.json"), false),
+        ]);
+        let result = run(root.path(), &prepared(root.path(), false), &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 3);
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["state"], "created");
+        assert_eq!(data["initializesSources"], true);
+        assert_eq!(data["sourceSet"], "main");
+        assert_eq!(data["targetStateAttestedBy"], "provider");
+        assert!(data.get("generationProtection").is_none(), "{data}");
+        assert!(result.summary.contains("source set `main`"), "{result:?}");
+        for encoded in [
+            serde_json::to_string(&preview).unwrap(),
+            serde_json::to_string(&result).unwrap(),
+        ] {
+            for leaked in ["/workspace", "1Cv8.1CD", "1cv8", "/platform", "ibcmd"] {
+                assert!(!encoded.contains(leaked), "{leaked} leaked: {encoded}");
+            }
+        }
+    }
+
+    /// Существующую файловую базу раннер 0.14.0 отвергает отказом проверки ещё
+    /// в превью. Для `infobase.create` это не правка вызова (аргументов нет), а
+    /// состояние: превью отказывает `invalid_state`, применение, на котором база
+    /// появилась после превью, — `concurrent_change`.
+    #[test]
+    fn captured_existing_infobase_refusal_is_a_state_not_a_call_error() {
+        let root = workspace_with_main("File=build/ib");
+        let runner = SequenceRunner::new(vec![process(
+            captured("infobase-create-receipt-preview.json"),
+            false,
+        )]);
+        let result = run(root.path(), &prepared(root.path(), true), &runner);
+        assert_eq!(result.diagnostics[0]["code"], "invalid_state", "{result:?}");
+        assert!(result.diagnostics[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("already exists"));
+
+        let mut raced = captured("infobase-create-receipt-preview.json");
+        raced["data"]["steps"][0]["status"] = json!("failed");
+        let runner = SequenceRunner::new(vec![
+            process(captured("infobase-create-preview.json"), true),
+            process(raced, false),
+        ]);
+        let result = run(root.path(), &prepared(root.path(), false), &runner);
+        assert_eq!(
+            result.diagnostics[0]["code"], "concurrent_change",
+            "{result:?}"
+        );
+        assert_eq!(runner.call_count(), 2);
+
+        // Тот же род отказа у базы в кластере — нехватка реквизитов СУБД, а не
+        // существующая база: он остаётся отказом раннера.
+        let root = workspace_with_main("Srvr=srv;Ref=demo");
+        let runner = SequenceRunner::new(vec![process(
+            captured("infobase-create-receipt-preview.json"),
+            false,
+        )]);
+        let result = run(root.path(), &prepared(root.path(), true), &runner);
+        assert_eq!(result.diagnostics[0]["code"], "bad_value", "{result:?}");
+    }
+
+    /// База в кластере создаётся пустой: ответ не обещает загрузку исходников.
+    #[test]
+    fn a_cluster_infobase_is_created_without_sources() {
+        let root = workspace_with_main("Srvr=srv;Ref=demo");
+        let runner = SequenceRunner::new(vec![process(
+            envelope(root.path(), "planned", "skipped", false),
+            true,
+        )]);
+        let result = run(root.path(), &prepared(root.path(), true), &runner);
+        assert!(result.ok, "{result:?}");
+        let plan = &result.data.as_ref().unwrap()["plan"];
+        assert_eq!(plan["initializesSources"], false);
+        assert!(plan["sourceSet"].is_null(), "{plan}");
+        assert_eq!(result.warnings[0]["code"], "cluster_database_unverified");
+
+        // Повторное превью кластера снова планирует создание: квитанцией оно
+        // не служит, ответ держится на шаге провайдера и говорит это.
+        let runner = SequenceRunner::new(vec![
+            process(envelope(root.path(), "planned", "skipped", false), true),
+            process(envelope(root.path(), "ok", "skipped", true), true),
+        ]);
+        let result = run(root.path(), &prepared(root.path(), false), &runner);
+        assert!(result.ok, "{result:?}");
+        assert_eq!(runner.call_count(), 2);
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["state"], "created");
+        assert_eq!(data["initializesSources"], false);
+        assert_eq!(data["targetStateAttestedBy"], "provider");
+        assert!(data["receipt"].as_str().unwrap().contains("not observable"));
+        assert_eq!(result.warnings[0]["code"], "cluster_database_unverified");
     }
 
     #[test]

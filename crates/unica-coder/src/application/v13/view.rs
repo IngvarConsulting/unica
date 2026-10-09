@@ -41,6 +41,48 @@ impl ViewFilter {
         self.0.is_empty()
     }
 
+    pub(crate) fn can_operation(&self) -> Result<Option<&str>, ViewError> {
+        let Some(value) = self.get("can") else {
+            return Ok(None);
+        };
+        let object = value.as_object().ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::BadValue,
+                "view filter.can must be an object with op",
+            )
+        })?;
+        if object.len() != 1 || !object.contains_key("op") {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "view filter.can accepts only op",
+            ));
+        }
+        let op = object["op"]
+            .as_str()
+            .filter(|op| !op.trim().is_empty())
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::BadValue,
+                    "view filter.can.op must be non-empty text",
+                )
+            })?;
+        if !self
+            .get("sections")
+            .and_then(Value::as_array)
+            .is_some_and(|sections| {
+                sections
+                    .iter()
+                    .any(|section| section.as_str() == Some("can"))
+            })
+        {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "view filter.can requires sections:[\"can\"]",
+            ));
+        }
+        Ok(Some(op))
+    }
+
     fn normalized(&self) -> String {
         serde_json::to_string(&canonical_value(Value::Object(self.0.clone())))
             .expect("a JSON filter always serializes")
@@ -962,6 +1004,47 @@ mod tests {
                 .as_str(),
             "bad_value",
         );
+    }
+
+    #[test]
+    fn detailed_can_filter_is_explicit_strict_and_bound_to_cursor_identity() {
+        use crate::domain::refusal::RefusalCode;
+        let valid = json!({"sections":["can"],"can":{"op":"query.set"}});
+        let filter = ViewFilter::new(valid.as_object().unwrap().clone());
+        assert_eq!(filter.can_operation().unwrap(), Some("query.set"));
+        for invalid in [
+            json!({"can":null}),
+            json!({"sections":["can"],"can":[]}),
+            json!({"sections":["can"],"can":{}}),
+            json!({"sections":["can"],"can":{"op":1}}),
+            json!({"sections":["can"],"can":{"op":" "}}),
+            json!({"sections":["can"],"can":{"op":"query.set","extra":true}}),
+            json!({"can":{"op":"query.set"}}),
+            json!({"sections":["props"],"can":{"op":"query.set"}}),
+        ] {
+            assert_eq!(
+                ViewFilter::new(invalid.as_object().unwrap().clone())
+                    .can_operation()
+                    .unwrap_err()
+                    .code(),
+                RefusalCode::BadValue,
+                "{invalid}"
+            );
+        }
+        let changed = ViewFilter::new(
+            json!({"can":{"op":"query.patch"},"sections":["can"]})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert_ne!(filter.normalized(), changed.normalized());
+        let reordered = ViewFilter::new(
+            json!({"can":{"op":"query.set"},"sections":["can"]})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert_eq!(filter.normalized(), reordered.normalized());
     }
 
     #[test]
