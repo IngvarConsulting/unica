@@ -244,6 +244,83 @@ pub(crate) struct DcsInfoVariant {
     /// How many filter items the variant declares.
     pub(crate) filters: usize,
     pub(crate) structure: Vec<DcsInfoStructureItem>,
+    pub(crate) structure_items: Vec<DcsInfoStructureRow>,
+}
+
+/// XML facts in document order. Indices identify rows within this variant,
+/// not logical addresses: anonymous and duplicate names remain observable.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DcsInfoStructureRow {
+    pub(crate) index: usize,
+    pub(crate) parent_index: Option<usize>,
+    pub(crate) axis: Option<String>,
+    pub(crate) kind: String,
+    pub(crate) name: Option<String>,
+    pub(crate) group_by: Vec<String>,
+}
+
+fn dcs_info_structure_rows(settings: roxmltree::Node<'_, '_>) -> Vec<DcsInfoStructureRow> {
+    let mut rows = Vec::new();
+    let mut indices = HashMap::new();
+    for item in settings
+        .descendants()
+        .filter(|node| role_info_element(*node, "item", Some(DCS_SETTINGS_NS)))
+    {
+        let known_kind = [
+            ("StructureItemGroup", "Group"),
+            ("StructureItemTable", "Table"),
+            ("StructureItemChart", "Chart"),
+            ("StructureItemNestedObject", "NestedObject"),
+        ]
+        .into_iter()
+        .find_map(|(xml_type, kind)| {
+            dcs_edit_xsi_type_matches(item, DCS_SETTINGS_NS, xml_type).then_some(kind)
+        });
+        let xml_type = item
+            .attribute((XML_SCHEMA_INSTANCE_NS, "type"))
+            .unwrap_or_default();
+        let local_type = xml_type.rsplit(':').next().unwrap_or_default();
+        let Some(kind) = known_kind.or_else(|| {
+            (local_type.starts_with("StructureItem")
+                && dcs_edit_xsi_type_matches(item, DCS_SETTINGS_NS, local_type))
+            .then_some(local_type)
+        }) else {
+            continue;
+        };
+        let mut parent_index = None;
+        let mut axis = None;
+        for ancestor in item
+            .ancestors()
+            .skip(1)
+            .take_while(|node| *node != settings)
+        {
+            if let Some(index) = indices.get(&ancestor.id()) {
+                parent_index = Some(*index);
+                break;
+            }
+            if axis.is_none()
+                && ancestor.tag_name().namespace() == Some(DCS_SETTINGS_NS)
+                && matches!(
+                    ancestor.tag_name().name(),
+                    "row" | "column" | "point" | "series"
+                )
+            {
+                axis = Some(ancestor.tag_name().name().to_string());
+            }
+        }
+        let index = rows.len();
+        indices.insert(item.id(), index);
+        rows.push(DcsInfoStructureRow {
+            index,
+            parent_index,
+            axis,
+            kind: kind.to_string(),
+            name: dcs_info_child_text(item, "name", DCS_SETTINGS_NS),
+            group_by: dcs_info_group_fields(item, DCS_SETTINGS_NS),
+        });
+    }
+    rows
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -486,6 +563,7 @@ fn dcs_info_collect(
                         .and_then(|node| dcs_child(node, "filter", ns_settings))
                         .map(|node| dcs_children(node, "item", ns_settings).len())
                         .unwrap_or_default(),
+                    structure_items: settings.map(dcs_info_structure_rows).unwrap_or_default(),
                     structure: settings
                         .map(|node| {
                             dcs_children(node, "item", ns_settings)
@@ -8281,6 +8359,13 @@ pub(crate) fn dcs_edit_modify_structure(
             dcs_edit_structure_description(structures)
         ));
     }
+    // Prove every target before changing the first one. A later missing or
+    // ambiguous name must not leave either a partial edit or a success log.
+    for (name, _) in &targets {
+        if dcs_edit_find_named_structure_group(xml_text, variant, name)?.is_none() {
+            return Err(format!("Group with @name=\"{name}\" not found"));
+        }
+    }
     for (name, group_by) in targets {
         if dcs_edit_replace_named_group_items(xml_text, variant, &name, &group_by)? {
             let desc = if group_by.is_empty() {
@@ -8293,10 +8378,7 @@ pub(crate) fn dcs_edit_modify_structure(
                 name, desc
             ));
         } else {
-            stdout.push_str(&format!(
-                "[WARN] Group with @name=\"{}\" not found -- skipped\n",
-                name
-            ));
+            return Err(format!("Group with @name=\"{name}\" no longer resolves"));
         }
     }
     Ok(())
@@ -8406,19 +8488,26 @@ pub(crate) fn dcs_edit_find_named_structure_group(
         Document::parse(xml_text).map_err(|error| format!("XML parse error: {error}"))?;
     let settings = dcs_edit_element_for_range(&document, settings_range)
         .ok_or_else(|| "DCS settings element not found".to_string())?;
-    Ok(settings
+    let groups = settings
         .descendants()
         .skip(1)
         .filter(|node| role_info_element(*node, "item", Some(DCS_SETTINGS_NS)))
         .filter(|node| dcs_edit_xsi_type_matches(*node, DCS_SETTINGS_NS, "StructureItemGroup"))
-        .find(|node| {
+        .filter(|node| {
             dcs_child(*node, "name", DCS_SETTINGS_NS)
                 .is_some_and(|candidate| dcs_text_of(candidate) == name)
         })
-        .map(|node| {
-            let range = node.range();
-            (range.start, range.end)
-        }))
+        .collect::<Vec<_>>();
+    if groups.len() > 1 {
+        return Err(format!(
+            "Group with @name=\"{name}\" is ambiguous ({} matches)",
+            groups.len()
+        ));
+    }
+    Ok(groups.first().map(|node| {
+        let range = node.range();
+        (range.start, range.end)
+    }))
 }
 
 pub(crate) fn dcs_edit_find_group_items_range(
@@ -9939,20 +10028,12 @@ pub(crate) fn dcs_edit_set_query(
 }
 
 pub(crate) fn dcs_edit_extract_once_marker(value: &str) -> (String, bool) {
-    let mut once = false;
-    let cleaned = value
-        .split_whitespace()
-        .filter(|part| {
-            if *part == "@once" {
-                once = true;
-                false
-            } else {
-                true
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    (cleaned, once)
+    // The typed converter appends this control suffix after the exact find
+    // and replacement text. Removing the suffix must not normalize either.
+    match value.strip_suffix(" @once") {
+        Some(text) => (text.to_string(), true),
+        None => (value.to_string(), false),
+    }
 }
 
 pub(crate) fn dcs_edit_patch_query(
@@ -11274,6 +11355,63 @@ pub(crate) mod tests {
         );
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_info_structure_items_preserve_names_unnamed_parents_duplicates_and_axes() {
+        let xml = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:s="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+        <settingsVariant><s:name>Variant</s:name><s:settings>
+          <s:item xsi:type="s:StructureItemGroup"><s:item xsi:type="s:StructureItemGroup"><s:name>Nested</s:name></s:item></s:item>
+          <s:item xsi:type="s:StructureItemGroup"/>
+          <s:item xsi:type="s:StructureItemTable"><s:row><s:item xsi:type="s:StructureItemGroup"><s:name>Repeated</s:name></s:item></s:row><s:column><s:item xsi:type="s:StructureItemGroup"><s:name>Repeated</s:name></s:item></s:column></s:item>
+          <s:item xsi:type="s:StructureItemChart"><s:point><s:item xsi:type="s:StructureItemGroup"><s:name>name with spaces</s:name></s:item></s:point><s:series><s:item xsi:type="s:StructureItemGroup"><s:name>Series</s:name></s:item></s:series></s:item>
+          <s:selection><s:item xsi:type="s:SelectedItemField"><s:name>Decoy</s:name></s:item></s:selection>
+          <s:item xsi:type="s:StructureItemNestedObject"><s:name>NestedObject</s:name><s:item xsi:type="s:StructureItemGroup"><s:name>NestedChild</s:name></s:item></s:item>
+          <s:item xsi:type="s:StructureItemFuture"><s:name>Unknown</s:name><s:item xsi:type="s:StructureItemGroup"><s:name>FutureChild</s:name></s:item></s:item>
+        </s:settings></settingsVariant></DataCompositionSchema>"#;
+        let data = parse_dcs_info_xml(
+            xml,
+            DomainObjectSupportData {
+                state: crate::domain::support_state::ObjectSupportState::NotSupported,
+                direct_edit_safe: None,
+            },
+        )
+        .unwrap();
+        let value = serde_json::to_value(data).unwrap();
+        let rows = value["variants"][0]["structureItems"]
+            .as_array()
+            .expect("structure names must be reachable without reading XML");
+        assert_eq!(
+            rows.iter()
+                .map(|row| row["name"].clone())
+                .collect::<Vec<_>>(),
+            vec![
+                json!(null),
+                json!("Nested"),
+                json!(null),
+                json!(null),
+                json!("Repeated"),
+                json!("Repeated"),
+                json!(null),
+                json!("name with spaces"),
+                json!("Series"),
+                json!("NestedObject"),
+                json!("NestedChild"),
+                json!("Unknown"),
+                json!("FutureChild")
+            ]
+        );
+        assert_eq!(rows[1]["parentIndex"], json!(0));
+        assert_eq!(rows[4]["parentIndex"], json!(3));
+        assert_eq!(rows[4]["axis"], json!("row"));
+        assert_eq!(rows[5]["axis"], json!("column"));
+        assert_eq!(rows[7]["axis"], json!("point"));
+        assert_eq!(rows[8]["axis"], json!("series"));
+        assert_eq!(rows[9]["kind"], json!("NestedObject"));
+        assert_eq!(rows[10]["parentIndex"], json!(9));
+        assert_eq!(rows[11]["kind"], json!("StructureItemFuture"));
+        assert_eq!(rows[12]["parentIndex"], json!(11));
+        assert!(rows.iter().all(|row| row.get("at").is_none()));
     }
 
     #[test]
@@ -12659,6 +12797,70 @@ pub(crate) mod tests {
         );
 
         let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn dcs_patch_unknown_or_ambiguous_groups_refuses_before_any_change() {
+        let initial = edit_field_test_xml(
+            "dcs-patch-atomic-source",
+            base_dcs_xml(),
+            "set-structure",
+            "Amount @name=Known > Quantity @name=Child",
+        );
+        for patch in [
+            "Price @name=Missing",
+            "Price @name=Known > Amount @name=Missing",
+        ] {
+            let mut xml = initial.clone();
+            let mut stdout = String::new();
+            let error = dcs_edit_modify_structure(
+                &mut xml,
+                "Основной",
+                &dcs_edit_parse_structure(patch),
+                &mut stdout,
+            )
+            .expect_err("an unknown group must not be a successful skipped edit");
+            assert!(error.contains("Missing"), "{error}");
+            assert_eq!(xml, initial, "a mixed patch must be atomic");
+            assert!(
+                stdout.is_empty(),
+                "no success is announced before preflight"
+            );
+        }
+        let duplicate = initial.replace(
+            "<dcsset:name>Child</dcsset:name>",
+            "<dcsset:name>Known</dcsset:name>",
+        );
+        let mut xml = duplicate.clone();
+        assert!(dcs_edit_modify_structure(
+            &mut xml,
+            "Основной",
+            &dcs_edit_parse_structure("Price @name=Known"),
+            &mut String::new()
+        )
+        .is_err());
+        assert_eq!(
+            xml, duplicate,
+            "duplicate names must not select the first group"
+        );
+    }
+
+    #[test]
+    fn dcs_query_patch_marker_preserves_literal_whitespace_and_empty_replacement() {
+        for value in [
+            "Code\n  AS Code => Item\n  AS Item",
+            "Code => ",
+            "Code  =>  Item",
+        ] {
+            assert_eq!(
+                dcs_edit_extract_once_marker(value),
+                (value.to_string(), false)
+            );
+            assert_eq!(
+                dcs_edit_extract_once_marker(&format!("{value} @once")),
+                (value.to_string(), true)
+            );
+        }
     }
 
     #[test]

@@ -23,6 +23,7 @@ pub(crate) mod metadata;
 #[allow(dead_code)]
 pub(crate) mod module_projection;
 pub(crate) mod node_view;
+pub(crate) mod operation_contract;
 pub(crate) mod operation_deadline;
 pub mod operational_config;
 #[allow(dead_code)]

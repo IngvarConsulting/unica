@@ -8694,6 +8694,552 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S326",
+   "name": "dcs-reported-examples-current-contract",
+   "issue": 1299,
+   "area": "СКД",
+   "task": "По контракту подсказчика изменить поле, запрос и именованную группу из исходного #1299; preview не пишет, три XML-эффекта и check подтверждены",
+   "workspace": "tests/fixtures/acceptance/workspace-dcs",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches",
+       "eq": [
+        {
+         "at": "cf:Report.F05Report.Template.F05Schema.DataSet",
+         "count": 1
+        },
+        {
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting",
+         "count": 1
+        }
+       ]
+      }
+     ],
+     "captures": {
+      "image0": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 0,
+         "parentIndex": null,
+         "axis": null,
+         "kind": "Group",
+         "name": "F05Group",
+         "groupBy": [
+          "Category"
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "filter": {
+       "sections": [
+        "can"
+       ],
+       "can": {
+        "op": "field.add"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can/0/op",
+       "eq": "field.add"
+      },
+      {
+       "pointer": "/data/can/0/implemented",
+       "eq": true
+      },
+      {
+       "pointer": "/data/can/0/contract/argsSchema/additionalProperties",
+       "eq": false
+      },
+      {
+       "pointer": "/data/can/0/contract/help/path",
+       "eq": "references/use-cases/reports-printing.md"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "ops": [
+       {
+        "op": "field.add",
+        "args": {
+         "items": [
+          {
+           "dataPath": "Added",
+           "title": "Added"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "eq": "$capture.image0"
+      }
+     ],
+     "captures": {
+      "token0": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.token0"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "notEq": "$capture.image0"
+      }
+     ],
+     "captures": {
+      "image1": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "filter": {
+       "sections": [
+        "can"
+       ],
+       "can": {
+        "op": "query.set"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can/0/op",
+       "eq": "query.set"
+      },
+      {
+       "pointer": "/data/can/0/implemented",
+       "eq": true
+      },
+      {
+       "pointer": "/data/can/0/contract/argsSchema/additionalProperties",
+       "eq": false
+      },
+      {
+       "pointer": "/data/can/0/contract/help/path",
+       "eq": "references/use-cases/reports-printing.md"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "ops": [
+       {
+        "op": "query.set",
+        "args": {
+         "values": {
+          "query": "ВЫБРАТЬ \"After1299\" КАК Category, 3 КАК Amount, 4 КАК Added"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "eq": "$capture.image1"
+      }
+     ],
+     "captures": {
+      "token1": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.token1"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "notEq": "$capture.image1"
+      }
+     ],
+     "captures": {
+      "image2": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+      "filter": {
+       "sections": [
+        "can"
+       ],
+       "can": {
+        "op": "structure.patch"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can/0/op",
+       "eq": "structure.patch"
+      },
+      {
+       "pointer": "/data/can/0/implemented",
+       "eq": true
+      },
+      {
+       "pointer": "/data/can/0/contract/argsSchema/additionalProperties",
+       "eq": false
+      },
+      {
+       "pointer": "/data/can/0/contract/help/path",
+       "eq": "references/use-cases/reports-printing.md"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+      "ops": [
+       {
+        "op": "structure.patch",
+        "args": {
+         "values": {
+          "groupBy": [
+           "Amount @name=F05Group"
+          ],
+          "details": false
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "eq": "$capture.image2"
+      }
+     ],
+     "captures": {
+      "token2": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.token2"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "notEq": "$capture.image2"
+      }
+     ],
+     "captures": {
+      "image3": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/2/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Added"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath",
+       "eq": [
+        "Category",
+        "Amount",
+        "Added"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "line": 1,
+         "text": "ВЫБРАТЬ \"After1299\" КАК Category, 3 КАК Amount, 4 КАК Added"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}query",
+       "eq": [
+        "ВЫБРАТЬ \"After1299\" КАК Category, 3 КАК Amount, 4 КАК Added"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 0,
+         "parentIndex": null,
+         "axis": null,
+         "kind": "Group",
+         "name": "F05Group",
+         "groupBy": [
+          "Amount"
+         ]
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+       "eq": [
+        "F05Group"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}groupItems/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+       "eq": [
+        "Amount"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "dcs"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
+      }
+     ]
+    }
+   ]
   }
  ]
 }

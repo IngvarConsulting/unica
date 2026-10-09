@@ -191,10 +191,88 @@ pub(super) fn project_view_sections(
     Ok(Value::Object(projected))
 }
 
+pub(super) fn project_view_operation(
+    data: &Value,
+    sections: &Value,
+    operation: Option<&str>,
+) -> Result<Value, ReadModeError> {
+    let mut projected = project_view_sections(data, sections)?;
+    let Some(operation) = operation else {
+        return Ok(projected);
+    };
+    let descriptor = OperationRegistry::closed()
+        .lookup(operation)
+        .ok_or_else(|| {
+            ReadModeError::bad_value(format!(
+                "unknown operation `{operation}`; inspect the node can dictionary"
+            ))
+        })?;
+    let kind = projected["kind"]
+        .as_str()
+        .and_then(|kind| NodeKind::parse(kind).ok())
+        .ok_or_else(|| {
+            ReadModeError::unsupported_section("operation details require a known node kind")
+        })?;
+    if !descriptor.applies_to(kind) {
+        return Err(ReadModeError::bad_value(format!(
+            "operation `{operation}` does not apply to {}",
+            kind.as_str()
+        )));
+    }
+    let implemented = IMPLEMENTED_APPLY_OPERATIONS.contains(&operation);
+    let contract = descriptor.argument_contract();
+    if implemented && contract.is_none() {
+        return Err(ReadModeError::unsupported_section(format!(
+            "detailed argument contract for `{operation}` is not available yet"
+        )));
+    }
+    projected["can"] = json!([{"op":operation,"args":descriptor.skeleton_key(),
+        "implemented":implemented,"contract":contract.map(|contract| contract.details())}]);
+    Ok(projected)
+}
+
 #[cfg(test)]
 mod call_graph_section_tests {
     use super::{project_view_sections, VIEW_SECTION_SLOTS};
     use serde_json::json;
+
+    #[test]
+    fn detailed_dcs_can_keeps_legacy_entries_and_distinguishes_unimplemented_operations() {
+        use super::project_view_operation;
+        use crate::domain::refusal::RefusalCode;
+        let data = json!({"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data","kind":"DataSet","title":"F05Data"});
+        let brief = project_view_operation(&data, &json!(["can"]), None).unwrap();
+        let query = brief["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["op"] == "query.set")
+            .unwrap();
+        assert_eq!(
+            query,
+            &json!({"op":"query.set","args":"values","implemented":true})
+        );
+        let detailed = project_view_operation(&data, &json!(["can"]), Some("query.set")).unwrap();
+        assert_eq!(detailed["can"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            detailed["can"][0]["contract"]["argsSchema"]["properties"]["values"]["properties"]
+                ["query"]["type"],
+            "string"
+        );
+        assert!(serde_json::to_vec(&detailed).unwrap().len() < 64 * 1024);
+        let unimplemented =
+            project_view_operation(&data, &json!(["can"]), Some("dcs.set")).unwrap();
+        assert_eq!(unimplemented["can"][0]["implemented"], false);
+        assert_eq!(unimplemented["can"][0]["contract"], serde_json::Value::Null);
+        for op in ["query.unknown", "enumValue.add"] {
+            assert_eq!(
+                project_view_operation(&data, &json!(["can"]), Some(op))
+                    .unwrap_err()
+                    .code(),
+                RefusalCode::BadValue
+            );
+        }
+    }
 
     /// `callGraph` — выключатель вычисления, а не восьмой слот узла.
     ///
