@@ -117,6 +117,9 @@ def step_wire(step: dict) -> str:
 
 
 def step_classes(step: dict) -> str:
+    if "knownGap" in step:
+        gap = step["knownGap"]
+        return f"`gap`: известный ошибочный `{gap['observedClass']}` (#{gap['issue']})"
     return " / ".join(f"`{name}`" for name in step["expect"])
 
 
@@ -145,6 +148,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         key = " / ".join(step["expect"])
         class_counts[key] = class_counts.get(key, 0) + 1
     gaps = [scenario["id"] for scenario in scenarios if any("gap" in step["expect"] for step in scenario["wire"])]
+    gap_steps = [(scenario["id"], step) for scenario in scenarios for step in scenario["wire"] if "gap" in step["expect"]]
 
     op_scenarios: dict[str, list[str]] = {}
     for scenario in scenarios:
@@ -198,9 +202,19 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     out(
         "Провод проходной, когда каждый его шаг отвечает результатом или типизированным отказом своего "
         "класса. Сырой транспортный сбой и незадокументированный типизированный отказ роняют прогон. "
-        f"Задокументированных пробелов (`gap`) сейчас: **{len(gaps)}**"
+        f"Шагов с пробелом (`gap`) сейчас: **{len(gap_steps)}** в **{len(gaps)} сценариях**"
         + (f" ({', '.join(gaps)})." if gaps else ".")
     )
+    out("")
+    out("### Известные пробелы")
+    out("")
+    out("Потолок корпуса — восемь gap-шагов. Известный ошибочный вердикт остаётся дефектом и не означает поддержку сценария.")
+    out("")
+    out("| Сценарий | Наблюдение | Причина |")
+    out("| --- | --- | --- |")
+    for identifier, step in gap_steps:
+        reason = step["gap"].replace("|", "\\|").replace("\n", " ")
+        out(f"| {identifier} | {step_classes(step)} | {reason} |")
     out("")
     out("## Как предложить сценарий или операцию")
     out("")
