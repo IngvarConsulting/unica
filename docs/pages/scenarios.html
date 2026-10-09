@@ -363,9 +363,9 @@
   function openDetails(scenario) {
     document.getElementById('details-id').textContent = scenario.id;
     document.getElementById('details-task').textContent = scenario.task;
-    document.getElementById('details-area').textContent = scenario.workspace
-      ? scenario.area + ' · ' + scenario.workspace
-      : scenario.area;
+    document.getElementById('details-area').textContent = [scenario.area,
+      (scenario.profile || 'source') + (scenario.driver ? '/' + scenario.driver : ''),
+      scenario.workspace].filter(Boolean).join(' · ');
     const wire = document.getElementById('details-wire');
     wire.replaceChildren(...scenario.wire.map((step, index) => {
       const block = document.createElement('div');

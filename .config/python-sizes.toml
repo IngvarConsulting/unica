@@ -9,6 +9,7 @@
 entries = [
   # приёмочный корпус: собирает продукт и гоняет сценарии через MCP
   "test_acceptance_scenarios.AcceptanceCorpusRunTests",
+  "test_acceptance_scenarios.AcceptanceDeliveryCorpusRunTests",
   # два контракта продукта, которые собирают библиотеку и поднимают транспорт
   "test_product_contracts.ProductContractTests.test_unica_coder_production_library_satisfies_rmcp_handler_bound",
   "test_product_contracts.ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface",

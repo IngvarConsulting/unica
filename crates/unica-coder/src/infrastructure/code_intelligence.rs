@@ -1135,7 +1135,29 @@ fn parse_bsl_analyzer_search(
     const BSL_ANALYZER_SEARCH_MAX_LIMIT: usize = 50;
     let effective_limit = requested_limit.min(BSL_ANALYZER_SEARCH_MAX_LIMIT);
     let trimmed = text.trim();
-    if trimmed.is_empty() || trimmed == "No results found." {
+    // The bundled analyzer keeps the no-hits sentence but appends a separate
+    // indexing text block. Only a ready footer is evidence of an empty result;
+    // pending, failed or unknown output must not become proven absence.
+    let empty_lines: Vec<_> = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let empty_with_ready_footer = matches!(
+        empty_lines.as_slice(),
+        ["No results found."]
+            | [
+                "No results found.",
+                "Indexing lexical: ready",
+                "Indexing semantic: ready" | "Indexing semantic: disabled"
+            ]
+            | [
+                "No results found.",
+                "Indexing semantic: ready" | "Indexing semantic: disabled",
+                "Indexing lexical: ready"
+            ]
+    );
+    if trimmed.is_empty() || empty_with_ready_footer {
         return empty_section(ProviderId::BslAnalyzer, SearchRanking::Provider);
     }
     if let Ok(envelope) = serde_json::from_str::<Value>(trimmed) {
@@ -3183,6 +3205,50 @@ mod tests {
         assert!(termination.retryable);
         assert_eq!(termination.detail_code.as_deref(), Some("buildingIndex"));
         assert_eq!(section.diagnostics, vec!["indexing 40%".to_string()]);
+    }
+
+    #[test]
+    fn bsl_analyzer_empty_results_with_ready_indexing_footer_are_empty() {
+        for text in [
+            "No results found.",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\n",
+            "No results found.\nIndexing semantic: ready\nIndexing lexical: ready",
+            "No results found.\nIndexing semantic: disabled\nIndexing lexical: ready",
+        ] {
+            let section = parse_bsl_analyzer_search(text, &context());
+            assert_eq!(section.status, ProviderSectionStatus::Empty);
+            assert!(section.search_complete);
+            assert!(section.hits.is_empty());
+            assert_eq!(section.matches.total, Some(0));
+        }
+    }
+
+    #[test]
+    fn bsl_analyzer_empty_marker_does_not_hide_untrusted_tail() {
+        for text in [
+            "No results found.\nunknown provider error",
+            "No results found.\nIndexing lexical: ready",
+            "No results found.\nIndexing semantic: ready",
+            "No results found.\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: ready\nIndexing lexical: ready",
+            "No results found.\nIndexing lexical: ready\nIndexing lexical: ready\nIndexing semantic: ready",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\nIndexing semantic: ready",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: failed\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: running (parsing): 1/2 chunks\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: unknown",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: failed",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: running",
+            "No results found.\n#broken header",
+            "No results found.\nNo results found.",
+        ] {
+            let section = parse_bsl_analyzer_search(text, &context());
+            assert_eq!(section.status, ProviderSectionStatus::Failed, "{text}");
+            assert!(!section.search_complete, "{text}");
+            assert_eq!(section.matches.total, None, "{text}");
+            assert_eq!(section.matches.relation, SearchCountRelation::Unknown, "{text}");
+        }
     }
 
     #[test]
