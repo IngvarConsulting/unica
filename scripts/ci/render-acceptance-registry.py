@@ -182,11 +182,18 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         "`tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, "
         "без файла поддержки) идут на выведенном из него пространстве "
         "`tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом "
-        "`tests/fixtures/acceptance/workspace-bare/`. Источник истины — JSON корпуса; этот документ — его "
+        "`tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную "
+        "`tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. "
+        "Источник истины — JSON корпуса; этот документ — его "
         "рендер для людей, и проверка на расхождение входит в тот же тест."
     )
     out("")
-    out("Словарь `run` и жизненный цикл задач в этот корпус не входят: у них будет собственный корпус.")
+    source_count = sum(s.get("profile", "source") == "source" for s in scenarios)
+    delivery_count = sum(s.get("profile") == "delivery" for s in scenarios)
+    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}. "
+        "Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной "
+        "синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. "
+        "Runtime и agent-evaluation добавляются с исполняемыми драйверами; неизвестный профиль не пропускается.")
     out("")
     out("## Классы ответа шага")
     out("")
@@ -309,13 +316,16 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     for name, items in areas.items():
         out(f"### {name}")
         out("")
-        out("| № | Задача | Провод | Классы шагов |")
-        out("| --- | --- | --- | --- |")
+        out("| № | Задача | Профиль | Провод | Классы шагов |")
+        out("| --- | --- | --- | --- | --- |")
         for scenario in items:
             wire = "<br>".join(step_wire(step) for step in scenario["wire"])
             classes = "<br>".join(step_classes(step) for step in scenario["wire"])
             task = scenario["task"].replace("|", "\\|")
-            out(f"| {scenario['id']} | {task} | {wire} | {classes} |")
+            execution = scenario.get("profile", "source")
+            if scenario.get("driver"):
+                execution += "/" + scenario["driver"]
+            out(f"| {scenario['id']} | {task} | `{execution}` | {wire} | {classes} |")
         out("")
     return "\n".join(line.rstrip() for line in lines).rstrip("\n") + "\n"
 

@@ -8606,6 +8606,221 @@
    ]
   },
   {
+   "id": "S324",
+   "issue": 1306,
+   "area": "Код BSL",
+   "task": "После найденного метода отсутствующий символ дважды даёт завершённую пустую выдачу",
+   "workspace": "tests/fixtures/acceptance/workspace-symbol",
+   "profile": "delivery",
+   "driver": "bsl-analyzer",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "AcceptanceExistingSymbol1306",
+      "role": "symbol"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/mode",
+       "eq": "symbol"
+      },
+      {
+       "pointer": "/data/matches/0/role",
+       "eq": "symbol"
+      },
+      {
+       "pointer": "/data/matches/0/provider",
+       "eq": "bsl-analyzer"
+      },
+      {
+       "pointer": "/data/matches/0/indexFreshness",
+       "eq": "unknown"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/page/stoppedBy",
+       "eq": "complete"
+      },
+      {
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/data/matches/0/status",
+       "eq": "ok"
+      },
+      {
+       "pointer": "/data/matches/0/hits/0/symbol",
+       "eq": "AcceptanceExistingSymbol1306"
+      },
+      {
+       "pointer": "/data/matches/0/matches",
+       "eq": {
+        "returned": 1,
+        "total": 1,
+        "relation": "exact"
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "E03aDefinitelyAbsentSymbol987654321",
+      "role": "symbol"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/mode",
+       "eq": "symbol"
+      },
+      {
+       "pointer": "/data/matches/0/role",
+       "eq": "symbol"
+      },
+      {
+       "pointer": "/data/matches/0/provider",
+       "eq": "bsl-analyzer"
+      },
+      {
+       "pointer": "/data/matches/0/indexFreshness",
+       "eq": "unknown"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/page/stoppedBy",
+       "eq": "complete"
+      },
+      {
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/data/matches/0/status",
+       "eq": "empty"
+      },
+      {
+       "pointer": "/data/matches/0/termination",
+       "eq": null
+      },
+      {
+       "pointer": "/data/matches/0/hits",
+       "eq": []
+      },
+      {
+       "pointer": "/data/matches/0/diagnostics",
+       "eq": []
+      },
+      {
+       "pointer": "/data/matches/0/searchComplete",
+       "eq": true
+      },
+      {
+       "pointer": "/data/matches/0/matches",
+       "eq": {
+        "returned": 0,
+        "total": 0,
+        "relation": "exact"
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "E03aDefinitelyAbsentSymbol987654321",
+      "role": "symbol"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/mode",
+       "eq": "symbol"
+      },
+      {
+       "pointer": "/data/matches/0/role",
+       "eq": "symbol"
+      },
+      {
+       "pointer": "/data/matches/0/provider",
+       "eq": "bsl-analyzer"
+      },
+      {
+       "pointer": "/data/matches/0/indexFreshness",
+       "eq": "unknown"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/page/stoppedBy",
+       "eq": "complete"
+      },
+      {
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/data/matches/0/status",
+       "eq": "empty"
+      },
+      {
+       "pointer": "/data/matches/0/termination",
+       "eq": null
+      },
+      {
+       "pointer": "/data/matches/0/hits",
+       "eq": []
+      },
+      {
+       "pointer": "/data/matches/0/diagnostics",
+       "eq": []
+      },
+      {
+       "pointer": "/data/matches/0/searchComplete",
+       "eq": true
+      },
+      {
+       "pointer": "/data/matches/0/matches",
+       "eq": {
+        "returned": 0,
+        "total": 0,
+        "relation": "exact"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
    "id": "S325",
    "name": "acceptance-profile-content-and-gap-controls",
    "issue": 1245,

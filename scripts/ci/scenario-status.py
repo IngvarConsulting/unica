@@ -90,6 +90,8 @@ def build(corpus: dict) -> dict[str, object]:
             "task": scenario["task"],
             "workspace": scenario.get("workspace", ""),
             "mode": scenario_mode(scenario),
+            "profile": scenario.get("profile", "source"),
+            "driver": scenario.get("driver", ""),
             "wire": [
                 {
                     "tool": step["tool"],
