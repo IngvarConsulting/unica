@@ -32,20 +32,10 @@ class DcsNamingContractTests(unittest.TestCase):
         self.assertEqual(domain_surface, EXPECTED_TOOLS)
         self.assertTrue(REMOVED_TOOLS.isdisjoint(domain_surface))
 
-    def test_prompt_visible_dcs_skills_replace_skd_skills(self) -> None:
+    def test_dcs_guidance_retires_both_dcs_and_skd_prompt_skills(self) -> None:
         skill_root = REPO_ROOT / "plugins" / "unica" / "skills"
         skill_names = {path.name for path in skill_root.iterdir() if path.is_dir()}
-
-        self.assertTrue(EXPECTED_SKILLS <= skill_names)
-        self.assertTrue(REMOVED_SKILLS.isdisjoint(skill_names))
-        for skill in EXPECTED_SKILLS:
-            header = (skill_root / skill / "SKILL.md").read_text(encoding="utf-8")
-            self.assertIn(f"name: {skill}", header)
-            # Имя предмета осталось DCS, а маршрут стал каноническим: работу со
-            # схемой компоновки ведёт `unica.apply`, а не снятый `unica.dcs.*`.
-            self.assertIn("unica.apply", header)
-            self.assertNotIn("unica.dcs.", header)
-
+        self.assertTrue((EXPECTED_SKILLS | REMOVED_SKILLS).isdisjoint(skill_names))
 
     def test_provenance_names_local_dcs_contract_but_preserves_donor_paths(self) -> None:
         path = REPO_ROOT / "docs" / "provenance" / "skill-upstreams.json"

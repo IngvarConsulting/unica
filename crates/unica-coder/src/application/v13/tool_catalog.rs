@@ -269,7 +269,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     input_schema: schema(
                         json!({
                             "at": logical_address(),
-                            "filter": data_object("Optional projection such as sections; valid only with at."),
+                            "filter": data_object("Optional projection; valid only with at. sections:[\"can\"] lists operation summaries; add can:{op:\"query.set\"} for one detailed supported argument contract."),
                             // No schema `default` (#1210): form clients send it, and
                             // limit without at is refused.
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50,

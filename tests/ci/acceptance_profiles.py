@@ -11,7 +11,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
+DCS_WORKSPACE = "tests/fixtures/acceptance/workspace-dcs"
 SOURCE_WORKSPACES = {
+    DCS_WORKSPACE,
     "tests/fixtures/acceptance/workspace",
     "tests/fixtures/acceptance/workspace-format",
     "tests/fixtures/acceptance/workspace-bare",
@@ -19,7 +21,7 @@ SOURCE_WORKSPACES = {
 
 
 def select_profile(corpus, profile):
-    if profile not in {"source", "delivery"}:
+    if profile not in {"source", "delivery", "agent-evaluation"}:
         raise ValueError(f"profile {profile!r} has no executable driver")
     selected = []
     for scenario in corpus["scenarios"]:
@@ -40,6 +42,11 @@ def select_profile(corpus, profile):
             if any(step["tool"] != "unica.search" or step["args"].get("role") != "symbol"
                    for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: analyzer driver supports symbol search only")
+        elif current == "agent-evaluation":
+            if driver != "codex" or workspace != DCS_WORKSPACE or scenario.get("evaluation") != "dcs-contract":
+                raise ValueError(f"{scenario['id']}: invalid agent driver, evaluation or fixture")
+            if any(step["tool"] not in {"unica.view", "unica.check"} for step in scenario["wire"]):
+                raise ValueError(f"{scenario['id']}: agent post-image wire must be read-only")
         else:
             raise ValueError(f"{scenario['id']}: profile {current!r} has no executable driver")
         if current == profile:

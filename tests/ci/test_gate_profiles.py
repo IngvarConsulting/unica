@@ -213,7 +213,9 @@ class GateProfileCompositionTests(unittest.TestCase):
         for gate in ("pr", "queue", "main", "release"):
             with self.subTest(gate=gate):
                 matrix = self.run_tests.python_matrix(gate)
-                self.assertEqual(sorted({entry["suite"] for entry in matrix}), sorted(suite for suite, _, _ in self.run_tests.PYTHON_SUITES))
+                self.assertEqual(sorted({entry["suite"] for entry in matrix}), sorted(
+                    suite for suite, size, _ in self.run_tests.PYTHON_SUITES
+                    if size in self.run_tests.ADMITTED[gate]))
                 lanes = {entry["lane"] for entry in matrix if entry["suite"] in self.run_tests.LANED_SUITES}
                 self.assertEqual(lanes, set(self.run_tests.ADMITTED[gate]))
                 self.assertTrue(all(not entry["lane"] for entry in matrix if entry["suite"] not in self.run_tests.LANED_SUITES))
@@ -250,9 +252,21 @@ class GateProfileCompositionTests(unittest.TestCase):
             with self.subTest(suite=suite):
                 self.assertIn(size, sizes)
                 self.assertTrue((REPO_ROOT / suite).is_dir())
-        # Размер набора — `small`; `medium` внутри набора объявляет манифест
-        # `.config/python-sizes.toml`, и `pr` его не гоняет.
-        self.assertEqual({size for _, size, _ in self.run_tests.PYTHON_SUITES}, {"small"})
+        self.assertEqual({size for _, size, _ in self.run_tests.PYTHON_SUITES}, {"small", "large"})
+
+    def test_real_agent_suite_is_required_by_complete_gates(self) -> None:
+        for gate in ("all", "release", "large"):
+            self.assertIn("tests/agent_evaluation", {entry["suite"] for entry in self.run_tests.python_matrix(gate)})
+            self.assertTrue(any("tests/agent_evaluation" in command for command in self.run_tests.python_commands(gate)))
+        for gate in ("pr", "queue", "main"):
+            self.assertNotIn("tests/agent_evaluation", {entry["suite"] for entry in self.run_tests.python_matrix(gate)})
+
+    def test_large_agent_gate_really_selects_the_case_without_allure(self) -> None:
+        import subprocess
+        command, = self.run_tests.python_commands("large", suite="tests/agent_evaluation")
+        result = subprocess.run([*command, "--plan-only"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.splitlines(), [
+            "test_dcs.DcsAgentAcceptanceTests.test_agent_uses_current_contract_without_retired_skills"])
 
 
 if __name__ == "__main__":

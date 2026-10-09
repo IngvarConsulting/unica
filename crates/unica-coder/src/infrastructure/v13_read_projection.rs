@@ -362,6 +362,37 @@ fn project_dcs(
         )));
     }
     let dataset_segment = &suffix[0];
+    if dataset_segment.kind() == NodeKind::Setting && suffix.len() > 1 {
+        let [setting, item] = suffix else {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "DCS setting structure does not have addressable children",
+            ));
+        };
+        if item.kind() != NodeKind::Item || item.name().is_some() {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "DCS structure items are rows of Setting.<name>.Item, not named logical nodes",
+            ));
+        }
+        let variant = setting
+            .name()
+            .and_then(|name| {
+                payload
+                    .get("variants")
+                    .and_then(|variants| select_named(variants, name))
+            })
+            .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "DCS setting was not found"))?;
+        let rows = variant
+            .get("structureItems")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Item", "Item", Map::new()),
+            rows,
+        )));
+    }
     if dataset_segment.kind() != NodeKind::DataSet {
         return project_known_suffix(LogicalReader::Dcs, address, payload, suffix);
     }
@@ -2296,6 +2327,19 @@ fn known_reader_branches(
     address: &QualifiedAddress,
     value: &Value,
 ) -> Vec<BranchRef> {
+    if matches!(reader, LogicalReader::Dcs)
+        && address
+            .segments()
+            .last()
+            .is_some_and(|segment| segment.kind() == NodeKind::Setting && segment.name().is_some())
+    {
+        return value
+            .get("structureItems")
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty())
+            .map(|items| vec![BranchRef::new(format!("{}.Item", address), items.len())])
+            .unwrap_or_default();
+    }
     let kinds: &[NodeKind] = match reader {
         LogicalReader::Configuration => &[],
         LogicalReader::Form => &[
@@ -2392,6 +2436,46 @@ fn data_row(value: &Value) -> Value {
         Value::Null | Value::Bool(_) | Value::Number(_) => json!({"value": value}),
         Value::String(text) if text.len() <= MAX_COMPACT_PROP_BYTES => json!({"value": text}),
         Value::String(_) | Value::Array(_) | Value::Object(_) => json!({"value": "<omitted>"}),
+    }
+}
+
+#[cfg(test)]
+mod dcs_structure_tests {
+    use super::*;
+    #[test]
+    fn setting_structure_rows_never_fabricate_or_choose_named_addresses() {
+        let base = "cf:Report.F05Report.Template.F05Schema";
+        let rows = json!([{"index":0,"parentIndex":null,"axis":null,"kind":"Group","name":null,"groupBy":[]}, {"index":1,"parentIndex":0,"axis":null,"kind":"Group","name":"Repeated","groupBy":["Amount"]}, {"index":2,"parentIndex":null,"axis":"row","kind":"Group","name":"Repeated","groupBy":[]}]);
+        let payload = json!({"variants":[{"name":"Variant","structureItems":rows}]});
+        let read = |suffix: &str| {
+            let address = QualifiedAddress::parse(&format!("{base}.{suffix}")).unwrap();
+            let tail: Vec<_> = address.segments().iter().skip(2).cloned().collect();
+            project_dcs(&address, &payload, &tail)
+        };
+        let projected = serde_json::to_value(read("Setting.Variant.Item").unwrap()).unwrap();
+        assert_eq!(projected["items"], rows);
+        assert!(projected["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row.get("at").is_none()));
+        let setting = serde_json::to_value(read("Setting.Variant").unwrap()).unwrap();
+        assert_eq!(
+            setting["branches"],
+            json!([{"at":format!("{base}.Setting.Variant.Item"),"count":3}])
+        );
+        for suffix in [
+            "Setting.Variant.Item.Repeated",
+            "Setting.Variant.Item.Group",
+            "Setting.Variant.Item.Repeated.Item",
+            "Setting.Missing.Item",
+        ] {
+            assert_eq!(
+                read(suffix).unwrap_err().code(),
+                RefusalCode::NotFound,
+                "{suffix}"
+            );
+        }
     }
 }
 

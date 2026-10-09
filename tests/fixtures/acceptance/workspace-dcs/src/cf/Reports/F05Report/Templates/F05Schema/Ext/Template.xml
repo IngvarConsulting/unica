@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+ <dataSource><name>LocalSource</name><dataSourceType>Local</dataSourceType></dataSource>
+ <dataSet xsi:type="DataSetQuery"><name>F05Data</name>
+  <field xsi:type="DataSetFieldField"><dataPath>Category</dataPath><field>Category</field></field>
+  <field xsi:type="DataSetFieldField"><dataPath>Amount</dataPath><field>Amount</field></field>
+  <dataSource>LocalSource</dataSource><query>ВЫБРАТЬ "<!-- preserve-query-note -->Test"<?preserve query?> КАК Category, 1 КАК Amount, 2 КАК Added</query>
+ </dataSet>
+ <settingsVariant><dcsset:name>F05Variant</dcsset:name><dcsset:settings>
+  <dcsset:selection><dcsset:item xsi:type="dcsset:SelectedItemAuto"/></dcsset:selection>
+  <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>F05Group</dcsset:name><dcsset:groupItems><dcsset:item xsi:type="dcsset:GroupItemField"><dcsset:field>Category</dcsset:field><dcsset:groupType>Items</dcsset:groupType></dcsset:item></dcsset:groupItems></dcsset:item>
+ </dcsset:settings></settingsVariant>
+</DataCompositionSchema>

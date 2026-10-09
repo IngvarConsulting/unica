@@ -1788,13 +1788,22 @@ impl LogicalViewReadAuthority<'_> {
                 let payload = self
                     .read
                     .dcs_payload(child, &mut || self.read_checkpoint())?;
-                vec![(
-                    NodeKind::DataSet,
-                    payload
-                        .get("dataSets")
-                        .and_then(Value::as_array)
-                        .map_or(0, Vec::len),
-                )]
+                vec![
+                    (
+                        NodeKind::DataSet,
+                        payload
+                            .get("dataSets")
+                            .and_then(Value::as_array)
+                            .map_or(0, Vec::len),
+                    ),
+                    (
+                        NodeKind::Setting,
+                        payload
+                            .get("variants")
+                            .and_then(Value::as_array)
+                            .map_or(0, Vec::len),
+                    ),
+                ]
             }
             Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
                 let payload = self
@@ -2029,7 +2038,10 @@ fn validate_view_filter(
     route: &LogicalTreeRoute,
     filter: &ViewFilter,
 ) -> Result<ModuleViewFilter, ViewError> {
-    let has_reader_filter = filter.iter().any(|(key, _)| key != "sections");
+    filter.can_operation()?;
+    let has_reader_filter = filter
+        .iter()
+        .any(|(key, _)| !matches!(key.as_str(), "sections" | "can"));
     if route.reader() != LogicalReader::Module {
         return if !has_reader_filter {
             Ok(ModuleViewFilter::default())
@@ -2053,7 +2065,7 @@ fn validate_view_filter(
     let mut result = ModuleViewFilter::default();
     for (key, value) in filter.iter() {
         match key.as_str() {
-            "sections" => {}
+            "sections" | "can" => {}
             "context" => {
                 let context = value.as_str().ok_or_else(|| {
                     ViewError::new(

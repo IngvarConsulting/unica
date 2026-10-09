@@ -192,7 +192,16 @@ def validate_index(
                         f"{upstream_id}: {skill}"
                     )
                 seen_entry_skills.add(skill)
-                indexed_skills.add(skill)
+                prompt_skill = entry.get("promptSkill", True)
+                if type(prompt_skill) is not bool:
+                    errors.append(f"{entry_label}: promptSkill must be a boolean")
+                if prompt_skill is False:
+                    if skill in local_skills:
+                        errors.append(f"{entry_label}: retired promptSkill still exists in the package: {skill}")
+                    if not entry.get("localPaths") and not entry.get("contractPaths"):
+                        errors.append(f"{entry_label}: retired promptSkill must retain implementation provenance")
+                else:
+                    indexed_skills.add(skill)
             status = entry.get("status")
             if isinstance(status, str) and status not in ALLOWED_STATUSES:
                 errors.append(f"{entry_label}: unsupported status: {status}")
