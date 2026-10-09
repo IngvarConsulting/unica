@@ -1138,19 +1138,25 @@ fn parse_bsl_analyzer_search(
     // The bundled analyzer keeps the no-hits sentence but appends a separate
     // indexing text block. Only a ready footer is evidence of an empty result;
     // pending, failed or unknown output must not become proven absence.
-    let mut empty_lines = trimmed
+    let empty_lines: Vec<_> = trimmed
         .lines()
         .map(str::trim)
-        .filter(|line| !line.is_empty());
-    let empty_with_ready_footer = empty_lines.next() == Some("No results found.")
-        && empty_lines.all(|line| {
-            matches!(
-                line,
+        .filter(|line| !line.is_empty())
+        .collect();
+    let empty_with_ready_footer = matches!(
+        empty_lines.as_slice(),
+        ["No results found."]
+            | [
+                "No results found.",
+                "Indexing lexical: ready",
+                "Indexing semantic: ready" | "Indexing semantic: disabled"
+            ]
+            | [
+                "No results found.",
+                "Indexing semantic: ready" | "Indexing semantic: disabled",
                 "Indexing lexical: ready"
-                    | "Indexing semantic: ready"
-                    | "Indexing semantic: disabled"
-            )
-        });
+            ]
+    );
     if trimmed.is_empty() || empty_with_ready_footer {
         return empty_section(ProviderId::BslAnalyzer, SearchRanking::Provider);
     }
@@ -3204,8 +3210,11 @@ mod tests {
     #[test]
     fn bsl_analyzer_empty_results_with_ready_indexing_footer_are_empty() {
         for text in [
+            "No results found.",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: disabled",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\n",
+            "No results found.\nIndexing semantic: ready\nIndexing lexical: ready",
+            "No results found.\nIndexing semantic: disabled\nIndexing lexical: ready",
         ] {
             let section = parse_bsl_analyzer_search(text, &context());
             assert_eq!(section.status, ProviderSectionStatus::Empty);
@@ -3219,13 +3228,26 @@ mod tests {
     fn bsl_analyzer_empty_marker_does_not_hide_untrusted_tail() {
         for text in [
             "No results found.\nunknown provider error",
+            "No results found.\nIndexing lexical: ready",
+            "No results found.\nIndexing semantic: ready",
+            "No results found.\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: ready\nIndexing lexical: ready",
+            "No results found.\nIndexing lexical: ready\nIndexing lexical: ready\nIndexing semantic: ready",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\nIndexing semantic: ready",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: ready\nIndexing semantic: disabled",
             "No results found.\nIndexing lexical: failed\nIndexing semantic: disabled",
             "No results found.\nIndexing lexical: running (parsing): 1/2 chunks\nIndexing semantic: disabled",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: unknown",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: failed",
+            "No results found.\nIndexing lexical: ready\nIndexing semantic: running",
             "No results found.\n#broken header",
+            "No results found.\nNo results found.",
         ] {
             let section = parse_bsl_analyzer_search(text, &context());
-            assert_eq!(section.status, ProviderSectionStatus::Failed);
-            assert!(!section.search_complete);
+            assert_eq!(section.status, ProviderSectionStatus::Failed, "{text}");
+            assert!(!section.search_complete, "{text}");
+            assert_eq!(section.matches.total, None, "{text}");
+            assert_eq!(section.matches.relation, SearchCountRelation::Unknown, "{text}");
         }
     }
 
