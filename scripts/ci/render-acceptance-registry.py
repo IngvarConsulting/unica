@@ -184,7 +184,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         "`tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом "
         "`tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную "
         "`tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. "
-        "СКД и MXL проверяются на отдельных `workspace-dcs/` и `workspace-mxl/`; "
+        "СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; "
         "агентные сценарии выбираются большим набором `tests/agent_evaluation/`. "
         "Источник истины — JSON корпуса; этот документ — его "
         "рендер для людей, и проверка на расхождение входит в тот же тест."

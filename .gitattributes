@@ -28,3 +28,6 @@ plugins/unica/references/specs/*.md whitespace=cr-at-eol
 
 # This prompt-visible skill intentionally retains its CRLF source formatting.
 plugins/unica/skills/form-patterns/SKILL.md whitespace=cr-at-eol
+
+# The code acceptance corpus asserts raw source bytes, including BOM and CRLF.
+tests/fixtures/acceptance/workspace-code/** -text whitespace=cr-at-eol
