@@ -12379,17 +12379,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -12404,12 +12404,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -12455,17 +12455,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "8e27b7700ea251e43c838bbe3924037de9f32131d3e681036f15b3397e6bd8da"
+       "eq": "451525564d9be2a5c2ee207b69631596194ae821febe08c62427004dc1d3f322"
       },
       {
        "kind": "sha256",
@@ -12480,12 +12480,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -12535,17 +12535,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "8e27b7700ea251e43c838bbe3924037de9f32131d3e681036f15b3397e6bd8da"
+       "eq": "451525564d9be2a5c2ee207b69631596194ae821febe08c62427004dc1d3f322"
       },
       {
        "kind": "sha256",
@@ -12560,12 +12560,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -12611,17 +12611,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "8e27b7700ea251e43c838bbe3924037de9f32131d3e681036f15b3397e6bd8da"
+       "eq": "451525564d9be2a5c2ee207b69631596194ae821febe08c62427004dc1d3f322"
       },
       {
        "kind": "sha256",
@@ -12636,12 +12636,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -12691,17 +12691,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "8e27b7700ea251e43c838bbe3924037de9f32131d3e681036f15b3397e6bd8da"
+       "eq": "451525564d9be2a5c2ee207b69631596194ae821febe08c62427004dc1d3f322"
       },
       {
        "kind": "sha256",
@@ -12716,12 +12716,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -12767,17 +12767,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -12792,12 +12792,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -12847,17 +12847,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -12872,12 +12872,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -12923,17 +12923,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -12948,12 +12948,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13003,17 +13003,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13028,12 +13028,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13079,17 +13079,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "166082ca3a7ad7845118d44ac8059defd7b659d0163cdc306b23f4b78894d18d"
+       "eq": "8fa3edd384c544268586407fd823c94b2718a78040ce461dc66aa49549bc772a"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13104,12 +13104,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13159,17 +13159,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "166082ca3a7ad7845118d44ac8059defd7b659d0163cdc306b23f4b78894d18d"
+       "eq": "8fa3edd384c544268586407fd823c94b2718a78040ce461dc66aa49549bc772a"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13184,12 +13184,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13235,17 +13235,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "166082ca3a7ad7845118d44ac8059defd7b659d0163cdc306b23f4b78894d18d"
+       "eq": "8fa3edd384c544268586407fd823c94b2718a78040ce461dc66aa49549bc772a"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13260,12 +13260,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13315,17 +13315,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "166082ca3a7ad7845118d44ac8059defd7b659d0163cdc306b23f4b78894d18d"
+       "eq": "8fa3edd384c544268586407fd823c94b2718a78040ce461dc66aa49549bc772a"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13340,12 +13340,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13391,17 +13391,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13416,12 +13416,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13471,17 +13471,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13496,12 +13496,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13547,17 +13547,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13572,12 +13572,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13627,17 +13627,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13652,12 +13652,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -13703,17 +13703,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13728,12 +13728,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "cb2689599a4cc923bed81cd327287b214fc159f84c6692a40828ed164b100755"
+       "eq": "bd27f8ae4e13e022cc53a0040c5c33409f35c561ed81a5f2e9b77c18c669408c"
       },
       {
        "kind": "sha256",
@@ -13783,17 +13783,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13808,12 +13808,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "cb2689599a4cc923bed81cd327287b214fc159f84c6692a40828ed164b100755"
+       "eq": "bd27f8ae4e13e022cc53a0040c5c33409f35c561ed81a5f2e9b77c18c669408c"
       },
       {
        "kind": "sha256",
@@ -13859,17 +13859,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13884,12 +13884,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "cb2689599a4cc923bed81cd327287b214fc159f84c6692a40828ed164b100755"
+       "eq": "bd27f8ae4e13e022cc53a0040c5c33409f35c561ed81a5f2e9b77c18c669408c"
       },
       {
        "kind": "sha256",
@@ -13939,17 +13939,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -13964,12 +13964,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "cb2689599a4cc923bed81cd327287b214fc159f84c6692a40828ed164b100755"
+       "eq": "bd27f8ae4e13e022cc53a0040c5c33409f35c561ed81a5f2e9b77c18c669408c"
       },
       {
        "kind": "sha256",
@@ -14015,17 +14015,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -14040,12 +14040,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "e4c037002c520192e0b538de9c9722ed9928af5d624e5409ab9d144aabff134c"
+       "eq": "0adec00e6aaf2f5723e425a68ca40b95b54cdee2ef71d17073092dbd97e1a9bf"
       },
       {
        "kind": "sha256",
@@ -14095,17 +14095,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -14120,12 +14120,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "e4c037002c520192e0b538de9c9722ed9928af5d624e5409ab9d144aabff134c"
+       "eq": "0adec00e6aaf2f5723e425a68ca40b95b54cdee2ef71d17073092dbd97e1a9bf"
       },
       {
        "kind": "sha256",
@@ -14171,17 +14171,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "745dff1f151de522502f806a2196c4f24bec54535fc58a3e5011d06449f4362c"
+       "eq": "8d78d6ec928673ad67940695d0146aaabf119a84ed82f6af07837fcd2c2ced32"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "c401f9ee485fda5af6dee58bee8f9dc4bc2cda301e172b5320a910528a5adf5b"
+       "eq": "05dab57e8e8a46bb5a53947c7c74d917bc7e64774da2a65217dd4001cef18368"
       },
       {
        "kind": "sha256",
@@ -14196,12 +14196,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "e4c037002c520192e0b538de9c9722ed9928af5d624e5409ab9d144aabff134c"
+       "eq": "0adec00e6aaf2f5723e425a68ca40b95b54cdee2ef71d17073092dbd97e1a9bf"
       },
       {
        "kind": "sha256",
@@ -14265,17 +14265,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14290,12 +14290,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14341,17 +14341,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "865b06acabb2261b60b7d751a1a2cbd563fb7fbfb9f202de0f8be65d6bf02332"
+       "eq": "8cb2e55974cb5c1d0529dd22f3209389c79ea54c5b85325ccc13fd1a484b593b"
       },
       {
        "kind": "sha256",
@@ -14366,12 +14366,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14425,17 +14425,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "865b06acabb2261b60b7d751a1a2cbd563fb7fbfb9f202de0f8be65d6bf02332"
+       "eq": "8cb2e55974cb5c1d0529dd22f3209389c79ea54c5b85325ccc13fd1a484b593b"
       },
       {
        "kind": "sha256",
@@ -14450,12 +14450,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14501,17 +14501,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "865b06acabb2261b60b7d751a1a2cbd563fb7fbfb9f202de0f8be65d6bf02332"
+       "eq": "8cb2e55974cb5c1d0529dd22f3209389c79ea54c5b85325ccc13fd1a484b593b"
       },
       {
        "kind": "sha256",
@@ -14526,12 +14526,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14585,17 +14585,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "865b06acabb2261b60b7d751a1a2cbd563fb7fbfb9f202de0f8be65d6bf02332"
+       "eq": "8cb2e55974cb5c1d0529dd22f3209389c79ea54c5b85325ccc13fd1a484b593b"
       },
       {
        "kind": "sha256",
@@ -14610,12 +14610,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14661,17 +14661,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "e6990e0343c6d60ee71c25bd422ec0cb69d0dc533509fa4968a54ad503c1ee5d"
+       "eq": "e8360641b44f8e658d781c5c12064fb6c4ea86b75b5d5edfcef5fe596a50b720"
       },
       {
        "kind": "sha256",
@@ -14686,12 +14686,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14745,17 +14745,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "e6990e0343c6d60ee71c25bd422ec0cb69d0dc533509fa4968a54ad503c1ee5d"
+       "eq": "e8360641b44f8e658d781c5c12064fb6c4ea86b75b5d5edfcef5fe596a50b720"
       },
       {
        "kind": "sha256",
@@ -14770,12 +14770,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14821,17 +14821,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "e6990e0343c6d60ee71c25bd422ec0cb69d0dc533509fa4968a54ad503c1ee5d"
+       "eq": "e8360641b44f8e658d781c5c12064fb6c4ea86b75b5d5edfcef5fe596a50b720"
       },
       {
        "kind": "sha256",
@@ -14846,12 +14846,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14875,7 +14875,7 @@
         "args": {
          "at": "main:CommonModule.Пример",
          "selector": {
-          "method": "Выполнить"
+          "method": "ОбработатьПример"
          },
          "position": "before",
          "text": "Процедура ПередМетодом() Экспорт\nКонецПроцедуры\n\n"
@@ -14905,17 +14905,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "e6990e0343c6d60ee71c25bd422ec0cb69d0dc533509fa4968a54ad503c1ee5d"
+       "eq": "e8360641b44f8e658d781c5c12064fb6c4ea86b75b5d5edfcef5fe596a50b720"
       },
       {
        "kind": "sha256",
@@ -14930,12 +14930,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -14981,17 +14981,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "697494c664fa8f87dc687e036cdabc8d306c2a44af84812e42dbb2a8db59c496"
+       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
       },
       {
        "kind": "sha256",
@@ -15006,12 +15006,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15035,7 +15035,7 @@
         "args": {
          "at": "main:CommonModule.Пример",
          "selector": {
-          "method": "Выполнить"
+          "method": "ОбработатьПример"
          },
          "position": "before",
          "text": "Процедура ПередМетодом() Экспорт\nКонецПроцедуры\n\n"
@@ -15065,17 +15065,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "697494c664fa8f87dc687e036cdabc8d306c2a44af84812e42dbb2a8db59c496"
+       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
       },
       {
        "kind": "sha256",
@@ -15090,12 +15090,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15141,17 +15141,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "697494c664fa8f87dc687e036cdabc8d306c2a44af84812e42dbb2a8db59c496"
+       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
       },
       {
        "kind": "sha256",
@@ -15166,12 +15166,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15195,7 +15195,7 @@
         "args": {
          "at": "main:CommonModule.Пример",
          "selector": {
-          "method": "Выполнить"
+          "method": "ОбработатьПример"
          },
          "position": "after",
          "text": "\nПроцедура ПослеМетода() Экспорт\nКонецПроцедуры\n"
@@ -15225,17 +15225,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "697494c664fa8f87dc687e036cdabc8d306c2a44af84812e42dbb2a8db59c496"
+       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
       },
       {
        "kind": "sha256",
@@ -15250,12 +15250,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15301,17 +15301,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1a4c88aa640bfb77deff5763d3b4ed4bba7f92c231b639ee131e120b9383605e"
+       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
       },
       {
        "kind": "sha256",
@@ -15326,12 +15326,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15355,7 +15355,7 @@
         "args": {
          "at": "main:CommonModule.Пример",
          "selector": {
-          "method": "Выполнить"
+          "method": "ОбработатьПример"
          },
          "position": "after",
          "text": "\nПроцедура ПослеМетода() Экспорт\nКонецПроцедуры\n"
@@ -15385,17 +15385,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1a4c88aa640bfb77deff5763d3b4ed4bba7f92c231b639ee131e120b9383605e"
+       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
       },
       {
        "kind": "sha256",
@@ -15410,12 +15410,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15461,17 +15461,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1a4c88aa640bfb77deff5763d3b4ed4bba7f92c231b639ee131e120b9383605e"
+       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
       },
       {
        "kind": "sha256",
@@ -15486,12 +15486,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15523,7 +15523,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример.Method.Выполнить",
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "text": "// отказ"
         }
        }
@@ -15542,17 +15542,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15567,12 +15567,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15594,7 +15594,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример.Method.Выполнить.Body",
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример.Body",
          "text": "// отказ"
         }
        }
@@ -15613,17 +15613,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15638,12 +15638,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15667,7 +15667,7 @@
         "args": {
          "at": "main:CommonModule.Пример.Body",
          "selector": {
-          "method": "Выполнить"
+          "method": "ОбработатьПример"
          },
          "position": "after",
          "text": "// отказ"
@@ -15688,17 +15688,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15713,12 +15713,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15760,17 +15760,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15785,12 +15785,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15834,17 +15834,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15859,12 +15859,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15886,7 +15886,7 @@
        {
         "op": "code.replace",
         "args": {
-         "at": "main:CommonModule.Пример.Method.Выполнить.Body",
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример.Body",
          "text": "    Возврат Ложь;"
         }
        }
@@ -15914,17 +15914,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15939,12 +15939,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -15990,17 +15990,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "cf65aef9ecc5706d22fcdcc25adf487d55cfe7fb4751069f5850b1a674ed9791"
+       "eq": "034873a782225cd90eac38dbca63022e807fc4b58dc6998145e9e8a4ac612a51"
       },
       {
        "kind": "sha256",
@@ -16015,12 +16015,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -16042,7 +16042,7 @@
        {
         "op": "code.replace",
         "args": {
-         "at": "main:CommonModule.Пример.Method.Выполнить.Body",
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример.Body",
          "text": "    Возврат Ложь;"
         }
        }
@@ -16070,17 +16070,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "cf65aef9ecc5706d22fcdcc25adf487d55cfe7fb4751069f5850b1a674ed9791"
+       "eq": "034873a782225cd90eac38dbca63022e807fc4b58dc6998145e9e8a4ac612a51"
       },
       {
        "kind": "sha256",
@@ -16095,12 +16095,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
@@ -16146,17 +16146,17 @@
       {
        "kind": "sha256",
        "path": "src/cf/Catalogs/Пример/Ext/ObjectModule.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример.xml",
-       "eq": "366e9cc6fc90df4d14a9ab054ad0cfb044d8494be09cc496e71fa7d837c8cfa8"
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
       },
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "cf65aef9ecc5706d22fcdcc25adf487d55cfe7fb4751069f5850b1a674ed9791"
+       "eq": "034873a782225cd90eac38dbca63022e807fc4b58dc6998145e9e8a4ac612a51"
       },
       {
        "kind": "sha256",
@@ -16171,12 +16171,12 @@
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример.xml",
-       "eq": "f2fd2adf3dd1f5e4ec70883d7f21b8f731a7453d8fb1bbc451767a53c3956281"
+       "eq": "90e4a9e5194130c65dc5c1319595f5a6cc40e789668848c1febcfdbc5f00a2d7"
       },
       {
        "kind": "sha256",
        "path": "src/ext/CommonModules/ПР_Пример/Ext/Module.bsl",
-       "eq": "29e79142cbf95a69128ef3ae6fef9812291c476ee07a7a3c462ac2c1f5d25980"
+       "eq": "d38bcc53483b1369aae5664c772e771fbd4137f85b0c1006f951a3c17059923d"
       },
       {
        "kind": "sha256",
