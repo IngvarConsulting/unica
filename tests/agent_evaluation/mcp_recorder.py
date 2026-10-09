@@ -7,6 +7,22 @@ import threading
 from pathlib import Path
 
 
+def source_digest(source):
+    """Observe all source files for creation, including its owner registration."""
+    if source.is_symlink():
+        raise ValueError("recorded source must not be a symlink")
+    if not source.is_dir():
+        return hashlib.sha256(source.read_bytes()).hexdigest()
+    entries = {}
+    for path in sorted(source.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("recorded source tree must not contain symlinks")
+        if path.is_file():
+            entries[path.relative_to(source).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    payload = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
 def main():
     binary, log_path, source = map(Path, sys.argv[1:])
     lock = threading.Lock()
@@ -14,7 +30,7 @@ def main():
     def record(direction, line):
         payload = json.loads(line)
         with lock, log_path.open("a", encoding="utf-8") as log:
-            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            digest = source_digest(source)
             log.write(json.dumps({"direction": direction, "payload": payload,
                                   "sourceSha256": digest}, ensure_ascii=False) + "\n")
     def receive():

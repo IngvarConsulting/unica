@@ -11,6 +11,24 @@ from tests.agent_evaluation.dcs_driver import DCS_TEMPLATE, allowed_help_command
 
 
 class AgentEvaluationAuditTests(unittest.TestCase):
+    def test_creation_recorder_observes_owner_peers_and_new_files(self):
+        from tests.agent_evaluation.mcp_recorder import source_digest
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw); source = root / "src"; source.mkdir()
+            owner = source / "owner.xml"; owner.write_text("before")
+            before = source_digest(source)
+            owner.write_text("registered")
+            self.assertNotEqual(source_digest(source), before)
+            registered = source_digest(source)
+            layout = source / "Template.xml"; layout.write_text("content")
+            self.assertNotEqual(source_digest(source), registered)
+            published = source_digest(source)
+            layout.rename(source / "Other.xml")
+            self.assertNotEqual(source_digest(source), published, "names are part of the source identity")
+            (source / "link").symlink_to(root / "missing")
+            with self.assertRaisesRegex(ValueError,"symlinks"):
+                source_digest(source)
+
     def test_cleanup_accepts_a_terminated_daemon_and_never_signals_a_reused_pid(self):
         import signal
         import subprocess
@@ -117,6 +135,67 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             audit_mcp(records(read_ok=False))
         with self.assertRaisesRegex(ValueError, "check"):
             audit_mcp(records(check_at="cf:Configuration"))
+
+    def test_mxl_creation_audit_rejects_foreign_owner_unobserved_token_and_writing_preview(self):
+        from tests.agent_evaluation.mxl_driver import OWNER, TEMPLATE, audit
+        import copy
+        trace = []
+        digest = "original-tree"
+        def exchange(name, args, result):
+            nonlocal digest
+            identifier = len(trace)
+            trace.append({"direction": "request", "sourceSha256": digest,
+                          "payload": {"id": identifier, "method": "tools/call",
+                                      "params": {"name": name, "arguments": args}}})
+            if result.get("data", {}).get("mode") == "published":
+                digest += "-publication"
+            trace.append({"direction": "response", "sourceSha256": digest,
+                          "payload": {"id": identifier, "result": {"structuredContent": result}}})
+        trace.extend([
+            {"direction": "request", "sourceSha256": digest, "payload": {"id": -1, "method": "tools/list", "params": {}}},
+            {"direction": "response", "sourceSha256": digest, "payload": {"id": -1, "result": {"tools": [
+                {"name": name} for name in ["unica.view", "unica.apply", "unica.check"]]}}},
+        ])
+        for target in [OWNER + ".Template.F06Template.Area.A.Body",
+                       OWNER + ".Template.F06Template.Area.A.Parameter",
+                       OWNER + ".Template.F06Template.Area.B"]:
+            exchange("unica.view", {"at": target}, {"ok": True})
+        for number, (operation, target) in enumerate([("template.add", OWNER), ("mxl.set", TEMPLATE)]):
+            exchange("unica.view", {"at": target}, {"ok": True, "data": {"can": [{
+                "op": operation, "implemented": True, "contract": {"argsSchema": {"type": "object"}}}]}})
+            exchange("unica.apply", {"at": target, "ops": [{"op": operation, "args": {}}]},
+                     {"ok": True, "data": {"mode": "preview", "effects": 1, "executionToken": str(number)}})
+            exchange("unica.apply", {"executionToken": str(number)},
+                     {"ok": True, "data": {"mode": "published", "effects": 1}})
+        exchange("unica.view", {"at": TEMPLATE + ".Area.Header.Body"}, {"ok": True})
+        exchange("unica.check", {"at": TEMPLATE}, {"ok": True, "data": {"status": "passed"}})
+        audit(trace)
+        def request_index(predicate):
+            return next(i for i, r in enumerate(trace) if r["direction"] == "request"
+                        and r["payload"]["method"] == "tools/call" and predicate(r["payload"]["params"]))
+        preview = request_index(lambda p: bool(p["arguments"].get("ops")))
+        publication = request_index(lambda p: "executionToken" in p["arguments"])
+        preparatory = request_index(lambda p: p["arguments"].get("at") == OWNER + ".Template.F06Template.Area.A.Parameter")
+        foreign = copy.deepcopy(trace)
+        foreign[preview]["payload"]["params"]["arguments"]["at"] = "cf:Report.Other"
+        with self.assertRaisesRegex(ValueError, "outside"):
+            audit(foreign)
+        unobserved = copy.deepcopy(trace)
+        unobserved[publication]["payload"]["params"]["arguments"]["executionToken"] = "never-observed"
+        with self.assertRaisesRegex(ValueError, "observed preview"):
+            audit(unobserved)
+        writing = copy.deepcopy(trace)
+        writing[preview + 1]["sourceSha256"] = "unexpected-write"
+        with self.assertRaisesRegex(ValueError, "preview changed"):
+            audit(writing)
+        missing_read = copy.deepcopy(trace)
+        missing_read[preparatory + 1]["payload"]["result"]["structuredContent"]["ok"] = False
+        with self.assertRaisesRegex(ValueError, "existing layout"):
+            audit(missing_read)
+        missing_creation = copy.deepcopy(trace)
+        del missing_creation[preview:publication + 2]
+        with self.assertRaisesRegex(ValueError, "all requested template operations"):
+            audit(missing_creation)
 
     def test_only_literal_cat_of_prepared_help_is_allowed(self):
         path = Path("/prepared/plugin/reports printing.md")

@@ -14,6 +14,7 @@ class DcsAgentAcceptanceTests(unittest.TestCase):
         subprocess.run(["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"],
                        cwd=REPO, check=True)
         corpus = select_profile(load_corpus(REPO / "tests/fixtures/acceptance/scenario-corpus.json"), "agent-evaluation")
+        corpus["scenarios"] = [s for s in corpus["scenarios"] if s["evaluation"] == "dcs-contract"]
         proofs = REPO / ".session-temp/acceptance-agent"
         def driver(server, scenario):
             proof = evaluate(server, scenario, proofs)

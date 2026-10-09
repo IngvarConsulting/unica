@@ -44,8 +44,8 @@ def prepare_packet(root, source_binary):
     packet = root / "plugin"
     builder.copy_tracked_plugin_source(REPO, REPO / "plugins/unica", packet)
     builder.assert_host_manifests_present(packet)
-    if any((packet / "skills" / skill).exists() for skill in ("dcs-edit", "dcs-compile")):
-        raise ValueError("evaluated packet still delivers retired DCS skills")
+    if any((packet / "skills" / skill).exists() for skill in ("dcs-edit", "dcs-compile", "mxl-compile", "mxl-decompile", "mxl-info")):
+        raise ValueError("evaluated packet still delivers retired workflow skills")
     binary = packet / "bin" / target / ("unica.exe" if os.name == "nt" else "unica")
     binary.parent.mkdir(parents=True)
     shutil.copy2(source_binary, binary)
@@ -168,7 +168,7 @@ def audit_cli(events, allowed_tools, help_path):
     return completed
 
 
-def audit_mcp(records):
+def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_operations=None):
     requests = {}
     calls = []
     allowed = None
@@ -227,9 +227,11 @@ def audit_mcp(records):
                     # The public DCS contract also selects a dataset/variant
                     # by name. That effective node may differ from the common
                     # apply root, while still belonging to the same template.
-                    if not isinstance(target, str) or not (target == DCS_TEMPLATE or target.startswith(DCS_TEMPLATE + ".")):
-                        raise ValueError("operation target is outside the evaluated DCS template")
-                    template = DCS_TEMPLATE
+                    in_template = isinstance(target, str) and (target == target_template or target.startswith(target_template + "."))
+                    creation_owner = op == "template.add" and owner is not None and target == owner
+                    if not (in_template or creation_owner):
+                        raise ValueError("operation target is outside the evaluated template or its creation owner")
+                    template = target_template
                     if isinstance(values.get("variant"), str) and values["variant"]:
                         target = template + ".Setting." + values["variant"]
                     elif isinstance(values.get("dataSet"), str) and values["dataSet"]:
@@ -253,20 +255,23 @@ def audit_mcp(records):
     operations = {op for op, _ in executed}
     # A preview may be abandoned or become stale after another publication.
     # Only consumed plans prove effects; every publication was checked above.
-    if (not {"field.add"} <= operations or not operations & {"query.set", "query.patch"}
-            or not operations & {"structure.set", "structure.patch"}):
-        raise ValueError("agent did not publish the requested field, query and grouping effects")
+    if required_operations is None:
+        if (not {"field.add"} <= operations or not operations & {"query.set", "query.patch"}
+                or not operations & {"structure.set", "structure.patch"}):
+            raise ValueError("agent did not publish the requested field, query and grouping effects")
+    elif not required_operations <= operations:
+        raise ValueError("agent did not publish all requested template operations")
     last = max(done for _, done in executed)
     if not any(call["index"] > last and call["params"]["name"] == "unica.check"
-               and call["params"]["arguments"].get("at") == DCS_TEMPLATE
+               and call["params"]["arguments"].get("at") == target_template
                and (call["result"] or {}).get("ok") is True
                and ((call["result"] or {}).get("data") or {}).get("status") == "passed"
                for call in calls):
         raise ValueError("agent did not check the final image")
     if not any(call["index"] > last and call["params"]["name"] == "unica.view"
                and (call["result"] or {}).get("ok") is True
-               and (call["params"]["arguments"].get("at") == DCS_TEMPLATE
-                    or str(call["params"]["arguments"].get("at", "")).startswith(DCS_TEMPLATE + "."))
+               and (call["params"]["arguments"].get("at") == target_template
+                    or str(call["params"]["arguments"].get("at", "")).startswith(target_template + "."))
                for call in calls):
         raise ValueError("agent did not reread the final image")
     return allowed, raw_calls
@@ -339,7 +344,7 @@ def stop_owned_daemons(state, binary):
                     raise TimeoutError("owned evaluation daemon survived cleanup")
 
 
-def evaluate(server, scenario, proof_root):
+def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source=XML, changed_paths=None, auditor=audit_mcp):
     proof = proof_root / (scenario["id"] + "-" + uuid.uuid4().hex)
     proof.mkdir(parents=True)
     (proof / "scenario.json").write_text(json.dumps(scenario, ensure_ascii=False, indent=2))
@@ -349,9 +354,9 @@ def evaluate(server, scenario, proof_root):
     source_before = {path.relative_to(server.workspace).as_posix(): packager().sha256(path)
                      for path in (server.workspace / "src").rglob("*") if path.is_file()}
     skills = disabled_skills()
-    shutil.copy2(FIXTURE / "AGENTS.md", server.workspace / "AGENTS.md")
+    shutil.copy2(fixture / "AGENTS.md", server.workspace / "AGENTS.md")
     for name in ("prompt.md", "AGENTS.md", "output.schema.json"):
-        shutil.copy2(FIXTURE / name, proof / name)
+        shutil.copy2(fixture / name, proof / name)
     help_path = packet / "references/use-cases/reports-printing.md"
     agents = (proof / "AGENTS.md").read_text().replace("{{HELP_PATH}}", str(help_path))
     (proof / "AGENTS.md").write_text(agents)
@@ -364,7 +369,7 @@ def evaluate(server, scenario, proof_root):
     tool_settings = "{" + ",".join(json.dumps(name) + '={approval_mode="approve"}' for name in server._schemas) + "}"
     command += ["-c", f"mcp_servers.unica.tools={tool_settings}"]
     recorder = REPO / "tests/agent_evaluation/mcp_recorder.py"
-    arguments = [str(recorder), str(binary), str(proof / "mcp.jsonl"), str(server.workspace / XML)]
+    arguments = [str(recorder), str(binary), str(proof / "mcp.jsonl"), str(server.workspace / source)]
     for key, value in {"command": sys.executable, "args": arguments, "cwd": str(packet),
                        "env": {key: value for key, value in environment.items() if key.startswith("UNICA_")}}.items():
         # JSON is a valid TOML scalar/array. TOML dictionaries use '='.
@@ -390,9 +395,9 @@ def evaluate(server, scenario, proof_root):
                     for path in (server.workspace / "src").rglob("*") if path.is_file()}
     changed = {path for path in source_before.keys() | source_after.keys()
                if source_before.get(path) != source_after.get(path)}
-    if changed != {XML} or packager().package_tree_sha256(packet) != package_hash:
+    if changed != (changed_paths if changed_paths is not None else {XML}) or packager().package_tree_sha256(packet) != package_hash:
         raise ValueError("agent changed an unrequested source or its prepared packet")
-    allowed, calls = audit_mcp(records)
+    allowed, calls = auditor(records)
     completed = audit_cli(events, allowed, help_path)
     if len(completed) != len(calls):
         raise ValueError("CLI and raw MCP transcripts disagree on tool calls")
@@ -405,7 +410,7 @@ def evaluate(server, scenario, proof_root):
     return proof
 
 
-def independent_review(proof):
+def independent_review(proof, *, rubric=None):
     # The evaluator gets business intent, the complete wire transcript and the
     # final source views. It has neither the agent's context nor mutation tools.
     schema = {"type": "object", "additionalProperties": False, "properties": {
@@ -417,13 +422,14 @@ def independent_review(proof):
                 "final": json.loads((proof / "final.json").read_text()),
                 "mcp": [json.loads(line) for line in (proof / "mcp.jsonl").read_text().splitlines()],
                 "verification": json.loads((proof / "verification.json").read_text())}
-    prompt = ("Независимо проверь приёмку. Любое невыполненное требование означает accepted=false. "
-              "Требования: три заданных изменения действительно опубликованы и прочитаны; запрос "
+    default_rubric = ("Три заданных изменения действительно опубликованы и прочитаны; запрос "
               "задаёт строку Agent1310 и числа 3/4 правильным полям; имя исходной группы сохранено; "
               "check проходит. Ответ честно объясняет, что создание template даёт только каркас "
               "без набора данных и полная новая схема с набором/запросом/полями не поддерживается "
-              "текущими публичными операциями. Нельзя обещать её сборку или советовать обход XML. "
-              "Приведи конкретные причины вердикта. Инструменты не используй.\nЗапрос:\n" + intent +
+              "текущими публичными операциями. Нельзя обещать её сборку или советовать обход XML.")
+    prompt = ("Независимо проверь приёмку. Любое невыполненное требование означает accepted=false. "
+              "Требования: " + (rubric if rubric is not None else default_rubric) +
+              " Приведи конкретные причины вердикта. Инструменты не используй.\nЗапрос:\n" + intent +
               "\nСвидетельства:\n" + json.dumps(evidence, ensure_ascii=False))
     (proof / "review-prompt.md").write_text(prompt)
     command = codex_command(proof, proof / "review.schema.json", proof / "review.json", disabled_skills())

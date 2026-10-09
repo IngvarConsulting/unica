@@ -266,7 +266,8 @@ class GateProfileCompositionTests(unittest.TestCase):
         command, = self.run_tests.python_commands("large", suite="tests/agent_evaluation")
         result = subprocess.run([*command, "--plan-only"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
         self.assertEqual(result.stdout.splitlines(), [
-            "test_dcs.DcsAgentAcceptanceTests.test_agent_uses_current_contract_without_retired_skills"])
+            "test_dcs.DcsAgentAcceptanceTests.test_agent_uses_current_contract_without_retired_skills",
+            "test_mxl.MxlAgentAcceptanceTests.test_agent_uses_current_contract_without_retired_skills"])
 
 
 if __name__ == "__main__":

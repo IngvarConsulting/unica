@@ -73,6 +73,21 @@ class FileFixtureTests(unittest.TestCase):
 
 
 class FileAndCaptureTests(FileFixtureTests):
+    def test_new_template_presence_distinguishes_missing_file_created_file_and_symlink(self):
+        assertion = {"kind":"exists", "path":"new/Template.xml", "eq":False}
+        validate_controls({"fileAssertions":[assertion]})
+        self.assertEqual(self.check_file(assertion), [])
+        (self.workspace / "new").mkdir()
+        (self.workspace / "new/Template.xml").write_text("<document/>")
+        self.assertTrue(self.check_file(assertion), "publication must invalidate the missing-file observation")
+        self.assertEqual(self.check_file({**assertion,"eq":True}), [])
+        (self.workspace / "new/Template.xml").unlink()
+        (self.workspace / "new/Template.xml").symlink_to(self.workspace / "missing-target")
+        self.assertTrue(self.check_file(assertion), "a dangling symlink is not a successful absence proof")
+        for expected in (0,1,"false"):
+            with self.subTest(expected=expected), self.assertRaises(ValueError):
+                validate_controls({"fileAssertions":[{**assertion,"eq":expected}]})
+
     def test_typed_file_inequality_rejects_incompatible_operands_after_capture(self):
         (self.workspace / "module.bsl").write_bytes(b"same bytes")
         context = {"captures": {"address": "main:Module.Body"}}

@@ -177,13 +177,15 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     out(
         f"Корпус держит **{len(scenarios)} сценариев** реальных задач разработчика конфигурации "
         f"и **{len(steps)} шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из "
-        "классов ответа, и приёмочный тест `tests/ci/test_acceptance_scenarios.py` исполняет весь "
-        "корпус против собранного `target/debug/unica` на рабочем пространстве "
+        "классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется "
+        "против собранного `target/debug/unica`; основное рабочее пространство — "
         "`tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, "
         "без файла поддержки) идут на выведенном из него пространстве "
         "`tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом "
         "`tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную "
         "`tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. "
+        "СКД и MXL проверяются на отдельных `workspace-dcs/` и `workspace-mxl/`; "
+        "агентные сценарии выбираются большим набором `tests/agent_evaluation/`. "
         "Источник истины — JSON корпуса; этот документ — его "
         "рендер для людей, и проверка на расхождение входит в тот же тест."
     )

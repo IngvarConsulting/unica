@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tests.ci.acceptance_profiles import (
-    REPO, SYMBOL_WORKSPACE, DCS_WORKSPACE, completed_delivery_call, host_target,
+    REPO, SYMBOL_WORKSPACE, DCS_WORKSPACE, MXL_WORKSPACE, completed_delivery_call, host_target,
     isolated_environment, select_profile, stage_analyzer, tools_builder,
 )
 
@@ -22,6 +22,9 @@ class AcceptanceProfileTests(unittest.TestCase):
             {"id": "agent", "profile": "agent-evaluation", "driver": "codex",
              "evaluation": "dcs-contract", "workspace": DCS_WORKSPACE,
              "wire": [{"tool": "unica.view", "args": {}}]},
+            {"id": "mxl", "profile": "agent-evaluation", "driver": "codex",
+             "evaluation": "mxl-contract", "workspace": MXL_WORKSPACE,
+             "wire": [{"tool": "unica.check", "args": {}}]},
         ]}
 
     def test_profiles_partition_without_omitting_or_duplicating_scenarios(self):
@@ -31,10 +34,18 @@ class AcceptanceProfileTests(unittest.TestCase):
         self.assertEqual(source, {"source"})
         self.assertEqual(delivery, {"delivery"})
         agent = {s["id"] for s in select_profile(corpus, "agent-evaluation")["scenarios"]}
-        self.assertEqual(agent, {"agent"})
+        self.assertEqual(agent, {"agent", "mxl"})
         self.assertFalse(agent & (source | delivery))
         self.assertEqual(source | delivery | agent, {s["id"] for s in corpus["scenarios"]})
         self.assertFalse(source & delivery)
+
+    def test_agent_evaluation_cannot_silently_switch_fixture_or_driver(self):
+        for field, value in [("evaluation", "mxl-contract"), ("workspace", MXL_WORKSPACE),
+                             ("evaluation", "unknown"), ("driver", "bsl-analyzer")]:
+            corpus = self.corpus()
+            corpus["scenarios"][2][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                select_profile(corpus, "source")
 
     def test_unsupported_profile_driver_and_fixture_fail_even_when_not_selected(self):
         for field, value in [("profile", "delivrey"), ("profile", "runtime"),

@@ -24,8 +24,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 
 - Read schemas and layouts through `unica.view`, change them through
   `unica.apply`, and validate the template through `unica.check`.
-  Read the target's `can` section to discover its operations. For a DCS
-  operation, explicitly request its argument contract:
+  Read the target's `can` section to discover its operations. For a DCS operation, `mxl.set` or `template.add`, explicitly request its argument contract:
 
   ```json
   {"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
@@ -153,6 +152,58 @@ source-set:
     type: EXTERNAL_REPORTS
     path: src/external-reports
 ```
+
+## Reading and changing a spreadsheet layout
+
+Find the source-set with `view {}` and the template with name search or its
+owner's Template branch. Read the template, its `Area` collection, then a
+named area's `Body` and `Parameter` branches. A supplied physical path can
+be translated by `resolve`; it is not a selector for `view`.
+
+The canonical Template node exposes the Area branch. Height, default width,
+column sets, outside-area contents and merge/drawing counts belong to the
+format/internal reader; the current canonical projection does not publish
+these as Template properties or extra branches. Area properties describe its kind (`Rows`, `Columns`, `Rectangle`, `Drawing`), boundaries,
+column/drawing identity and `contentCount`. `Body` lists nonempty text cells
+in reading order with `index`, `text` and `template`; the index is a reading
+ordinal, not a row/column coordinate. Empty and parameter-only cells are
+not text rows. `Parameter` lists parameters, including substitutions in
+text templates. The `[tpl]` display marker denotes a substitution from a text
+template; it is not part of the parameter's name. Inspect the Parameter
+collection rather than constructing a leaf address from that marker.
+Read actual names instead of inferring them from visible
+labels. A tabular document's `ПолучитьОбласть` can combine a row and a
+column area by their names; this does not make column areas editable.
+
+For exact arguments, request `filter.can.op: "mxl.set"` at the Template or
+`template.add` at its owner. Creation must be executed before the new
+Template is addressed. An addressed parameter or text-template cell becomes
+ordinary text when written. Unaddressed neighbors should be verified after
+publication. Width can grow but the operation does not shrink it.
+
+Reading does not establish writability. The current writer cannot preserve
+all platform constructs: drawings, non-Rows areas, outside rows, overlapping
+or differently ordered areas, identified/multiple column sets and
+multilingual text/format collections refuse before writing. Such a refusal
+requires editing in the Designer; do not bypass it with manual XML writes.
+Support-state rules of the metadata owner also apply.
+
+Full JSON-DSL compilation/decompilation, font/style definitions, rowStyle,
+merges, palettes and page properties are not public operations. The DSL
+reference preserves their format knowledge and historical conversion
+models, including generated font/style names and recognition of uniformly
+styled empty cells. Historical generated font names include `default`, `bold`,
+`header`, `small`, `italic`; style names describe properties, for example
+`bordered-center`, `bold-right`, `border-top`. Uniformly formatted cells with
+no parameter or text become `rowStyle` in the internal conversion model
+and are omitted from its explicit cells. These are format rules, not
+new canonical view fields. It is not a payload accepted by `mxl.set`, nor a JSON
+round-trip produced by `view`. An image may inform layout structure, but
+cannot supply capabilities missing from the public contract.
+
+Execute only the preview's own `executionToken`; reread Area/Body/Parameter
+and run `check` on the Template. Check infers `mxl` from the template kind.
+Observe a returned Task to terminal state without repeating the mutation.
 
 ## Related references
 

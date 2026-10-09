@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?><document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">	<languageSettings>
+		<currentLanguage>ru</currentLanguage>
+		<defaultLanguage>ru</defaultLanguage>
+		<languageInfo>
+			<id>ru</id>
+			<code>Русский</code>
+			<description>Русский</description>
+		</languageInfo>
+	</languageSettings>
+<columns><size>1</size></columns><rowsItem><index>0</index><row><c><c><tl><v8:item><v8:lang>ru</v8:lang><v8:content>Target</v8:content></v8:item></tl></c></c></row></rowsItem><templateMode>true</templateMode><height>3</height><vgRows>3</vgRows><namedItem xsi:type="NamedItemCells"><name>A</name><area><type>Rows</type><beginRow>0</beginRow><endRow>0</endRow><beginColumn>-1</beginColumn><endColumn>-1</endColumn></area></namedItem><columnsID>KeepMe</columnsID></document>

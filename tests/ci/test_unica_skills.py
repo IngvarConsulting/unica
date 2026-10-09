@@ -417,9 +417,6 @@ IN_SCOPE_TOOLS = {
     "interface-edit": "unica.apply",
     "subsystem-compile": "unica.apply",
     "subsystem-edit": "unica.apply",
-    "mxl-compile": "unica.apply",
-    "mxl-decompile": "unica.view",
-    "mxl-info": "unica.view",
     "role-compile": "unica.apply",
     "role-edit": "unica.apply",
 }
@@ -833,10 +830,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "interface-edit": ["at", "ops"],
     "subsystem-compile": ["at", "ops"],
     "subsystem-edit": ["at", "ops"],
-    "mxl-compile": ["at", "ops"],
-    "mxl-decompile": ["at"],
     # Читающий макет адресуется логически: файлового селектора у `view` нет.
-    "mxl-info": ["at"],
     "role-compile": ["at", "ops"],
     "role-edit": ["at", "ops"],
 }
@@ -849,7 +843,6 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "interface-edit": 3,
     "subsystem-compile": 3,
     "subsystem-edit": 2,
-    "mxl-info": 3,
     "role-edit": 1,
     "role-compile": 4,
 }
@@ -960,11 +953,6 @@ SCENARIO_PRESERVING_TOKENS = {
     # skill names, not by the selector that no longer exists.
     # Содержимое ячеек стало отдельным адресом, а не признаком в аргументах,
     # поэтому сценарий сохраняется адресом ветви, а не селектором состава.
-    "mxl-info": [
-        "Area.Шапка.Body",
-        "columnSets",
-        "contentCount",
-    ],
 }
 
 # Arguments the MCP contract used to publish and now rejects. The packaged skill
@@ -978,14 +966,6 @@ SCENARIO_RETIRED_TOKENS = {
         '"Value"',
         '"DefinitionFile"',
         '"sourceSet"',
-    ],
-    "mxl-info": [
-        '"Format"',
-        '"MaxParams"',
-        '"Limit"',
-        '"Offset"',
-        '"TemplatePath"',
-        '"WithText"',
     ],
     "meta-info": [
         '"ObjectPath"',
@@ -1246,8 +1226,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_read_only_skills_do_not_offer_outfile(self) -> None:
         read_only_skills = [
             "meta-info",
-            "mxl-info",
-            "mxl-decompile",
         ]
 
         for skill in read_only_skills:
@@ -2216,7 +2194,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
     def test_support_state_reporting_is_documented_for_info_skills(self) -> None:
         for skill in (
             "meta-info",
-            "mxl-info",
         ):
             with self.subTest(skill=skill):
                 text = (self.skill_root() / skill / "SKILL.md").read_text(encoding="utf-8")
@@ -2492,7 +2469,7 @@ Use `.claude/commands/xdto.md` as the execution route.
             modelled_skills,
             set(IN_SCOPE_TOOLS)
             - {"epf-init", "erf-init", "meta-add", "meta-edit", "role-edit"}
-            | {"dcs-compile", "dcs-edit"},
+            | {"dcs-compile", "dcs-edit", "mxl-compile", "mxl-decompile", "mxl-info"},
         )
         allowed_suffixes = {".json", ".md", ".ps1", ".py"}
         for path in models_root.rglob("*"):
