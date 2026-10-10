@@ -7992,6 +7992,28 @@
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonModules/GoogleПереводчик/Ext/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 12,
+        "to": 18
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
      ]
     }
    ],
@@ -16850,6 +16872,1961 @@
        "kind": "sha256",
        "path": "src/Languages/Русский.xml",
        "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S349",
+   "area": "Навигация и чтение",
+   "task": "Разрешить методы, тела и вложенные области в разных модулях",
+   "workspace": "tests/fixtures/acceptance/workspace-resolve",
+   "wire": [
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Method.Ping"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.Probe.Method.Ping"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonModules/Probe/Ext/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Method.Ping.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.Probe.Method.Ping.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonModules/Probe/Ext/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.Probe.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonModules/Probe/Ext/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 1,
+        "to": 72
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Region.A.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.Probe.Region.A.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonModules/Probe/Ext/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 2,
+        "to": 66
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Region.B.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.Probe.Region.B.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonModules/Probe/Ext/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 69,
+        "to": 71
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Method.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Method.Missing.Body"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Region.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: region `main:CommonModule.Probe.Region.Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Region.Missing.Region.A"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:CommonModule.Probe.Region.Missing.Region.A` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe.Region.A.Region.Inner.Region.B"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:CommonModule.Probe.Region.A.Region.Inner.Region.B` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Method.Ping"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Object.Method.Ping"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ObjectModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Method.Ping.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Object.Method.Ping.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ObjectModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Object.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ObjectModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 1,
+        "to": 72
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Region.A.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Object.Region.A.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ObjectModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 2,
+        "to": 66
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Region.B.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Object.Region.B.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ObjectModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 69,
+        "to": 71
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Method.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Method.Missing.Body"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Region.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Module.Object.Region.Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Region.Missing.Region.A"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Module.Object.Region.Missing.Region.A` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Object.Region.A.Region.Inner.Region.B"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Module.Object.Region.A.Region.Inner.Region.B` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Method.Ping"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Manager.Method.Ping"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ManagerModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Method.Ping.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Manager.Method.Ping.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ManagerModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Manager.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ManagerModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 1,
+        "to": 72
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Region.A.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Manager.Region.A.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ManagerModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 2,
+        "to": 66
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Region.B.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Module.Manager.Region.B.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Ext/ManagerModule.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 69,
+        "to": 71
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Method.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Method.Missing.Body"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Region.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Module.Manager.Region.Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Region.Missing.Region.A"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Module.Manager.Region.Missing.Region.A` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Module.Manager.Region.A.Region.Inner.Region.B"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Module.Manager.Region.A.Region.Inner.Region.B` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Method.Ping"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Form.Main.Module.Form.Method.Ping"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Method.Ping.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Form.Main.Module.Form.Method.Ping.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Form.Main.Module.Form.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 1,
+        "to": 72
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Region.A.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Form.Main.Module.Form.Region.A.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 2,
+        "to": 66
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Region.B.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Form.Main.Module.Form.Region.B.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 69,
+        "to": 71
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Method.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Method.Missing.Body"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Region.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Form.Main.Module.Form.Region.Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Region.Missing.Region.A"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Form.Main.Module.Form.Region.Missing.Region.A` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Module.Form.Region.A.Region.Inner.Region.B"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:Catalog.Items.Form.Main.Module.Form.Region.A.Region.Inner.Region.B` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Method.Ping"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonForm.Main.Module.Form.Method.Ping"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Method.Ping.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonForm.Main.Module.Form.Method.Ping.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 4,
+        "to": 64
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonForm.Main.Module.Form.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 1,
+        "to": 72
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Region.A.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonForm.Main.Module.Form.Region.A.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 2,
+        "to": 66
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Region.B.Region.Inner"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonForm.Main.Module.Form.Region.B.Region.Inner"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Region"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonForms/Main/Ext/Form/Module.bsl"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "range",
+        "from": 69,
+        "to": 71
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Method.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Method.Missing.Body"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: method `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Region.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: region `main:CommonForm.Main.Module.Form.Region.Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Region.Missing.Region.A"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:CommonForm.Main.Module.Form.Region.Missing.Region.A` was not found"
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Module.Form.Region.A.Region.Inner.Region.B"
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ],
+     "refusal": "not_found: region `main:CommonForm.Main.Module.Form.Region.A.Region.Inner.Region.B` was not found"
+    }
+   ]
+  },
+  {
+   "id": "S350",
+   "area": "Навигация и чтение",
+   "task": "Разрешить реквизиты и элементы форм в содержащий их XML",
+   "workspace": "tests/fixtures/acceptance/workspace-resolve",
+   "wire": [
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Attribute.Value"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Attribute.Value"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Attribute"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.TabularSection.Rows.Attribute.Amount"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.TabularSection.Rows.Attribute.Amount"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Attribute"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Item.Value"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Form.Main.Item.Value"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Item"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Forms/Main/Ext/Form.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Item.Group.Item.Inside"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Form.Main.Item.Group.Item.Inside"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Item"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Forms/Main/Ext/Form.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Attribute.FormValue"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items.Form.Main.Attribute.FormValue"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Attribute"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Items/Forms/Main/Ext/Form.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Item.Value"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonForm.Main.Item.Value"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Item"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonForms/Main/Ext/Form.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Attribute.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: metadata node `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.TabularSection.Missing.Attribute.Amount"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: metadata node `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Item.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: form Item `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Item.Missing.Item.Value"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: form Item `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Items.Form.Main.Attribute.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: form Attribute `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonForm.Main.Item.Missing"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: form Item `Missing` was not found",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Missing.Attribute.Value"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: metadata owner `Catalog.Missing` is not registered",
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "not_found"
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S351",
+   "area": "Навигация и чтение",
+   "task": "Сохранить обратное разрешение пути и расположение владельца",
+   "workspace": "tests/fixtures/acceptance/workspace-resolve",
+   "wire": [
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:CommonModule.Probe"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.Probe"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "CommonModule"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "CommonModules/Probe.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "path": "src/CommonModules/Probe.xml"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.Probe"
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "path": "src/CommonModules/Probe/Ext/Module.bsl"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.Probe"
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "path": "src/Catalogs/Items.xml"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Items"
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
       }
      ]
     }

@@ -342,6 +342,33 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(())
     }
 
+    /// Resolve can reuse the typed identity locator only after reading the
+    /// exact node. View treats an absent BSL file as empty; a source location
+    /// must distinguish that case from an existing empty file.
+    pub(crate) fn existing_export_path(&self, at: &QualifiedAddress) -> Result<String, ViewError> {
+        self.read_checkpoint()?;
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if route.reader() == LogicalReader::Module {
+            let capability = route.module().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "the logical node has no BSL module")
+            })?;
+            let (module_at, _) = module_prefix(at, self.profile, capability)?;
+            let target = module_source_address(&module_at, capability)?;
+            if self.read.module_source(&target)?.is_none() {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the BSL module source file does not exist",
+                ));
+            }
+        }
+        let path = self.identity_export_path(at)?.ok_or_else(|| {
+            ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
+        })?;
+        self.read_checkpoint()?;
+        Ok(path)
+    }
+
     #[cfg(test)]
     pub(crate) fn module_source_read_count(&self, target: &str) -> usize {
         self.read.module_source_read_count(target)
@@ -2369,17 +2396,6 @@ fn module_projection_view(
         (NodeKind::Region, _, _) => {
             let region = projections
                 .region(&requested.to_string())
-                .or_else(|_| {
-                    suffix
-                        .last()
-                        .and_then(AddressSegment::name)
-                        .ok_or_else(|| {
-                            crate::domain::module_projection::ProjectionError::not_found(
-                                "region name is missing",
-                            )
-                        })
-                        .and_then(|name| projections.region(name))
-                })
                 .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
             Ok(NodeViewData::Node(region_node(requested, region)))
         }
