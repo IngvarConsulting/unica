@@ -555,7 +555,7 @@ accountingBalanceType, accountField, ignoreNullValues, required, dimensionAttrib
 |---|---|---|
 | Дата | `xs:dateTime` | `0001-01-01T00:00:00` |
 | Строка | `xs:string` | `Т13` |
-| Стандартный период | `v8:StandardPeriod` | `<v8:variant>LastMonth</v8:variant>` |
+| Стандартный период | `v8:StandardPeriod` | `<v8:variant xsi:type="v8:StandardPeriodVariant">LastMonth</v8:variant>` |
 | Ссылка | `d5p1:CatalogRef.ИмяСправочника` (с `xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config"`) | `xsi:nil="true"` |
 | null | — | `xsi:nil="true"` |
 
