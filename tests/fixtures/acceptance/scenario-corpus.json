@@ -8567,9 +8567,49 @@
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/httpMethod",
+       "eq": "POST"
+      },
+      {
+       "pointer": "/data/props/handler",
+       "eq": "ПринятьДанныеPOST"
+      },
+      {
+       "pointer": "/data/at",
+       "eq": "main:HTTPService.ПроверкаСвязи.URLTemplate.ПринятьДанные.Method.POST"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/HTTPServices/ПроверкаСвязи.xml",
+       "eq": "4fa183eaf063769b291158ac318b7c2d1a5135134fbe19392d7d8ee4b55f8acf"
+      },
+      {
+       "kind": "xml",
+       "path": "src/HTTPServices/ПроверкаСвязи.xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}URLTemplate/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "Пинг",
+        "Принять данные"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/HTTPServices/ПроверкаСвязи.xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Method/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "GET",
+        "POST"
+       ]
+      }
      ]
     }
-   ]
+   ],
+   "issue": 634
   },
   {
    "id": "S323",
@@ -19212,6 +19252,318 @@
        "kind": "sha256",
        "path": "erf/Sales.xml",
        "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S354",
+   "issue": 896,
+   "area": "Известные пробелы",
+   "task": "Включить справку отчёта: props.set IncludeHelpInContents пока отказывает (#896)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "IncludeHelpInContents": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "gap"
+     ],
+     "gap": "#896: IncludeHelpInContents отчёта отсутствует в типизированном props.set",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "bad_value",
+         "outcome": "fixCall",
+         "message": "unknown metadata property `IncludeHelpInContents`; supported properties for Report: Synonym, Comment, UseStandardCommands"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов.xml",
+       "eq": "4a5d35f1061d329b0003a90ffe4b3a2ecd37de256a442694061bfc3f19124230"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+      }
+     ],
+     "refusal": "bad_value: unknown metadata property `IncludeHelpInContents`; supported properties for Report: Synonym, Comment, UseStandardCommands"
+    }
+   ]
+  },
+  {
+   "id": "S355",
+   "issue": 852,
+   "area": "Известные пробелы",
+   "task": "Создать регистр, затем сменить RegisterType на Turnovers: props.set пока отказывает (#852)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "CorpusTurnovers"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+       "select": ".//{*}AccumulationRegister/{*}Properties/{*}RegisterType",
+       "eq": [
+        "Balance"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Configuration.xml",
+       "select": ".//{*}Configuration/{*}ChildObjects/{*}AccumulationRegister",
+       "contains": "CorpusTurnovers"
+      }
+     ],
+     "captures": {
+      "registerBytes": {
+       "file": "src/AccumulationRegisters/CorpusTurnovers.xml",
+       "kind": "sha256"
+      },
+      "configBytes": {
+       "file": "src/Configuration.xml",
+       "kind": "sha256"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:AccumulationRegister.CorpusTurnovers",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "RegisterType": "Turnovers"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "gap"
+     ],
+     "gap": "#852: props.set не принимает RegisterType=Turnovers после успешного создания регистра",
+     "refusal": "bad_value: unknown metadata property `RegisterType`; supported properties for AccumulationRegister: Synonym, Comment, EnableTotalsSplitting, UseStandardCommands",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "bad_value",
+         "outcome": "fixCall",
+         "message": "unknown metadata property `RegisterType`; supported properties for AccumulationRegister: Synonym, Comment, EnableTotalsSplitting, UseStandardCommands"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+       "eq": "$capture.registerBytes"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "$capture.configBytes"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S356",
+   "issue": 919,
+   "area": "Известные пробелы",
+   "task": "Перенести существующее поле вместе с companions в существующую группу: element.move пока отсутствует (#919)",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.move",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеНаименованиеПолное",
+           "into": "ГруппаСлужебная"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "gap",
+      "unsupported"
+     ],
+     "gap": "#919: операция переноса существующего поля отсутствует в каноническом реестре",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/at",
+       "eq": "ops[0].op"
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "unsupported_operation"
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "unsupported_operation",
+         "outcome": "goElsewhere",
+         "message": "apply operation `element.move` is not in the canonical registry"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S357",
+   "issue": 895,
+   "area": "Известные пробелы",
+   "task": "Выделить три helper-метода одной заменой: текущий отказ сохранён до исправления #895",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "selector": {
+          "method": "МаксимальныйРазмерПорции"
+         },
+         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "gap"
+     ],
+     "gap": "#895: замена метода текстом из четырёх методов пока даёт postcondition_failed; в 13.1 согласована полная поддержка",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "postcondition_failed",
+         "outcome": "fixSource",
+         "message": "patched BSL module does not prove repeat-noop behavior"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
       }
      ]
     }
