@@ -12,6 +12,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
+FAULT_CASES = {"empty", "invalid-event", "unknown-severity"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 DCS_WORKSPACE = "tests/fixtures/acceptance/workspace-dcs"
 MXL_WORKSPACE = "tests/fixtures/acceptance/workspace-mxl"
@@ -27,7 +28,7 @@ SOURCE_WORKSPACES = {
 
 
 def select_profile(corpus, profile):
-    if profile not in {"source", "delivery", "agent-evaluation"}:
+    if profile not in {"source", "delivery", "agent-evaluation", "fault-injection"}:
         raise ValueError(f"profile {profile!r} has no executable driver")
     selected = []
     for scenario in corpus["scenarios"]:
@@ -55,6 +56,12 @@ def select_profile(corpus, profile):
                     raise ValueError(f"{scenario['id']}: invalid diagnostic case or wire")
             else:
                 raise ValueError(f"{scenario['id']}: invalid delivery driver or fixture")
+        elif current == "fault-injection":
+            if driver != "analyzer-jsonl-fault" or workspace != DIAGNOSTICS_WORKSPACE or scenario.get("evaluation") not in FAULT_CASES or any(
+                step["tool"] != "unica.check" or step["args"] != {"at": "main:CommonModule.Пример"}
+                for step in scenario["wire"]
+            ):
+                raise ValueError(f"{scenario['id']}: invalid controlled JSONL driver, case or wire")
         elif current == "agent-evaluation":
             if driver != "codex" or AGENT_EVALUATIONS.get(scenario.get("evaluation")) != workspace:
                 raise ValueError(f"{scenario['id']}: invalid agent driver, evaluation or fixture")

@@ -193,12 +193,14 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     source_count = sum(s.get("profile", "source") == "source" for s in scenarios)
     delivery_count = sum(s.get("profile") == "delivery" for s in scenarios)
     agent_count = sum(s.get("profile") == "agent-evaluation" for s in scenarios)
-    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}. "
+    fault_count = sum(s.get("profile") == "fault-injection" for s in scenarios)
+    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}. "
         "Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной "
         "синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. "
         "Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, "
         "проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. "
-        "Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.")
+        "Fault-injection исполняет управляемый нативный producer повреждённого JSONL через настоящий процесс и публичный check; это не проверка опубликованного анализатора. "
+        "Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.")
     out("")
     out("## Классы ответа шага")
     out("")
