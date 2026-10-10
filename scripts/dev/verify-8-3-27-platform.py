@@ -105,9 +105,10 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 )
 # LAST_VERIFIED records the previous successful full platform run. Two
 # independent generations agree on the current direct-DCS public contract.
-# The first run exposed DCS semantic loss hidden by a stable normalized
-# export; it is not accepted. Six existing MXL/empty-template imports also
-# timed out with incomplete cleanup (SIGKILL EPERM). Keep LAST_VERIFIED.
+# The first candidate exposed DCS loss hidden by a stable normalized export.
+# The corrected DCS cases now preserve their full content. Both full runs
+# still time out on six existing MXL/empty-template imports (300s, then 60s);
+# the latter confirms process exit/output EOF. Keep LAST_VERIFIED.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
     "5b5159540280fdb99bb8c8e282c03777e21fe0ad2aed9ba1ad658546d85dac25"
 )
