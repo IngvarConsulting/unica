@@ -405,20 +405,23 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 343)
+        self.assertEqual(len(scenarios), 346)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 565,
-            "a wire step went missing: the corpus freezes 565 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 568,
+            "a wire step went missing: the corpus freezes 568 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 344)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 347)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
         delivery = {s["id"] for s in select_profile(self.corpus, "delivery")["scenarios"]}
         agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
+        fault = {s["id"] for s in select_profile(self.corpus, "fault-injection")["scenarios"]}
+        self.assertEqual(fault, {"S344", "S345", "S346"})
+        self.assertFalse(fault & (source | delivery | agent))
         self.assertFalse(source & delivery or source & agent or delivery & agent)
-        self.assertEqual(source | delivery | agent, {s["id"] for s in self.corpus["scenarios"]})
+        self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
         self.assertEqual(agent, {"S328", "S335"})
         self.assertEqual(delivery, {"S324", "S339", "S340", "S341", "S342", "S343"})
 
@@ -782,6 +785,26 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
             self.assertEqual(evidence["both"]["result"]["findings_ignored_by_author"],2)
             self.assertEqual(evidence["both"]["result"]["findings"],[])
 
+
+
+class AcceptanceFaultCorpusRunTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        subprocess.run(["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"],
+                       cwd=REPO_ROOT, check=True)
+        cls.corpus = load_corpus(CORPUS)
+
+    def test_controlled_jsonl_faults_preserve_public_reason_without_provider_input(self):
+        from tests.ci.acceptance_faults import stage_fault_producer, fault_driver
+        with tempfile.TemporaryDirectory(prefix="unica-jsonl-fault-") as raw:
+            plugin = Path(raw).resolve() / "plugin"
+            manifest = stage_fault_producer(plugin)
+            self.assertFalse(manifest["testFixture"]["publishedArtifact"])
+            self.assertEqual(manifest["tools"][0]["version"], "0.0.0-test-fixture")
+            records = []
+            run_corpus(self, select_profile(self.corpus, "fault-injection"), plugin,
+                       scenario_driver=fault_driver(plugin, records))
+            self.assertEqual(sum(record["tool"] == "unica.check" for record in records), 3)
 
 
 if __name__ == "__main__":

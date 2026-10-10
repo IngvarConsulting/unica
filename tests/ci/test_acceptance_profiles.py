@@ -25,6 +25,9 @@ class AcceptanceProfileTests(unittest.TestCase):
             {"id": "mxl", "profile": "agent-evaluation", "driver": "codex",
              "evaluation": "mxl-contract", "workspace": MXL_WORKSPACE,
              "wire": [{"tool": "unica.check", "args": {}}]},
+            {"id": "fault", "profile": "fault-injection", "driver": "analyzer-jsonl-fault",
+             "evaluation": "empty", "workspace": DIAGNOSTICS_WORKSPACE,
+             "wire": [{"tool": "unica.check", "args": {"at": "main:CommonModule.Пример"}}]},
         ]}
 
     def test_profiles_partition_without_omitting_or_duplicating_scenarios(self):
@@ -36,8 +39,27 @@ class AcceptanceProfileTests(unittest.TestCase):
         agent = {s["id"] for s in select_profile(corpus, "agent-evaluation")["scenarios"]}
         self.assertEqual(agent, {"agent", "mxl"})
         self.assertFalse(agent & (source | delivery))
-        self.assertEqual(source | delivery | agent, {s["id"] for s in corpus["scenarios"]})
+        fault = {s["id"] for s in select_profile(corpus, "fault-injection")["scenarios"]}
+        self.assertEqual(fault, {"fault"})
+        self.assertFalse(fault & (source | delivery | agent))
+        self.assertEqual(source | delivery | agent | fault, {s["id"] for s in corpus["scenarios"]})
         self.assertFalse(source & delivery)
+
+    def test_fault_profile_cannot_silently_change_driver_case_fixture_or_wire(self):
+        for field, value in [("evaluation", "unknown"), ("workspace", SYMBOL_WORKSPACE),
+                             ("driver", "bsl-analyzer"), ("wire", [{"tool": "unica.view", "args": {}}])]:
+            corpus = self.corpus()
+            corpus["scenarios"][-1][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                select_profile(corpus, "source")
+
+    def test_fault_case_writer_rejects_unknown_cases_without_writing(self):
+        from tests.ci.acceptance_faults import write_fault_case
+        with tempfile.TemporaryDirectory() as raw:
+            plugin = Path(raw)
+            with self.assertRaises(ValueError):
+                write_fault_case(plugin, "unknown")
+            self.assertFalse((plugin / "jsonl-fault-case").exists())
 
     def test_agent_evaluation_cannot_silently_switch_fixture_or_driver(self):
         for field, value in [("evaluation", "mxl-contract"), ("workspace", MXL_WORKSPACE),

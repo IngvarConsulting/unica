@@ -3255,8 +3255,8 @@ impl From<(bool, Vec<Value>)> for CheckStepVerdict {
 
 const BSL_INCOMPLETE_MESSAGE: &str = "BSL analysis did not complete, so the module is unproven";
 
-/// Отказ называет причину, если поставщик её назвал: сломанная базовая
-/// линия диагностик — это не «анализ не закончился вообще».
+/// Named incomplete causes retain their own sanitization boundary; JSONL
+/// failures cross only through the existing closed stream-error formatter.
 fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult) -> String {
     let mut reasons: Vec<String> = result
         .providers
@@ -3270,6 +3270,19 @@ fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult)
             })
         })
         .collect();
+    for section in &result.providers {
+        if let Some(error) = &section.error {
+            if error.code == "diagnostics_invalid" {
+                if let Some(message) =
+                    crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message)
+                {
+                    if !reasons.contains(&message) {
+                        reasons.push(message);
+                    }
+                }
+            }
+        }
+    }
     for item in &result.items {
         if let crate::domain::diagnostics::DiagnosticItem::ResourceFailure { error, .. } = item {
             if matches!(
@@ -4232,6 +4245,78 @@ mod tests {
             super::bsl_incomplete_message(&unnamed),
             super::BSL_INCOMPLETE_MESSAGE
         );
+    }
+
+    #[test]
+    fn bsl_check_preserves_only_canonical_jsonl_failure_recovery() {
+        use crate::domain::diagnostics::stream_error::{StreamErrorKind, MISSING_START_MESSAGE};
+        use crate::domain::diagnostics::{
+            DiagnosticAction, DiagnosticError, DiagnosticProviderSection, DiagnosticProviderStatus,
+            DiagnosticResult, DiagnosticResultState, DiagnosticSelection,
+        };
+        let result = |code: &str, message: String| DiagnosticResult {
+            ok: false,
+            action: DiagnosticAction::Analyze,
+            selection: DiagnosticSelection {
+                source_set: "main".to_string(),
+                metadata_path: None,
+                target_kind: None,
+                providers: vec!["bsl-analyzer"],
+                filter: None,
+                limit: None,
+            },
+            state: DiagnosticResultState::Failed,
+            complete: false,
+            providers: vec![DiagnosticProviderSection {
+                id: "bsl-analyzer",
+                status: DiagnosticProviderStatus::Failed,
+                complete: false,
+                version: None,
+                capabilities: None,
+                readiness: None,
+                items_total: Some(0),
+                items_returned: Some(0),
+                resource_failures: Some(0),
+                truncated: Some(false),
+                suppressions: Vec::new(),
+                error: Some(DiagnosticError {
+                    code: code.to_string(),
+                    message,
+                    retryable: false,
+                }),
+            }],
+            items_total: Some(0),
+            items_returned: Some(0),
+            truncated: Some(false),
+            items: Vec::new(),
+        };
+        for safe in [
+            StreamErrorKind::InvalidEvent.message(2),
+            StreamErrorKind::UnknownSeverity.message(3),
+            MISSING_START_MESSAGE.to_string(),
+        ] {
+            let failed = result("diagnostics_invalid", safe.clone());
+            assert!(!super::bsl_result_proves_full_verdict(&failed));
+            assert_eq!(
+                super::bsl_incomplete_message(&failed),
+                format!("{}: {safe}", super::BSL_INCOMPLETE_MESSAGE)
+            );
+        }
+        let safe = StreamErrorKind::InvalidEvent.message(2);
+        for (code, message) in [
+            ("provider_failed", safe.clone()),
+            ("diagnostics_invalid", format!("private-prefix {safe}")),
+            (
+                "diagnostics_invalid",
+                format!("{safe} secret=/private/synthetic-secret"),
+            ),
+            ("diagnostics_invalid", safe.replace("line 2:", "line 02:")),
+        ] {
+            assert_eq!(
+                super::bsl_incomplete_message(&result(code, message)),
+                super::BSL_INCOMPLETE_MESSAGE
+            );
+        }
     }
 
     #[test]

@@ -16492,6 +16492,192 @@
      "diagnostic": "UnusedLocalVariable"
     }
    ]
+  },
+  {
+   "id": "S344",
+   "name": "diagnostics-jsonl-empty",
+   "issue": 1064,
+   "area": "Код BSL",
+   "task": "Пустой поток называет отсутствие start и действие восстановления без номера строки",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-jsonl-fault",
+   "evaluation": "empty",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.Пример"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "da18d3716215544b1e445b278655aa80ab824ae1c3c14e45bdd582fc11a941a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример.xml",
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "204a6fb52d776b9bfad625cb1960346b45aec1caaba9bada50a16fcfaae057f2"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "BSL analysis did not complete, so the module is unproven: stream is missing start event. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason."
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S345",
+   "name": "diagnostics-jsonl-invalid-event",
+   "issue": 1064,
+   "area": "Код BSL",
+   "task": "Повреждённый JSONL называет безопасную строку и причину без исходного payload",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-jsonl-fault",
+   "evaluation": "invalid-event",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.Пример"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "da18d3716215544b1e445b278655aa80ab824ae1c3c14e45bdd582fc11a941a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример.xml",
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "204a6fb52d776b9bfad625cb1960346b45aec1caaba9bada50a16fcfaae057f2"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "BSL analysis did not complete, so the module is unproven: line 1: invalid JSON or event schema. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number."
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S346",
+   "name": "diagnostics-jsonl-unknown-severity",
+   "issue": 1064,
+   "area": "Код BSL",
+   "task": "Неизвестная severity даёт безопасный отказ без секретных значений",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-jsonl-fault",
+   "evaluation": "unknown-severity",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.Пример"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "da18d3716215544b1e445b278655aa80ab824ae1c3c14e45bdd582fc11a941a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример.xml",
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "204a6fb52d776b9bfad625cb1960346b45aec1caaba9bada50a16fcfaae057f2"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "BSL analysis did not complete, so the module is unproven: line 2: unknown diagnostic severity. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number."
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      }
+     ]
+    }
+   ]
   }
  ]
 }
