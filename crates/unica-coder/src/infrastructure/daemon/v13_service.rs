@@ -2254,6 +2254,16 @@ impl CanonicalV13ReadService {
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
     ) -> DomainResult {
+        if address
+            .segments()
+            .iter()
+            .any(|segment| !segment.kind().is_metadata_kind())
+        {
+            return match self.resolve_projected_source(invocation, address, cancellation) {
+                Ok(source) => resolve_result(source),
+                Err(error) => view_error_result(Some(address.to_string()), error),
+            };
+        }
         let at = address.to_string();
         let directory = match self.layout_directory(
             invocation,
@@ -2281,52 +2291,77 @@ impl CanonicalV13ReadService {
         };
         let kind = entry.kind().to_string();
         let placed = placed.to_string();
-        let lines = match self.resolve_lines(invocation, address, cancellation) {
-            Ok(lines) => lines,
-            Err(result) => return *result,
-        };
-        resolve_result(ResolvedSource::new(at, kind, placed, lines))
+        resolve_result(ResolvedSource::new(
+            at,
+            kind,
+            placed,
+            ResolvedLines::NotLineBased,
+        ))
     }
 
-    /// Строки обещаются там, где источник строчный. У BSL они настоящие, и
-    /// проекция модуля их уже знает; у реквизита и элемента формы источник
-    /// древовидный, и обещать строки значило бы обещать то, что развалится.
-    fn resolve_lines(
+    fn resolve_projected_source(
         &self,
         invocation: &ActorBoundExecution,
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
-    ) -> Result<ResolvedLines, Box<DomainResult>> {
-        if !address
-            .segments()
-            .iter()
-            .any(|segment| segment.kind() == NodeKind::Module)
-        {
-            return Ok(ResolvedLines::NotLineBased);
+    ) -> Result<ResolvedSource, ViewError> {
+        use crate::application::v13::view::ViewFilter;
+
+        let source = invocation
+            .read_sources()
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
+            .into_iter()
+            .find(|source| source.source_set_name() == address.source_set())
+            .ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "resolve source set was not admitted")
+            })?;
+        let authority = source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let snapshot = authority.snapshot(address)?;
+        let canonical = authority.canonical_address(address, &snapshot)?;
+        // Resolve needs the whole node's range, not the first public view page.
+        let projected = authority.read_exact(&canonical, &ViewFilter::default(), &snapshot)?;
+        let path = authority.existing_export_path(&canonical)?;
+        if authority.snapshot(&canonical)?.revision != snapshot.revision {
+            return Err(ViewError::new(
+                RefusalCode::StaleCursor,
+                "source revision changed during source location resolution",
+            ));
         }
-        let at = address.to_string();
-        let view_arguments = Map::from_iter([("at".to_string(), Value::String(at.clone()))]);
-        let viewed = self.execute_view_arguments(invocation, &view_arguments, cancellation);
-        if !viewed.ok {
-            return Err(Box::new(viewed));
-        }
-        let props = viewed
-            .data
-            .as_ref()
-            .and_then(|data| data.get("props"))
-            .cloned()
-            .unwrap_or(Value::Null);
-        let from = props.get("line").and_then(Value::as_u64);
-        let to = props.get("endLine").and_then(Value::as_u64);
-        match (from, to) {
-            (Some(from), Some(to)) => Ok(ResolvedLines::Range {
+        authority.read_checkpoint()?;
+        let data = serde_json::to_value(projected).expect("node projections serialize to JSON");
+        let range = path
+            .ends_with(".bsl")
+            .then(|| {
+                let props = &data["props"];
+                props["line"]
+                    .as_u64()
+                    .zip(props["endLine"].as_u64())
+                    .filter(|(from, to)| from <= to)
+                    .or_else(|| {
+                        let items = data["items"].as_array()?;
+                        let last = items.last()?;
+                        items.first()?["line"]
+                            .as_u64()
+                            .zip(last["endLine"].as_u64().or_else(|| last["line"].as_u64()))
+                    })
+                    .filter(|(from, to)| from <= to)
+            })
+            .flatten();
+        let lines = match range {
+            Some((from, to)) => ResolvedLines::Range {
                 from: from as usize,
                 to: to as usize,
-            }),
-            // Узел модуля есть, но собственного диапазона у него нет: предмет
-            // занимает файл целиком, и называть часть было бы неверно.
-            _ => Ok(ResolvedLines::NotLineBased),
-        }
+            },
+            None => ResolvedLines::NotLineBased,
+        };
+        Ok(ResolvedSource::new(
+            canonical.to_string(),
+            data["kind"].as_str().expect("node projection has a kind"),
+            path,
+            lines,
+        ))
     }
 }
 
@@ -4379,6 +4414,527 @@ mod tests {
         std::fs::write(workspace.path().join("src/Configuration.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
         workspace
+    }
+
+    #[test]
+    fn resolve_common_module_terminals_use_bsl_and_validate_existence() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::ports::TokioClock;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+
+        let workspace = role_search_workspace();
+        let source = workspace.path().join("src");
+        std::fs::write(source.join("Configuration.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>Probe</CommonModule></ChildObjects></Configuration></MetaDataObject>"#).unwrap();
+        std::fs::create_dir_all(source.join("CommonModules/Probe/Ext")).unwrap();
+        std::fs::write(source.join("CommonModules/Probe.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Probe</Name><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#).unwrap();
+        let body = "    Сообщить(\"probe\");\n".repeat(61);
+        std::fs::write(
+            source.join("CommonModules/Probe/Ext/Module.bsl"),
+            format!(
+                "#Область Outer\nПроцедура Ping() Экспорт\n{body}КонецПроцедуры\n#КонецОбласти\n"
+            ),
+        )
+        .unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(super::CanonicalV13ReadService::default()),
+            Arc::new(TokioClock),
+        );
+        let resolve = |arguments| {
+            let request = InvocationRequest::new(
+                ToolIdentity::Resolve,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            runtime
+                .bind(request)
+                .unwrap()
+                .prepare()
+                .unwrap()
+                .execute(CancellationToken::new())
+                .unwrap()
+        };
+        let owner = resolve(json!({"at":"main:CommonModule.Probe"}));
+        assert!(owner.ok, "{owner:?}");
+        assert_eq!(
+            owner.data.as_ref().unwrap()["path"],
+            "CommonModules/Probe.xml"
+        );
+        assert_eq!(
+            owner.data.as_ref().unwrap()["lines"]["state"],
+            "notLineBased"
+        );
+        for (suffix, kind, from, to) in [
+            (".Method.Ping", "Method", 3, 63),
+            (".Method.Ping.Body", "Body", 3, 63),
+            (".Region.Outer", "Region", 1, 65),
+            (".Body", "Body", 1, 65),
+        ] {
+            let at = format!("main:CommonModule.Probe{suffix}");
+            let result = resolve(json!({"at":at}));
+            assert!(result.ok, "{at}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["at"], at);
+            assert_eq!(
+                data["path"], "CommonModules/Probe/Ext/Module.bsl",
+                "{result:?}"
+            );
+            assert_eq!(data["kind"], kind, "{result:?}");
+            assert_eq!(
+                data["lines"],
+                json!({"state":"range","from":from,"to":to}),
+                "{result:?}"
+            );
+        }
+        for suffix in [".Method.Missing", ".Method.Missing.Body", ".Region.Missing"] {
+            let result = resolve(json!({"at":format!("main:CommonModule.Probe{suffix}")}));
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                "not_found"
+            );
+        }
+        let module = source.join("CommonModules/Probe/Ext/Module.bsl");
+        std::fs::write(&module, "Процедура Empty()\nКонецПроцедуры\n").unwrap();
+        for suffix in [".Method.Empty", ".Method.Empty.Body"] {
+            let result = resolve(json!({"at":format!("main:CommonModule.Probe{suffix}")}));
+            assert!(result.ok, "{result:?}");
+            assert_eq!(
+                result.data.as_ref().unwrap()["lines"]["state"],
+                "notLineBased",
+                "{result:?}"
+            );
+        }
+        std::fs::write(&module, "").unwrap();
+        let empty = resolve(json!({"at":"main:CommonModule.Probe.Body"}));
+        assert!(empty.ok, "{empty:?}");
+        assert_eq!(
+            empty.data.as_ref().unwrap()["lines"]["state"],
+            "notLineBased"
+        );
+        std::fs::remove_file(&module).unwrap();
+        let missing = resolve(json!({"at":"main:CommonModule.Probe.Body"}));
+        assert!(
+            !missing.ok,
+            "absent BSL is not an existing empty file: {missing:?}"
+        );
+        assert_eq!(
+            serde_json::to_value(&missing).unwrap()["diagnostics"][0]["code"],
+            "not_found"
+        );
+        std::fs::write(&module, [0xff]).unwrap();
+        let unreadable = resolve(json!({"at":"main:CommonModule.Probe.Body"}));
+        assert!(!unreadable.ok, "{unreadable:?}");
+        assert_eq!(
+            serde_json::to_value(&unreadable).unwrap()["diagnostics"][0]["code"],
+            "provider_unavailable"
+        );
+    }
+
+    fn resolve_exact_workspace() -> tempfile::TempDir {
+        let workspace = role_search_workspace();
+        let source = workspace.path().join("src");
+        let descriptor = |kind: &str, name: &str, children: &str| {
+            let (uuid, extra) = match kind {
+                "Configuration" => ("f3317000-0000-4000-8000-000000000001", ""),
+                "CommonModule" => ("f3317000-0000-4000-8000-000000000002", "<Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse>"),
+                "Catalog" => ("f3317000-0000-4000-8000-000000000003", ""),
+                "Form" => ("f3317000-0000-4000-8000-000000000004", "<FormType>Managed</FormType>"),
+                "CommonForm" => ("f3317000-0000-4000-8000-000000000005", "<FormType>Managed</FormType>"),
+                _ => unreachable!(),
+            };
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="{uuid}"><Properties><Name>{name}</Name>{extra}</Properties><ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>"#
+            )
+        };
+        std::fs::write(source.join("Configuration.xml"), descriptor("Configuration", "Store", "<CommonModule>Probe</CommonModule><Catalog>Items</Catalog><CommonForm>Main</CommonForm>")).unwrap();
+        for directory in [
+            "CommonModules/Probe/Ext",
+            "Catalogs/Items/Ext",
+            "Catalogs/Items/Forms/Main/Ext",
+            "CommonForms/Main/Ext",
+        ] {
+            std::fs::create_dir_all(source.join(directory)).unwrap();
+        }
+        std::fs::write(
+            source.join("CommonModules/Probe.xml"),
+            descriptor("CommonModule", "Probe", ""),
+        )
+        .unwrap();
+        std::fs::write(source.join("Catalogs/Items.xml"), descriptor("Catalog", "Items", r#"<Form>Main</Form><Attribute><Properties><Name>Value</Name></Properties></Attribute><TabularSection><Properties><Name>Rows</Name></Properties><ChildObjects><Attribute><Properties><Name>Amount</Name></Properties></Attribute></ChildObjects></TabularSection>"#)).unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Forms/Main.xml"),
+            descriptor("Form", "Main", ""),
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("CommonForms/Main.xml"),
+            descriptor("CommonForm", "Main", ""),
+        )
+        .unwrap();
+        let form = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField name="Value" id="1"/><UsualGroup name="Group" id="2"><ChildItems><InputField name="Inside" id="3"/></ChildItems></UsualGroup></ChildItems><Attributes><Attribute name="FormValue" id="1"/></Attributes></Form>"#;
+        for file in [
+            "Catalogs/Items/Forms/Main/Ext/Form.xml",
+            "CommonForms/Main/Ext/Form.xml",
+        ] {
+            std::fs::write(source.join(file), form).unwrap();
+        }
+        let body = "    Сообщить(\"probe\");\n".repeat(61);
+        let module = format!("#Область A\n#Область Inner\nПроцедура Ping() Экспорт\n{body}КонецПроцедуры\n#КонецОбласти\n#КонецОбласти\n#Область B\n#Область Inner\n// second\n#КонецОбласти\n#КонецОбласти\n");
+        for file in [
+            "CommonModules/Probe/Ext/Module.bsl",
+            "Catalogs/Items/Ext/ObjectModule.bsl",
+            "Catalogs/Items/Ext/ManagerModule.bsl",
+            "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            "CommonForms/Main/Ext/Form/Module.bsl",
+        ] {
+            let target = source.join(file);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, &module).unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        workspace
+    }
+
+    fn invoke_exact_read(
+        workspace: &std::path::Path,
+        tool: crate::application::invocation_store::ToolIdentity,
+        arguments: serde_json::Value,
+    ) -> crate::domain::invocation::DomainResult {
+        use crate::application::ports::TokioClock;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(super::CanonicalV13ReadService::default()),
+            Arc::new(TokioClock),
+        );
+        runtime
+            .bind(
+                InvocationRequest::new(
+                    tool,
+                    arguments,
+                    std::fs::canonicalize(workspace).unwrap().to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .prepare()
+            .unwrap()
+            .execute(CancellationToken::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn resolve_exact_bsl_nodes_across_module_roles() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        for (module, path) in [
+            ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
+            (
+                "Catalog.Items.Module.Object",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Catalog.Items.Module.Manager",
+                "Catalogs/Items/Ext/ManagerModule.bsl",
+            ),
+            (
+                "Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            ),
+            (
+                "CommonForm.Main.Module.Form",
+                "CommonForms/Main/Ext/Form/Module.bsl",
+            ),
+        ] {
+            for (suffix, kind, from, to) in [
+                (".Method.Ping", "Method", 4, 64),
+                (".Method.Ping.Body", "Body", 4, 64),
+                (".Body", "Body", 1, 72),
+                (".Region.A.Region.Inner", "Region", 2, 66),
+                (".Region.B.Region.Inner", "Region", 69, 71),
+            ] {
+                let at = format!("main:{module}{suffix}");
+                let result =
+                    invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+                assert!(result.ok, "{at}: {result:?}");
+                let data = result.data.as_ref().unwrap();
+                assert_eq!(data["at"], at);
+                assert_eq!(data["kind"], kind, "{result:?}");
+                assert_eq!(data["path"], path, "{result:?}");
+                assert_eq!(
+                    data["lines"],
+                    json!({"state":"range","from":from,"to":to}),
+                    "{result:?}"
+                );
+                assert!(result.rev.is_none());
+            }
+            for suffix in [
+                ".Method.Missing",
+                ".Method.Missing.Body",
+                ".Region.Missing",
+                ".Region.Missing.Region.A",
+                ".Region.A.Region.Missing",
+                ".Region.A.Region.Inner.Region.B",
+            ] {
+                let result = invoke_exact_read(
+                    workspace.path(),
+                    ToolIdentity::Resolve,
+                    json!({"at":format!("main:{module}{suffix}")}),
+                );
+                assert!(!result.ok, "{result:?}");
+                assert_eq!(
+                    serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                    "not_found",
+                    "{result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn view_nested_regions_never_substitutes_the_final_name() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        for prefix in ["CommonModule.Probe", "Catalog.Items.Module.Object"] {
+            for (suffix, ok) in [
+                (".Region.A.Region.Inner", true),
+                (".Region.B.Region.Inner", true),
+                (".Region.Missing.Region.A", false),
+                (".Region.A.Region.Inner.Region.B", false),
+            ] {
+                let at = format!("main:{prefix}{suffix}");
+                let result =
+                    invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+                assert_eq!(result.ok, ok, "{at}: {result:?}");
+                if !ok {
+                    assert_eq!(
+                        serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                        "not_found"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_exact_tree_children_use_their_containing_xml() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        for (node, kind, path) in [
+            (
+                "Catalog.Items.Attribute.Value",
+                "Attribute",
+                "Catalogs/Items.xml",
+            ),
+            (
+                "Catalog.Items.TabularSection.Rows.Attribute.Amount",
+                "Attribute",
+                "Catalogs/Items.xml",
+            ),
+            (
+                "Catalog.Items.Form.Main.Item.Value",
+                "Item",
+                "Catalogs/Items/Forms/Main/Ext/Form.xml",
+            ),
+            (
+                "Catalog.Items.Form.Main.Item.Group.Item.Inside",
+                "Item",
+                "Catalogs/Items/Forms/Main/Ext/Form.xml",
+            ),
+            (
+                "Catalog.Items.Form.Main.Attribute.FormValue",
+                "Attribute",
+                "Catalogs/Items/Forms/Main/Ext/Form.xml",
+            ),
+            (
+                "CommonForm.Main.Item.Value",
+                "Item",
+                "CommonForms/Main/Ext/Form.xml",
+            ),
+        ] {
+            let at = format!("main:{node}");
+            let view = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+            assert!(view.ok, "fixture must independently expose {at}: {view:?}");
+            let result =
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+            assert!(result.ok, "{at}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["at"], at);
+            assert_eq!(data["kind"], kind, "{result:?}");
+            assert_eq!(data["path"], path, "{result:?}");
+            assert_eq!(data["lines"], json!({"state":"notLineBased"}));
+            assert!(result.rev.is_none());
+        }
+        for node in [
+            "Catalog.Items.Attribute.Missing",
+            "Catalog.Items.TabularSection.Missing.Attribute.Amount",
+            "Catalog.Items.Form.Main.Item.Missing",
+            "Catalog.Items.Form.Main.Item.Missing.Item.Value",
+            "Catalog.Items.Form.Main.Attribute.Missing",
+            "CommonForm.Main.Item.Missing",
+            "Catalog.Missing.Attribute.Value",
+        ] {
+            let result = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Resolve,
+                json!({"at":format!("main:{node}")}),
+            );
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                "not_found"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_exact_module_read_failures_are_never_successful_locations() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        for (prefix, path) in [
+            ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
+            (
+                "Catalog.Items.Module.Object",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            ),
+        ] {
+            let file = workspace.path().join("src").join(path);
+            std::fs::write(&file, "Процедура Empty()\nКонецПроцедуры\n").unwrap();
+            for suffix in [".Method.Empty", ".Method.Empty.Body"] {
+                let result = invoke_exact_read(
+                    workspace.path(),
+                    ToolIdentity::Resolve,
+                    json!({"at":format!("main:{prefix}{suffix}")}),
+                );
+                assert!(result.ok, "{result:?}");
+                assert_eq!(
+                    result.data.unwrap()["lines"],
+                    json!({"state":"notLineBased"})
+                );
+            }
+            std::fs::write(&file, "").unwrap();
+            let empty = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Resolve,
+                json!({"at":format!("main:{prefix}.Body")}),
+            );
+            assert!(empty.ok, "{empty:?}");
+            assert_eq!(
+                empty.data.unwrap()["lines"],
+                json!({"state":"notLineBased"})
+            );
+            std::fs::remove_file(&file).unwrap();
+            let absent = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Resolve,
+                json!({"at":format!("main:{prefix}.Body")}),
+            );
+            assert!(
+                !absent.ok,
+                "an absent BSL file is not an empty body: {absent:?}"
+            );
+            assert_eq!(
+                serde_json::to_value(&absent).unwrap()["diagnostics"][0]["code"],
+                "not_found"
+            );
+            std::fs::write(&file, [0xff]).unwrap();
+            let unreadable = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Resolve,
+                json!({"at":format!("main:{prefix}.Body")}),
+            );
+            assert!(!unreadable.ok, "{unreadable:?}");
+            assert_eq!(
+                serde_json::to_value(&unreadable).unwrap()["diagnostics"][0]["code"],
+                "provider_unavailable"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_exact_cancelled_read_never_claims_a_location() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::operation_descriptors::ExecutionClass;
+        use crate::application::ports::TokioClock;
+        use crate::domain::invocation::{DomainResult, InvocationFailure};
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        struct CancelRead(super::CanonicalV13ReadService);
+        impl super::CanonicalInvocationService for CancelRead {
+            fn prepare(
+                &self,
+                invocation: &super::ActorBoundInvocation,
+            ) -> Result<ExecutionClass, Box<DomainResult>> {
+                self.0.prepare(invocation)
+            }
+            fn execute(
+                &self,
+                execution: &super::ActorBoundExecution,
+                _: CancellationToken,
+            ) -> Result<DomainResult, InvocationFailure> {
+                // Cancel after actor admission, at the actual resolve read boundary.
+                let cancellation = CancellationToken::new();
+                cancellation.cancel();
+                self.0.execute(execution, cancellation)
+            }
+        }
+        let workspace = resolve_exact_workspace();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CancelRead(super::CanonicalV13ReadService::default())),
+            Arc::new(TokioClock),
+        );
+        let result = runtime
+            .bind(
+                InvocationRequest::new(
+                    ToolIdentity::Resolve,
+                    json!({"at":"main:CommonModule.Probe.Method.Ping"}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .prepare()
+            .unwrap()
+            .execute(CancellationToken::new())
+            .unwrap();
+        assert!(
+            !result.ok,
+            "cancelled resolution claimed a location: {result:?}"
+        );
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+            "cancelled"
+        );
+        assert!(
+            result.data.is_none(),
+            "cancelled read returned a location: {result:?}"
+        );
     }
 
     #[test]

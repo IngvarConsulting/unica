@@ -1,6 +1,11 @@
 ---
 id: INV.WIRE.RESOLVE-EXACT-BRIDGE
 check:
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_bsl_nodes_across_module_roles
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_tree_children_use_their_containing_xml
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_module_read_failures_are_never_successful_locations
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_cancelled_read_never_claims_a_location
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::view_nested_regions_never_substitutes_the_final_name
   - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_catalog_locks_the_eight_domain_contracts_without_publishing_them
   - crates/unica-coder/src/application/v13/resolve.rs::resolve_takes_exactly_one_side_of_the_bridge
   - crates/unica-coder/src/application/v13/resolve.rs::absent_lines_are_named_rather_than_omitted
@@ -27,7 +32,6 @@ check:
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_checks_the_owner_of_a_nested_object
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_nested_path_ignores_an_unrelated_linked_owner_directory
   - crates/unica-coder/src/infrastructure/v13_find.rs::linked_proven_owner_directory_refuses_instead_of_hiding_nested_names
-gap: https://github.com/IngvarConsulting/unica/issues/976
 ---
 
 # Запрос resolve выбирает одну сторону адресного моста
@@ -37,15 +41,14 @@ gap: https://github.com/IngvarConsulting/unica/issues/976
 
 Форма расположения явно называет наличие строк: `lines.state` равен
 `range` с границами `from` и `to` либо `notLineBased`. Поле не опускается,
-когда диапазона нет. Эти проверки закрепляют разбор запроса и сериализацию
-расположения. Они не доказывают существование указанного узла и правильность
-его диапазона в исходниках.
+когда диапазона нет. Проверки формы запроса и сериализации дополнены проверками существования
+узла, его расположения и диапазона в исходниках.
 
 При успешном ответе указанный предмет существует; результат сообщает его
 адрес, вид и действительное место в исходниках. Отсутствующий предмет даёт
 `not_found`. Для метода или области BSL диапазон относится именно к файлу
 модуля, а не к XML-дескриптору его владельца. У древовидного ресурса диапазон
-не выдумывается. Эти гарантии текущего вызова требуют проверки из `gap`.
+не выдумывается. Ошибка чтения или отмена дают отказ; успешный ответ не содержит `rev`.
 
 При `path` проверяются запрошенный объект и необходимые владельцы. Абсолютный
 путь внутри допущенного корня выбирает самый глубокий подходящий набор

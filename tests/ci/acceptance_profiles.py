@@ -22,6 +22,7 @@ SOURCE_WORKSPACES = {
     DCS_WORKSPACE,
     MXL_WORKSPACE,
     "tests/fixtures/acceptance/workspace-code",
+    "tests/fixtures/acceptance/workspace-resolve",
     "tests/fixtures/acceptance/workspace",
     "tests/fixtures/acceptance/workspace-format",
     "tests/fixtures/acceptance/workspace-bare",
