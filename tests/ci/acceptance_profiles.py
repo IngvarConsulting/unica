@@ -16,10 +16,18 @@ FAULT_CASES = {"empty", "invalid-event", "unknown-severity"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 DCS_WORKSPACE = "tests/fixtures/acceptance/workspace-dcs"
 MXL_WORKSPACE = "tests/fixtures/acceptance/workspace-mxl"
+EXTERNAL_WORKSPACE = "tests/fixtures/acceptance/workspace-external"
+EXTERNAL_CHECK_ADDRESSES = {
+    None,
+    "epf:ExternalDataProcessor.Import.Module.Object",
+    "epf:ExternalDataProcessor.Import.Form.Main.Module.Form",
+    "erf:ExternalReport.Sales.Module.Object",
+}
 AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
 SOURCE_WORKSPACES = {
     "tests/fixtures/acceptance/workspace-metadata-values",
     "tests/fixtures/acceptance/workspace-external",
+    "tests/fixtures/acceptance/workspace-external-missing",
     "tests/fixtures/acceptance/workspace-external-invalid",
     "tests/fixtures/acceptance/workspace-external-linked",
 
@@ -50,7 +58,16 @@ def select_profile(corpus, profile):
                    for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: runtime operations need an executable runtime driver")
         elif current == "delivery":
-            if driver == "bsl-analyzer" and workspace == SYMBOL_WORKSPACE:
+            if driver == "bsl-analyzer-external" and workspace == EXTERNAL_WORKSPACE:
+                if "evaluation" in scenario or any(
+                    step["tool"] != "unica.check"
+                    or step["args"].get("at") not in EXTERNAL_CHECK_ADDRESSES
+                    or step["args"] != ({} if step["args"].get("at") is None
+                                        else {"at": step["args"]["at"]})
+                    for step in scenario["wire"]
+                ):
+                    raise ValueError(f"{scenario['id']}: invalid external check or arguments")
+            elif driver == "bsl-analyzer" and workspace == SYMBOL_WORKSPACE:
                 if any(step["tool"] != "unica.search" or step["args"].get("role") != "symbol"
                        for step in scenario["wire"]):
                     raise ValueError(f"{scenario['id']}: analyzer driver supports symbol search only")
