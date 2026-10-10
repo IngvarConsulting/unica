@@ -1429,7 +1429,7 @@ fn typed_element(
                     super::info_projection::observed_type_is_strict_but_unmodelled(properties);
                 let typed = if unmodelled {
                     MetaDiagnostic::warning(
-                        MetaDiagnosticCode::ValidationFailed,
+                        MetaDiagnosticCode::ValidationWarning,
                         "metadata type is syntactically valid but not modelled by this format profile",
                     )
                 } else {

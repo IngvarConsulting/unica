@@ -2075,7 +2075,7 @@ fn validation_warning(
     field: &str,
     message: impl Into<String>,
 ) -> MetaDiagnostic {
-    MetaDiagnostic::warning(MetaDiagnosticCode::ValidationFailed, message)
+    MetaDiagnostic::warning(MetaDiagnosticCode::ValidationWarning, message)
         .with_metadata_path(subject.target.clone())
         .with_field(field)
 }
@@ -6312,6 +6312,57 @@ mod tests {
         let mut exact = Vec::new();
         validate_child_footprints(&subject, &mut exact, MetadataAdmission::Writable);
         assert!(exact.is_empty(), "{exact:?}");
+    }
+
+    #[test]
+    fn legacy_metadata_warnings_use_a_warning_code_and_keep_error_verdicts() {
+        let registration = owner(&[("CommonModule", "Service")]);
+        let no_context = common_module("Service").replace(
+            "</Properties>",
+            "<Server>false</Server><ClientManagedApplication>false</ClientManagedApplication><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ExternalConnection>false</ExternalConnection><ServerCall>false</ServerCall><Global>false</Global><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties>",
+        );
+        for (xml, expected) in [
+            (no_context.clone(), MetaValidationStatus::Passed),
+            (
+                no_context.replace("DontUse", "InvalidReuse"),
+                MetaValidationStatus::Failed,
+            ),
+        ] {
+            let proof = subject("CommonModule.Service", Some(&xml), &registration, &[]);
+            let result = assert_internal_status("context-warning", &proof, expected);
+            let warning = result
+                .diagnostics
+                .iter()
+                .find(|item| item.message == "10. CommonModule: no execution context enabled")
+                .expect("real validator must report the disabled execution contexts");
+            assert_eq!(warning.severity, MetaDiagnosticSeverity::Warning);
+            assert_eq!(
+                serde_json::to_value(warning.code).unwrap(),
+                "validation_warning"
+            );
+            assert_eq!(warning.metadata_path, Some(address("CommonModule.Service")));
+            assert_eq!(warning.field.as_deref(), Some("properties"));
+            assert_eq!(warning.language, None);
+            let errors = result
+                .diagnostics
+                .iter()
+                .filter(|item| {
+                    item.severity == MetaDiagnosticSeverity::Error
+                        && item.code == MetaDiagnosticCode::ValidationFailed
+                })
+                .collect::<Vec<_>>();
+            if expected == MetaValidationStatus::Failed {
+                assert!(errors
+                    .iter()
+                    .any(|item| item.message.contains("InvalidReuse")));
+            } else {
+                assert!(errors.is_empty());
+                assert!(result
+                    .diagnostics
+                    .iter()
+                    .all(|item| item.code != MetaDiagnosticCode::ValidationFailed));
+            }
+        }
     }
 
     #[test]
