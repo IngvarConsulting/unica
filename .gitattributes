@@ -33,4 +33,7 @@ plugins/unica/skills/form-patterns/SKILL.md whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-code/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-diagnostics/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-metadata-warning/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-external/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-external-invalid/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-external-linked/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-metadata-values/** -text whitespace=cr-at-eol

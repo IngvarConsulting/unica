@@ -371,6 +371,50 @@ class AcceptanceServer:
             pass
 
 
+def materialize_external_form_link(workspace: Path) -> None:
+    """Create the fixed adversarial payload in an isolated corpus copy."""
+    payload = workspace / "epf/Import/Forms/Main/Ext/Form.xml"
+    target = workspace / "epf/Other/Forms/Main/Ext/Form.xml"
+    relative_target = "../../../../Other/Forms/Main/Ext/Form.xml"
+    placeholder = b"<!-- replaced by a real relative symlink before MCP starts -->\n"
+    if payload.is_symlink() or payload.read_bytes() != placeholder or not target.is_file():
+        raise ValueError("external link fixture is not the declared regular placeholder")
+    payload.unlink()
+    payload.symlink_to(relative_target)
+    if not payload.is_symlink() or os.readlink(payload) != relative_target:
+        raise ValueError("external link fixture did not create an actual relative symlink")
+    if payload.resolve(strict=True) != target.resolve(strict=True):
+        raise ValueError("external link fixture does not point to the neighboring owner")
+
+
+class ExternalLinkFixtureTests(unittest.TestCase):
+    def test_fixed_link_is_real_and_the_neighbor_bytes_are_preserved(self):
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw) / "workspace"
+            shutil.copytree(REPO_ROOT / "tests/fixtures/acceptance/workspace-external-linked", workspace)
+            target = workspace / "epf/Other/Forms/Main/Ext/Form.xml"
+            original = target.read_bytes()
+            materialize_external_form_link(workspace)
+            payload = workspace / "epf/Import/Forms/Main/Ext/Form.xml"
+            self.assertTrue(payload.is_symlink())
+            self.assertEqual(os.readlink(payload), "../../../../Other/Forms/Main/Ext/Form.xml")
+            self.assertEqual(payload.resolve(strict=True), target.resolve(strict=True))
+            self.assertEqual(target.read_bytes(), original)
+            with self.assertRaises(ValueError):
+                materialize_external_form_link(workspace)
+
+
+    def test_link_refusal_cannot_pass_as_wrong_descriptor_identity(self):
+        corpus = load_corpus(CORPUS)
+        case = next(s for s in corpus["scenarios"] if s.get("name") == "external-linked-payload-refusal")
+        link = {"assertions": case["wire"][0]["assertions"]}
+        foreign = case["wire"][1]["assertions"][1]["eq"]
+        wrong_cause = {"ok": False, "diagnostics": foreign}
+        mismatches = content_mismatches(link, wrong_cause, "provider", "")
+        self.assertEqual(len(mismatches), 1)
+        self.assertIn("notEq", mismatches[0])
+
+
 class SavedPlanWireTests(unittest.TestCase):
     def test_capture_values_are_opaque_even_when_they_look_like_template_tokens(self):
         context = {"captures": {"text": "$executionToken", "object": {"at": "$rev"}},
@@ -405,13 +449,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 349)
+        self.assertEqual(len(scenarios), 353)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 576,
-            "a wire step went missing: the corpus freezes 576 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 592,
+            "a wire step went missing: the corpus freezes 592 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 350)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 354)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -431,7 +475,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values"},
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -646,6 +690,11 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
             home = root / f"run-{generation}"
             workspace = home / "workspace"
             shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+            if workspace_relative == "tests/fixtures/acceptance/workspace-external-linked":
+                materialize_external_form_link(workspace)
+            if workspace_relative in {"tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked"}:
+                from tests.ci.acceptance_diagnostics import initialize_vendor_source
+                initialize_vendor_source(workspace)
             if workspace_relative == FORMAT_WORKSPACE:
                 derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
             state = home / "state"
