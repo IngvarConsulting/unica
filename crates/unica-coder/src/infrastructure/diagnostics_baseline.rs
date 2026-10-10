@@ -33,7 +33,7 @@
 
 use crate::domain::diagnostics::{
     DiagnosticProviderOutcome, DiagnosticProviderStatus, DiagnosticSuppression,
-    DiagnosticSuppressionReason, DiagnosticSuppressionSource,
+    DiagnosticSuppressionReason,
 };
 use crate::infrastructure::redaction::redactor;
 use serde::Deserialize;
@@ -92,8 +92,7 @@ pub(crate) fn baseline_verdict(facts: BaselineFacts<'_>) -> BaselineVerdict {
     let reason = failure_reason(&facts);
     BaselineVerdict {
         intact: reason.is_none(),
-        suppression: Some(DiagnosticSuppression {
-            by: DiagnosticSuppressionSource::Baseline,
+        suppression: Some(DiagnosticSuppression::Baseline {
             known: facts.known,
             new: facts.new,
             reason,
@@ -378,12 +377,11 @@ pub(crate) fn broken_baseline_outcome(
         rules: Vec::new(),
         readiness: None,
         error: None,
-        suppression: Some(DiagnosticSuppression {
-            by: DiagnosticSuppressionSource::Baseline,
+        suppressions: vec![DiagnosticSuppression::Baseline {
             known: None,
             new: None,
             reason: Some(reason),
-        }),
+        }],
     }
 }
 
@@ -591,9 +589,23 @@ mod tests {
         assert!(!outcome.complete);
         assert_eq!(outcome.status, DiagnosticProviderStatus::Completed);
         assert!(outcome.error.is_none() && outcome.observations.is_empty());
-        let suppression = outcome.suppression.unwrap();
-        assert_eq!((suppression.known, suppression.new), (None, None));
-        assert_eq!(suppression.reason.unwrap().code, "missing");
+        let suppression = outcome.suppressions.into_iter().next().unwrap();
+        assert_eq!(
+            (
+                match &suppression {
+                    crate::domain::diagnostics::DiagnosticSuppression::Baseline {
+                        known, ..
+                    } => *known,
+                    _ => panic!("expected baseline fact"),
+                },
+                match &suppression {
+                    crate::domain::diagnostics::DiagnosticSuppression::Baseline { new, .. } => *new,
+                    _ => panic!("expected baseline fact"),
+                }
+            ),
+            (None, None)
+        );
+        assert_eq!(suppression.reason().cloned().unwrap().code, "missing");
     }
 
     /// A path with spaces outside every known physical root: the whole path,
@@ -608,7 +620,14 @@ mod tests {
             ),
             ..facts(BaselineState::Error)
         });
-        let detail = verdict.suppression.unwrap().reason.unwrap().detail.unwrap();
+        let detail = verdict
+            .suppression
+            .unwrap()
+            .reason()
+            .cloned()
+            .unwrap()
+            .detail
+            .unwrap();
         assert_eq!(
             detail,
             "cannot read diagnostics baseline main.json: No such file or directory (os error 2)"
@@ -635,15 +654,35 @@ mod tests {
             });
             assert!(verdict.intact, "{state:?}");
             let suppression = verdict.suppression.expect("fact is named");
-            assert_eq!(suppression.by, DiagnosticSuppressionSource::Baseline);
-            assert_eq!((suppression.known, suppression.new), (Some(3), Some(1)));
-            assert!(suppression.reason.is_none(), "{state:?}");
+            assert_eq!(
+                serde_json::to_value(&suppression).unwrap()["by"],
+                "baseline"
+            );
+            assert_eq!(
+                (
+                    match &suppression {
+                        crate::domain::diagnostics::DiagnosticSuppression::Baseline {
+                            known,
+                            ..
+                        } => *known,
+                        _ => panic!("expected baseline fact"),
+                    },
+                    match &suppression {
+                        crate::domain::diagnostics::DiagnosticSuppression::Baseline {
+                            new, ..
+                        } => *new,
+                        _ => panic!("expected baseline fact"),
+                    }
+                ),
+                (Some(3), Some(1))
+            );
+            assert!(suppression.reason().is_none(), "{state:?}");
         }
 
         // Partial without `known`: the classification was interrupted.
         let interrupted = baseline_verdict(facts(BaselineState::Partial));
         assert!(!interrupted.intact);
-        let reason = interrupted.suppression.unwrap().reason.unwrap();
+        let reason = interrupted.suppression.unwrap().reason().cloned().unwrap();
         assert_eq!(reason.code, "baseline_interrupted");
         assert_eq!(reason.detail.as_deref(), Some(INTERRUPTED_DETAIL));
 
@@ -654,7 +693,7 @@ mod tests {
             ..facts(BaselineState::Error)
         });
         assert!(!broken.intact);
-        let reason = broken.suppression.unwrap().reason.unwrap();
+        let reason = broken.suppression.unwrap().reason().cloned().unwrap();
         assert_eq!(reason.code, "invalid_path");
         let detail = reason.detail.unwrap();
         assert!(detail.starts_with("baseline path escapes the project"));
@@ -671,7 +710,13 @@ mod tests {
         });
         assert!(!partition.intact);
         assert_eq!(
-            partition.suppression.unwrap().reason.unwrap().code,
+            partition
+                .suppression
+                .unwrap()
+                .reason()
+                .cloned()
+                .unwrap()
+                .code,
             "missing_partition"
         );
 
@@ -683,7 +728,7 @@ mod tests {
             ..facts(BaselineState::Full)
         });
         assert!(!coded.intact);
-        let reason = coded.suppression.unwrap().reason.unwrap();
+        let reason = coded.suppression.unwrap().reason().cloned().unwrap();
         assert_eq!(reason.code, "baseline_error");
         assert!(reason.detail.is_none());
     }

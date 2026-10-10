@@ -31,3 +31,4 @@ plugins/unica/skills/form-patterns/SKILL.md whitespace=cr-at-eol
 
 # The code acceptance corpus asserts raw source bytes, including BOM and CRLF.
 tests/fixtures/acceptance/workspace-code/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-diagnostics/** -text whitespace=cr-at-eol

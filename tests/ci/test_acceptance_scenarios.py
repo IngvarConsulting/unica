@@ -59,7 +59,7 @@ BINARY = (
     / ("unica.exe" if os.name == "nt" else "unica")
 )
 from tests.ci.acceptance_profiles import (
-    SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment, select_profile,
+    DIAGNOSTICS_WORKSPACE, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment, select_profile,
 )
 
 REFUSAL_CODES = {"bad_value", "not_found", "invalid_state", "invalid_source", "stale_revision"}
@@ -405,13 +405,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 338)
+        self.assertEqual(len(scenarios), 343)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 560,
-            "a wire step went missing: the corpus freezes 560 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 565,
+            "a wire step went missing: the corpus freezes 565 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 339)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 344)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -420,7 +420,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent, {s["id"] for s in self.corpus["scenarios"]})
         self.assertEqual(agent, {"S328", "S335"})
-        self.assertEqual(delivery, {"S324"})
+        self.assertEqual(delivery, {"S324", "S339", "S340", "S341", "S342", "S343"})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -428,7 +428,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code"},
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -758,7 +758,30 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
             plugin = Path(raw).resolve() / "plugin"
             subprocess.run([sys.executable, "-m", "tests.ci.acceptance_profiles", "--stage-analyzer", str(plugin)],
                            cwd=REPO_ROOT, timeout=90, check=True)
-            run_corpus(self, corpus, plugin)
+            from tests.ci.acceptance_diagnostics import prepare_diagnostic_case
+            run_corpus(self, corpus, plugin, scenario_driver=prepare_diagnostic_case)
+    def test_pinned_resident_reports_real_baseline_author_and_scope_facts(self):
+        from tests.ci.acceptance_profiles import stage_analyzer, host_target
+        from tests.ci.acceptance_diagnostics import resident_filter_evidence
+        import platform
+        with tempfile.TemporaryDirectory(prefix="unica-resident-filter-") as raw:
+            root=Path(raw).resolve()
+            plugin=stage_analyzer(root / "plugin")
+            lock=json.loads((plugin / "third-party/tools.lock.json").read_text())
+            target=host_target(lock,platform.system(),platform.machine())
+            binary=plugin / "bin" / target / ("bsl-analyzer.exe" if os.name=="nt" else "bsl-analyzer")
+            workspace=root / "workspace"
+            shutil.copytree(REPO_ROOT / DIAGNOSTICS_WORKSPACE,workspace)
+            evidence=resident_filter_evidence(binary,workspace,root)
+            self.assertEqual(len(evidence["plain"]["result"]["findings"]),3)
+            self.assertEqual(evidence["authors"]["result"]["findings_ignored_by_author"],3)
+            self.assertEqual(evidence["authors"]["result"]["findings"],[])
+            self.assertIs(evidence["scope"]["result"]["out_of_scope"],True)
+            self.assertEqual(evidence["both"]["result"]["baseline"]["known"],1)
+            self.assertEqual(evidence["both"]["result"]["baseline"]["new"],2)
+            self.assertEqual(evidence["both"]["result"]["findings_ignored_by_author"],2)
+            self.assertEqual(evidence["both"]["result"]["findings"],[])
+
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ pub(crate) mod daemon;
 mod deadline_lock;
 pub(crate) mod diagnostics;
 pub(crate) mod diagnostics_baseline;
+mod diagnostics_filters;
 pub(crate) mod diagnostics_jsonl;
 pub(crate) mod documentation_policy;
 pub(crate) mod documentation_retrieval;

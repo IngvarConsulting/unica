@@ -194,7 +194,7 @@ impl DiagnosticsJsonlParser {
                 rules: Vec::new(),
                 readiness: None,
                 error: None,
-                suppression: self.baseline.suppression,
+                suppressions: self.baseline.suppression.into_iter().collect(),
             },
             files: AnalyzerDiagnosticsFileTotals {
                 discovered: Some(discovered),
@@ -330,7 +330,7 @@ impl DiagnosticsJsonlParser {
                     message,
                     retryable,
                 }),
-                suppression: None,
+                suppressions: Vec::new(),
             },
             files: AnalyzerDiagnosticsFileTotals {
                 discovered: self.discovered,
@@ -864,18 +864,24 @@ mod tests {
                 case.findings,
                 "{baseline}"
             );
-            let suppression = batch.outcome.suppression;
+            let suppression = batch.outcome.suppressions;
             if case.status == DiagnosticProviderStatus::Empty {
-                assert!(suppression.is_none(), "{baseline}");
+                assert!(suppression.is_empty(), "{baseline}");
                 continue;
             }
-            let suppression = suppression.expect(baseline);
-            assert_eq!(suppression.known, case.known, "{baseline}");
+            let suppression = suppression.into_iter().next().expect(baseline);
             assert_eq!(
-                suppression
-                    .reason
-                    .as_ref()
-                    .map(|reason| reason.code.as_str()),
+                match &suppression {
+                    crate::domain::diagnostics::DiagnosticSuppression::Baseline {
+                        known, ..
+                    } => *known,
+                    _ => panic!("expected baseline fact"),
+                },
+                case.known,
+                "{baseline}"
+            );
+            assert_eq!(
+                suppression.reason().map(|reason| reason.code.as_str()),
                 case.reason,
                 "{baseline}"
             );

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from tests.ci.acceptance_profiles import (
-    REPO, SYMBOL_WORKSPACE, DCS_WORKSPACE, MXL_WORKSPACE, completed_delivery_call, host_target,
+    REPO, DIAGNOSTICS_WORKSPACE, SYMBOL_WORKSPACE, DCS_WORKSPACE, MXL_WORKSPACE, completed_delivery_call, host_target,
     isolated_environment, select_profile, stage_analyzer, tools_builder,
 )
 
@@ -72,6 +72,18 @@ class AcceptanceProfileTests(unittest.TestCase):
             corpus["scenarios"][index]["wire"] = [{"tool": tool, "args": args}]
             with self.subTest(tool=tool, args=args), self.assertRaises(ValueError):
                 select_profile(corpus, "source")
+
+    def test_diagnostic_delivery_rejects_wrong_case_fixture_tool_and_arguments(self):
+        scenario={"id":"diagnostics","profile":"delivery","driver":"bsl-analyzer-diagnostics",
+                  "workspace":DIAGNOSTICS_WORKSPACE,"evaluation":"authors-toml",
+                  "wire":[{"tool":"unica.check","args":{"at":"main:CommonModule.Пример"}}]}
+        corpus={"workspace":"tests/fixtures/acceptance/workspace","scenarios":[scenario]}
+        self.assertEqual(select_profile(corpus,"delivery")["scenarios"],[scenario])
+        for field,value in [("evaluation","unknown"),("workspace",SYMBOL_WORKSPACE),
+                            ("driver","bsl-analyzer"), ("wire",[{"tool":"unica.apply","args":{}}]),
+                            ("wire",[{"tool":"unica.check","args":{"at":"wrong"}}])]:
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                select_profile({**corpus,"scenarios":[{**scenario,field:value}]},"source")
 
     def test_host_target_uses_the_lock_and_rejects_unsupported_platform(self):
         lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())

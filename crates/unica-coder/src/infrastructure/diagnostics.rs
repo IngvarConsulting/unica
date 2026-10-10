@@ -6,8 +6,8 @@ use crate::domain::diagnostics::{
     DiagnosticObservationLocation, DiagnosticProvider, DiagnosticProviderDescriptor,
     DiagnosticProviderOutcome, DiagnosticProviderRequest, DiagnosticProviderStatus,
     DiagnosticReadiness, DiagnosticReadinessState, DiagnosticRequest, DiagnosticRequestError,
-    DiagnosticRuleObservation, DiagnosticSeverity, DiagnosticTag, MetadataFocus, ProviderDeadline,
-    UnaddressableReason, BSL_ANALYZER_PROVIDER,
+    DiagnosticRuleObservation, DiagnosticSeverity, DiagnosticSuppression, DiagnosticTag,
+    MetadataFocus, ProviderDeadline, UnaddressableReason, BSL_ANALYZER_PROVIDER,
 };
 use crate::domain::metadata::{
     diagnostic_metadata_focus_route, diagnostic_metadata_property_is_canonical,
@@ -434,7 +434,7 @@ pub(crate) mod analyze_timeout_probe {
                             rules: Vec::new(),
                             readiness: None,
                             error: None,
-                            suppression: None,
+                            suppressions: Vec::new(),
                         },
                         files: crate::infrastructure::diagnostics_jsonl::AnalyzerDiagnosticsFileTotals {
                             discovered: Some(1),
@@ -668,6 +668,9 @@ struct ResidentFindingsResult {
     #[serde(default)]
     truncated: bool,
     #[serde(default)]
+    out_of_scope: bool,
+    findings_ignored_by_author: Option<usize>,
+    #[serde(default)]
     findings: Vec<ResidentFinding>,
     error: Option<String>,
     detail: Option<String>,
@@ -779,10 +782,18 @@ fn parse_resident_findings(
             rules: Vec::new(),
             readiness: None,
             error: None,
-            suppression: None,
+            suppressions: Vec::new(),
         });
     }
     let baseline = envelope.result.baseline_verdict();
+    let mut suppressions: Vec<_> = baseline.suppression.into_iter().collect();
+    if let Some(count) = envelope
+        .result
+        .findings_ignored_by_author
+        .and_then(std::num::NonZeroUsize::new)
+    {
+        suppressions.push(DiagnosticSuppression::Authors { count });
+    }
     let mut observations = Vec::with_capacity(envelope.result.findings.len());
     for finding in envelope.result.findings {
         observations.push(DiagnosticObservation::Diagnostic {
@@ -804,24 +815,34 @@ fn parse_resident_findings(
             tags: parse_common_tags(&finding.tags),
         });
     }
+    if envelope.result.out_of_scope {
+        observations.push(DiagnosticObservation::ResourceFailure {
+            provider: BSL_ANALYZER_PROVIDER,
+            location: DiagnosticObservationLocation::Resource { handle },
+            error: DiagnosticError {
+                code: "analysis_out_of_scope".to_string(),
+                message: "selected resource is outside the analyzer's configured analysis scope"
+                    .to_string(),
+                retryable: false,
+            },
+        });
+    }
     Ok(DiagnosticProviderOutcome {
         // A configured baseline is named with the findings, so a list it
         // emptied reads as filtered rather than as a payload-free "clean".
-        status: if observations.is_empty()
-            && !envelope.result.truncated
-            && baseline.suppression.is_none()
+        status: if observations.is_empty() && !envelope.result.truncated && suppressions.is_empty()
         {
             DiagnosticProviderStatus::Empty
         } else {
             DiagnosticProviderStatus::Completed
         },
-        complete: !envelope.result.truncated && baseline.intact,
+        complete: !envelope.result.truncated && baseline.intact && !envelope.result.out_of_scope,
         version: reply.version,
         observations,
         rules: Vec::new(),
         readiness: None,
         error: None,
-        suppression: baseline.suppression,
+        suppressions,
     })
 }
 
@@ -878,7 +899,7 @@ fn parse_resident_status(
             ),
         }),
         error: None,
-        suppression: None,
+        suppressions: Vec::new(),
     })
 }
 
@@ -928,7 +949,7 @@ fn parse_resident_catalog(
         rules,
         readiness: None,
         error: None,
-        suppression: None,
+        suppressions: Vec::new(),
     })
 }
 
@@ -1004,7 +1025,7 @@ fn provider_failed_with_status(
             message: message.into(),
             retryable,
         }),
-        suppression: None,
+        suppressions: Vec::new(),
     }
 }
 
@@ -1252,7 +1273,7 @@ mod bsl_diagnostics_provider_tests {
                 rules: Vec::new(),
                 readiness: None,
                 error: None,
-                suppression: None,
+                suppressions: Vec::new(),
             },
             files: AnalyzerDiagnosticsFileTotals {
                 discovered: Some(0),
@@ -1378,6 +1399,115 @@ mod bsl_diagnostics_provider_tests {
         }
     }
 
+    /// Captured from the pinned 0.2.86 native resident protocol. Only the
+    /// volatile result id is normalized; author and baseline counts are real.
+    fn captured_baseline_authors_reply() -> Value {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/analyzer/resident-baseline-authors-0.2.86.json"
+        )))
+        .unwrap()
+    }
+
+    fn parse_filter_reply(value: Value) -> Result<DiagnosticProviderOutcome, String> {
+        parse_resident_findings(
+            BslDiagnosticResidentReply {
+                result_text: value.to_string(),
+                stderr: String::new(),
+                version: Some("0.2.86".to_string()),
+            },
+            PathBuf::from("/fixture/Module.bsl"),
+        )
+    }
+
+    #[test]
+    fn resident_filters_preserve_captured_baseline_and_authors_together() {
+        let mut value = captured_baseline_authors_reply();
+        value["result"]["author_hint"] = json!("secret author /private/hidden.bsl");
+        let actual = parse_filter_reply(value).unwrap();
+        assert_eq!(actual.status, DiagnosticProviderStatus::Completed);
+        assert!(actual.complete);
+        assert!(actual.observations.is_empty());
+        assert_eq!(
+            serde_json::to_value(&actual.suppressions).unwrap(),
+            json!([
+                {"by":"baseline","known":1,"new":2}, {"by":"authors","count":2}
+            ])
+        );
+        assert!(!format!("{actual:?}").contains("secret author"));
+    }
+
+    #[test]
+    fn resident_analysis_scope_is_incomplete_without_erasing_proven_findings_or_filters() {
+        let mut value = captured_baseline_authors_reply();
+        value["result"]["out_of_scope"] = json!(true);
+        value["result"]["hint"] = json!("secret author /private/hidden.bsl");
+        // Combination is a protocol counterexample, not a claim that the
+        // captured live request itself returned an out-of-scope finding.
+        value["result"]["findings"] = json!([{"code":"UnusedLocalVariable",
+            "severity":"warning", "message":"unused variable", "tags":[],
+            "range":{"start_line":1,"start_column":8,"end_line":1,"end_column":14}}]);
+        let actual = parse_filter_reply(value.clone()).unwrap();
+        assert_eq!(actual.status, DiagnosticProviderStatus::Completed);
+        assert!(!actual.complete);
+        assert_eq!(actual.suppressions.len(), 2);
+        assert_eq!(actual.observations.len(), 2);
+        assert!(
+            matches!(&actual.observations[0], DiagnosticObservation::Diagnostic{code,..} if code=="UnusedLocalVariable")
+        );
+        assert!(
+            matches!(&actual.observations[1], DiagnosticObservation::ResourceFailure {error,..} if error.code=="analysis_out_of_scope")
+        );
+        assert!(!format!("{actual:?}").contains("secret author"));
+        value["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("out_of_scope");
+        value["result"]["truncated"] = json!(true);
+        assert!(!parse_filter_reply(value.clone()).unwrap().complete);
+        value["result"]["truncated"] = json!(false);
+        value["result"]["baseline"] =
+            json!({"state":"error","error_code":"missing","detail":"cannot read baseline"});
+        let broken = parse_filter_reply(value).unwrap();
+        assert!(!broken.complete);
+        assert_eq!(broken.suppressions.len(), 2);
+        assert_eq!(broken.suppressions[0].reason().unwrap().code, "missing");
+    }
+
+    #[test]
+    fn resident_filter_absence_and_zero_are_clean_but_malformed_flags_are_rejected() {
+        let plain = json!({"revision":1,"stale":false,"reload":"none",
+            "result":{"kind":"full","truncated":false,"findings":[]}});
+        for field in [None, Some(json!(0))] {
+            let mut value = plain.clone();
+            value["result"]["out_of_scope"] = json!(false);
+            if let Some(field) = field {
+                value["result"]["findings_ignored_by_author"] = field;
+            }
+            let actual = parse_filter_reply(value).unwrap();
+            assert_eq!(actual.status, DiagnosticProviderStatus::Empty);
+            assert!(actual.complete);
+            assert!(actual.suppressions.is_empty());
+        }
+        for invalid in [json!(-1), json!(1.5), json!("2"), json!(true), json!(1e30)] {
+            let mut value = plain.clone();
+            value["result"]["findings_ignored_by_author"] = invalid;
+            assert!(parse_filter_reply(value).is_err());
+        }
+        for invalid in [json!(0), json!("false"), json!(null)] {
+            let mut value = plain.clone();
+            value["result"]["out_of_scope"] = invalid;
+            assert!(parse_filter_reply(value).is_err());
+        }
+        let mut scope_only = plain;
+        scope_only["result"]["out_of_scope"] = json!(true);
+        let actual = parse_filter_reply(scope_only).unwrap();
+        assert_eq!(actual.status, DiagnosticProviderStatus::Completed);
+        assert!(!actual.complete);
+        assert!(actual.suppressions.is_empty());
+        assert_eq!(actual.observations.len(), 1);
+    }
+
     #[test]
     fn truncated_empty_resident_findings_are_incomplete_not_empty() {
         let fixture = ProviderFixture::new();
@@ -1422,7 +1552,7 @@ mod bsl_diagnostics_provider_tests {
         let disabled = run(json!({"state": "disabled", "complete": true}));
         assert_eq!(disabled.status, DiagnosticProviderStatus::Empty);
         assert!(disabled.complete);
-        assert!(disabled.suppression.is_none());
+        assert!(disabled.suppressions.is_empty());
 
         for state in ["full", "partial"] {
             let filtered = run(json!({
@@ -1437,9 +1567,30 @@ mod bsl_diagnostics_provider_tests {
             );
             assert!(filtered.complete, "{state}");
             assert!(filtered.observations.is_empty(), "{state}");
-            let suppression = filtered.suppression.expect("filter is named");
-            assert_eq!((suppression.known, suppression.new), (Some(2), Some(0)));
-            assert!(suppression.reason.is_none(), "{state}");
+            let suppression = filtered
+                .suppressions
+                .into_iter()
+                .next()
+                .expect("filter is named");
+            assert_eq!(
+                (
+                    match &suppression {
+                        crate::domain::diagnostics::DiagnosticSuppression::Baseline {
+                            known,
+                            ..
+                        } => *known,
+                        _ => panic!("expected baseline fact"),
+                    },
+                    match &suppression {
+                        crate::domain::diagnostics::DiagnosticSuppression::Baseline {
+                            new, ..
+                        } => *new,
+                        _ => panic!("expected baseline fact"),
+                    }
+                ),
+                (Some(2), Some(0))
+            );
+            assert!(suppression.reason().is_none(), "{state}");
         }
 
         let broken = run(json!({
@@ -1451,7 +1602,14 @@ mod bsl_diagnostics_provider_tests {
         assert_eq!(broken.status, DiagnosticProviderStatus::Completed);
         assert!(!broken.complete);
         assert!(broken.error.is_none());
-        let reason = broken.suppression.unwrap().reason.expect("cause is named");
+        let reason = broken
+            .suppressions
+            .into_iter()
+            .next()
+            .unwrap()
+            .reason()
+            .cloned()
+            .expect("cause is named");
         assert_eq!(reason.code, "invalid_schema");
         let detail = reason.detail.unwrap();
         assert!(detail.starts_with("baseline schema 7 is newer"), "{detail}");
@@ -1460,7 +1618,7 @@ mod bsl_diagnostics_provider_tests {
         // The state set is closed: an unknown state is a protocol change.
         let unknown = run(json!({"state": "suppressed", "complete": true}));
         assert_eq!(unknown.status, DiagnosticProviderStatus::Failed);
-        assert!(unknown.suppression.is_none());
+        assert!(unknown.suppressions.is_empty());
     }
 
     #[test]

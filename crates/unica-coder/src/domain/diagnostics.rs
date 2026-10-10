@@ -381,15 +381,6 @@ pub struct DiagnosticError {
     pub retryable: bool,
 }
 
-/// Who hid findings by the user's own configuration before the provider
-/// answered. A closed set: an unnamed filter would read as "no findings".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum DiagnosticSuppressionSource {
-    /// The analyzer's diagnostics baseline (`[diagnostics.baseline]`).
-    Baseline,
-}
-
 /// Why a configured suppression could not prove which findings it hid. The
 /// provider section is then incomplete, and this names the cause.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -400,21 +391,36 @@ pub struct DiagnosticSuppressionReason {
     pub detail: Option<String>,
 }
 
-/// A filter the user configured, applied by the provider before it answered.
-/// Hidden findings are asked away, not missing: a proven suppression leaves the
-/// section complete, and only `reason` makes it incomplete.
+/// Independent user-configured filters; author counts never masquerade as baseline counts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagnosticSuppression {
-    pub by: DiagnosticSuppressionSource,
-    /// Findings the filter hid as already known.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub known: Option<usize>,
-    /// Findings the filter classified as new and left visible.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub new: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<DiagnosticSuppressionReason>,
+#[serde(tag = "by", rename_all = "camelCase")]
+pub enum DiagnosticSuppression {
+    Baseline {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        known: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        new: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<DiagnosticSuppressionReason>,
+    },
+    Authors {
+        count: std::num::NonZeroUsize,
+    },
+}
+
+impl DiagnosticSuppression {
+    pub fn reason(&self) -> Option<&DiagnosticSuppressionReason> {
+        match self {
+            Self::Baseline { reason, .. } => reason.as_ref(),
+            Self::Authors { .. } => None,
+        }
+    }
+    pub fn reason_mut(&mut self) -> Option<&mut DiagnosticSuppressionReason> {
+        match self {
+            Self::Baseline { reason, .. } => reason.as_mut(),
+            Self::Authors { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -427,7 +433,7 @@ pub struct DiagnosticProviderOutcome {
     pub readiness: Option<DiagnosticReadiness>,
     pub error: Option<DiagnosticError>,
     /// A user-configured filter the provider applied; see [`DiagnosticSuppression`].
-    pub suppression: Option<DiagnosticSuppression>,
+    pub suppressions: Vec<DiagnosticSuppression>,
 }
 
 impl DiagnosticProviderOutcome {
@@ -443,7 +449,7 @@ impl DiagnosticProviderOutcome {
             rules: Vec::new(),
             readiness: None,
             error: None,
-            suppression: None,
+            suppressions: Vec::new(),
         }
     }
 }
@@ -597,8 +603,8 @@ pub struct DiagnosticProviderSection {
     pub error: Option<DiagnosticError>,
     /// Findings the provider hid by the user's configuration, named so that an
     /// empty or short list is read as filtered rather than as everything.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub suppression: Option<DiagnosticSuppression>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub suppressions: Vec<DiagnosticSuppression>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -871,7 +877,7 @@ mod tests {
                 resource_failures: Some(0),
                 truncated: Some(false),
                 error: None,
-                suppression: None,
+                suppressions: Vec::new(),
             }],
             items_total: Some(1),
             items_returned: Some(1),

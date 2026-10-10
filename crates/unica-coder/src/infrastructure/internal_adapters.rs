@@ -1749,6 +1749,22 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             parser.push_line(line_number, bytes);
             StreamControl::Continue
         };
+        let explicit_config = normalized_args
+            .get("config")
+            .and_then(Value::as_str)
+            .map(|path| {
+                let path = PathBuf::from(path);
+                if path.is_absolute() {
+                    path
+                } else {
+                    context.cwd.join(path)
+                }
+            });
+        let mut filter_errors = crate::infrastructure::diagnostics_filters::cli_filter_errors(
+            &source_dir,
+            explicit_config.as_deref(),
+            module.is_some(),
+        );
         let output = self.process_runner.run_streaming(
             &ProcessCommand {
                 program: bundled_tool.program,
@@ -1833,7 +1849,23 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             });
         }
 
-        let batch = parser.finish();
+        let mut batch = parser.finish();
+        // A removed filter must not hide that it may have applied while the
+        // process ran; conversely a newly observed filter is also unproven.
+        for error in crate::infrastructure::diagnostics_filters::cli_filter_errors(
+            &source_dir,
+            explicit_config.as_deref(),
+            module.is_some(),
+        ) {
+            if !filter_errors.iter().any(|before| before.code == error.code) {
+                filter_errors.push(error);
+            }
+        }
+        crate::infrastructure::diagnostics_filters::mark_cli_filter_limits(
+            &mut batch.outcome,
+            module,
+            filter_errors,
+        );
         let protocol_error = batch.outcome.error.as_ref();
         let outcome = AdapterOutcome {
             ok: protocol_error.is_none(),
@@ -5833,7 +5865,14 @@ analyze_timeout_seconds = 900
         assert!(!outcome.complete);
         assert!(outcome.error.is_none());
         assert!(outcome.observations.is_empty());
-        let reason = outcome.suppression.unwrap().reason.expect("cause is named");
+        let reason = outcome
+            .suppressions
+            .into_iter()
+            .next()
+            .unwrap()
+            .reason()
+            .cloned()
+            .expect("cause is named");
         assert_eq!(reason.code, "missing");
         assert_eq!(
             reason.detail.as_deref(),
