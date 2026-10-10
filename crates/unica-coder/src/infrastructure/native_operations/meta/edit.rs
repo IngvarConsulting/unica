@@ -5048,6 +5048,38 @@ pub(super) fn parse_typed_fill_value_node(
             // address — `Catalog.Валюты.EmptyRef` or a predefined item name.
             // The address prefix is validated; the designator round-trips
             // verbatim so re-emission cannot corrupt the value.
+            let parts = value.split('.').collect::<Vec<_>>();
+            if parts.first() == Some(&"Enum") && parts.get(2) == Some(&"EnumValue") {
+                if parts.len() != 4
+                    || !crate::infrastructure::native_operations::cf::cf_validate_identifier(
+                        parts[1],
+                    )
+                    || !crate::infrastructure::native_operations::cf::cf_validate_identifier(
+                        parts[3],
+                    )
+                {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "existing enum fill value is not a canonical item address",
+                        Some("fillValue"),
+                    ));
+                }
+                let metadata_path = MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("Enum.{}", parts[1]),
+                )
+                .map_err(|error| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::ValidationFailed,
+                        error.to_string(),
+                        Some("fillValue"),
+                    )
+                })?;
+                return Ok(Some(MetaFillValue::DesignTimeItemRef {
+                    reference: crate::domain::metadata::MetadataReference { metadata_path },
+                    item: format!("EnumValue.{}", parts[3]),
+                }));
+            }
             if let Ok(metadata_path) =
                 MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
             {
@@ -8360,6 +8392,40 @@ pub(crate) mod tests {
             failure.diagnostics[0].field.as_deref(),
             Some("operations[1].elements[0].fillValue")
         );
+    }
+
+    #[test]
+    fn observed_enum_value_designator_preserves_the_full_xml_value() {
+        let xml = r#"<Properties xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="http://v8.1c.ru/8.3/MDClasses"><FillValue xsi:type="xr:DesignTimeRef">Enum.Flags.EnumValue.Yes</FillValue></Properties>"#;
+        let document = Document::parse(xml).unwrap();
+        let value = parse_typed_fill_value_node(document.root_element())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&value).unwrap(),
+            serde_json::json!({
+                "kind": "reference", "metadataPath": "Enum.Flags", "item": "EnumValue.Yes"
+            })
+        );
+        let mut output = Vec::new();
+        super::super::xml_model::emit_meta_typed_fill_value(&mut output, "", Some(&value));
+        assert_eq!(
+            output,
+            vec![r#"<FillValue xsi:type="xr:DesignTimeRef">Enum.Flags.EnumValue.Yes</FillValue>"#]
+        );
+        for designator in [
+            "Enum.Flags.EnumValue",
+            "Enum.Flags.EnumValue.Yes.Extra",
+            "Enum.Bad-Name.EnumValue.Yes",
+            "Enum.Flags.EnumValue.Bad-Name",
+        ] {
+            let malformed = xml.replace("Enum.Flags.EnumValue.Yes", designator);
+            let document = Document::parse(&malformed).unwrap();
+            assert!(
+                parse_typed_fill_value_node(document.root_element()).is_err(),
+                "{designator}"
+            );
+        }
     }
 
     #[test]
