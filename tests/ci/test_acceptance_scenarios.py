@@ -449,13 +449,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 356)
+        self.assertEqual(len(scenarios), 360)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 601,
-            "a wire step went missing: the corpus freezes 601 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 607,
+            "a wire step went missing: the corpus freezes 607 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 357)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 361)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -467,7 +467,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
         self.assertEqual(agent, {"S328", "S335"})
-        self.assertEqual(delivery, {'S324', 'S339', 'S340', 'S341', 'S342', 'S343', 'S355'})
+        self.assertEqual(delivery, {'S324', 'S339', 'S340', 'S341', 'S342', 'S343', 'S359'})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:

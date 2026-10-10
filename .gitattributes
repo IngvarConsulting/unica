@@ -38,3 +38,5 @@ tests/fixtures/acceptance/workspace-external-missing/** -text whitespace=cr-at-e
 tests/fixtures/acceptance/workspace-external-invalid/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external-linked/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-metadata-values/** -text whitespace=cr-at-eol
+
+tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
