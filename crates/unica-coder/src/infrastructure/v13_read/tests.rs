@@ -5976,7 +5976,7 @@ mod canonical_module_diagnostics {
                 rules: Vec::new(),
                 readiness: None,
                 error: None,
-                suppression: None,
+                suppressions: Vec::new(),
             };
             let registry =
                 DiagnosticProviderRegistry::new(vec![Arc::new(AnalysisFixture(outcome))]).unwrap();

@@ -3258,17 +3258,32 @@ const BSL_INCOMPLETE_MESSAGE: &str = "BSL analysis did not complete, so the modu
 /// Отказ называет причину, если поставщик её назвал: сломанная базовая
 /// линия диагностик — это не «анализ не закончился вообще».
 fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult) -> String {
-    let reasons: Vec<String> = result
+    let mut reasons: Vec<String> = result
         .providers
         .iter()
-        .filter_map(|section| {
-            let reason = section.suppression.as_ref()?.reason.as_ref()?;
+        .flat_map(|section| section.suppressions.iter())
+        .filter_map(|suppression| {
+            let reason = suppression.reason()?;
             Some(match &reason.detail {
                 Some(detail) => format!("diagnostics baseline {}: {detail}", reason.code),
                 None => format!("diagnostics baseline {}", reason.code),
             })
         })
         .collect();
+    for item in &result.items {
+        if let crate::domain::diagnostics::DiagnosticItem::ResourceFailure { error, .. } = item {
+            if matches!(
+                error.code.as_str(),
+                "analysis_out_of_scope"
+                    | "analysis_filter_unproven"
+                    | "analysis_scope_unproven"
+                    | "analysis_config_unproven"
+            ) && !reasons.contains(&error.message)
+            {
+                reasons.push(error.message.clone());
+            }
+        }
+    }
     if reasons.is_empty() {
         BSL_INCOMPLETE_MESSAGE.to_string()
     } else {
@@ -3282,16 +3297,17 @@ fn bsl_suppression_facts(result: &crate::domain::diagnostics::DiagnosticResult) 
     result
         .providers
         .iter()
-        .filter_map(|section| {
-            let suppression = section.suppression.as_ref()?;
-            let mut fact = serde_json::to_value(suppression).expect("suppression serializes");
-            fact.as_object_mut()
-                .expect("suppression is an object")
-                .insert(
-                    "provider".to_string(),
-                    Value::String(section.id.to_string()),
-                );
-            Some(fact)
+        .flat_map(|section| {
+            section.suppressions.iter().map(|suppression| {
+                let mut fact = serde_json::to_value(suppression).expect("suppression serializes");
+                fact.as_object_mut()
+                    .expect("suppression is an object")
+                    .insert(
+                        "provider".to_string(),
+                        Value::String(section.id.to_string()),
+                    );
+                fact
+            })
         })
         .collect()
 }
@@ -4109,7 +4125,7 @@ mod tests {
         use crate::domain::diagnostics::{
             DiagnosticAction, DiagnosticProviderSection, DiagnosticProviderStatus,
             DiagnosticResult, DiagnosticResultState, DiagnosticSelection, DiagnosticSuppression,
-            DiagnosticSuppressionReason, DiagnosticSuppressionSource,
+            DiagnosticSuppressionReason,
         };
         let result =
             |complete: bool, reason: Option<DiagnosticSuppressionReason>| DiagnosticResult {
@@ -4141,12 +4157,11 @@ mod tests {
                     resource_failures: Some(0),
                     truncated: Some(false),
                     error: None,
-                    suppression: Some(DiagnosticSuppression {
-                        by: DiagnosticSuppressionSource::Baseline,
+                    suppressions: vec![DiagnosticSuppression::Baseline {
                         known: Some(2),
                         new: Some(0),
                         reason,
-                    }),
+                    }],
                 }],
                 items_total: Some(0),
                 items_returned: Some(0),
@@ -4164,6 +4179,38 @@ mod tests {
             })]
         );
 
+        let mut combined = filtered.clone();
+        combined.providers[0]
+            .suppressions
+            .push(DiagnosticSuppression::Authors {
+                count: std::num::NonZeroUsize::new(3).unwrap(),
+            });
+        assert!(super::bsl_result_proves_full_verdict(&combined));
+        assert_eq!(
+            super::bsl_suppression_facts(&combined),
+            vec![
+                serde_json::json!({"provider":"bsl-analyzer","by":"baseline","known":2,"new":0}),
+                serde_json::json!({"provider":"bsl-analyzer","by":"authors","count":3}),
+            ]
+        );
+        combined.complete = false;
+        combined.state = DiagnosticResultState::Partial;
+        combined.providers[0].complete = false;
+        combined.items.push(crate::domain::diagnostics::DiagnosticItem::ResourceFailure {
+            provider:"bsl-analyzer",
+            location:crate::domain::source_location::SourceLocation::Addressed {
+                source_set:"main".to_string(),metadata_path:None,
+                target_kind:crate::domain::source_target::TargetKind::Module,
+            },location_reason:None,
+            error:crate::domain::diagnostics::DiagnosticError {
+                code:"analysis_filter_unproven".to_string(),
+                message:"CLI author filtering is configured; this analyzer does not report which findings it hid".to_string(),retryable:false,
+            },
+        });
+        assert!(!super::bsl_result_proves_full_verdict(&combined));
+        assert_eq!(super::bsl_incomplete_message(&combined),
+            "BSL analysis did not complete, so the module is unproven: CLI author filtering is configured; this analyzer does not report which findings it hid");
+
         let broken = result(
             false,
             Some(DiagnosticSuppressionReason {
@@ -4180,7 +4227,7 @@ mod tests {
 
         // Без названной причины отказ остаётся прежним.
         let mut unnamed = result(false, None);
-        unnamed.providers[0].suppression = None;
+        unnamed.providers[0].suppressions.clear();
         assert_eq!(
             super::bsl_incomplete_message(&unnamed),
             super::BSL_INCOMPLETE_MESSAGE

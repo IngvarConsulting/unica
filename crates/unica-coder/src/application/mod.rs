@@ -3151,7 +3151,7 @@ pub(crate) mod tests {
                         message: "test provider is unavailable".to_string(),
                         retryable: true,
                     }),
-                    suppression: None,
+                    suppressions: Vec::new(),
                 };
             }
             crate::domain::diagnostics::DiagnosticProviderOutcome {
@@ -3170,7 +3170,7 @@ pub(crate) mod tests {
                         retryable: false,
                     }),
                 error: None,
-                suppression: None,
+                suppressions: Vec::new(),
             }
         }
     }

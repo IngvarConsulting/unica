@@ -535,7 +535,7 @@ mod tests {
             rules: Vec::new(),
             readiness: None,
             error: None,
-            suppression: None,
+            suppressions: Vec::new(),
         }
     }
 

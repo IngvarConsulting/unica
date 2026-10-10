@@ -11,6 +11,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
+DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
+DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 DCS_WORKSPACE = "tests/fixtures/acceptance/workspace-dcs"
 MXL_WORKSPACE = "tests/fixtures/acceptance/workspace-mxl"
 AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
@@ -41,11 +43,18 @@ def select_profile(corpus, profile):
                    for step in scenario["wire"]):
                 raise ValueError(f"{scenario['id']}: runtime operations need an executable runtime driver")
         elif current == "delivery":
-            if driver != "bsl-analyzer" or workspace != SYMBOL_WORKSPACE:
+            if driver == "bsl-analyzer" and workspace == SYMBOL_WORKSPACE:
+                if any(step["tool"] != "unica.search" or step["args"].get("role") != "symbol"
+                       for step in scenario["wire"]):
+                    raise ValueError(f"{scenario['id']}: analyzer driver supports symbol search only")
+            elif driver == "bsl-analyzer-diagnostics" and workspace == DIAGNOSTICS_WORKSPACE:
+                if scenario.get("evaluation") not in DIAGNOSTIC_CASES or any(
+                    step["tool"] != "unica.check" or step["args"] != {"at": "main:CommonModule.Пример"}
+                    for step in scenario["wire"]
+                ):
+                    raise ValueError(f"{scenario['id']}: invalid diagnostic case or wire")
+            else:
                 raise ValueError(f"{scenario['id']}: invalid delivery driver or fixture")
-            if any(step["tool"] != "unica.search" or step["args"].get("role") != "symbol"
-                   for step in scenario["wire"]):
-                raise ValueError(f"{scenario['id']}: analyzer driver supports symbol search only")
         elif current == "agent-evaluation":
             if driver != "codex" or AGENT_EVALUATIONS.get(scenario.get("evaluation")) != workspace:
                 raise ValueError(f"{scenario['id']}: invalid agent driver, evaluation or fixture")
@@ -111,6 +120,8 @@ def isolated_environment(plugin, state):
                 "UNICA_HOST_CONTEXT_REQUIRED", "UNICA_TEST_WORKSPACE_SERVICE_EXE",
                 "EMBEDDING_URL", "EMBEDDING_API_KEY"]:
         environment.pop(key, None)
+    environment["BSL_MCP_IDLE_TTL_SECS"] = "1"
+    environment["BSL_MCP_ORPHAN_GRACE_SECS"] = "1"
     environment["UNICA_PLUGIN_ROOT"] = str(plugin)
     environment["UNICA_ARTIFACT_CACHE"] = str(state / "empty-artifact-cache")
     return environment

@@ -1,0 +1,47 @@
+{
+  "freshness": {
+    "completeness": {
+      "reasons": [
+        {
+          "code": "out_of_analysis_scope",
+          "detail": "findings on lines authored by [analysis].ignored_authors were suppressed"
+        }
+      ],
+      "status": "partial"
+    },
+    "revision": 1,
+    "source": "resident",
+    "stale": false,
+    "topology_fingerprint": "4786cb79b4347de8"
+  },
+  "reload": "none",
+  "result": {
+    "author_hint": "findings on lines authored by [analysis].ignored_authors were suppressed",
+    "baseline": {
+      "complete": false,
+      "known": 1,
+      "new": 2,
+      "partitions": [],
+      "partitions_returned": 0,
+      "partitions_total": 0,
+      "partitions_truncated": false,
+      "path": "baseline.json",
+      "resolved": 0,
+      "schema_version": 1,
+      "state": "partial"
+    },
+    "counts": {
+      "error": 0,
+      "hint": 0,
+      "info": 0,
+      "warning": 0
+    },
+    "findings": [],
+    "findings_ignored_by_author": 2,
+    "kind": "full",
+    "result_id": "captured-fixture",
+    "truncated": false
+  },
+  "revision": 1,
+  "stale": false
+}
