@@ -434,7 +434,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     pub(crate) fn dcs_validation_input(
         &self,
         at: &QualifiedAddress,
-    ) -> Result<crate::infrastructure::v13_read_port::DcsValidationInput, ViewError> {
+    ) -> Result<crate::infrastructure::v13_read_port::TemplateValidationInput, ViewError> {
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
         let target =
@@ -456,6 +456,37 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let input = self
             .read
             .dcs_validation_input(&target, &mut || self.read_checkpoint())?;
+        self.read_checkpoint()?;
+        Ok(input)
+    }
+
+    /// Proves a MXL template through the same registration and descriptor
+    /// authority as view, then reads its body through the retained source root.
+    pub(crate) fn mxl_validation_input(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::infrastructure::v13_read_port::TemplateValidationInput, ViewError> {
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let target =
+            crate::infrastructure::native_operations::mxl::typed_mxl_reader_target(&canonical)
+                .ok_or_else(|| {
+                    ViewError::new(RefusalCode::BadValue, "MXL validation requires a template")
+                })?;
+        self.verify_registered_owner(&target, &admitted)?;
+        if !matches!(
+            self.read.metadata_child_profile(&target)?,
+            MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)
+        ) {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "template is not a spreadsheet document",
+            ));
+        }
+        self.read_checkpoint()?;
+        let input = self
+            .read
+            .mxl_validation_input(&target, &mut || self.read_checkpoint())?;
         self.read_checkpoint()?;
         Ok(input)
     }

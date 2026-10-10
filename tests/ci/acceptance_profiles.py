@@ -28,6 +28,8 @@ SOURCE_WORKSPACES = {
     "tests/fixtures/acceptance/workspace-metadata-values",
     "tests/fixtures/acceptance/workspace-external",
     "tests/fixtures/acceptance/workspace-external-missing",
+    "tests/fixtures/acceptance/workspace-external-invalid",
+    "tests/fixtures/acceptance/workspace-external-linked",
 
     "tests/fixtures/acceptance/workspace-metadata-warning",
     DCS_WORKSPACE,

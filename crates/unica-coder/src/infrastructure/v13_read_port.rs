@@ -79,9 +79,9 @@ pub(crate) fn review_clear_revision_identity_hooks() {
     REVIEW_AFTER_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = None);
 }
 
-/// One captured DCS body and its read-only format verdict. Validation consumes
+/// One captured template body and its read-only format verdict. Validation consumes
 /// this value and does not use display paths as filesystem authority.
-pub(crate) struct DcsValidationInput {
+pub(crate) struct TemplateValidationInput {
     pub(crate) artifact: PathBuf,
     pub(crate) text: String,
     pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
@@ -705,11 +705,69 @@ impl ProviderReadAuthority {
         Ok((self.root_path().join(relative), text))
     }
 
+    pub(crate) fn mxl_validation_input(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<TemplateValidationInput, ViewError> {
+        self.metadata_descriptor(target)?;
+        let relative = self.attached_resource_relative(target, "Template.xml")?;
+        let bytes = self.read_relative_with_checkpoint(&relative, None, checkpoint)?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "MXL Template.xml is not UTF-8",
+            )
+        })?;
+        let artifact = self.root_path().join(relative);
+        let wrapper_relative = self.metadata_descriptor_relative(target)?;
+        let wrapper = self.metadata_descriptor(target)?;
+        let source_relative = if self.is_external_source_set() {
+            let owner = target
+                .as_str()
+                .split('.')
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(".");
+            let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner).map_err(
+                |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
+            )?;
+            self.metadata_descriptor_relative(&owner)?
+        } else {
+            PathBuf::from("Configuration.xml")
+        };
+        // The previous format guard read the complete owner without a size cap.
+        // Retaining its authority must not add an 8 MiB rejection for large roots.
+        let source_bytes =
+            self.read_relative_with_checkpoint(&source_relative, None, checkpoint)?;
+        let format_guard =
+            crate::infrastructure::format_guard::evaluate_retained_template_format_guard(
+                "mxl-validate",
+                crate::infrastructure::platform_xml_owner::MXL_ROOT,
+                &artifact,
+                &text,
+                (self.root_path().join(wrapper_relative), wrapper),
+                (
+                    self.root_path().join(source_relative),
+                    source_bytes,
+                    self.source_set_kind,
+                ),
+            )
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        Ok(TemplateValidationInput {
+            artifact,
+            text,
+            format_guard,
+        })
+    }
+
     pub(crate) fn dcs_validation_input(
         &self,
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
-    ) -> Result<DcsValidationInput, ViewError> {
+    ) -> Result<TemplateValidationInput, ViewError> {
         let (artifact, text) = self.dcs_input(target)?;
         let wrapper_relative = self.metadata_descriptor_relative(target)?;
         let wrapper = self.metadata_descriptor(target)?;
@@ -742,7 +800,7 @@ impl ProviderReadAuthority {
             ),
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
-        Ok(DcsValidationInput {
+        Ok(TemplateValidationInput {
             artifact,
             text,
             format_guard,

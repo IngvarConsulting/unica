@@ -17079,6 +17079,2146 @@
   },
   {
    "id": "S350",
+   "name": "external-owned-form-and-mxl",
+   "issue": 627,
+   "area": "Приёмочный корпус",
+   "task": "Форма и области MXL принадлежат точному владельцу внешнего набора",
+   "workspace": "tests/fixtures/acceptance/workspace-external",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "epf:ExternalDataProcessor.Import"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "ExternalDataProcessor"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "erf:ExternalReport.Sales"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "erf:ExternalReport.Sales"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "ExternalReport"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Form.Main"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "epf:ExternalDataProcessor.Import.Form.Main"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Form"
+      },
+      {
+       "pointer": "/data/props/objectContext",
+       "eq": "ExternalDataProcessor.Import"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Other.Form.Main"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "epf:ExternalDataProcessor.Other.Form.Main"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Form"
+      },
+      {
+       "pointer": "/data/props/objectContext",
+       "eq": "ExternalDataProcessor.Other"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Module.Object"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "epf:ExternalDataProcessor.Import.Module.Object"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Module"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "erf:ExternalReport.Sales.Module.Object"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "erf:ExternalReport.Sales.Module.Object"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Module"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Template.Print.Area"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "at": "epf:ExternalDataProcessor.Import.Template.Print.Area.A",
+         "kind": "Area",
+         "title": "A",
+         "props": {
+          "kind": "Rows",
+          "beginRow": 0,
+          "endRow": 1,
+          "beginCol": -1,
+          "endCol": -1,
+          "columnsId": null,
+          "drawingId": null,
+          "contentCount": 3
+         }
+        },
+        {
+         "at": "epf:ExternalDataProcessor.Import.Template.Print.Area.B",
+         "kind": "Area",
+         "title": "B",
+         "props": {
+          "kind": "Rows",
+          "beginRow": 2,
+          "endRow": 3,
+          "beginCol": -1,
+          "endCol": -1,
+          "columnsId": null,
+          "drawingId": null,
+          "contentCount": 2
+         }
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Template.Print"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "mxl"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S351",
+   "name": "external-orphan-refusal",
+   "issue": 627,
+   "area": "Приёмочный корпус",
+   "task": "Физически существующие незарегистрированные форма/макет недоступны",
+   "workspace": "tests/fixtures/acceptance/workspace-external",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Form.Orphan"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: metadata owner `ExternalDataProcessor.Import` does not register `Form.Orphan`",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Template.Orphan"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: metadata node `Orphan` was not found",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S352",
+   "name": "external-corrupt-payload-refusal",
+   "issue": 627,
+   "area": "Приёмочный корпус",
+   "task": "Повреждённый payload не становится успехом; соседний владелец сохраняется",
+   "workspace": "tests/fixtures/acceptance/workspace-external-invalid",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Form.Main"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "77c14bd31196dad61a8b5b08df6e3267a90b62fab4a077b212c0a8c0a4a69bab"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "ac159744c843b22b68c0c8901e922b7bda735041a6daf97a145f5bfd79c08ac1"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "provider_unavailable",
+         "outcome": "fixSource",
+         "message": "Form XML parse error: expected 'Broken' tag, not 'Form' at 1:15",
+         "detailCode": "source_unreadable"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Template.Print"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "77c14bd31196dad61a8b5b08df6e3267a90b62fab4a077b212c0a8c0a4a69bab"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "ac159744c843b22b68c0c8901e922b7bda735041a6daf97a145f5bfd79c08ac1"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "provider_unavailable",
+         "outcome": "fixSource",
+         "message": "XML parse error in Template.xml: expected 'Broken' tag, not 'document' at 1:19",
+         "detailCode": "source_unreadable"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Other.Form.Main"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/objectContext",
+       "eq": "ExternalDataProcessor.Other"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form.xml",
+       "eq": "77c14bd31196dad61a8b5b08df6e3267a90b62fab4a077b212c0a8c0a4a69bab"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "ac159744c843b22b68c0c8901e922b7bda735041a6daf97a145f5bfd79c08ac1"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "737f80c93c8008690326301b0bdc01522243c7b4fa04bdf8204e4df7dca78ef6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S353",
+   "name": "external-linked-payload-refusal",
+   "issue": 627,
+   "area": "Приёмочный корпус",
+   "task": "Ссылка на payload соседнего владельца отклоняется; собственная соседняя форма доступна",
+   "workspace": "tests/fixtures/acceptance/workspace-external-linked",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Form.Main"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "source_unreadable"
+      },
+      {
+       "pointer": "/diagnostics/0/outcome",
+       "eq": "fixSource"
+      },
+      {
+       "pointer": "/diagnostics/1",
+       "absent": true
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "notEq": "metadata descriptor identity does not match `ExternalDataProcessor.Import.Form.Foreign`"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "c65f1858a669f872eebc811141e2a9b517c026d434bf781b2b9ab0cf1776cd87"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Import.Form.Foreign"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "provider_unavailable",
+         "outcome": "fixSource",
+         "message": "metadata descriptor identity does not match `ExternalDataProcessor.Import.Form.Foreign`",
+         "detailCode": "source_unreadable"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "c65f1858a669f872eebc811141e2a9b517c026d434bf781b2b9ab0cf1776cd87"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "epf:ExternalDataProcessor.Other.Form.Main"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/props/objectContext",
+       "eq": "ExternalDataProcessor.Other"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Ext/ObjectModule.bsl",
+       "eq": "f1b7425b5791d9202de242f0c82c8bbac1a1792b09645e4ed0b2ee9e7a766b58"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Foreign.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Main.xml",
+       "eq": "095935ef4941f7f6febc5c3f53d8c8c8ce7b4f87be8ba1992e52dd5c1271dc7b"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan/Ext/Form.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Forms/Orphan.xml",
+       "eq": "d3c7c1f4f34133849ea550fa3ab2ec0c35f0f5a88a9caa760746968402cb6f2c"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan/Ext/Template.xml",
+       "eq": "88de8e6e97a972c5e01968eef2e8c871e6ef8229cbd6505591b3bf3c31fc5b82"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Orphan.xml",
+       "eq": "45c165fd3809e3b8f06e487faf0807f06873736a56960b61612f373e8e9aedb3"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print/Ext/Template.xml",
+       "eq": "0011badfe537312fb636a58211f147cd039acd0634d0aca3e83eed958023aa74"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import/Templates/Print.xml",
+       "eq": "f97b2180ee69015867cbbaf023a513c4939fa3f6b8ff73bd2d34e4bdc63cfb8e"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Import.xml",
+       "eq": "c65f1858a669f872eebc811141e2a9b517c026d434bf781b2b9ab0cf1776cd87"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Ext/ObjectModule.bsl",
+       "eq": "579dfd1c8f9fddb28e702132627a50e7c159dbb8f6493998b0f01a82c5ea5ed7"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other/Forms/Main.xml",
+       "eq": "b3ad12f8747f92e4f7b142f5cff393831d42dd6589251570ada0254373b309a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "epf/Other.xml",
+       "eq": "af8a1a124a377ef3ab73ad276a38abbc3dfbc92be0bf24b6a556464e62f77b20"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Ext/ObjectModule.bsl",
+       "eq": "eca4dd79c0fd4cf30930bcb3ca7698fb9d1434925e42e8700ceb4780b0771b5a"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form/Module.bsl",
+       "eq": "ed481aee46aaa389d526f2db784b5931d323af6ba0282cbf28c008203aab0819"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main/Ext/Form.xml",
+       "eq": "0fdbb62909e8393e353282fa02ff4acb93d96943cddcd14c8c19de1a118a535f"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales/Forms/Main.xml",
+       "eq": "594a6876b6eca926613939b2a7c9e9bae45b4f4f959695c556f2075ff514dc9e"
+      },
+      {
+       "kind": "sha256",
+       "path": "erf/Sales.xml",
+       "eq": "77f602d36888d062828083f13be264cb2f38f925a2ce6a0db71b0a6be574f70c"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S354",
    "name": "external-only-root",
    "issue": 313,
    "area": "Приёмочный корпус",
@@ -17476,7 +19616,7 @@
    ]
   },
   {
-   "id": "S351",
+   "id": "S355",
    "name": "external-terminal-bsl-checks",
    "issue": 313,
    "area": "Приёмочный корпус",
@@ -17981,7 +20121,7 @@
    "driver": "bsl-analyzer-external"
   },
   {
-   "id": "S352",
+   "id": "S356",
    "name": "external-missing-root-fails-readiness",
    "issue": 313,
    "area": "Приёмочный корпус",

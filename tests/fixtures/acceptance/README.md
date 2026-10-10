@@ -1,6 +1,6 @@
 # Приёмочный корпус поверхности v0.13
 
-`scenario-corpus.json` — 352 сценария реальных задач разработчика
+`scenario-corpus.json` — 356 сценариев реальных задач разработчика
 конфигурации. У общего корпуса пока есть исполняемые профили `source` и
 `delivery/bsl-analyzer`. Runtime и agent-evaluation добавляются вместе с их
 задачами поверхности; профиль без драйвера отклоняется, а не пропускается.
@@ -188,8 +188,10 @@ warning/passed, а колонка с пустыми References добавляе�
 поскольку его адрес выбирает анализ BSL.
 
 
-S350–S352 (#313) проверяют EPF/ERF-only discovery, исполнение рекомендованных rootnext, terminal BSL checks root/object/formModule/report с pinned analyzer, и failed/ready=false при недоступном объявленном наборе (source_set.path_missing). Git baseline создаётся до MCP. Корневая проверка оценивает readiness, а не валидность всего XML; fixtures синтетические, импорт в 1С не заявляется. Корпус #1245 продолжает расширяться.
+S350–S353 (#627) исполняют чтение собственных EPF/ERF форм, модулей, MXL областей и MXL check, а также отказ для orphan, malformed payload, чужого имени descriptor и настоящей ссылки на соседнюю форму. Git baseline создаётся в изолированной копии до MCP. Это синтетические fixtures чтения, без обещания загрузки всей конфигурации в 1С. Corpus #1245 ещё расширяется.
 
 S349 (#533) проверяет точные типы и заполнение EmptyRef/EnumValue, read-only Characteristic и meta passed без диагностик. SHA всех XML подтверждают отсутствие записи. workspace-metadata-values — синтетическая fixture чтения, без утверждения о загрузке всей конфигурации платформой. Общий corpus #1245 ещё расширяется отдельными задачами.
+
+S354–S356 (#313) проверяют EPF/ERF-only discovery, исполнение рекомендованных rootnext, terminal BSL checks root/object/formModule/report с pinned analyzer, и failed/ready=false при недоступном объявленном наборе (source_set.path_missing). Git baseline создаётся до MCP. Корневая проверка оценивает readiness, а не валидность всего XML; fixtures синтетические, импорт в 1С не заявляется. Корпус #1245 продолжает расширяться.
 
 Отдельный критерий #313 — failed при повреждённом descriptor владельца внешнего набора — пока не выполнен. source_set.path_missing проверяет недоступный объявленный путь и не заменяет этот критерий.
