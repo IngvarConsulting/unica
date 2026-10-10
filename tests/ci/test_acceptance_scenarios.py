@@ -405,13 +405,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 348)
+        self.assertEqual(len(scenarios), 351)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 572,
-            "a wire step went missing: the corpus freezes 572 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 581,
+            "a wire step went missing: the corpus freezes 581 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 349)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 352)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -423,7 +423,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
         self.assertEqual(agent, {"S328", "S335"})
-        self.assertEqual(delivery, {"S324", "S339", "S340", "S341", "S342", "S343"})
+        self.assertEqual(delivery, {"S324", "S339", "S340", "S341", "S342", "S343", "S350"})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -431,7 +431,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning"},
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-missing"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -646,6 +646,9 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
             home = root / f"run-{generation}"
             workspace = home / "workspace"
             shutil.copytree(REPO_ROOT / workspace_relative, workspace)
+            if workspace_relative in {"tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-missing"}:
+                from tests.ci.acceptance_diagnostics import initialize_vendor_source
+                initialize_vendor_source(workspace)
             if workspace_relative == FORMAT_WORKSPACE:
                 derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
             state = home / "state"

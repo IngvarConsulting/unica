@@ -257,13 +257,17 @@ fn bootstrap_result(
     } else {
         "autodetected"
     };
-    let discovered_ready = source_map.effective_source_set.is_some()
+    let external_only = matches!(
+        crate::domain::source_roots::select_project_default_source_set(&source_map.source_sets),
+        Ok(None)
+    );
+    let discovered_ready = (source_map.effective_source_set.is_some() || external_only)
         && source_map.source_selection_error.is_none()
         && !source_map.source_sets.is_empty()
-        && source_map
-            .source_sets
-            .iter()
-            .all(|source| source.source_format == SourceFormat::PlatformXml);
+        && source_map.source_sets.iter().all(|source| {
+            source.source_format == SourceFormat::PlatformXml
+                && source.source_state == crate::domain::project_sources::SourceSetState::Supported
+        });
     let health = if source_map.source_sets.is_empty() {
         None
     } else {
@@ -353,12 +357,37 @@ fn bootstrap_result(
         let encoded = format!("{}:Configuration", source.name);
         QualifiedAddress::parse(&encoded).map(|address| address.to_string())
     });
-    if ready && next_address.as_ref().is_some_and(Result::is_err) {
+    let external_addresses = if external_only {
+        source_map
+            .source_sets
+            .iter()
+            .map(|source| {
+                let kind = if source.kind == SourceSetKind::ExternalProcessor {
+                    "ExternalDataProcessor"
+                } else {
+                    "ExternalReport"
+                };
+                (
+                    source,
+                    QualifiedAddress::parse(&format!("{}:{kind}", source.name))
+                        .map(|at| at.to_string()),
+                )
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let invalid_source_name = if next_address.as_ref().is_some_and(Result::is_err) {
+        actionable_source.map(|source| source.name.as_str())
+    } else {
+        external_addresses
+            .iter()
+            .find(|(_, at)| at.is_err())
+            .map(|(source, _)| source.name.as_str())
+    };
+    if let (true, Some(source_name)) = (ready, invalid_source_name) {
         ready = false;
         if let Value::Array(items) = &mut diagnostics {
-            let source_name = actionable_source
-                .map(|source| source.name.as_str())
-                .unwrap_or_default();
             items.push(object([
                 (
                     "code",
@@ -569,6 +598,7 @@ fn bootstrap_result(
     let source_sets = serde_json::to_value(&source_map.source_sets)
         .expect("project source sets always serialize");
     let mut result = DomainResult::success(match (config_state, infobase.configured, source_map.source_sets.is_empty()) {
+        (_, _, false) if external_only => "external artifact source sets discovered; no configuration default is needed; inspect owners by their qualified source-set address",
         ("configured", true, true) => "workspace configuration and infobase target discovered; no source sets are attached",
         ("configured", _, _) => "workspace configuration and source sets discovered",
         ("autodetected", _, _) => "source sets autodetected; v8project.yaml is not present",
@@ -647,6 +677,17 @@ fn bootstrap_result(
             object([("at", Value::String(at))]),
             "inspect the root logical node of the selected source set",
         ));
+    }
+    if external_only && source_map.source_selection_error.is_none() {
+        for (_, address) in external_addresses {
+            if let Ok(at) = address {
+                result.next.push(next_action(
+                    "unica.view",
+                    object([("at", Value::String(at))]),
+                    "inspect external owners in this source set",
+                ));
+            }
+        }
     }
     // Вердикт живёт в `check {}`, и спросить его уместно всегда — в том числе
     // на ненастроенном пространстве, где вопрос «а что не так» и есть главный.
