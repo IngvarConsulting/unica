@@ -1689,6 +1689,95 @@ impl unica_source_contract::proposal::TrackedSourceProposal for CfeBorrowWritePl
 }
 
 #[cfg(test)]
+mod borrowed_form_binding_regressions {
+    use super::*;
+
+    const OWNER: &str = r#"<MetaDataObject><Document><Properties><Name>Order</Name></Properties><ChildObjects><TabularSection><Properties><Name>Товары</Name></Properties><ChildObjects><Attribute><Properties><Name>TotalCost</Name></Properties></Attribute></ChildObjects></TabularSection></ChildObjects></Document></MetaDataObject>"#;
+
+    #[test]
+    fn footer_inference_preserves_metadata_fields_reference_paths_and_unknown_owner() {
+        let source = r#"<Form><FooterDataPath>Объект.Товары.TotalCost</FooterDataPath><FooterDataPath>Объект.Товары.TotalКоличество</FooterDataPath><FooterDataPath>Объект.Партнер.TotalCost</FooterDataPath><FooterDataPath>Объект.Unknown.TotalCost</FooterDataPath></Form>"#;
+        let omitted =
+            cfe_borrow_synthetic_footer_paths(source, Some(OWNER), "Document", "Order").unwrap();
+        assert_eq!(
+            omitted,
+            HashSet::from(["Объект.Товары.TotalКоличество".to_string()])
+        );
+        for owner in [None, Some("<broken"), Some("<Other/>")] {
+            assert!(
+                cfe_borrow_synthetic_footer_paths(source, owner, "Document", "Order").is_none()
+            );
+        }
+        assert!(
+            cfe_borrow_synthetic_footer_paths(source, Some(OWNER), "Document", "Other").is_none()
+        );
+    }
+
+    #[test]
+    fn borrowed_form_and_base_form_preserve_valid_bindings_without_omitted_data() {
+        let source = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema"><AutoCommandBar/><ChildItems><InputField name="ItemCode" id="1"><DataPath>Объект.Товары.Артикул</DataPath></InputField><InputField name="Quantity" id="2"><DataPath>Объект.Товары.Количество</DataPath><FooterDataPath>Объект.Товары.TotalКоличество</FooterDataPath><ChoiceParameterLinks><xr:Link><xr:DataPath xsi:type="xs:string">UseAgreements</xr:DataPath></xr:Link><xr:Link><xr:DataPath xsi:type="xs:string">Объект.Партнер</xr:DataPath></xr:Link></ChoiceParameterLinks></InputField></ChildItems><Attributes><Attribute name="Объект"><MainAttribute>true</MainAttribute><Columns><AdditionalColumns table="Объект.Товары"><Column name="Артикул"/></AdditionalColumns></Columns></Attribute><Attribute name="UseAgreements"/></Attributes></Form>"#;
+        let mut log = CfeBorrowLog::default();
+        let footer_paths =
+            cfe_borrow_synthetic_footer_paths(source, Some(OWNER), "Document", "Order").unwrap();
+        let cleaned = cfe_borrow_prune_omitted_form_bindings(source, &footer_paths);
+        let generated = cfe_borrow_form_xml(
+            &unica_workspace::discovery::ProjectDiscoveryReader::new(Path::new("")),
+            &cleaned,
+            Path::new("."),
+            "Document",
+            "Order",
+            true,
+            &mut log,
+        );
+        let doc = Document::parse(&generated).expect("borrowed XML must parse");
+        let root = doc.root_element();
+        let base = root
+            .children()
+            .find(|node| node.has_tag_name("BaseForm"))
+            .expect("BaseForm snapshot");
+        for snapshot in [root, base] {
+            let items = snapshot
+                .children()
+                .find(|node| node.has_tag_name("ChildItems"))
+                .expect("snapshot items");
+            let paths: Vec<_> = items
+                .descendants()
+                .filter(|node| matches!(node.tag_name().name(), "DataPath" | "FooterDataPath"))
+                .filter_map(|node| node.text())
+                .collect();
+            assert_eq!(paths, vec!["Объект.Товары.Количество", "Объект.Партнер"]);
+            assert_eq!(
+                items
+                    .descendants()
+                    .filter(|node| node.has_tag_name("Link"))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn removes_only_bindings_to_omitted_form_data_including_namespaced_links() {
+        let source = r#"<Form><ChildItems><FooterDataPath>Объект.Товары.TotalКоличество</FooterDataPath></ChildItems><Attributes><Attribute name="Объект"><MainAttribute>true</MainAttribute><Columns><AdditionalColumns table="Объект.Товары"><Column name="Артикул"/></AdditionalColumns></Columns></Attribute><Attribute name="ИспользоватьСоглашенияСКлиентами"/></Attributes></Form>"#;
+        let omitted = cfe_borrow_omitted_form_paths(source);
+        assert!(omitted.contains("Объект.Товары.Артикул"));
+        assert!(!omitted.contains("Объект.Товары.TotalКоличество"));
+        assert!(!omitted.contains("Объект"));
+        let input = r#"<ChildItems><DataPath>Объект.Товары.Артикул</DataPath><DataPath>Объект.Товары.Количество</DataPath><FooterDataPath>ИспользоватьСоглашенияСКлиентами</FooterDataPath><ChoiceParameterLinks><xr:Link><xr:DataPath xsi:type="xs:string">ИспользоватьСоглашенияСКлиентами</xr:DataPath></xr:Link><xr:Link><xr:DataPath xsi:type="xs:string">Объект.Партнер</xr:DataPath></xr:Link></ChoiceParameterLinks></ChildItems>"#;
+        let result = cfe_borrow_prune_omitted_form_bindings(input, &omitted);
+        assert!(!result.contains("Артикул"));
+        assert!(!result.contains("ИспользоватьСоглашенияСКлиентами"));
+        assert!(result.contains("Объект.Товары.Количество"));
+        assert!(result.contains("Объект.Партнер"));
+        assert_eq!(result.matches("<xr:Link>").count(), 1);
+        assert_eq!(
+            cfe_borrow_prune_omitted_form_bindings(&result, &omitted),
+            result
+        );
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod tests {
     use super::*;
     use crate::application::UnicaApplication;
