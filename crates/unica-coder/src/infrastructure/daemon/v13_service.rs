@@ -3436,7 +3436,11 @@ fn run_native_validator(
 
     let context = invocation.workspace_context();
     let at = address.to_string();
-    let native = if validator == crate::application::v13::check::CheckValidator::Dcs {
+    let native = if matches!(
+        validator,
+        crate::application::v13::check::CheckValidator::Dcs
+            | crate::application::v13::check::CheckValidator::Mxl
+    ) {
         let sources = invocation.read_sources().map_err(|error| {
             Box::new(error_result_detailed(
                 Some(at.clone()),
@@ -3451,7 +3455,7 @@ fn run_native_validator(
                 Box::new(error_result_detailed(
                     Some(at.clone()),
                     RefusalDetail::SourceUnreadable,
-                    "DCS source was not admitted",
+                    "template source was not admitted",
                 ))
             })?;
         let authority = source
@@ -3463,10 +3467,18 @@ fn run_native_validator(
                     error,
                 ))
             })?;
-        let input = authority
-            .dcs_validation_input(address)
-            .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?;
-        crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input)
+        let dcs = validator == crate::application::v13::check::CheckValidator::Dcs;
+        let input = if dcs {
+            authority.dcs_validation_input(address)
+        } else {
+            authority.mxl_validation_input(address)
+        }
+        .map_err(|error| Box::new(view_error_result(Some(at.clone()), error)))?;
+        if dcs {
+            crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input)
+        } else {
+            crate::infrastructure::native_operations::v13_analysis::validate_mxl_input(input)
+        }
     } else {
         let selector = validator_selector(validator, address, context).map_err(|error| {
             Box::new(error_result(Some(at.clone()), RefusalCode::BadValue, error))
