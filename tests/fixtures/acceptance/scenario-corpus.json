@@ -10441,7 +10441,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
-       "eq": "367028f1f5b21a89a9d0ff1df2a60f5bba367fddb3871411ad98025ce02dd8d3"
+       "eq": "eda8583f33bb50db813299ffb45a3a64a367aa993697ed462b4a76f66c063c22"
       }
      ],
      "captures": {
@@ -10550,7 +10550,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
-       "eq": "d1314252174b58d409c18679f6a0b79ba472de55d377f51a648539d6bfaaf5a9"
+       "eq": "9d91cca23afb268120f32debe80245d99097e7dad25689909606f5808d8f3f85"
       }
      ],
      "captures": {
@@ -10725,6 +10725,10 @@
         {
          "at": "cf:Report.F05Report.Template.NewSkeleton.Setting",
          "count": 1
+        },
+        {
+         "at": "cf:Report.F05Report.Template.NewSkeleton.Item",
+         "count": 1
         }
        ]
       }
@@ -10776,6 +10780,10 @@
          "branches": [
           {
            "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной.Item",
+           "count": 1
+          },
+          {
+           "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной.Property",
            "count": 1
           }
          ]
@@ -24378,13 +24386,17 @@
            "source": "Left",
            "destination": "Right",
            "sourceExpression": "Amount",
-           "destinationExpression": "Amount"
+           "destinationExpression": "Amount",
+           "parameterListAllowed": false,
+           "required": true
           },
           {
            "source": "Left",
            "destination": "Right",
            "sourceExpression": "Category",
-           "destinationExpression": "Category"
+           "destinationExpression": "Category",
+           "parameterListAllowed": true,
+           "required": false
           }
          ]
         }
@@ -24436,6 +24448,22 @@
         "Amount",
         "Category"
        ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}parameterListAllowed",
+       "eq": [
+        "true"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}required",
+       "eq": [
+        "false"
+       ]
       }
      ]
     },
@@ -24471,7 +24499,9 @@
           },
           "condition": "Amount > 0",
           "parameter": "Period",
-          "startExpression": "1"
+          "startExpression": "1",
+          "parameterListAllowed": true,
+          "required": false
          }
         }
        }
@@ -24538,6 +24568,24 @@
         "Amount",
         "Category"
        ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}parameterListAllowed",
+       "eq": [
+        "true",
+        "true"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}required",
+       "eq": [
+        "false",
+        "false"
+       ]
       }
      ]
     },
@@ -24573,6 +24621,22 @@
       {
        "pointer": "/data/items/2/sourceExpression",
        "eq": "Category"
+      },
+      {
+       "pointer": "/data/items/1/parameterListAllowed",
+       "eq": true
+      },
+      {
+       "pointer": "/data/items/1/required",
+       "eq": false
+      },
+      {
+       "pointer": "/data/items/2/parameterListAllowed",
+       "eq": true
+      },
+      {
+       "pointer": "/data/items/2/required",
+       "eq": false
       }
      ]
     },
@@ -24654,6 +24718,22 @@
        "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}sourceExpression",
        "eq": [
         "Category"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}parameterListAllowed",
+       "eq": [
+        "true"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveLinks/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}required",
+       "eq": [
+        "false"
        ]
       }
      ]
@@ -28909,7 +28989,7 @@
        "eq": "preview"
       },
       {
-       "pointer": "/data/effects/count",
+       "pointer": "/data/effects",
        "eq": 0
       }
      ],
@@ -28940,7 +29020,7 @@
        "eq": "published"
       },
       {
-       "pointer": "/data/effects/count",
+       "pointer": "/data/effects",
        "eq": 0
       }
      ],

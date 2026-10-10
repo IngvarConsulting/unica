@@ -29,6 +29,175 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"symlinks"):
                 source_digest(source)
 
+    def test_recorder_per_file_snapshot_binds_source_map_owner_and_new_templates(self):
+        from tests.agent_evaluation.mcp_recorder import source_observation
+        with tempfile.TemporaryDirectory() as raw:
+            workspace = Path(raw)
+            source = workspace / "src"
+            root = source / "cf"
+            root.mkdir(parents=True)
+            project = workspace / "v8project.yaml"
+            project.write_text("source-set:\n  - name: cf\n    path: src/cf\n")
+            owner = root / "Reports/Report.xml"
+            owner.parent.mkdir()
+            owner.write_text("owner-before")
+            before = source_observation(source, workspace, {"cf": "src/cf"})
+            self.assertEqual(before["sourceSetRoots"], {"cf": "src/cf"})
+            self.assertEqual(before["sourceFilesSha256"], {
+                "src/cf/Reports/Report.xml": hashlib.sha256(b"owner-before").hexdigest(),
+                "v8project.yaml": hashlib.sha256(project.read_bytes()).hexdigest()})
+            body = root / "Reports/Report/Templates/New/Ext/Template.xml"
+            body.parent.mkdir(parents=True)
+            body.write_text("new-body")
+            owner.write_text("registered")
+            after = source_observation(source, workspace, {"cf": "src/cf"})
+            self.assertEqual(set(after["sourceFilesSha256"]) - set(before["sourceFilesSha256"]),
+                             {"src/cf/Reports/Report/Templates/New/Ext/Template.xml"})
+            self.assertNotEqual(before["sourceFilesSha256"]["src/cf/Reports/Report.xml"],
+                                after["sourceFilesSha256"]["src/cf/Reports/Report.xml"])
+            project.write_text("source-set:\n  - name: cf\n    path: src\n")
+            remapped = source_observation(source, workspace, {"cf": "src/cf"})
+            self.assertNotEqual(remapped["sourceFilesSha256"]["v8project.yaml"],
+                                after["sourceFilesSha256"]["v8project.yaml"])
+            self.assertEqual(remapped["sourceSetRoots"], after["sourceSetRoots"],
+                             "the fixed fixture topology is separate from observed project bytes")
+
+    def test_independent_template_publication_keeps_plan_valid_but_protected_changes_refuse(self):
+        import copy
+        from tests.agent_evaluation.mcp_recorder import tree_digest
+        first = DCS_TEMPLATE
+        second = first.rsplit(".Template.", 1)[0] + ".Template.Peer"
+        root = "src/cf/Reports/F05Report"
+        first_body = root + "/Templates/F05Schema/Ext/Template.xml"
+        second_body = root + "/Templates/Peer/Ext/Template.xml"
+        files = {path: hashlib.sha256(path.encode()).hexdigest() for path in [
+            "v8project.yaml", "src/cf/Configuration.xml", root + ".xml",
+            root + "/Templates/F05Schema.xml", first_body,
+            root + "/Templates/Peer.xml", second_body]}
+        trace = []
+        def exchange(name, args, result, write=None):
+            identifier = len(trace)
+            def observation(direction, payload):
+                return {"direction": direction, "payload": payload,
+                        "sourceSha256": tree_digest(files), "sourceFilesSha256": dict(files),
+                        "sourceSetRoots": {"cf": "src/cf"}}
+            method = "tools/list" if name is None else "tools/call"
+            params = {} if name is None else {"name": name, "arguments": args}
+            trace.append(observation("request", {"id": identifier, "method": method, "params": params}))
+            if write:
+                files[write] = hashlib.sha256((write + "-published").encode()).hexdigest()
+            trace.append(observation("response", {"id": identifier, "result": (
+                result if name is None else {"structuredContent": result})}))
+        exchange(None, {}, {"tools": [{"name": name} for name in ["unica.view", "unica.apply", "unica.check"]]})
+        for template in [first, second]:
+            exchange("unica.view", {"at": template}, {"ok": True, "data": {"can": [{
+                "op": "field.add", "implemented": True, "contract": {"argsSchema": {"type": "object"}}}]}})
+        for token, template in [("first", first), ("peer", second)]:
+            exchange("unica.apply", {"at": template, "ops": [{"op": "field.add", "args": {"items": [{"dataPath": "Added"}]}}]},
+                     {"ok": True, "data": {"mode": "preview", "effects": 1, "executionToken": token}})
+        exchange("unica.apply", {"executionToken": "peer"},
+                 {"ok": True, "data": {"mode": "published", "effects": 1}}, second_body)
+        publication = len(trace)
+        exchange("unica.apply", {"executionToken": "first"},
+                 {"ok": True, "data": {"mode": "published", "effects": 1}}, first_body)
+        for template in [first, second]:
+            exchange("unica.view", {"at": template}, {"ok": True})
+            exchange("unica.check", {"at": template}, {"ok": True, "data": {"status": "passed"}})
+        def audit(records):
+            audit_mcp(records, owner=first.rsplit(".Template.", 1)[0],
+                      extra_templates=(second,), required_operations={"field.add"})
+        audit(trace)
+        for path in [first_body, root + "/Templates/F05Schema.xml", root + ".xml", "src/cf/Configuration.xml",
+                     "v8project.yaml", root + "/Templates/F05Schema/Ext/NewInput.xml"]:
+            altered = copy.deepcopy(trace)
+            altered[publication]["sourceFilesSha256"][path] = hashlib.sha256(b"concurrent input").hexdigest()
+            with self.subTest(protected=path), self.assertRaisesRegex(ValueError, "protected plan source"):
+                audit(altered)
+        outside = copy.deepcopy(trace)
+        outside[publication + 1]["sourceFilesSha256"][second_body] = hashlib.sha256(b"foreign write").hexdigest()
+        with self.assertRaisesRegex(ValueError, "outside its planned XML"):
+            audit(outside)
+        owner_write = copy.deepcopy(trace)
+        owner_write[publication + 1]["sourceFilesSha256"][root + ".xml"] = hashlib.sha256(b"unexpected registration").hexdigest()
+        with self.assertRaisesRegex(ValueError, "outside its planned XML"):
+            audit(owner_write)
+        remapped = copy.deepcopy(trace)
+        remapped[publication]["sourceSetRoots"]["cf"] = "src/other"
+        with self.assertRaisesRegex(ValueError, "source map evidence"):
+            audit(remapped)
+        missing = copy.deepcopy(trace)
+        del missing[publication]["sourceFilesSha256"]
+        with self.assertRaisesRegex(ValueError, "incomplete per-file"):
+            audit(missing)
+        preview_index = next(i for i, record in enumerate(trace) if record["direction"] == "response"
+                             and ((record["payload"].get("result", {}).get("structuredContent") or {}).get("data") or {}).get("executionToken") == "first")
+        for refused in [False, True]:
+            writing = copy.deepcopy(trace)
+            writing[preview_index]["sourceFilesSha256"]["v8project.yaml"] = hashlib.sha256(b"forbidden preview write").hexdigest()
+            if refused:
+                writing[preview_index]["payload"]["result"]["structuredContent"]["ok"] = False
+            with self.assertRaisesRegex(ValueError, "refused apply changed" if refused else "preview changed"):
+                audit(writing)
+        # First executes asynchronously; its peer commits while it is pending.
+        async_trace = copy.deepcopy(trace)
+        first_request, first_response = async_trace[publication:publication + 2]
+        del async_trace[publication:publication + 2]
+        peer_index = next(i for i, record in enumerate(async_trace) if record["direction"] == "request"
+                          and record["payload"].get("params", {}).get("arguments", {}).get("executionToken") == "peer")
+        queued_response = copy.deepcopy(first_response)
+        queued_response["sourceFilesSha256"] = dict(async_trace[peer_index]["sourceFilesSha256"])
+        queued_response["sourceSha256"] = async_trace[peer_index]["sourceSha256"]
+        queued_response["payload"]["result"]["structuredContent"] = {"ok": True, "data": {"task": {"taskId": "first-task", "status": "queued"}}}
+        first_request["sourceFilesSha256"] = dict(async_trace[peer_index]["sourceFilesSha256"])
+        first_request["sourceSha256"] = async_trace[peer_index]["sourceSha256"]
+        async_trace[peer_index:peer_index] = [first_request, queued_response]
+        terminal_index = peer_index + 4
+        terminal_request = copy.deepcopy(first_request)
+        terminal_request["payload"] = {"id": 999, "method": "tools/call", "params": {"name": "unica.task.result", "arguments": {"taskId": "first-task"}}}
+        terminal_request["sourceFilesSha256"] = dict(async_trace[terminal_index - 1]["sourceFilesSha256"])
+        terminal_request["sourceSha256"] = async_trace[terminal_index - 1]["sourceSha256"]
+        first_response["payload"]["id"] = 999
+        async_trace[terminal_index:terminal_index] = [terminal_request, first_response]
+        async_trace[1]["payload"]["result"]["tools"].append({"name": "unica.task.result"})
+        audit(async_trace)
+        unknown_write = copy.deepcopy(async_trace)
+        unknown_write[terminal_index + 1]["sourceFilesSha256"][root + "/Templates/Unobserved/Ext/Template.xml"] = hashlib.sha256(b"unobserved").hexdigest()
+        with self.assertRaisesRegex(ValueError, "outside its planned XML"):
+            audit(unknown_write)
+        overlap = copy.deepcopy(async_trace)
+        # A registered peer publication may not change an owner's captured bytes.
+        overlap[peer_index + 3]["sourceFilesSha256"][root + ".xml"] = hashlib.sha256(b"owner changed").hexdigest()
+        with self.assertRaisesRegex(ValueError, "outside its planned XML|protected plan source"):
+            audit(overlap)
+        creation_overlap = copy.deepcopy(async_trace)
+        logical_owner = first.rsplit(".Template.", 1)[0]
+        peer_wrapper = root + "/Templates/Peer.xml"
+        # A valid peer creation may write registration; it still invalidates
+        # the first plan's captured owner while the first Task is pending.
+        for i, record in enumerate(creation_overlap):
+            files_at_call = record["sourceFilesSha256"]
+            if i < peer_index + 3:
+                files_at_call.pop(peer_wrapper, None)
+                files_at_call.pop(second_body, None)
+            else:
+                files_at_call[peer_wrapper] = hashlib.sha256(b"created wrapper").hexdigest()
+                files_at_call[root + ".xml"] = hashlib.sha256(b"registered peer").hexdigest()
+            record["sourceSha256"] = tree_digest(files_at_call)
+        creation_overlap[4]["payload"]["params"]["arguments"]["at"] = logical_owner
+        creation_overlap[5]["payload"]["result"]["structuredContent"]["data"]["can"][0]["op"] = "template.add"
+        peer_preview = next(record for record in creation_overlap if record["direction"] == "request"
+                            and record["payload"].get("params", {}).get("arguments", {}).get("at") == second)
+        peer_preview["payload"]["params"]["arguments"] = {"at": logical_owner, "ops": [
+            {"op": "template.add", "args": {"items": [{"name": "Peer"}]}}]}
+        with self.assertRaisesRegex(ValueError, "protected plan source files during execution"):
+            audit(creation_overlap)
+        legacy = copy.deepcopy(trace)
+        for record in legacy:
+            record.pop("sourceFilesSha256")
+            record.pop("sourceSetRoots")
+        with self.assertRaisesRegex(ValueError, "observed preview"):
+            audit(legacy)
+
     def test_cleanup_accepts_a_terminated_daemon_and_never_signals_a_reused_pid(self):
         import signal
         import subprocess
@@ -163,7 +332,8 @@ class AgentEvaluationAuditTests(unittest.TestCase):
         for number, (operation, target) in enumerate([("template.add", OWNER), ("mxl.set", TEMPLATE)]):
             exchange("unica.view", {"at": target}, {"ok": True, "data": {"can": [{
                 "op": operation, "implemented": True, "contract": {"argsSchema": {"type": "object"}}}]}})
-            exchange("unica.apply", {"at": target, "ops": [{"op": operation, "args": {}}]},
+            exchange("unica.apply", {"at": target, "ops": [{"op": operation, "args": (
+                {"items": [{"name": "Agent1311"}]} if operation == "template.add" else {})}]},
                      {"ok": True, "data": {"mode": "preview", "effects": 1, "executionToken": str(number)}})
             exchange("unica.apply", {"executionToken": str(number)},
                      {"ok": True, "data": {"mode": "published", "effects": 1}})
@@ -180,6 +350,10 @@ class AgentEvaluationAuditTests(unittest.TestCase):
         foreign[preview]["payload"]["params"]["arguments"]["at"] = "cf:Report.Other"
         with self.assertRaisesRegex(ValueError, "outside"):
             audit(foreign)
+        foreign_name = copy.deepcopy(trace)
+        foreign_name[preview]["payload"]["params"]["arguments"]["ops"][0]["args"]["items"][0]["name"] = "Other"
+        with self.assertRaisesRegex(ValueError, "creation names"):
+            audit(foreign_name)
         unobserved = copy.deepcopy(trace)
         unobserved[publication]["payload"]["params"]["arguments"]["executionToken"] = "never-observed"
         with self.assertRaisesRegex(ValueError, "observed preview"):

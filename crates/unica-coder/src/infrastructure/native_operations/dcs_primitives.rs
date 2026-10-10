@@ -197,6 +197,17 @@ const ROOT_ORDER: &[&str] = &[
     "nestedSchema",
     "settingsVariant",
 ];
+const LINK_ORDER: &[&str] = &[
+    "sourceDataSet",
+    "destinationDataSet",
+    "sourceExpression",
+    "destinationExpression",
+    "parameter",
+    "parameterListAllowed",
+    "linkConditionExpression",
+    "startExpression",
+    "required",
+];
 const DATASET_ORDER: &[&str] = &[
     "name",
     "field",
@@ -2613,8 +2624,10 @@ fn apply_item(
             }
             for (key, tag) in [
                 ("parameter", "parameter"),
+                ("parameterListAllowed", "parameterListAllowed"),
                 ("condition", "linkConditionExpression"),
                 ("startExpression", "startExpression"),
+                ("required", "required"),
             ] {
                 if let Some(value) = values.get(key) {
                     let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
@@ -2632,21 +2645,40 @@ fn apply_item(
                         }),
                         "dataset link",
                     )?;
+                    if let Some(default) = match key {
+                        "required" => Some(true),
+                        "parameterListAllowed" => Some(false),
+                        _ => None,
+                    } {
+                        let wanted = value.as_bool().ok_or("link flag must be boolean")?;
+                        let existing = child(link, S, tag);
+                        let old = if existing.is_some() {
+                            match text(link, S, tag).trim() {
+                                "true" | "1" => true,
+                                "false" | "0" => false,
+                                _ => return Err(format!("link {tag} has an invalid boolean")),
+                            }
+                        } else {
+                            default
+                        };
+                        if old == wanted {
+                            continue;
+                        }
+                        if wanted == default {
+                            if let Some(existing) = existing {
+                                let range = existing.range();
+                                xml_text.replace_range(range, "");
+                            }
+                            continue;
+                        }
+                    }
                     upsert(
                         xml_text,
                         link.range(),
                         S,
                         tag,
                         &simple(tag, &value_text(value), S),
-                        &[
-                            "sourceDataSet",
-                            "destinationDataSet",
-                            "sourceExpression",
-                            "destinationExpression",
-                            "parameter",
-                            "linkConditionExpression",
-                            "startExpression",
-                        ],
+                        LINK_ORDER,
                     )?;
                 }
             }
@@ -2662,10 +2694,17 @@ fn apply_item(
                 ("sourceExpression", "sourceExpression"),
                 ("destinationExpression", "destinationExpression"),
                 ("parameter", "parameter"),
+                ("parameterListAllowed", "parameterListAllowed"),
                 ("condition", "linkConditionExpression"),
                 ("startExpression", "startExpression"),
+                ("required", "required"),
             ] {
                 if let Some(value) = values.get(key) {
+                    if (key == "required" && value.as_bool() == Some(true))
+                        || (key == "parameterListAllowed" && value.as_bool() == Some(false))
+                    {
+                        continue;
+                    }
                     body += &simple(tag, &value_text(value), S);
                 }
             }

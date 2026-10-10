@@ -103,12 +103,11 @@ EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
     "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf"
 )
-# LAST_VERIFIED records the previous full 69-case platform run. Two current
-# independent generations agree on the HTML form candidate below; its two
-# managed-form checkpoints pass the exact 8.3.27.2074 gate. The full current
-# run failed during timeout cleanup (#1169), so LAST_VERIFIED stays unchanged.
+# LAST_VERIFIED records the previous successful full platform run. Two
+# independent generations agree on the current direct-DCS public contract.
+# Advance LAST_VERIFIED only after the full exact 8.3.27.2074 gate succeeds.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "9c8b3ef88d04af0f7ad18db0d63a484512834439b9eeb2ca34d9498dca6750b4"
+    "a1e9a25bcb480071b1704672a79fe5d52337e12e1fc21b1437497a98121f2cab"
 )
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -1774,6 +1773,17 @@ def case_contract_sha256(
                 "impactClass": case.get("impactClass"),
                 "xmlImpact": case.get("xmlImpact"),
                 "publicArguments": public_arguments,
+                **({"publications": [
+                    {
+                        **{key: value for key, value in publication.items()
+                           if key != "snapshotXmlFiles"},
+                        # Raw hashes bind the physical inventory below. Across
+                        # independent generations, identities may differ;
+                        # postSemanticSha256 binds their normalized content.
+                        "snapshotXmlPaths": [entry["path"] for entry in publication["snapshotXmlFiles"]],
+                    }
+                    for publication in normalized["publications"]
+                ]} if isinstance(normalized, dict) and normalized.get("publications") else {}),
                 "files": file_contract,
                 "preSignature": (
                     normalized.get("preSignature")
@@ -2149,6 +2159,97 @@ def _validate_pre_snapshot(
     }
 
 
+def _validate_dcs_publications(
+    root: Path, case_id: str, report: dict,
+    before: dict[str, str], after: dict[str, str],
+) -> list[dict]:
+    """Bind two real DCS publications to captured intermediate and final bytes."""
+    publications = report.get("publications")
+    expected = case_id == "dcs-compile-owned-template" and report.get("toolId") == "unica.apply"
+    if not expected:
+        if publications is not None:
+            raise CorpusError(f"case {case_id} cannot claim DCS creation publications")
+        return []
+    if not isinstance(publications, list) or len(publications) != 2:
+        raise CorpusError(f"case {case_id} requires both DCS creation publications")
+    body = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml"
+    normalized = []
+    previous = before
+    for index, publication in enumerate(publications):
+        label = f"case {case_id} publication {index + 1}"
+        if not isinstance(publication, dict):
+            raise CorpusError(f"{label} must be an object")
+        _require_exact_keys(publication, {
+            "snapshotPath", "toolId", "publicArguments", "summary",
+            "preXmlSha256", "postXmlSha256", "delta",
+        }, label)
+        if publication["toolId"] != "unica.apply" or not isinstance(publication["summary"], str):
+            raise CorpusError(f"{label} must record successful canonical apply")
+        arguments = publication["publicArguments"]
+        if (not isinstance(arguments, dict)
+            or arguments.get("cwd") != "$CASE_WORKSPACE"
+            or arguments.get("dryRun") is not False
+            or str(root) in json.dumps(arguments, ensure_ascii=False)):
+            raise CorpusError(f"{label} arguments are not deterministic/sanitized")
+        ops = arguments.get("ops")
+        if (not isinstance(ops, list) or not ops
+            or any(not isinstance(op, dict) or set(op) != {"op", "args"}
+                   or not isinstance(op["op"], str) or not isinstance(op["args"], dict)
+                   for op in ops)):
+            raise CorpusError(f"{label} must record explicit basic operations")
+        if index == 0 and (arguments != report["publicArguments"]
+                           or len(ops) != 1 or ops[0]["op"] != "template.add"):
+            raise CorpusError(f"{label} must be the recorded template.add call")
+        if index == 1 and any(op["op"] == "template.add" for op in ops):
+            raise CorpusError(f"{label} must fill the already created template")
+        if _hash_map(publication["preXmlSha256"], f"{label} pre hashes") != previous:
+            raise CorpusError(f"{label} hash chain does not match its predecessor")
+        expected_path = (f"cases/{case_id}/publications/1/xml" if index == 0
+                         else f"cases/{case_id}/workspace")
+        if publication["snapshotPath"] != expected_path:
+            raise CorpusError(f"{label} snapshot must use its dedicated canonical path")
+        snapshot = _safe_existing_path(root, expected_path, label, directory=True)
+        actual = _snapshot_xml_hashes(snapshot)
+        claimed = _hash_map(publication["postXmlSha256"], f"{label} post hashes")
+        if actual != claimed:
+            raise CorpusError(f"{label} hashes do not match captured snapshot bytes")
+        delta = publication["delta"]
+        if not isinstance(delta, dict) or set(delta) != {"created", "modified", "removed", "unchanged"}:
+            raise CorpusError(f"{label} delta has invalid shape")
+        delta = {key: _string_list(delta[key], f"{label} delta {key}", paths=True)
+                 for key in ("created", "modified", "removed", "unchanged")}
+        if delta != _classify_delta(previous, actual):
+            raise CorpusError(f"{label} delta does not match captured hashes")
+        if index == 0 and (body in previous or body not in delta["created"]):
+            raise CorpusError(f"{label} must create an absent DCS body")
+        if index == 1 and (delta["created"] or delta["removed"] or delta["modified"] != [body]):
+            raise CorpusError(f"{label} must modify only the existing DCS body")
+        payloads, _excluded = _xml_payloads(snapshot, exclude_root_config_dump_info=False)
+        if index == 0:
+            version, _owner, qname = _parse_root_details_payload(payloads[body], f"{label} scaffold")
+            if version is not None or qname != "{http://v8.1c.ru/8.1/data-composition-system/schema}DataCompositionSchema":
+                raise CorpusError(f"{label} must capture a versionless DCS scaffold")
+        normalized.append({
+            "toolId": publication["toolId"], "publicArguments": arguments,
+            "snapshotPath": expected_path, "delta": delta,
+            # The final workspace is already declared by case.files. Only the
+            # distinct intermediate copy contributes new physical entries.
+            "snapshotXmlFiles": [
+                {"path": f"{expected_path}/{relative}", "sha256": digest}
+                for relative, digest in sorted(actual.items())
+            ] if index == 0 else [],
+            "emptyDirectoryPaths": [
+                f"{expected_path}/{relative}"
+                for relative in _empty_directory_paths(snapshot)
+            ] if index == 0 else [],
+            "postSemanticSha256": uuid_normalized_semantic_sha256(payloads, label),
+        })
+        previous = actual
+    if previous != after:
+        raise CorpusError(f"case {case_id} final publication is not the final XML map")
+    return normalized
+
+
 def _validate_case(root: Path, case: dict, known_case_ids: set[str]) -> dict:
     _require_exact_keys(
         case,
@@ -2298,7 +2399,8 @@ def _validate_case(root: Path, case: dict, known_case_ids: set[str]) -> dict:
             "ownerLinks",
             "preOwnerVersions",
             "ownerVersions",
-        },
+        }
+        | ({"publications"} if case_id == "dcs-compile-owned-template" and case.get("toolId") == "unica.apply" else set()),
         f"case {case_id} checkpoint report",
     )
     matching_fields = (
@@ -2365,6 +2467,7 @@ def _validate_case(root: Path, case: dict, known_case_ids: set[str]) -> dict:
     actual = _snapshot_xml_hashes(workspace)
     if after != actual:
         raise CorpusError(f"case {case_id} post hash map does not match workspace files")
+    publications = _validate_dcs_publications(root, case_id, report, before, after)
     seed_outputs = _string_list(
         report.get("seedOutputs"), f"case {case_id} seedOutputs", paths=True
     )
@@ -2736,6 +2839,7 @@ def _validate_case(root: Path, case: dict, known_case_ids: set[str]) -> dict:
             path.relative_to(source).as_posix() for path in source_owners
         ),
         "report": report,
+        "publications": publications,
         "reportSha256": hashlib.sha256(report_payload).hexdigest(),
         "targetSequence": target["sequence"],
     }
@@ -2848,6 +2952,12 @@ def load_corpus(
         for item in collection
         if isinstance(item, dict) and isinstance(item.get("path"), str)
     ]
+    declared_xml_paths.extend(
+        entry["path"]
+        for case in normalized
+        for publication in case["publications"]
+        for entry in publication["snapshotXmlFiles"]
+    )
     if len(declared_xml_paths) != len(set(declared_xml_paths)):
         raise CorpusError("corpus XML paths must be globally unique across cases")
     declared_xml = set(declared_xml_paths)
@@ -2900,6 +3010,12 @@ def load_corpus(
                 f"case {case_id} checkpoint report",
             )
         )
+        for publication in normalized_case["publications"]:
+            for entry in publication["snapshotXmlFiles"]:
+                declared_entries.append((
+                    entry["path"], entry["sha256"],
+                    f"case {case_id} intermediate publication XML",
+                ))
         for field in (
             "preFiles",
             "files",

@@ -1037,7 +1037,7 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual(
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "9c8b3ef88d04af0f7ad18db0d63a484512834439b9eeb2ca34d9498dca6750b4",
+            "a1e9a25bcb480071b1704672a79fe5d52337e12e1fc21b1437497a98121f2cab",
         )
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
@@ -4577,6 +4577,214 @@ class CliTests(unittest.TestCase):
                         ]
                     )
                 self.assertEqual(error.exception.code, 2)
+
+
+class DcsPublicationContractTests(unittest.TestCase):
+    case_id = "dcs-compile-owned-template"
+    body = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml"
+
+    def publication_report(self, root):
+        verifier = load_verifier()
+        intermediate_path = f"cases/{self.case_id}/publications/1/xml"
+        workspace_path = f"cases/{self.case_id}/workspace"
+        before = {"src/Configuration.xml": sha256(CONFIG_XML.encode())}
+        for base in [intermediate_path, workspace_path]:
+            write(root / base / "src/Configuration.xml", CONFIG_XML)
+        empty = '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>'
+        populated = '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"><parameter><name>Period</name></parameter></DataCompositionSchema>'
+        write(root / intermediate_path / self.body, empty)
+        write(root / workspace_path / self.body, populated)
+        intermediate = dict(sorted({**before, self.body: sha256(empty.encode())}.items()))
+        after = dict(sorted({**before, self.body: sha256(populated.encode())}.items()))
+        creation = {"cwd":"$CASE_WORKSPACE", "dryRun":False,
+                    "at":"main:Report.CorpusReport", "ops":[{
+                        "op":"template.add", "args":{"items":[{"name":"CorpusTemplate","templateType":"DataCompositionSchema"}]}
+                    }]}
+        components = {"cwd":"$CASE_WORKSPACE", "dryRun":False,
+                      "at":"main:Report.CorpusReport.Template.CorpusTemplate", "ops":[{
+                          "op":"parameter.add", "args":{"items":[{"name":"Period","type":"date"}]}
+                      }]}
+        report = {"toolId":"unica.apply", "publicArguments":creation, "publications":[
+            {"snapshotPath":intermediate_path,"toolId":"unica.apply","publicArguments":creation,
+             "summary":"created", "preXmlSha256":before,"postXmlSha256":intermediate,
+             "delta":verifier._classify_delta(before,intermediate)},
+            {"snapshotPath":workspace_path,"toolId":"unica.apply","publicArguments":components,
+             "summary":"filled", "preXmlSha256":intermediate,"postXmlSha256":after,
+             "delta":verifier._classify_delta(intermediate,after)},
+        ]}
+        return report, before, after
+
+    def test_both_publications_bind_real_intermediate_bytes_and_component_call(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report, before, after = self.publication_report(root)
+            normalized = verifier._validate_dcs_publications(root,self.case_id,report,before,after)
+            self.assertEqual(len(normalized),2)
+            self.assertEqual(normalized[0]["delta"]["created"],[self.body])
+            self.assertEqual(normalized[1]["delta"]["modified"],[self.body])
+            self.assertEqual(normalized[1]["publicArguments"]["ops"][0]["op"],"parameter.add")
+            baseline = verifier.case_contract_sha256([{"id":self.case_id}], [{"id":self.case_id,"publications":normalized}])
+            changed = copy.deepcopy(normalized)
+            changed[1]["publicArguments"]["ops"][0]["args"]["items"][0]["name"] = "Other"
+            self.assertNotEqual(baseline,verifier.case_contract_sha256([{"id":self.case_id}],[{"id":self.case_id,"publications":changed}]))
+
+    def test_missing_or_forged_creation_publication_is_rejected(self):
+        verifier = load_verifier()
+        mutations = {
+            "missing": lambda report: report.pop("publications"),
+            "only_creation": lambda report: report["publications"].pop(),
+            "wrong_hash_chain": lambda report: report["publications"][1].update(preXmlSha256={}),
+            "wrong_delta": lambda report: report["publications"][1]["delta"].update(modified=[]),
+            "wrong_snapshot": lambda report: report["publications"][0].update(snapshotPath=f"cases/{self.case_id}/workspace"),
+            "forged_initial_bytes": lambda report: report["publications"][0]["postXmlSha256"].update({self.body:"0"*64}),
+            "unrecorded_first_call": lambda report: report["publications"][0].update(publicArguments={}),
+            "unknown_fields": lambda report: report["publications"][0].update(gateVerdict="pass"),
+            "wrong_operation_shape": lambda report: report["publications"][1]["publicArguments"]["ops"][0].update(at="main:Report.CorpusReport.Template.CorpusTemplate"),
+            "second_creation": lambda report: report["publications"][1]["publicArguments"]["ops"][0].update(op="template.add"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                report,before,after = self.publication_report(root)
+                mutate(report)
+                with self.assertRaises(verifier.CorpusError):
+                    verifier._validate_dcs_publications(root,self.case_id,report,before,after)
+
+    def test_intermediate_file_drift_and_cross_case_claims_are_rejected(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report,before,after = self.publication_report(root)
+            write(root / report["publications"][0]["snapshotPath"] / self.body,"<wrong/>")
+            with self.assertRaisesRegex(verifier.CorpusError,"captured snapshot bytes"):
+                verifier._validate_dcs_publications(root,self.case_id,report,before,after)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report,before,after = self.publication_report(root)
+            with self.assertRaisesRegex(verifier.CorpusError,"cannot claim"):
+                verifier._validate_dcs_publications(root,"dcs-edit-owned-template",report,before,after)
+
+
+    def write_loadable_case(self, root):
+        verifier = load_verifier()
+        case = write_platform_case(root, self.case_id)
+        publications, before, after = self.publication_report(root)
+        add_pre_file(root, case, "src/Configuration.xml", CONFIG_XML, "metadata", source_set_owner=True)
+        case.update(toolId="unica.apply", operation="dcs-component-create", branch="owned-template")
+        owner = f'{case["workspacePath"]}/src/Configuration.xml'
+        body = f'{case["workspacePath"]}/{self.body}'
+        case["files"][0].update(seed=True, delta="unchanged")
+        case["files"].append({"path":body,"sha256":after[self.body],"family":"dcs",
+                              "seed":False,"delta":"created","ownerPath":owner})
+        case["files"].sort(key=lambda entry:entry["path"])
+        report = read_case_report(root,case)
+        report.update(publications)
+        for field in ["toolId","operation","branch","preFiles","preOwnerVersions"]:
+            report[field] = copy.deepcopy(case[field])
+        report.update(preXmlSha256=before,postXmlSha256=after,
+                      delta=verifier._classify_delta(before,after),
+                      seedOutputs=sorted(before),remainingXml=sorted(after),
+                      ownerLinks={body:owner})
+        write_case_report(root,case,report)
+        manifest = write_manifest(root,[case])
+        return case,manifest
+
+    def load_case(self, root, manifest):
+        return load_verifier().load_corpus(manifest,repo_root=ROOT,home_root=Path.home(),
+                                          mandatory_case_ids={self.case_id})
+
+    def test_load_corpus_accounts_for_intermediate_xml_and_both_real_publications(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            case,manifest = self.write_loadable_case(root)
+            corpus = self.load_case(root,manifest)
+            publications = corpus["cases"][0]["publications"]
+            self.assertEqual(len(publications),2)
+            paths = {entry["path"] for entry in publications[0]["snapshotXmlFiles"]}
+            self.assertEqual(paths,{
+                f"cases/{self.case_id}/publications/1/xml/src/Configuration.xml",
+                f"cases/{self.case_id}/publications/1/xml/{self.body}",
+            })
+            self.assertTrue(paths.issubset(corpus["snapshot"]["files"]))
+            self.assertEqual(publications[1]["snapshotXmlFiles"],[])
+            self.assertEqual(publications[1]["delta"]["modified"],[self.body])
+            baseline = corpus["caseContractSha256"]
+            report = read_case_report(root,case)
+            report["publications"][1]["publicArguments"]["ops"][0]["args"]["items"][0]["name"] = "Other"
+            write_case_report(root,case,report)
+            self.assertNotEqual(baseline,self.load_case(root,manifest)["caseContractSha256"])
+
+    def test_load_corpus_rejects_unreferenced_files_around_publication_snapshots(self):
+        mutations = {
+            "orphan_xml": (f"cases/{self.case_id}/publications/2/xml/extra.xml","<extra/>","XML inventory is not exact"),
+            "snapshot_non_xml": (f"cases/{self.case_id}/publications/1/xml/readme.txt","undeclared","regular-file inventory/hash is not exact"),
+        }
+        for name,(path,payload,error) in mutations.items():
+            with self.subTest(mutation=name),tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                _case,manifest = self.write_loadable_case(root)
+                write(root/path,payload)
+                with self.assertRaisesRegex(load_verifier().CorpusError,error):
+                    self.load_case(root,manifest)
+
+    def test_load_corpus_binds_empty_directories_in_publication_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            case,manifest = self.write_loadable_case(root)
+            baseline = self.load_case(root,manifest)["caseContractSha256"]
+            path = f"cases/{self.case_id}/publications/1/xml/empty"
+            (root/path).mkdir()
+            with self.assertRaisesRegex(load_verifier().CorpusError,"empty directory inventory is not exact"):
+                self.load_case(root,manifest)
+            manifest = write_manifest(root,[case])
+            corpus = self.load_case(root,manifest)
+            self.assertIn(path,corpus["emptyDirectoryPaths"])
+            self.assertEqual(corpus["cases"][0]["publications"][0]["emptyDirectoryPaths"],[path])
+            self.assertNotEqual(baseline,corpus["caseContractSha256"])
+            (root/path).rmdir()
+            with self.assertRaisesRegex(load_verifier().CorpusError,"empty directory inventory is not exact"):
+                self.load_case(root,manifest)
+
+    def test_load_corpus_refuses_cross_case_snapshot_and_hardlinked_bytes(self):
+        for mutation in ["cross_case","hardlink"]:
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                case,manifest = self.write_loadable_case(root)
+                if mutation == "cross_case":
+                    report = read_case_report(root,case)
+                    report["publications"][0]["snapshotPath"] = "cases/other/publications/1/xml"
+                    write_case_report(root,case,report)
+                    error = "dedicated canonical path"
+                else:
+                    snapshot = root/f"cases/{self.case_id}/publications/1/xml/src/Configuration.xml"
+                    snapshot.unlink()
+                    os.link(root/case["workspacePath"]/"src/Configuration.xml",snapshot)
+                    error = "hardlink"
+                with self.assertRaisesRegex(load_verifier().CorpusError,error):
+                    self.load_case(root,manifest)
+
+
+    def test_load_corpus_refuses_invalid_intermediate_scaffold_even_with_consistent_hashes(self):
+        invalid = [
+            '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>',
+            '<DataCompositionSchema xmlns="urn:foreign"/>',
+        ]
+        verifier = load_verifier()
+        for payload in invalid:
+            with self.subTest(payload=payload),tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                case,manifest = self.write_loadable_case(root)
+                report = read_case_report(root,case)
+                initial,final = report["publications"]
+                write(root/initial["snapshotPath"]/self.body,payload)
+                initial["postXmlSha256"][self.body] = sha256(payload.encode())
+                initial["delta"] = verifier._classify_delta(initial["preXmlSha256"],initial["postXmlSha256"])
+                final["preXmlSha256"] = copy.deepcopy(initial["postXmlSha256"])
+                final["delta"] = verifier._classify_delta(final["preXmlSha256"],final["postXmlSha256"])
+                write_case_report(root,case,report)
+                with self.assertRaisesRegex(verifier.CorpusError,"versionless DCS scaffold"):
+                    self.load_case(root,manifest)
 
 
 if __name__ == "__main__":

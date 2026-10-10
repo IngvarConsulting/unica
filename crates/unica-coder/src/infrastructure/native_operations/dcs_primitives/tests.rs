@@ -1734,3 +1734,233 @@ fn dcs_component_writer_refuses_wrong_existing_root_without_a_postimage() {
         "a refusal must not return a publishable postimage"
     );
 }
+
+fn link_schema(body: &str) -> String {
+    schema(&format!("<dataSource><name>Local</name><dataSourceType>Local</dataSourceType></dataSource><dataSet xsi:type='s:DataSetQuery'><name>Left</name><dataSource>Local</dataSource><query>SELECT 1 AS Amount</query></dataSet><dataSet xsi:type='s:DataSetQuery'><name>Right</name><dataSource>Local</dataSource><query>SELECT 1 AS Amount</query></dataSet>{body}"))
+}
+
+fn assert_link_read_flags(xml: &str, list_allowed: Option<bool>, required: Option<bool>) {
+    let data = crate::infrastructure::native_operations::dcs::parse_dcs_info_xml(
+        xml,
+        crate::domain::support_state::ObjectSupportData {
+            state: crate::domain::support_state::ObjectSupportState::NotSupported,
+            direct_edit_safe: None,
+        },
+    )
+    .unwrap();
+    let facts = serde_json::to_value(data).unwrap();
+    assert_eq!(facts["links"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        facts["links"][0]["parameterListAllowed"],
+        json!(list_allowed)
+    );
+    assert_eq!(facts["links"][0]["required"], json!(required));
+}
+
+#[test]
+fn dataset_link_add_keeps_platform_defaults_implicit_and_nondefaults_in_xsd_order() {
+    for (flags, expected_flags, read_flags) in [
+        (json!({}), false, (None, None)),
+        (
+            json!({"parameterListAllowed":false,"required":true}),
+            false,
+            (None, None),
+        ),
+        (
+            json!({"parameterListAllowed":true,"required":false}),
+            true,
+            (Some(true), Some(false)),
+        ),
+    ] {
+        let mut item = json!({"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount","parameter":"P","condition":"Amount > 0","startExpression":"Amount"});
+        item.as_object_mut()
+            .unwrap()
+            .extend(flags.as_object().unwrap().clone());
+        let mut xml = link_schema("");
+        let args = normalized(Primitive::DataSetLinkAdd, json!({"items":[item]}));
+        run(&mut xml, Primitive::DataSetLinkAdd, args, &target(&[], "")).unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let link = direct(doc.root_element(), S, "dataSetLink");
+        let expected = if expected_flags {
+            vec![
+                "sourceDataSet",
+                "destinationDataSet",
+                "sourceExpression",
+                "destinationExpression",
+                "parameter",
+                "parameterListAllowed",
+                "linkConditionExpression",
+                "startExpression",
+                "required",
+            ]
+        } else {
+            vec![
+                "sourceDataSet",
+                "destinationDataSet",
+                "sourceExpression",
+                "destinationExpression",
+                "parameter",
+                "linkConditionExpression",
+                "startExpression",
+            ]
+        };
+        assert_eq!(names(link), expected);
+        if expected_flags {
+            assert_eq!(direct_text(link, S, "parameterListAllowed"), "true");
+            assert_eq!(direct_text(link, S, "required"), "false");
+        }
+        assert_eq!(
+            direct_text(link, S, "linkConditionExpression"),
+            "Amount > 0"
+        );
+        assert_link_read_flags(&xml, read_flags.0, read_flags.1);
+    }
+}
+
+#[test]
+fn dataset_link_set_removes_only_supplied_nondefault_flag_and_keeps_adjacent_bytes() {
+    let list_flag = "<s:parameterListAllowed data-preserve='exact'>true<!-- list flag note --></s:parameterListAllowed>";
+    let untouched =
+        "<!-- link note --><?keep exact?><u:future xmlns:u='urn:future'>  unowned </u:future>";
+    let original = link_schema(&format!("<dataSetLink><sourceDataSet>Left</sourceDataSet><destinationDataSet>Right</destinationDataSet><sourceExpression>Amount</sourceExpression><destinationExpression>Amount</destinationExpression><parameter>P</parameter>{list_flag}<linkConditionExpression>Amount &gt; 0</linkConditionExpression>{untouched}<startExpression>Amount</startExpression><required>false</required></dataSetLink>"));
+    let selector = json!({"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount"});
+    let mut xml = original.clone();
+    let args = normalized(
+        Primitive::DataSetLinkSet,
+        json!({"values":{"selector":selector,"required":true}}),
+    );
+    run(&mut xml, Primitive::DataSetLinkSet, args, &target(&[], "")).unwrap();
+    assert_eq!(xml, original.replace("<required>false</required>", ""));
+    assert!(
+        xml.contains(list_flag),
+        "unsupplied flag is not a reset to default"
+    );
+    assert_link_read_flags(&xml, Some(true), None);
+    let before_list_reset = xml.clone();
+    let args = normalized(
+        Primitive::DataSetLinkSet,
+        json!({"values":{"selector":selector,"parameterListAllowed":false}}),
+    );
+    run(&mut xml, Primitive::DataSetLinkSet, args, &target(&[], "")).unwrap();
+    assert_eq!(xml, before_list_reset.replace(list_flag, ""));
+    assert!(xml.contains(untouched));
+    assert_link_read_flags(&xml, None, None);
+    let after_reset = xml.clone();
+    let args = normalized(
+        Primitive::DataSetLinkSet,
+        json!({"values":{"selector":selector,"parameterListAllowed":false,"required":true}}),
+    );
+    run(&mut xml, Primitive::DataSetLinkSet, args, &target(&[], "")).unwrap();
+    assert_eq!(xml, after_reset, "repeated defaults must be a no-op");
+}
+
+#[test]
+fn dataset_link_semantically_equal_explicit_default_flags_preserve_literal_bytes() {
+    for (list, required) in [
+        ("false", "true"),
+        ("0", "1"),
+        (" <!--note-->0", "tr<![CDATA[ue]]>"),
+        ("f<![CDATA[al]]><!--note-->se", " <!--note-->1 "),
+    ] {
+        let original = link_schema(&format!("<dataSetLink><sourceDataSet>Left</sourceDataSet><destinationDataSet>Right</destinationDataSet><sourceExpression>Amount</sourceExpression><destinationExpression>Amount</destinationExpression><parameterListAllowed>{list}<!-- explicit default note --></parameterListAllowed><required xmlns:q='urn:unowned' q:keep='exact'>{required}</required><!-- tail --></dataSetLink>"));
+        let mut xml = original.clone();
+        let args = normalized(
+            Primitive::DataSetLinkSet,
+            json!({"values":{"selector":{"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount"},"parameterListAllowed":false,"required":true}}),
+        );
+        run(&mut xml, Primitive::DataSetLinkSet, args, &target(&[], "")).unwrap();
+        assert_eq!(
+            xml, original,
+            "a semantic no-op must not canonicalize explicit defaults"
+        );
+        assert_link_read_flags(&xml, Some(false), Some(true));
+    }
+}
+
+#[test]
+fn dataset_link_read_preserves_complete_literal_selectors_for_set_and_noop() {
+    let source = "<sourceDataSet>Le<![CDATA[ft]]></sourceDataSet>";
+    let destination = "<destinationDataSet>Ri<!-- endpoint -->ght</destinationDataSet>";
+    let source_expression = "<sourceExpression> A<![CDATA[mount]]> </sourceExpression>";
+    let destination_expression =
+        "<destinationExpression> A<?keep expression?>mount </destinationExpression>";
+    let parameter = "<parameter> P<![CDATA[eriod]]> </parameter>";
+    let start_expression = "<startExpression> A<![CDATA[mount]]> </startExpression>";
+    let condition =
+        "<linkConditionExpression> Amount &gt; <!-- comparison -->0 </linkConditionExpression>";
+    let original = link_schema(&format!("<dataSetLink>{source}{destination}{source_expression}{destination_expression}{parameter}<parameterListAllowed> f<!-- false -->alse </parameterListAllowed>{condition}{start_expression}<required>tr<?keep bool?>ue</required></dataSetLink>"));
+    let facts = crate::infrastructure::native_operations::dcs::parse_dcs_info_xml(
+        &original,
+        crate::domain::support_state::ObjectSupportData {
+            state: crate::domain::support_state::ObjectSupportState::NotSupported,
+            direct_edit_safe: None,
+        },
+    )
+    .unwrap();
+    let facts = serde_json::to_value(facts).unwrap();
+    let link = &facts["links"][0];
+    for (key, expected) in [
+        ("source", "Left"),
+        ("destination", "Right"),
+        ("sourceExpression", " Amount "),
+        ("destinationExpression", " Amount "),
+        ("parameter", " Period "),
+        ("condition", " Amount > 0 "),
+        ("startExpression", " Amount "),
+    ] {
+        assert_eq!(link[key], json!(expected), "complete literal {key}");
+    }
+    assert_eq!(link["parameterListAllowed"], json!(false));
+    assert_eq!(link["required"], json!(true));
+    let selector = json!({
+        "source":link["source"],
+        "destination":link["destination"],
+        "sourceExpression":link["sourceExpression"],
+        "destinationExpression":link["destinationExpression"]
+    });
+    let mut xml = original.clone();
+    let args = normalized(
+        Primitive::DataSetLinkSet,
+        json!({"values":{"selector":selector,"parameterListAllowed":false,"required":true,"condition":" Amount > 0 "}}),
+    );
+    run(&mut xml, Primitive::DataSetLinkSet, args, &target(&[], "")).unwrap();
+    assert_eq!(
+        xml, original,
+        "facts must locate the link without changing equal bytes"
+    );
+    let args = normalized(
+        Primitive::DataSetLinkSet,
+        json!({"values":{"selector":selector,"parameterListAllowed":true,"condition":" Amount > 1 "}}),
+    );
+    run(&mut xml, Primitive::DataSetLinkSet, args, &target(&[], "")).unwrap();
+    let document = Document::parse(&xml).unwrap();
+    let link = direct(document.root_element(), S, "dataSetLink");
+    assert_eq!(direct_text(link, S, "parameterListAllowed"), "true");
+    assert_eq!(
+        direct_text(link, S, "linkConditionExpression"),
+        " Amount > 1 "
+    );
+    for untouched in [
+        source,
+        destination,
+        source_expression,
+        destination_expression,
+        parameter,
+        start_expression,
+    ] {
+        assert!(
+            xml.contains(untouched),
+            "unselected scalar XML must stay exact"
+        );
+    }
+    let after_change = xml.clone();
+    let args = normalized(
+        Primitive::DataSetLinkSet,
+        json!({"values":{"selector":selector,"parameterListAllowed":true,"condition":" Amount > 1 "}}),
+    );
+    run(&mut xml, Primitive::DataSetLinkSet, args, &target(&[], "")).unwrap();
+    assert_eq!(
+        xml, after_change,
+        "repeated targeted set must preserve the postimage"
+    );
+}

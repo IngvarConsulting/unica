@@ -175,6 +175,81 @@ def audit_cli(events, allowed_tools, help_path):
     return completed
 
 
+def protected_plan_files(operations, roots):
+    """Bounded source inputs and writable XML, derived from evaluated reports.
+
+    Preview replies expose logical changed nodes, not retained physical reads.
+    Observe the addressed template subtree plus each metadata owner and source
+    map; creation additionally permits registration in its report descriptor.
+    """
+    exact = {"v8project.yaml"}
+    prefixes = set()
+    writable = set()
+    for operation in operations:
+        target = operation["args"]["at"]
+        match = re.fullmatch(r"([^:]+):Report\.([^.]+)(?:\.Template\.([^.]+)(?:\..*)?)?", target)
+        if not match or match[1] not in roots:
+            raise ValueError("cannot bind the plan to recorded source files")
+        root = roots[match[1]]
+        report = f"{root}/Reports/{match[2]}"
+        exact.update({f"{root}/Configuration.xml", report + ".xml"})
+        if operation["op"] == "template.add":
+            names = [item.get("name") for item in operation["args"].get("items", [])]
+            if not names or any(not isinstance(name, str) or not re.fullmatch(r"[^./\\]+", name) for name in names):
+                raise ValueError("creation plan omitted safe template names")
+            writable.add(report + ".xml")
+        else:
+            if not match[3]:
+                raise ValueError("plan operation omitted its template")
+            names = [match[3]]
+        for name in names:
+            template = f"{report}/Templates/{name}"
+            exact.add(template + ".xml")
+            prefixes.add(template + "/")
+            writable.add(template + "/Ext/Template.xml")
+            if operation["op"] == "template.add":
+                writable.add(template + ".xml")
+    return exact, prefixes, writable
+
+
+def protected_snapshot(files, scope):
+    exact, prefixes, _ = scope
+    return {**{path: files.get(path) for path in exact},
+            **{path: digest for path, digest in files.items()
+               if any(path.startswith(prefix) for prefix in prefixes)}}
+
+
+def changed_files(before, after):
+    return {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
+
+
+def audit_publication_files(publications):
+    verified = []
+    for call, plan in sorted(publications, key=lambda publication: publication[0]["done"]):
+        scope = plan[4]
+        if scope is None:
+            continue  # legacy traces retain the stricter global preimage check
+        before = dict(call["filesBefore"])
+        for peer, peer_scope, transitions in verified:
+            if not call["index"] < peer["index"] < peer["done"] < call["done"]:
+                continue
+            if any(path in scope[0] or any(path.startswith(prefix) for prefix in scope[1])
+                   for path in transitions):
+                raise ValueError("peer publication changed protected plan source files during execution")
+            for path, (old, new) in transitions.items():
+                if before.get(path) != old:
+                    raise ValueError("peer publication source transitions do not match observed files")
+                if new is None:
+                    before.pop(path, None)
+                else:
+                    before[path] = new
+        writes = changed_files(before, call["filesAfter"])
+        if not writes or not writes <= scope[2]:
+            raise ValueError("execution wrote outside its planned XML files or published no effect")
+        transitions = {path: (before.get(path), call["filesAfter"].get(path)) for path in writes}
+        verified.append((call, scope, transitions))
+
+
 def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_operations=None,
               extra_templates=()):
     requests = {}
@@ -196,7 +271,11 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
             if message["method"] == "tools/call":
                 calls.append({"index": start, "done": index, "params": message["params"],
                               "result": (payload.get("result") or {}).get("structuredContent"),
-                              "before": before["sourceSha256"], "after": record["sourceSha256"]})
+                              "before": before["sourceSha256"], "after": record["sourceSha256"],
+                              "filesBefore": before.get("sourceFilesSha256"),
+                              "filesAfter": record.get("sourceFilesSha256"),
+                              "rootsBefore": before.get("sourceSetRoots"),
+                              "rootsAfter": record.get("sourceSetRoots")})
     if not allowed:
         raise ValueError("no actual MCP tool inventory")
     calls.sort(key=lambda call: call["index"])
@@ -205,6 +284,7 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
     contracts = {}
     plans = {}
     executed = []
+    publications = []
     templates = (target_template, *extra_templates)
     for call in calls:
         tool = call["params"]["name"]
@@ -218,12 +298,17 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                 if entry.get("implemented") is True and (entry.get("contract") or {}).get("argsSchema"):
                     contracts[(args.get("at"), entry["op"])] = call["done"]
         if tool == "unica.apply":
+            files = call.get("filesBefore")
+            after_files = call.get("filesAfter")
+            if (files is None) != (after_files is None):
+                raise ValueError("incomplete per-file source evidence")
+            observed_write = call["before"] != call["after"] or (files is not None and files != after_files)
             if result.get("ok") is not True:
-                if call["before"] != call["after"]:
+                if observed_write:
                     raise ValueError("refused apply changed source bytes")
                 continue  # a typed refusal may be corrected; it never proves an effect
             if data.get("mode") == "preview":
-                if call["before"] != call["after"] or not isinstance(data.get("effects"), int) or data["effects"] < 1:
+                if observed_write or not isinstance(data.get("effects"), int) or data["effects"] < 1:
                     raise ValueError("preview changed bytes or did not plan a positive effect")
                 operations = args.get("ops") or []
                 if not operations:
@@ -248,8 +333,11 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                         # publication of a new schema cannot satisfy an effect
                         # or invalidate a completed verification of its peer.
                         names = {item.get("name") for item in operation.get("args", {}).get("items", [])}
-                        owning_template = next((template for template in templates
-                                                if template.rsplit(".Template.", 1)[-1] in names), target_template)
+                        evaluated_names = {template.rsplit(".Template.", 1)[-1] for template in templates}
+                        if not names or not names <= evaluated_names:
+                            raise ValueError("creation names are outside the evaluated templates")
+                        owning_template = next(template for template in templates
+                                               if template.rsplit(".Template.", 1)[-1] in names)
                     template = owning_template
                     if isinstance(values.get("variant"), str) and values["variant"]:
                         target = template + ".Setting." + values["variant"]
@@ -261,16 +349,35 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                 token = data.get("executionToken")
                 if not isinstance(token, str) or not token or token in plans:
                     raise ValueError("missing or repeated preview token")
-                plans[token] = (ops, call["done"], call["after"], data["effects"])
+                scope = None
+                snapshot = call["after"]
+                if files is not None:
+                    if not isinstance(call["rootsAfter"], dict) or call["rootsBefore"] != call["rootsAfter"]:
+                        raise ValueError("source map evidence changed during preview")
+                    scoped_operations = [{"op": operation["op"], "args": {**operation.get("args", {}),
+                                          "at": operation.get("args", {}).get("at", args.get("at"))}}
+                                         for operation in operations]
+                    scope = protected_plan_files(scoped_operations, call["rootsAfter"])
+                    snapshot = protected_snapshot(after_files, scope)
+                plans[token] = (ops, call["done"], snapshot, data["effects"], scope, call["rootsAfter"])
             elif data.get("mode") == "published":
                 plan = plans.pop(args.get("executionToken"), None)
-                if not plan or plan[1] >= call["index"] or plan[2] != call["before"]:
+                if not plan or plan[1] >= call["index"]:
                     raise ValueError("execute did not consume its observed preview")
-                if data.get("effects") != plan[3] or call["before"] == call["after"]:
+                if plan[4] is not None:
+                    if files is None or call["rootsBefore"] != plan[5] or call["rootsAfter"] != plan[5]:
+                        raise ValueError("execution omitted or changed source map evidence")
+                    if plan[2] != protected_snapshot(files, plan[4]):
+                        raise ValueError("execute changed protected plan source files since its preview")
+                elif plan[2] != call["before"]:
+                    raise ValueError("execute did not consume its observed preview")
+                if data.get("effects") != plan[3] or not observed_write:
                     raise ValueError("execution did not publish its XML effect")
+                publications.append((call, plan))
                 executed.extend((op, template, call["done"]) for op, template in plan[0])
             else:
                 raise ValueError("unobserved asynchronous apply")
+    audit_publication_files(publications)
     selected = [(op, done) for op, template, done in executed if template == target_template]
     operations = {op for op, _ in selected}
     # A preview may be abandoned or become stale after another publication.
@@ -404,7 +511,7 @@ def terminal_calls(calls):
                     raise ValueError("Task identity or state changed")
                 continue
             pending.pop(task_id)
-            terminal.append({**original, "done": call["done"], "after": call["after"], "result": call["result"]})
+            terminal.append({**original, "done": call["done"], "after": call["after"], "filesAfter": call.get("filesAfter"), "rootsAfter": call.get("rootsAfter"), "result": call["result"]})
         elif name in {"unica.task.get", "unica.task.cancel"}:
             task_id = call["params"]["arguments"].get("taskId")
             if task_id not in pending or not task or task.get("taskId") != task_id:
@@ -481,7 +588,8 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", cha
     tool_settings = "{" + ",".join(json.dumps(name) + '={approval_mode="approve"}' for name in server._schemas) + "}"
     command += ["-c", f"mcp_servers.unica.tools={tool_settings}"]
     recorder = REPO / "tests/agent_evaluation/mcp_recorder.py"
-    arguments = [str(recorder), str(binary), str(proof / "mcp.jsonl"), str(server.workspace / source)]
+    arguments = [str(recorder), str(binary), str(proof / "mcp.jsonl"), str(server.workspace / source), str(server.workspace),
+                 json.dumps({"cf": f"{source}/cf"})]
     for key, value in {"command": sys.executable, "args": arguments, "cwd": str(packet),
                        "env": {key: value for key, value in environment.items() if key.startswith("UNICA_")}}.items():
         # JSON is a valid TOML scalar/array. TOML dictionaries use '='.

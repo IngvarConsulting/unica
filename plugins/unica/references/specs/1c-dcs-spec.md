@@ -429,7 +429,8 @@ accountingBalanceType, accountField, ignoreNullValues, required, dimensionAttrib
 | `sourceExpression` | да | Выражение из источника (поле или формула) |
 | `destinationExpression` | да | Выражение для сопоставления в целевом наборе |
 | `parameter` | нет | Имя параметра для передачи значения |
-| `parameterListAllowed` | нет | Допустим ли список значений (`true`/`false`) |
+| `parameterListAllowed` | нет | Допустим ли список значений (`true`/`false`); по умолчанию `false` |
+| `required` | нет | Обязательна ли связь (`true`/`false`); по умолчанию `true` |
 
 ---
 

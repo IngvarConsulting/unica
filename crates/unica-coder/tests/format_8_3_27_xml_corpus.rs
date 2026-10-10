@@ -105,15 +105,15 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["nested-property"],
     },
     MutatorRegistryEntry {
-        tool: "unica.dcs.compile",
-        operation: "dcs-compile",
+        tool: CANONICAL_APPLY_TOOL,
+        operation: "dcs-component-create",
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["dcs-compile-owned-template"],
         required_branches: &["owned-template"],
     },
     MutatorRegistryEntry {
-        tool: "unica.dcs.edit",
-        operation: "dcs-edit",
+        tool: CANONICAL_APPLY_TOOL,
+        operation: "dcs-component-modify",
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &[
             "dcs-edit-owned-template",
@@ -394,27 +394,27 @@ pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
     },
     ExecutableCase {
         id: "dcs-compile-owned-template",
-        tool: "unica.dcs.compile",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "owned-template",
     },
     ExecutableCase {
         id: "dcs-edit-owned-template",
-        tool: "unica.dcs.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "owned-template",
     },
     ExecutableCase {
         id: "dcs-edit-add-parameter-after-settings",
-        tool: "unica.dcs.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "add-parameter-after-settings",
     },
     ExecutableCase {
         id: "dcs-edit-set-structure-after-settings",
-        tool: "unica.dcs.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "set-structure-after-settings",
     },
     ExecutableCase {
         id: "dcs-edit-modify-field-role-restriction",
-        tool: "unica.dcs.edit",
+        tool: CANONICAL_APPLY_TOOL,
         branch: "modify-field-role-restriction",
     },
     ExecutableCase {
@@ -855,6 +855,44 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
             "params": {"name": tool, "arguments": Value::Object(request)}
         }),
     )?;
+    fn completed_response(
+        stdin: &mut std::process::ChildStdin,
+        reader: &mut BufReader<std::process::ChildStdout>,
+        mut response: Value,
+        phase: &str,
+    ) -> Result<Value, String> {
+        let mut expected_task_id = None;
+        for poll in 0..=10 {
+            let structured = &response["result"]["structuredContent"];
+            if structured["ok"] != true || structured["data"]["task"].is_null() {
+                return Ok(response);
+            }
+            let task_id = structured["data"]["task"]["taskId"]
+                .as_str()
+                .ok_or_else(|| format!("task has no id: {response}"))?
+                .to_string();
+            if expected_task_id
+                .as_ref()
+                .is_some_and(|expected| expected != &task_id)
+            {
+                return Err(format!("task identity changed: {response}"));
+            }
+            expected_task_id = Some(task_id.clone());
+            if poll == 10 {
+                return Err(format!("canonical {phase} task did not finish: {response}"));
+            }
+            response = exchange(
+                stdin,
+                reader,
+                json!({
+                    "jsonrpc":"2.0","id":format!("{phase}-task-{poll}"),"method":"tools/call",
+                    "params":{"name":"unica.task.result","arguments":{"taskId":task_id,"waitMs":7000}}
+                }),
+            )?;
+        }
+        unreachable!()
+    }
+    response = completed_response(&mut stdin, &mut reader, response, "preview")?;
     if publish_apply && response["result"]["structuredContent"]["ok"] == true {
         let token = response["result"]["structuredContent"]["data"]["executionToken"]
             .as_str()
@@ -870,6 +908,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
             }),
         )?;
     }
+    response = completed_response(&mut stdin, &mut reader, response, "execute")?;
     drop(stdin);
     let _ = child.wait();
     let _ = fs::remove_dir_all(&state);
@@ -1275,6 +1314,11 @@ fn hashes_for_xml_payloads(payloads: &XmlPayloadSnapshot) -> XmlSnapshot {
 }
 
 fn materialize_pre_xml(pre_root: &Path, payloads: &XmlPayloadSnapshot) -> Result<(), String> {
+    if let Some(parent) = pre_root.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
+    // The snapshot leaf must be new, even when its parents are newly created.
     fs::create_dir(pre_root)
         .map_err(|error| format!("cannot create {}: {error}", pre_root.display()))?;
     for (relative, payload) in payloads {
@@ -1834,21 +1878,18 @@ fn template_args(workspace: &Path, template_name: &str, template_type: &str) -> 
     args
 }
 
+fn canonical_dcs_template_add_args(workspace: &Path, name: &str) -> Map<String, Value> {
+    let mut args = common_args(workspace);
+    args.insert("at".to_string(), json!("main:Report.CorpusReport"));
+    args.insert("ops".to_string(), json!([{
+        "op":"template.add", "args":{"items":[{"name":name,"templateType":"DataCompositionSchema"}]}
+    }]));
+    args
+}
+
 fn seed_dcs_template(workspace: &Path) -> Result<(), String> {
-    call_public_tool(
-        "unica.meta.edit",
-        &template_args(workspace, "CorpusDcs", "DataCompositionSchema"),
-    )?;
-    let mut compile = common_args(workspace);
-    compile.insert(
-        "Value".to_string(),
-        Value::String(dcs_definition().to_string()),
-    );
-    compile.insert(
-        "OutputPath".to_string(),
-        Value::String("src/Reports/CorpusReport/Templates/CorpusDcs/Ext/Template.xml".to_string()),
-    );
-    call_public_tool("unica.dcs.compile", &compile)?;
+    call_canonical_apply(&canonical_dcs_template_add_args(workspace, "CorpusDcs"))?;
+    call_canonical_apply(&dcs_component_args(workspace, "CorpusDcs"))?;
     Ok(())
 }
 
@@ -1903,117 +1944,178 @@ fn seed_extension(workspace: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn dcs_definition() -> Value {
-    json!({
-        "dataSets": [
-            {
-                "name": "Main",
-                "query": "SELECT 1 AS Value, 10 AS Amount",
-                "fields": ["Value:String", "Amount:Number(15,2)"]
-            },
-            {
-                "name": "CatalogObject",
-                "objectName": "Catalog.CorpusCatalog",
-                "fields": [{
-                    "dataPath": "Description",
-                    "field": "Description",
-                    "type": "String",
-                    "presentationExpression": "Description"
-                }]
-            },
-            {
-                "name": "Combined",
-                "fields": ["Value:String"],
-                "items": [
-                    {
-                        "name": "UnionFirst",
-                        "query": "SELECT 1 AS Value",
-                        "fields": ["Value:String"]
-                    },
-                    {
-                        "name": "UnionSecond",
-                        "query": "SELECT 2 AS Value",
-                        "fields": ["Value:String"]
-                    }
-                ]
+/// Explicit component composition. The scaffold source is part of template.add's
+/// tested initial content; fields never imply a variant selection.
+fn dcs_component_ops(template: &str) -> Vec<Value> {
+    let base = format!("main:Report.CorpusReport.Template.{template}");
+    let mut ops = Vec::new();
+    let mut add = |suffix: &str, op: &str, mut args: Value| {
+        args["at"] = json!(format!("{base}{suffix}"));
+        ops.push(json!({"op":op,"args":args}));
+    };
+    add(
+        "",
+        "dataSet.add",
+        json!({"items":[
+            {"name":"Main","kind":"Query","dataSource":"ИсточникДанных1","query":"SELECT 1 AS Value, 10 AS Amount"},
+            {"name":"CatalogObject","kind":"Object","dataSource":"ИсточникДанных1","objectName":"Catalog.CorpusCatalog"},
+            {"name":"Combined","kind":"Union"}
+        ]}),
+    );
+    add(
+        ".DataSet.Main",
+        "field.add",
+        json!({"items":[{"dataPath":"Value","type":"String"},{"dataPath":"Amount","type":"Number(15,2)"}]}),
+    );
+    add(
+        ".DataSet.CatalogObject",
+        "field.add",
+        json!({"items":[{"dataPath":"Description","field":"Description","type":"String","presentationExpression":"Description"}]}),
+    );
+    add(
+        ".DataSet.Combined",
+        "field.add",
+        json!({"items":[{"dataPath":"Value","type":"String"}]}),
+    );
+    add(
+        ".DataSet.Combined",
+        "dataSet.add",
+        json!({"items":[
+            {"name":"UnionFirst","kind":"Query","dataSource":"ИсточникДанных1","query":"SELECT 1 AS Value"},
+            {"name":"UnionSecond","kind":"Query","dataSource":"ИсточникДанных1","query":"SELECT 2 AS Value"}
+        ]}),
+    );
+    for member in ["UnionFirst", "UnionSecond"] {
+        add(
+            &format!(".DataSet.Combined.DataSet.{member}"),
+            "field.add",
+            json!({"items":[{"dataPath":"Value","type":"String"}]}),
+        );
+    }
+    add(
+        "",
+        "dataSetLink.add",
+        json!({"items":[{
+            "source":"Main","destination":"CatalogObject","sourceExpression":"Value","destinationExpression":"Description",
+            "parameter":"Режим","parameterListAllowed":true,"condition":"Value = Description","startExpression":"Value","required":true
+        }]}),
+    );
+    // Both legacy restriction aliases contributed to this one platform node.
+    add(
+        "",
+        "calculatedField.add",
+        json!({"items":[{
+            "name":"CalculatedAmount","expression":"Amount * 2","title":"Calculated amount","type":"decimal(15,2)",
+            "useRestriction":{"condition":true,"group":true,"field":true,"order":true}
+        }]}),
+    );
+    add(
+        "",
+        "parameter.add",
+        json!({"items":[
+            {"name":"Период","type":"StandardPeriod","value":"LastMonth"},
+            {"name":"ДатаНачала","title":"Начало периода","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаНачала","useRestriction":true},
+            {"name":"ДатаОкончания","title":"Конец периода","type":"dateTime","value":"0001-01-01T00:00:00","expression":"&Период.ДатаОкончания","useRestriction":true},
+            {"name":"ТипКорпуса","type":"string(16)","availableAsField":false,"use":"Always"},
+            {"name":"Режим","title":"Mode","type":"string(16)","value":"A","useRestriction":true,"expression":"&Source.Mode",
+             "availableValues":[{"value":"A","presentation":"Alpha"},{"value":"B","presentation":"Beta"}],
+             "valueListAllowed":true,"availableAsField":false,"denyIncompleteValues":true,"use":"Always"}
+        ]}),
+    );
+    add("", "variant.remove", json!({"values":{"name":"Основной"}}));
+    add(
+        "",
+        "variant.add",
+        json!({"items":[{"name":"Main","presentation":"Corpus settings"}]}),
+    );
+    add(
+        ".Setting.Main",
+        "structure.add",
+        json!({"items":[{"name":"Corpus group","kind":"group","groupBy":["Value"]}]}),
+    );
+    add(
+        ".Setting.Main",
+        "structure.add",
+        json!({"items":[{"name":"Details","kind":"group","parent":"Corpus group","groupBy":[]}]}),
+    );
+    for group in [None, Some("Corpus group")] {
+        let decorate = |mut value: Value| {
+            if let Some(group) = group {
+                value["group"] = json!(group);
             }
+            value
+        };
+        add(
+            ".Setting.Main",
+            "selection.add",
+            json!({"items":[decorate(json!({"field":"Value"})),decorate(json!({"field":"Amount"}))]}),
+        );
+        add(
+            ".Setting.Main",
+            "filter.add",
+            json!({"items":[decorate(json!({"field":"Amount","comparison":"Greater","value":0}))]}),
+        );
+        add(
+            ".Setting.Main",
+            "order.add",
+            json!({"items":[decorate(json!({"field":"Amount","direction":"Desc"}))]}),
+        );
+        add(
+            ".Setting.Main",
+            "conditionalAppearance.add",
+            json!({"items":[decorate(json!({"fields":["Amount"],"filter":[{"field":"Amount","comparison":"Greater","value":0}],"appearance":{"ЦветТекста":"web:Red"}}))]}),
+        );
+        add(
+            ".Setting.Main",
+            "outputParameter.set",
+            json!({"values":decorate(json!({"name":"Заголовок","value":if group.is_some(){"Corpus group"}else{"Corpus report"}}))}),
+        );
+    }
+    add(
+        ".Setting.Main",
+        "dataParameter.add",
+        json!({"items":[{"name":"Режим","value":"A"}]}),
+    );
+    ops
+}
+
+fn dcs_component_args(workspace: &Path, template: &str) -> Map<String, Value> {
+    let mut args = common_args(workspace);
+    args.insert(
+        "at".to_string(),
+        json!(format!("main:Report.CorpusReport.Template.{template}")),
+    );
+    args.insert("ops".to_string(), Value::Array(dcs_component_ops(template)));
+    args
+}
+
+fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
+    let base = "main:Report.CorpusReport.Template.CorpusDcs";
+    let mut ops = match case_id {
+        "dcs-edit-owned-template" => vec![
+            json!({"at":format!("{base}.DataSet.Main"),"op":"field.add","args":{"items":[{"dataPath":"Added","type":"String"}]}}),
+            json!({"at":format!("{base}.Setting.Main"),"op":"selection.add","args":{"items":[{"field":"Added"}]}}),
         ],
-        "dataSetLinks": [{
-            "source": "Main",
-            "dest": "CatalogObject",
-            "sourceExpr": "Value",
-            "destExpr": "Description",
-            "parameter": "Режим",
-            "parameterListAllowed": true,
-            "linkConditionExpression": "Value = Description",
-            "startExpression": "Value",
-            "required": true
-        }],
-        "calculatedFields": [{
-            "dataPath": "CalculatedAmount",
-            "expression": "Amount * 2",
-            "title": "Calculated amount",
-            "restrict": ["noFilter", "noGroup"],
-            "useRestriction": ["noField", "noOrder"],
-            "type": "decimal(15,2)"
-        }],
-        "parameters": [
-            "Период: StandardPeriod = LastMonth @autoDates",
-            {
-                "name": "ТипКорпуса",
-                "type": "string(16)",
-                "availableAsField": false,
-                "use": "Always"
-            },
-            {
-                "name": "Режим",
-                "title": "Mode",
-                "type": "string(16)",
-                "value": "A",
-                "useRestriction": true,
-                "expression": "&Source.Mode",
-                "availableValues": [
-                    {"value": "A", "presentation": "Alpha"},
-                    {"value": "B", "presentation": "Beta"}
-                ],
-                "valueListAllowed": true,
-                "availableAsField": false,
-                "denyIncompleteValues": true,
-                "use": "Always"
-            }
+        "dcs-edit-add-parameter-after-settings" => {
+            vec![json!({"op":"parameter.add","args":{"items":[{
+                "name":"ПериодРедактирования","title":"Edit period","type":"StandardPeriod","value":"LastMonth","useRestriction":true,"use":"Always"
+            }]}})]
+        }
+        "dcs-edit-set-structure-after-settings" => vec![
+            json!({"at":format!("{base}.Setting.Main"),"op":"structure.set","args":{"values":{"name":"Edited","groupBy":["Value"],"details":true}}}),
         ],
-        "settingsVariants": [{
-            "name": "Main",
-            "presentation": "Corpus settings",
-            "settings": {
-                "selection": ["Value", "Amount"],
-                "filter": ["Amount > 0"],
-                "dataParameters": [{"parameter": "Режим", "value": "A"}],
-                "order": [{"field": "Amount", "direction": "Desc"}],
-                "conditionalAppearance": [{
-                    "fields": ["Amount"],
-                    "filter": ["Amount > 0"],
-                    "appearance": {"ЦветТекста": "web:Red"}
-                }],
-                "outputParameters": {"Заголовок": "Corpus report"},
-                "structure": [{
-                    "type": "group",
-                    "name": "Corpus group",
-                    "groupBy": ["Value"],
-                    "filter": ["Amount > 0"],
-                    "order": [{"field": "Amount", "direction": "Desc"}],
-                    "selection": ["Value", "Amount"],
-                    "conditionalAppearance": [{
-                        "fields": ["Amount"],
-                        "filter": ["Amount > 0"],
-                        "appearance": {"ЦветТекста": "web:Red"}
-                    }],
-                    "outputParameters": {"Заголовок": "Corpus group"},
-                    "children": [{"type": "group", "name": "Details"}]
-                }]
-            }
-        }]
-    })
+        "dcs-edit-modify-field-role-restriction" => vec![
+            json!({"at":format!("{base}.DataSet.CatalogObject"),"op":"field.set","args":{"values":{"field":"Description","title":"Updated","type":"String","useRestriction":{"field":true,"order":true}}}}),
+            json!({"at":format!("{base}.DataSet.CatalogObject"),"op":"fieldRole.set","args":{"values":{"field":"Description","role":{"required":true,"dimension":true}}}}),
+        ],
+        _ => unreachable!("unknown DCS mutation case {case_id}"),
+    };
+    for op in &mut ops {
+        if let Some(at) = op.as_object_mut().unwrap().remove("at") {
+            op["args"]["at"] = at;
+        }
+    }
+    ops
 }
 
 fn meta_definition(kind: &str) -> Option<Value> {
@@ -2156,20 +2258,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
                 "valueTypes": ["String(16)"]
             }),
         )?;
-        call_public_tool(
-            "unica.meta.edit",
-            &template_args(workspace, "CorpusTemplate", "DataCompositionSchema"),
-        )?;
-        let output = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml";
-        fs::remove_file(workspace.join(output))
-            .map_err(|error| format!("cannot remove preparatory DCS content: {error}"))?;
-        let mut args = common_args(workspace);
-        args.insert(
-            "Value".to_string(),
-            Value::String(dcs_definition().to_string()),
-        );
-        args.insert("OutputPath".to_string(), Value::String(output.to_string()));
-        return Ok(args);
+        return Ok(canonical_dcs_template_add_args(workspace, "CorpusTemplate"));
     }
     if case.id == "mxl-compile-owned-template" {
         seed_configuration(workspace)?;
@@ -2950,36 +3039,10 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         seed_dcs_template(workspace)?;
         let mut args = common_args(workspace);
         args.insert(
-            "TemplatePath".to_string(),
-            Value::String(
-                "src/Reports/CorpusReport/Templates/CorpusDcs/Ext/Template.xml".to_string(),
-            ),
+            "at".to_string(),
+            json!("main:Report.CorpusReport.Template.CorpusDcs"),
         );
-        let (operation, value, data_set) = match case.id {
-            "dcs-edit-owned-template" => ("add-field", "Added:String", Some("Main")),
-            "dcs-edit-add-parameter-after-settings" => (
-                "add-parameter",
-                "ПериодРедактирования [Edit period]: StandardPeriod = LastMonth @autoDates @hidden @always",
-                None,
-            ),
-            "dcs-edit-set-structure-after-settings" => {
-                ("set-structure", "Value @name=Edited > details", None)
-            }
-            "dcs-edit-modify-field-role-restriction" => (
-                "modify-field",
-                "Description [Updated]:String @required @dimension @required #noOrder #noField #noOrder",
-                Some("CatalogObject"),
-            ),
-            _ => unreachable!(),
-        };
-        args.insert(
-            "Operation".to_string(),
-            Value::String(operation.to_string()),
-        );
-        args.insert("Value".to_string(), Value::String(value.to_string()));
-        if let Some(data_set) = data_set {
-            args.insert("DataSet".to_string(), Value::String(data_set.to_string()));
-        }
+        args.insert("ops".to_string(), Value::Array(dcs_mutation_ops(case.id)));
         return Ok(args);
     }
 
@@ -3162,6 +3225,8 @@ struct CaseReport {
     impact_class: String,
     public_arguments: Value,
     target_call: TargetCallReport,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    publications: Vec<PublicationReport>,
     pre_files: Vec<PreCorpusFile>,
     pre_non_xml_files: Vec<PreNonXmlFile>,
     non_xml_files: Vec<NonXmlFile>,
@@ -3185,6 +3250,20 @@ struct TargetCallReport {
     result_ok: bool,
     errors: Vec<String>,
     summary: String,
+}
+
+/// A component creation case publishes the scaffold first, then fills the
+/// newly registered template. Each publication retains its own real delta.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PublicationReport {
+    snapshot_path: String,
+    tool_id: String,
+    public_arguments: Value,
+    summary: String,
+    pre_xml_sha256: XmlSnapshot,
+    post_xml_sha256: XmlSnapshot,
+    delta: XmlDelta,
 }
 
 #[derive(Debug, Serialize)]
@@ -3678,6 +3757,316 @@ fn sanitize_value(value: &Value, workspace: &Path) -> Value {
     }
 }
 
+fn dcs_child<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+    ns: &str,
+    tag: &str,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
+    node.children()
+        .find(|child| child.has_tag_name((ns, tag)))
+        .ok_or_else(|| format!("missing DCS {tag}"))
+}
+
+fn dcs_named<'a, 'input>(
+    node: roxmltree::Node<'a, 'input>,
+    ns: &str,
+    tag: &str,
+    key: &str,
+    name: &str,
+) -> Result<roxmltree::Node<'a, 'input>, String> {
+    let matches = node
+        .children()
+        .filter(|child| {
+            child.has_tag_name((ns, tag))
+                && dcs_child(*child, ns, key).ok().and_then(|key| key.text()) == Some(name)
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(format!("DCS {tag}.{name} must occur exactly once"));
+    }
+    Ok(matches[0])
+}
+
+fn require_dcs_fixture_xml(case_id: &str, xml: &str) -> Result<(), String> {
+    const S: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
+    const T: &str = "http://v8.1c.ru/8.1/data-composition-system/settings";
+    const C: &str = "http://v8.1c.ru/8.1/data-composition-system/core";
+    const COMMON: &str = "http://v8.1c.ru/8.1/data-composition-system/common";
+    const V: &str = "http://v8.1c.ru/8.1/data/core";
+    let document = Document::parse(xml).map_err(|error| error.to_string())?;
+    let root = document.root_element();
+    let check = |condition: bool, message: &str| -> Result<(), String> {
+        if condition {
+            Ok(())
+        } else {
+            Err(format!("{case_id}: {message}"))
+        }
+    };
+    check(
+        root.has_tag_name((S, "DataCompositionSchema")) && root.attribute("version").is_none(),
+        "versionless DCS root was not preserved",
+    )?;
+    let main = dcs_named(root, S, "dataSet", "name", "Main")?;
+    let object = dcs_named(root, S, "dataSet", "name", "CatalogObject")?;
+    let union = dcs_named(root, S, "dataSet", "name", "Combined")?;
+    check(
+        dcs_child(main, S, "query")?.text() == Some("SELECT 1 AS Value, 10 AS Amount"),
+        "Query text changed",
+    )?;
+    check(
+        dcs_child(object, S, "objectName")?.text() == Some("Catalog.CorpusCatalog"),
+        "Object dataset name missing",
+    )?;
+    for (name, query) in [
+        ("UnionFirst", "SELECT 1 AS Value"),
+        ("UnionSecond", "SELECT 2 AS Value"),
+    ] {
+        let member = dcs_named(union, S, "item", "name", name)?;
+        check(
+            dcs_child(member, S, "query")?.text() == Some(query),
+            "Union member query missing",
+        )?;
+        dcs_named(member, S, "field", "dataPath", "Value")?;
+    }
+    dcs_child(
+        dcs_named(union, S, "field", "dataPath", "Value")?,
+        S,
+        "valueType",
+    )?;
+    let link = dcs_child(root, S, "dataSetLink")?;
+    for (tag, value) in [
+        ("sourceDataSet", "Main"),
+        ("destinationDataSet", "CatalogObject"),
+        ("sourceExpression", "Value"),
+        ("destinationExpression", "Description"),
+        ("parameter", "Режим"),
+        ("parameterListAllowed", "true"),
+        ("linkConditionExpression", "Value = Description"),
+        ("startExpression", "Value"),
+    ] {
+        check(
+            dcs_child(link, S, tag)?.text() == Some(value),
+            &format!("link {tag} missing"),
+        )?;
+    }
+    // Required=true is the platform default; an explicit false would weaken it.
+    check(
+        link.children()
+            .find(|node| node.has_tag_name((S, "required")))
+            .is_none_or(|node| node.text() == Some("true")),
+        "link required default changed",
+    )?;
+    let calculated = dcs_named(root, S, "calculatedField", "dataPath", "CalculatedAmount")?;
+    check(
+        dcs_child(calculated, S, "expression")?.text() == Some("Amount * 2"),
+        "calculated expression missing",
+    )?;
+    let restriction = dcs_child(calculated, S, "useRestriction")?;
+    for flag in ["field", "condition", "group", "order"] {
+        check(
+            dcs_child(restriction, S, flag)?.text() == Some("true"),
+            &format!("calculated restriction {flag} missing"),
+        )?;
+    }
+    let declared = dcs_child(calculated, S, "valueType")?;
+    check(
+        declared
+            .descendants()
+            .any(|node| node.has_tag_name((V, "Digits")) && node.text() == Some("15")),
+        "calculated numeric type qualifiers missing",
+    )?;
+    let mode = dcs_named(root, S, "parameter", "name", "Режим")?;
+    for (tag, value) in [
+        ("value", "A"),
+        ("useRestriction", "true"),
+        ("expression", "&Source.Mode"),
+        ("valueListAllowed", "true"),
+        ("availableAsField", "false"),
+        ("denyIncompleteValues", "true"),
+        ("use", "Always"),
+    ] {
+        check(
+            dcs_child(mode, S, tag)?.text() == Some(value),
+            &format!("parameter {tag} missing"),
+        )?;
+    }
+    let choices = mode
+        .children()
+        .filter(|node| node.has_tag_name((S, "availableValue")))
+        .collect::<Vec<_>>();
+    check(choices.len() == 2, "available value count changed")?;
+    for (choice, value, title) in [(choices[0], "A", "Alpha"), (choices[1], "B", "Beta")] {
+        check(
+            dcs_child(choice, S, "value")?.text() == Some(value),
+            "available value missing",
+        )?;
+        check(
+            dcs_child(choice, S, "presentation")?
+                .descendants()
+                .any(|node| node.has_tag_name((V, "content")) && node.text() == Some(title)),
+            "available presentation missing",
+        )?;
+    }
+    let unicode = dcs_named(root, S, "parameter", "name", "ТипКорпуса")?;
+    check(
+        dcs_child(unicode, S, "valueType")?
+            .descendants()
+            .any(|node| node.has_tag_name((V, "Length")) && node.text() == Some("16")),
+        "unicode parameter type qualifiers missing",
+    )?;
+    for (name, expression) in [
+        ("ДатаНачала", "&Период.ДатаНачала"),
+        ("ДатаОкончания", "&Период.ДатаОкончания"),
+    ] {
+        let parameter = dcs_named(root, S, "parameter", "name", name)?;
+        check(
+            dcs_child(parameter, S, "expression")?.text() == Some(expression),
+            "existing explicit period dependency changed",
+        )?;
+        check(
+            dcs_child(parameter, S, "useRestriction")?.text() == Some("true"),
+            "period dependency visibility changed",
+        )?;
+    }
+    let variant = root
+        .children()
+        .find(|node| {
+            node.has_tag_name((S, "settingsVariant"))
+                && dcs_child(*node, T, "name")
+                    .ok()
+                    .and_then(|name| name.text())
+                    == Some("Main")
+        })
+        .ok_or("missing Main variant")?;
+    let settings = dcs_child(variant, T, "settings")?;
+    for tag in [
+        "selection",
+        "filter",
+        "dataParameters",
+        "order",
+        "conditionalAppearance",
+        "outputParameters",
+    ] {
+        dcs_child(settings, T, tag)?;
+    }
+    let title = dcs_child(settings, T, "outputParameters")?;
+    check(
+        title
+            .descendants()
+            .any(|node| node.has_tag_name((V, "content")) && node.text() == Some("Corpus report")),
+        "localized output title missing",
+    )?;
+    let color = dcs_child(settings, T, "conditionalAppearance")?;
+    let value = color
+        .descendants()
+        .find(|node| node.has_tag_name((C, "value")) && node.text() == Some("web:Red"))
+        .ok_or("conditional appearance color missing")?;
+    let qname = value
+        .attribute(("http://www.w3.org/2001/XMLSchema-instance", "type"))
+        .ok_or("color lacks type")?;
+    let (prefix, local) = qname.split_once(':').ok_or("color lacks qualified type")?;
+    check(
+        local == "Color"
+            && value.lookup_namespace_uri(Some(prefix)) == Some("http://v8.1c.ru/8.1/data/ui"),
+        "appearance color has wrong platform type",
+    )?;
+    check(
+        value.lookup_namespace_uri(Some("web")) == Some("http://v8.1c.ru/8.1/data/ui/colors/web"),
+        "color value QName is unbound",
+    )?;
+    let structure_name = if case_id == "dcs-edit-set-structure-after-settings" {
+        "Edited"
+    } else {
+        "Corpus group"
+    };
+    let group = settings
+        .children()
+        .find(|node| {
+            node.has_tag_name((T, "item"))
+                && dcs_child(*node, T, "name")
+                    .ok()
+                    .and_then(|name| name.text())
+                    == Some(structure_name)
+        })
+        .ok_or("missing named structure group")?;
+    check(
+        dcs_child(group, T, "groupItems")?
+            .descendants()
+            .any(|node| node.has_tag_name((T, "field")) && node.text() == Some("Value")),
+        "groupBy field missing",
+    )?;
+    check(
+        group.children().any(|node| node.has_tag_name((T, "item"))),
+        "nested details missing",
+    )?;
+    if case_id != "dcs-edit-set-structure-after-settings" {
+        for tag in [
+            "selection",
+            "filter",
+            "order",
+            "conditionalAppearance",
+            "outputParameters",
+        ] {
+            dcs_child(group, T, tag)?;
+        }
+    }
+    let description = dcs_named(object, S, "field", "dataPath", "Description")?;
+    check(
+        dcs_child(description, S, "presentationExpression")?.text() == Some("Description"),
+        "unaddressed presentation expression changed",
+    )?;
+    dcs_child(description, S, "valueType")?;
+    match case_id {
+        "dcs-edit-owned-template" => {
+            dcs_named(main, S, "field", "dataPath", "Added")?;
+            check(
+                dcs_child(settings, T, "selection")?
+                    .descendants()
+                    .any(|node| node.has_tag_name((T, "field")) && node.text() == Some("Added")),
+                "explicit selection of added field missing",
+            )?;
+        }
+        "dcs-edit-add-parameter-after-settings" => {
+            let added = dcs_named(root, S, "parameter", "name", "ПериодРедактирования")?;
+            check(
+                dcs_child(added, S, "use")?.text() == Some("Always")
+                    && dcs_child(added, S, "useRestriction")?.text() == Some("true"),
+                "added period flags missing",
+            )?;
+            check(
+                dcs_child(added, S, "value")?.descendants().any(|node| {
+                    node.has_tag_name((V, "variant")) && node.text() == Some("LastMonth")
+                }),
+                "added period value missing",
+            )?;
+        }
+        "dcs-edit-modify-field-role-restriction" => {
+            let restriction = dcs_child(description, S, "useRestriction")?;
+            check(
+                dcs_child(restriction, S, "field")?.text() == Some("true")
+                    && dcs_child(restriction, S, "order")?.text() == Some("true"),
+                "modified field restrictions missing",
+            )?;
+            let role = dcs_child(description, S, "role")?;
+            check(
+                dcs_child(role, COMMON, "dimension")?.text() == Some("true")
+                    && dcs_child(role, COMMON, "required")?.text() == Some("true"),
+                "modified field role flags missing",
+            )?;
+            check(
+                dcs_child(description, S, "title")?
+                    .descendants()
+                    .any(|node| {
+                        node.has_tag_name((V, "content")) && node.text() == Some("Updated")
+                    }),
+                "modified field title missing",
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn assert_case_postconditions(
     case: &ExecutableCase,
     workspace: &Path,
@@ -3685,6 +4074,23 @@ fn assert_case_postconditions(
     after: &XmlSnapshot,
     delta: &XmlDelta,
 ) -> Result<(), String> {
+    if case.id.starts_with("dcs-") {
+        let template = if case.id == "dcs-compile-owned-template" {
+            "CorpusTemplate"
+        } else {
+            "CorpusDcs"
+        };
+        let body = format!("src/Reports/CorpusReport/Templates/{template}/Ext/Template.xml");
+        let xml = fs::read_to_string(workspace.join(&body)).map_err(|error| error.to_string())?;
+        require_dcs_fixture_xml(case.id, &xml)?;
+        if case.id != "dcs-compile-owned-template"
+            && (!delta.created.is_empty() || !delta.removed.is_empty() || delta.modified != [body])
+        {
+            return Err(format!(
+                "DCS component mutation changed files outside its existing body: {delta:?}"
+            ));
+        }
+    }
     if matches!(effective_xml_impact(case.id), XmlImpactClass::None) {
         if before.is_empty() {
             return Err(format!("None-impact case has no seed XML: {}", case.id));
@@ -3783,7 +4189,61 @@ fn run_corpus_case(
     let before = hashes_for_xml_payloads(&pre_payloads);
     let pre_contract = build_pre_contract(case, &pre_payloads)?;
     let sequence = gate.completed_target_calls + 1;
-    let summary = call_target_tool(gate, case.tool, &args)?;
+    let mut publications = Vec::new();
+    let summary = if case.id == "dcs-compile-owned-template" {
+        // One sequential case contains two actual publications. A new Template
+        // address becomes usable only after template.add execution completes.
+        gate.begin()?;
+        let result = (|| -> Result<String, String> {
+            let creation_summary = call_public_tool(case.tool, &args)?;
+            remove_internal_workspace_cache(&workspace)?;
+            let created_payloads = capture_xml_payloads(&workspace)?;
+            let created = hashes_for_xml_payloads(&created_payloads);
+            let creation_delta =
+                enforce_xml_impact(XmlImpactClass::CreateOrModify, &before, &created)?;
+            let body = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml";
+            if !creation_delta.created.iter().any(|path| path == body) {
+                return Err("DCS template.add did not create a previously absent body".to_string());
+            }
+            let creation_snapshot = format!("cases/{}/publications/1/xml", case.id);
+            materialize_pre_xml(&output.join(&creation_snapshot), &created_payloads)?;
+            publications.push(PublicationReport {
+                snapshot_path: creation_snapshot,
+                tool_id: case.tool.to_string(),
+                public_arguments: sanitize_value(&Value::Object(args.clone()), &workspace),
+                summary: creation_summary.clone(),
+                pre_xml_sha256: before.clone(),
+                post_xml_sha256: created.clone(),
+                delta: creation_delta,
+            });
+            let components = dcs_component_args(&workspace, "CorpusTemplate");
+            let component_summary = call_public_tool(CANONICAL_APPLY_TOOL, &components)?;
+            remove_internal_workspace_cache(&workspace)?;
+            let filled = hashes_for_xml_payloads(&capture_xml_payloads(&workspace)?);
+            let component_delta =
+                enforce_xml_impact(XmlImpactClass::CreateOrModify, &created, &filled)?;
+            if !component_delta.created.is_empty()
+                || !component_delta.removed.is_empty()
+                || component_delta.modified != [body.to_string()]
+            {
+                return Err(format!("DCS component publication must modify only its existing body: {component_delta:?}"));
+            }
+            publications.push(PublicationReport {
+                snapshot_path: format!("cases/{}/workspace", case.id),
+                tool_id: CANONICAL_APPLY_TOOL.to_string(),
+                public_arguments: sanitize_value(&Value::Object(components), &workspace),
+                summary: component_summary,
+                pre_xml_sha256: created,
+                post_xml_sha256: filled,
+                delta: component_delta,
+            });
+            Ok(creation_summary)
+        })();
+        gate.finish()?;
+        result?
+    } else {
+        call_target_tool(gate, case.tool, &args)?
+    };
     remove_internal_workspace_cache(&workspace)?;
     materialize_pre_xml(&pre_root, &pre_payloads)?;
     materialize_pre_non_xml(case, &pre_non_xml_root, &pre_non_xml_payloads)?;
@@ -3864,6 +4324,7 @@ fn run_corpus_case(
             errors: Vec::new(),
             summary: summary.replace(&workspace.display().to_string(), "$CASE_WORKSPACE"),
         },
+        publications,
         pre_files: manifest_case.pre_files.clone(),
         pre_non_xml_files: manifest_case.pre_non_xml_files.clone(),
         non_xml_files: manifest_case.non_xml_files.clone(),
@@ -4508,6 +4969,37 @@ fn managed_form_corpus_cases_mutate_content_without_overwriting_metadata_wrapper
     }
 
     assert_eq!(gate.completed_target_calls, 2);
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn dcs_creation_snapshot_materializes_under_fresh_generation_path() {
+    let root = unique_temp_dir("dcs-creation-snapshot-generation-path");
+    let workspace = root.join("workspace");
+    let source = workspace.join("src/Configuration.xml");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(
+        &source,
+        br#"<MetaDataObject version="2.20"><Configuration/></MetaDataObject>"#,
+    )
+    .unwrap();
+    let captured = capture_xml_payloads(&workspace).unwrap();
+    let generation = root.join("first");
+    // The same nested path is materialized by run_corpus_case during full
+    // research generation; neither the generation nor publication parents exist.
+    let snapshot = generation.join("cases/dcs-compile-owned-template/publications/1/xml");
+    assert!(!generation.exists());
+    materialize_pre_xml(&snapshot, &captured).unwrap();
+    assert_eq!(
+        snapshot_xml(&snapshot).unwrap(),
+        hashes_for_xml_payloads(&captured)
+    );
+    let copied = snapshot.join("src/Configuration.xml");
+    platform_support::assert_independent_copy(&source, &copied);
+    let initial = fs::read(&copied).unwrap();
+    let error = materialize_pre_xml(&snapshot, &captured).unwrap_err();
+    assert!(error.contains("cannot create"), "{error}");
+    assert_eq!(fs::read(&copied).unwrap(), initial);
     remove_temp_tree(&root);
 }
 
@@ -5637,71 +6129,161 @@ fn manifest_sorting_and_task_7a_shape_round_trip() {
 }
 
 #[test]
-fn dcs_corpus_exercises_xsd_order_sensitive_contracts() {
-    let definition = dcs_definition();
-    let data_sets = definition["dataSets"].as_array().unwrap();
-    assert!(
-        data_sets
+fn dcs_component_corpus_cases_publish_and_preserve_platform_owned_content() {
+    let root = unique_temp_dir("dcs-component-corpus");
+    let mut gate = SequentialCallGate::default();
+    for case in EXECUTABLE_CASES
+        .iter()
+        .filter(|case| case.id.starts_with("dcs-"))
+    {
+        assert_eq!(case.tool, CANONICAL_APPLY_TOOL);
+        let generated = run_corpus_case(&root, case, &mut gate)
+            .unwrap_or_else(|error| panic!("{}: {error}", case.id));
+        let template = if case.id == "dcs-compile-owned-template" {
+            "CorpusTemplate"
+        } else {
+            "CorpusDcs"
+        };
+        let body = format!("src/Reports/CorpusReport/Templates/{template}/Ext/Template.xml");
+        let file = generated
+            .files
             .iter()
-            .any(|data_set| data_set["items"].is_array()),
-        "DCS corpus must exercise DataSetUnion item emission"
+            .find(|file| file.path == manifest_path(case.id, &body))
+            .expect("DCS body absent from platform inventory");
+        assert_eq!(file.family, "dcs");
+        assert!(
+            file.owner_path.is_some(),
+            "DCS body must retain a metadata owner"
+        );
+        let report: Value = serde_json::from_slice(
+            &fs::read(root.join("cases").join(case.id).join("case-report.json")).unwrap(),
+        )
+        .unwrap();
+        if case.id == "dcs-compile-owned-template" {
+            let publications = report["publications"]
+                .as_array()
+                .expect("creation publications not recorded");
+            assert_eq!(publications.len(), 2);
+            assert_eq!(
+                publications[0]["publicArguments"]["ops"][0]["op"],
+                "template.add"
+            );
+            let snapshot_path = publications[0]["snapshotPath"]
+                .as_str()
+                .expect("creation snapshot path");
+            assert_eq!(
+                snapshot_path,
+                format!("cases/{}/publications/1/xml", case.id)
+            );
+            assert_eq!(
+                serde_json::to_value(snapshot_xml(&root.join(snapshot_path)).unwrap()).unwrap(),
+                publications[0]["postXmlSha256"]
+            );
+            assert!(publications[0]["preXmlSha256"].get(&body).is_none());
+            assert!(publications[0]["delta"]["created"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path == &json!(body)));
+            assert_eq!(publications[1]["delta"]["modified"], json!([body]));
+            assert_eq!(
+                publications[1]["preXmlSha256"],
+                publications[0]["postXmlSha256"]
+            );
+            assert_eq!(publications[1]["postXmlSha256"], report["postXmlSha256"]);
+            assert!(publications[1]["publicArguments"]["ops"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|op| op["op"] == "conditionalAppearance.add"));
+        } else {
+            assert!(report.get("publications").is_none());
+            assert_eq!(report["delta"]["modified"], json!([body]));
+        }
+    }
+    assert_eq!(gate.completed_target_calls, 5);
+    remove_temp_tree(&root);
+}
+
+#[test]
+fn dcs_corpus_exercises_xsd_order_sensitive_contracts() {
+    let ops = dcs_component_ops("CorpusTemplate");
+    let find = |op: &str| ops.iter().find(|entry| entry["op"] == op).unwrap();
+    let sets = find("dataSet.add")["args"]["items"].as_array().unwrap();
+    assert!(sets.iter().any(|set| set["kind"] == "Union"));
+    let members = ops
+        .iter()
+        .find(|entry| {
+            entry["op"] == "dataSet.add"
+                && entry["args"]["at"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(".DataSet.Combined")
+        })
+        .unwrap();
+    assert_eq!(members["args"]["items"].as_array().unwrap().len(), 2);
+    let link = &find("dataSetLink.add")["args"]["items"][0];
+    assert_eq!(link["condition"], "Value = Description");
+    assert_eq!(link["startExpression"], "Value");
+    assert_eq!(link["parameterListAllowed"], true);
+    assert_eq!(link["required"], true);
+    let calculated = &find("calculatedField.add")["args"]["items"][0];
+    assert_eq!(calculated["type"], "decimal(15,2)");
+    assert_eq!(
+        calculated["useRestriction"],
+        json!({"condition":true,"group":true,"field":true,"order":true})
     );
-
-    let link = &definition["dataSetLinks"][0];
-    assert!(link["linkConditionExpression"].is_string());
-    assert!(link["startExpression"].is_string());
-
-    let calculated = &definition["calculatedFields"][0];
-    assert!(calculated["restrict"].is_array());
-    assert!(calculated["useRestriction"].is_array());
-    assert!(calculated["type"].is_string());
-
-    let parameters = definition["parameters"].as_array().unwrap();
-    assert!(parameters.iter().any(|parameter| {
-        parameter["name"].as_str() == Some("ТипКорпуса")
-            && parameter["type"].as_str() == Some("string(16)")
-    }));
-    assert!(parameters.iter().any(|parameter| {
-        parameter["availableValues"]
+    let parameters = find("parameter.add")["args"]["items"].as_array().unwrap();
+    assert!(parameters
+        .iter()
+        .any(|parameter| parameter["name"] == "ТипКорпуса" && parameter["type"] == "string(16)"));
+    assert!(parameters
+        .iter()
+        .any(|parameter| parameter["availableValues"]
             .as_array()
-            .is_some_and(|values| !values.is_empty())
-    }));
-    assert!(parameters.iter().any(|parameter| {
-        parameter
-            .as_str()
-            .is_some_and(|value| value.contains("@autoDates"))
-    }));
-
-    let settings = &definition["settingsVariants"][0]["settings"];
-    for key in [
-        "selection",
-        "filter",
-        "dataParameters",
-        "order",
-        "conditionalAppearance",
-        "outputParameters",
-        "structure",
+            .is_some_and(|values| values.len() == 2)));
+    for (name, expression) in [
+        ("ДатаНачала", "&Период.ДатаНачала"),
+        ("ДатаОкончания", "&Период.ДатаОкончания"),
     ] {
-        assert!(!settings[key].is_null(), "missing settings.{key}");
+        assert!(parameters.iter().any(|parameter| parameter["name"] == name
+            && parameter["expression"] == expression
+            && parameter["useRestriction"] == true));
     }
-    let group = &settings["structure"][0];
-    for key in [
-        "groupBy",
-        "filter",
-        "order",
-        "selection",
-        "conditionalAppearance",
-        "outputParameters",
+    for op in [
+        "selection.add",
+        "filter.add",
+        "order.add",
+        "conditionalAppearance.add",
+        "outputParameter.set",
     ] {
-        assert!(!group[key].is_null(), "missing structure group {key}");
+        let matching = ops
+            .iter()
+            .filter(|entry| entry["op"] == op)
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 2, "missing variant/group settings {op}");
+        let operand = if op == "outputParameter.set" {
+            &matching[1]["args"]["values"]
+        } else {
+            &matching[1]["args"]["items"][0]
+        };
+        assert_eq!(operand["group"], "Corpus group");
     }
+    assert_eq!(
+        find("dataParameter.add")["args"]["items"][0]["name"],
+        "Режим"
+    );
+    assert_eq!(
+        find("structure.add")["args"]["items"][0]["groupBy"],
+        json!(["Value"])
+    );
 }
 
 #[test]
 fn dcs_edit_corpus_covers_order_sensitive_mutations() {
     let entry = MUTATOR_REGISTRY
         .iter()
-        .find(|entry| entry.tool == "unica.dcs.edit")
+        .find(|entry| entry.operation == "dcs-component-modify")
         .unwrap();
     assert_eq!(
         entry.case_ids,

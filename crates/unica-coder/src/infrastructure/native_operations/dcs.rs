@@ -193,6 +193,8 @@ pub(crate) struct DcsInfoLink {
     pub(crate) parameter: Option<String>,
     pub(crate) condition: Option<String>,
     pub(crate) start_expression: Option<String>,
+    pub(crate) parameter_list_allowed: Option<bool>,
+    pub(crate) required: Option<bool>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -652,22 +654,26 @@ fn dcs_info_collect(
             .collect(),
         links: dcs_children(root, "dataSetLink", ns_schema)
             .into_iter()
-            .map(|link| DcsInfoLink {
-                source: dcs_child(link, "sourceDataSet", ns_schema)
-                    .map(dcs_text_of)
-                    .unwrap_or_default(),
-                destination: dcs_child(link, "destinationDataSet", ns_schema)
-                    .map(dcs_text_of)
-                    .unwrap_or_default(),
-                parameter: dcs_info_child_text(link, "parameter", ns_schema),
-                condition: dcs_info_child_text(link, "linkConditionExpression", ns_schema),
-                start_expression: dcs_info_child_text(link, "startExpression", ns_schema),
-                source_expression: dcs_info_child_text(link, "sourceExpression", ns_schema),
-                destination_expression: dcs_info_child_text(
-                    link,
-                    "destinationExpression",
-                    ns_schema,
-                ),
+            .map(|link| {
+                let literal = |tag| dcs_child(link, tag, ns_schema).map(dcs_inner_text);
+                let boolean = |tag| {
+                    literal(tag).and_then(|value| match value.trim() {
+                        "true" | "1" => Some(true),
+                        "false" | "0" => Some(false),
+                        _ => None,
+                    })
+                };
+                DcsInfoLink {
+                    source: literal("sourceDataSet").unwrap_or_default(),
+                    destination: literal("destinationDataSet").unwrap_or_default(),
+                    parameter: literal("parameter"),
+                    condition: literal("linkConditionExpression"),
+                    start_expression: literal("startExpression"),
+                    source_expression: literal("sourceExpression"),
+                    destination_expression: literal("destinationExpression"),
+                    parameter_list_allowed: boolean("parameterListAllowed"),
+                    required: boolean("required"),
+                }
             })
             .collect(),
         calculated_fields: dcs_children(root, "calculatedField", ns_schema)
