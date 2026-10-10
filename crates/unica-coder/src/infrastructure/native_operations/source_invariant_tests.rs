@@ -13,8 +13,6 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
         ("unica.cfe.init", "extension"),
         ("unica.cfe.patch_method", "extension"),
         ("unica.code.patch", "code"),
-        ("unica.dcs.compile", "dcs"),
-        ("unica.dcs.edit", "dcs"),
         ("unica.epf.init", "external"),
         ("unica.erf.init", "external"),
         ("unica.form.compile", "form"),
@@ -53,11 +51,10 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
 
 #[test]
 fn verified_public_mutator_idempotence_cases_are_exact() {
-    let cases: [(&str, fn()); 10] = [
+    let cases: [(&str, fn()); 9] = [
         ("unica.cf.edit", crate::application::tests::cf_edit_equal_serialized_result_is_a_public_noop_and_preserves_identity),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow),
         ("unica.code.patch", super::code::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity),
-        ("unica.dcs.edit", super::dcs::tests::native_dcs_edit_noop_leaves_file_bytes_and_identity_untouched),
         ("unica.form.edit", super::form::tests::edit_form_identical_event_is_byte_and_identity_exact_idempotent_noop),
         ("unica.interface.edit", super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update),
         ("unica.meta.edit", super::meta::typed_resource_noop_and_identity_contract_is_complete),
@@ -84,15 +81,13 @@ fn typed_platform_resource_noop_emits_no_effects() {
 
 #[test]
 fn public_platform_xml_mutator_preimage_contract_is_complete() {
-    let cases: [(&str, fn()); 20] = [
+    let cases: [(&str, fn()); 18] = [
         ("unica.cf.edit", super::cf::cf_edit_transaction_tests::cf_edit_external_only_change_rejects_concurrent_format_owner_change),
         ("unica.cf.init", super::cf::cf_init_transaction_tests::cf_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_rejects_concurrent_base_format_owner_change),
         ("unica.cfe.init", super::cfe::tests::cfe_init_rejects_concurrent_base_format_owner_change),
         ("unica.cfe.patch_method", super::cfe::tests::cfe_patch_method_binds_exact_existing_bsl_preimage),
         ("unica.code.patch", super::code::tests::code_patch_rolls_back_if_owner_descriptor_changes_before_commit),
-        ("unica.dcs.compile", super::dcs::tests::dcs_compile_rolls_back_if_format_owner_changes_during_publication),
-        ("unica.dcs.edit", super::dcs::tests::dcs_edit_preserves_a_concurrent_replacement_instead_of_overwriting_it),
         ("unica.epf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.erf.init", super::external::tests::external_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.form.compile", super::form::tests::form_compile_rolls_back_if_unchanged_parent_owner_changes_during_publication),

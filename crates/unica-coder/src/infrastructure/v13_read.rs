@@ -1799,6 +1799,18 @@ impl LogicalViewReadAuthority<'_> {
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
         let mut projected = projected;
+        let format = match self.read.metadata_child_profile(&child) {
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
+                Some("DataCompositionSchema")
+            }
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
+                Some("SpreadsheetDocument")
+            }
+            _ => None,
+        };
+        if let Some(format) = format {
+            projected = projected.with_prop("format", Value::String(format.into()));
+        }
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
                 projected = projected.with_branch(BranchRef::new(
@@ -1833,6 +1845,18 @@ impl LogicalViewReadAuthority<'_> {
                             .get("variants")
                             .and_then(Value::as_array)
                             .map_or(0, Vec::len),
+                    ),
+                    (
+                        NodeKind::Item,
+                        ["dataSources", "links"]
+                            .iter()
+                            .map(|key| {
+                                payload
+                                    .get(*key)
+                                    .and_then(Value::as_array)
+                                    .map_or(0, Vec::len)
+                            })
+                            .sum(),
                     ),
                 ]
             }
