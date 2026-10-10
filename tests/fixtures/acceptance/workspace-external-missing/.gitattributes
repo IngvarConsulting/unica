@@ -1,0 +1,3 @@
+*.xml text eol=lf
+*.bsl text eol=lf
+*.bin binary

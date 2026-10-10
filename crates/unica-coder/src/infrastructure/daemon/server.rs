@@ -3863,40 +3863,50 @@ fn main() {
 
     #[test]
     fn canonical_view_bootstrap_does_not_offer_an_unparseable_logical_address() {
-        let workspace = tempfile::tempdir().unwrap();
-        let source = workspace.path().join("src");
-        std::fs::create_dir_all(&source).unwrap();
-        std::fs::write(
+        for (source_type, root_kind, root_file) in [
+            ("CONFIGURATION", "Configuration", "Configuration.xml"),
+            (
+                "EXTERNAL_DATA_PROCESSORS",
+                "ExternalDataProcessor",
+                "Store.xml",
+            ),
+            ("EXTERNAL_REPORTS", "ExternalReport", "Store.xml"),
+        ] {
+            let workspace = tempfile::tempdir().unwrap();
+            let source = workspace.path().join("src");
+            std::fs::create_dir_all(&source).unwrap();
+            std::fs::write(
             workspace.path().join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: bad name\n    type: CONFIGURATION\n    path: src\n",
+            format!("format: DESIGNER\nsource-set:\n  - name: bad name\n    type: {source_type}\n    path: src\n"),
         )
         .unwrap();
-        std::fs::write(
-            source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+            std::fs::write(
+            source.join(root_file),
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{root_kind}><Properties><Name>Store</Name></Properties><ChildObjects/></{root_kind}></MetaDataObject>"#),
         )
         .unwrap();
-        let runtime = bootstrap_runtime();
+            let runtime = bootstrap_runtime();
 
-        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+            let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
 
-        assert!(result.ok, "{result:?}");
-        assert_eq!(result.next.len(), 1, "{result:?}");
-        assert_eq!(result.next[0]["tool"], "unica.check", "{result:?}");
+            assert!(result.ok, "{result:?}");
+            assert_eq!(result.next.len(), 1, "{result:?}");
+            assert_eq!(result.next[0]["tool"], "unica.check", "{result:?}");
 
-        let verdict = submit_root_verdict(&runtime, workspace.path());
+            let verdict = submit_root_verdict(&runtime, workspace.path());
 
-        assert!(verdict.ok, "{verdict:?}");
-        let data = verdict.data.as_ref().unwrap();
-        assert_eq!(data["ready"], false, "{data}");
-        assert!(
-            data["diagnostics"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|item| { item["code"] == "source_set.logical_name_invalid" }),
-            "{data}"
-        );
+            assert!(verdict.ok, "{verdict:?}");
+            let data = verdict.data.as_ref().unwrap();
+            assert_eq!(data["ready"], false, "{data}");
+            assert!(
+                data["diagnostics"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| { item["code"] == "source_set.logical_name_invalid" }),
+                "{data}"
+            );
+        }
     }
 
     #[test]
