@@ -1139,6 +1139,7 @@ pub(crate) fn plan_metadata_batch(
                 MetaDiagnosticCode::ValidationFailed => ApplyPlanErrorKind::Postcondition,
                 MetaDiagnosticCode::AlreadyExists
                 | MetaDiagnosticCode::SupportLocked
+                | MetaDiagnosticCode::ValidationWarning
                 | MetaDiagnosticCode::RedundantListPresentation
                 | MetaDiagnosticCode::CommandTextRecommendedLimit
                 | MetaDiagnosticCode::CommandTextUpperLimit
@@ -1196,7 +1197,8 @@ pub(super) fn meta_failure_to_plan_error(
         MetaDiagnosticCode::AlreadyExists | MetaDiagnosticCode::SupportLocked => {
             ApplyPlanErrorKind::InvalidState
         }
-        MetaDiagnosticCode::RedundantListPresentation
+        MetaDiagnosticCode::ValidationWarning
+        | MetaDiagnosticCode::RedundantListPresentation
         | MetaDiagnosticCode::CommandTextRecommendedLimit
         | MetaDiagnosticCode::CommandTextUpperLimit
         | MetaDiagnosticCode::ConcurrentModification

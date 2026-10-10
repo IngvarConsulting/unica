@@ -3,6 +3,7 @@ id: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 check:
   - crates/unica-coder/src/domain/metadata/observed_types.rs::read_only_observation_cannot_be_narrowed_into_the_writer_algebra
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unknown_but_valid_platform_type_as_a_warning
+  - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_localizes_an_unmodelled_constant_type_with_the_warning_code
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::info_keeps_a_broken_qualifier_in_the_error_severity_branch
   - crates/unica-coder/src/application/meta_info_surface_tests.rs::uuid_writer_round_trips_through_meta_edit_and_info
 ---

@@ -621,7 +621,7 @@ pub(super) fn project_meta_info_details(
             Err(diagnostic) => {
                 let diagnostic = if observed_type_is_strict_but_unmodelled(properties) {
                     MetaDiagnostic::warning(
-                        MetaDiagnosticCode::ValidationFailed,
+                        MetaDiagnosticCode::ValidationWarning,
                         "metadata type is syntactically valid but not modelled by this format profile",
                     )
                 } else {

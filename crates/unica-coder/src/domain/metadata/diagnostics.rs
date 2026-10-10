@@ -11,6 +11,7 @@ pub(crate) enum MetaDiagnosticCode {
     AlreadyExists,
     SupportLocked,
     ValidationFailed,
+    ValidationWarning,
     RedundantListPresentation,
     CommandTextRecommendedLimit,
     CommandTextUpperLimit,
@@ -29,6 +30,7 @@ impl MetaDiagnosticCode {
         Self::AlreadyExists,
         Self::SupportLocked,
         Self::ValidationFailed,
+        Self::ValidationWarning,
         Self::RedundantListPresentation,
         Self::CommandTextRecommendedLimit,
         Self::CommandTextUpperLimit,
@@ -124,6 +126,10 @@ mod tests {
             (
                 MetaDiagnosticCode::ValidationFailed,
                 "\"validation_failed\"",
+            ),
+            (
+                MetaDiagnosticCode::ValidationWarning,
+                "\"validation_warning\"",
             ),
             (
                 MetaDiagnosticCode::RedundantListPresentation,

@@ -479,6 +479,32 @@ fn info_returns_the_constant_value_type_in_kind_specific_details() {
 }
 
 #[test]
+fn info_localizes_an_unmodelled_constant_type_with_the_warning_code() {
+    let workspace = create_info_workspace("constant-unmodelled-type");
+    let added = add_metadata_object(workspace.path(), "Constant", "MainCurrency");
+    assert!(added.ok, "{:?}", added.errors);
+    let descriptor = workspace.path().join("src/Constants/MainCurrency.xml");
+    let xml = std::fs::read_to_string(&descriptor).unwrap();
+    let unknown = replace_first_string_type_with_unqualified_variant(&xml, "v8:FutureOpaque");
+    assert_ne!(unknown, xml, "fixture must contain the constant value type");
+    std::fs::write(&descriptor, unknown).unwrap();
+    let result = call_info_path(workspace.path(), "Constant.MainCurrency", []);
+    assert!(result.ok, "{:?}", result.errors);
+    let data = result.data.as_ref().unwrap();
+    assert!(data["details"]["type"].is_null());
+    let warning = data["validation"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["field"] == "details.type")
+        .expect("unmodelled constant type needs a localized diagnostic");
+    assert_eq!(warning["severity"], "warning");
+    assert_eq!(warning["code"], "validation_warning");
+    assert_eq!(warning["metadataPath"], "Constant.MainCurrency");
+    assert_eq!(data["validation"]["status"], "passed");
+}
+
+#[test]
 fn info_does_not_silently_drop_an_unknown_compound_root_property() {
     let workspace = create_info_workspace("unknown-compound-property");
 
@@ -1406,6 +1432,7 @@ fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
         .any(|diagnostic| {
             diagnostic["field"] == "collections.attributes[0].type"
                 && diagnostic["severity"] == "warning"
+                && diagnostic["code"] == "validation_warning"
         }));
 }
 
