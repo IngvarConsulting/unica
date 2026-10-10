@@ -361,6 +361,59 @@ fn project_dcs(
             payload,
         )));
     }
+    if suffix.len() == 1 && suffix[0].kind() == NodeKind::Item && suffix[0].name().is_none() {
+        let mut rows = Vec::new();
+        for source in payload
+            .get("dataSources")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            rows.push(serde_json::json!({"kind":"DataSource","name":source["name"],"sourceType":source["kind"]}));
+        }
+        for (index, link) in payload
+            .get("links")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let mut row = link.as_object().cloned().unwrap_or_default();
+            row.insert("kind".into(), serde_json::json!("DataSetLink"));
+            row.insert("index".into(), serde_json::json!(index));
+            rows.push(Value::Object(row));
+        }
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Item", "Item", Map::new()),
+            rows,
+        )));
+    }
+    if let [setting, property] = suffix {
+        if setting.kind() == NodeKind::Setting
+            && property.kind() == NodeKind::Property
+            && property.name().is_none()
+        {
+            let variant = setting
+                .name()
+                .and_then(|name| {
+                    payload
+                        .get("variants")
+                        .and_then(|items| select_named(items, name))
+                })
+                .ok_or_else(|| {
+                    ViewError::new(RefusalCode::NotFound, "DCS setting was not found")
+                })?;
+            let rows = variant
+                .get("settingItems")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            return Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(address.to_string(), "Property", "Property", Map::new()),
+                rows,
+            )));
+        }
+    }
     let dataset_segment = &suffix[0];
     if dataset_segment.kind() == NodeKind::Setting && suffix.len() > 1 {
         let [setting, item] = suffix else {
@@ -396,43 +449,59 @@ fn project_dcs(
     if dataset_segment.kind() != NodeKind::DataSet {
         return project_known_suffix(LogicalReader::Dcs, address, payload, suffix);
     }
-    let datasets = payload
+    let mut datasets = payload
         .get("dataSets")
         .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "DCS has no datasets"))?;
-    let Some(dataset_name) = dataset_segment.name() else {
-        if suffix.len() != 1 {
+    let mut consumed = 0;
+    let mut current = None;
+    for segment in suffix
+        .iter()
+        .take_while(|segment| segment.kind() == NodeKind::DataSet)
+    {
+        consumed += 1;
+        let Some(name) = segment.name() else {
+            if consumed != suffix.len() {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "dataset collection cannot have children",
+                ));
+            }
+            return Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(address.to_string(), "DataSet", "DataSet", Map::new()),
+                collection_items(LogicalReader::Dcs, address, NodeKind::DataSet, datasets),
+            )));
+        };
+        let matches = datasets
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item_identity(item) == Some(name))
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
             return Err(ViewError::new(
                 RefusalCode::NotFound,
-                "DCS dataset collection cannot have a child suffix",
+                format!("dataset {name} was not found uniquely"),
             ));
         }
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "DataSet", "DataSet", Map::new()),
-            collection_items(LogicalReader::Dcs, address, NodeKind::DataSet, datasets),
-        )));
-    };
-    let dataset = select_named(datasets, dataset_name).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("DCS dataset `{dataset_name}` was not found"),
-        )
-    })?;
-    if suffix.len() == 1 {
+        let selected = matches[0];
+        current = Some(selected);
+        datasets = selected.get("items").unwrap_or(&Value::Null);
+    }
+    let dataset =
+        current.ok_or_else(|| ViewError::new(RefusalCode::NotFound, "dataset was not found"))?;
+    if consumed == suffix.len() {
         let node = node_from_value(LogicalReader::Dcs, address, NodeKind::DataSet, dataset);
         let mut branches = known_reader_branches(LogicalReader::Dcs, address, dataset);
-        let parameter_count = payload
+        let count = payload
             .get("parameters")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
-        if parameter_count > 0 {
-            branches.push(BranchRef::new(
-                format!("{}.Parameter", address),
-                parameter_count,
-            ));
+        if count > 0 {
+            branches.push(BranchRef::new(format!("{address}.Parameter"), count));
         }
         return Ok(NodeViewData::Node(node.with_branches(branches)));
     }
-    let [detail] = &suffix[1..] else {
+    let [detail] = &suffix[consumed..] else {
         return Err(ViewError::new(
             RefusalCode::NotFound,
             "DCS projection did not consume the complete suffix",
@@ -2313,7 +2382,18 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         }
         _ => &[],
     };
-    selected_scalar_props(value, keys)
+    let mut props = selected_scalar_props(value, keys);
+    if kind == NodeKind::Template {
+        let format = match reader {
+            LogicalReader::Dcs => Some("DataCompositionSchema"),
+            LogicalReader::Mxl => Some("SpreadsheetDocument"),
+            _ => None,
+        };
+        if let Some(format) = format {
+            props.insert("format".into(), Value::String(format.into()));
+        }
+    }
+    props
 }
 
 fn known_reader_node(
@@ -2323,7 +2403,21 @@ fn known_reader_node(
     value: &Value,
 ) -> NodeView {
     let mut node = node_from_value(reader, address, kind, value);
-    let branches = known_reader_branches(reader, address, value);
+    let mut branches = known_reader_branches(reader, address, value);
+    if matches!(reader, LogicalReader::Dcs) && kind == NodeKind::Template {
+        let count = ["dataSources", "links"]
+            .iter()
+            .map(|key| {
+                value
+                    .get(*key)
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+            })
+            .sum();
+        if count > 0 {
+            branches.push(BranchRef::new(format!("{address}.Item"), count));
+        }
+    }
     node = node.with_branches(branches);
     node
 }
@@ -2339,12 +2433,17 @@ fn known_reader_branches(
             .last()
             .is_some_and(|segment| segment.kind() == NodeKind::Setting && segment.name().is_some())
     {
-        return value
-            .get("structureItems")
-            .and_then(Value::as_array)
-            .filter(|items| !items.is_empty())
-            .map(|items| vec![BranchRef::new(format!("{}.Item", address), items.len())])
-            .unwrap_or_default();
+        let mut branches = Vec::new();
+        for (key, kind) in [("structureItems", "Item"), ("settingItems", "Property")] {
+            if let Some(items) = value
+                .get(key)
+                .and_then(Value::as_array)
+                .filter(|items| !items.is_empty())
+            {
+                branches.push(BranchRef::new(format!("{address}.{kind}"), items.len()));
+            }
+        }
+        return branches;
     }
     let kinds: &[NodeKind] = match reader {
         LogicalReader::Configuration => &[],

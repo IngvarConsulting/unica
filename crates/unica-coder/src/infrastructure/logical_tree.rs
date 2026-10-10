@@ -152,7 +152,13 @@ pub(crate) fn route_logical_address(
                 | NodeKind::Calculation
                 | NodeKind::Setting
         )
-    }) {
+    }) || (segments
+        .iter()
+        .any(|segment| segment.kind() == NodeKind::Template && segment.name().is_some())
+        && segments
+            .iter()
+            .any(|segment| matches!(segment.kind(), NodeKind::Item | NodeKind::Parameter)))
+    {
         let target = typed_dcs_reader_target(address).ok_or_else(|| not_found(address))?;
         return Ok(route(address, LogicalReader::Dcs, Some(target), None));
     }

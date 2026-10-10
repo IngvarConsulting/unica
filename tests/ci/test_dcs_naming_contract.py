@@ -7,37 +7,37 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_TOOLS = {
-    "unica.dcs.compile",
-    "unica.dcs.edit",
+HISTORICAL_SKILLS = {"dcs-compile", "dcs-edit"}
+REMOVED_SKILLS = HISTORICAL_SKILLS | {
+    "dcs-decompile", "skd-compile", "skd-edit", "skd-decompile"
 }
-REMOVED_TOOLS = {name.replace(".dcs.", ".skd.") for name in EXPECTED_TOOLS}
-EXPECTED_SKILLS = {
-    "dcs-compile",
-    "dcs-edit",
-}
-REMOVED_SKILLS = {name.replace("dcs-", "skd-") for name in EXPECTED_SKILLS}
-SKD_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9])(?:skd|Skd|SKD)")
 
 
 class DcsNamingContractTests(unittest.TestCase):
-    def test_public_dcs_migration_is_atomic_without_skd_aliases(self) -> None:
-        registry = (
-            REPO_ROOT / "crates" / "unica-coder" / "src" / "application" / "mod.rs"
-        ).read_text(encoding="utf-8")
-        domain_surface = set(
-            re.findall(r'name: "(unica\.(?:dcs|skd)\.[^"]+)"', registry)
-        )
+    def test_mutations_use_canonical_operations_without_legacy_tools(self) -> None:
+        source = REPO_ROOT / "crates" / "unica-coder" / "src"
+        tool_registry = (source / "application" / "mod.rs").read_text(encoding="utf-8")
+        legacy_surface = re.findall(r'name: "(unica\.(?:dcs|skd)\.[^"]+)"', tool_registry)
+        self.assertEqual(legacy_surface, [])
 
-        self.assertEqual(domain_surface, EXPECTED_TOOLS)
-        self.assertTrue(REMOVED_TOOLS.isdisjoint(domain_surface))
+        apply_registry = (source / "domain" / "apply.rs").read_text(encoding="utf-8")
+        registered = set(re.findall(r'\(\s*"([^"]+)"\s*,\s*Dcs\s*,', apply_registry))
+        writer = (source / "infrastructure" / "native_operations" / "dcs_primitives.rs").read_text(encoding="utf-8")
+        implemented = set(re.findall(r'"([^"]+)"\s*=>\s*Self::[A-Za-z]+', writer))
+        self.assertEqual(registered, implemented)
+        self.assertTrue({
+            "dataSource.add", "dataSet.add", "field.add", "fieldRole.set",
+            "query.set", "parameter.add", "variant.add", "selection.add",
+            "filter.add", "order.add", "structure.add", "dataSetLink.add",
+        } <= registered)
+        self.assertNotIn("dcs.set", registered)
 
-    def test_dcs_guidance_retires_both_dcs_and_skd_prompt_skills(self) -> None:
+    def test_dcs_guidance_retires_dcs_and_skd_prompt_skills(self) -> None:
         skill_root = REPO_ROOT / "plugins" / "unica" / "skills"
         skill_names = {path.name for path in skill_root.iterdir() if path.is_dir()}
-        self.assertTrue((EXPECTED_SKILLS | REMOVED_SKILLS).isdisjoint(skill_names))
+        self.assertTrue(REMOVED_SKILLS.isdisjoint(skill_names))
 
-    def test_provenance_names_local_dcs_contract_but_preserves_donor_paths(self) -> None:
+    def test_provenance_tracks_active_operations_and_preserves_donor_paths(self) -> None:
         path = REPO_ROOT / "docs" / "provenance" / "skill-upstreams.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         entries = {
@@ -45,22 +45,18 @@ class DcsNamingContractTests(unittest.TestCase):
             for upstream in data["upstreams"]
             for entry in upstream["entries"]
         }
-
-        self.assertTrue(EXPECTED_SKILLS <= entries.keys())
-        self.assertTrue(REMOVED_SKILLS.isdisjoint(entries.keys()))
-        for skill in EXPECTED_SKILLS:
+        self.assertTrue(HISTORICAL_SKILLS <= entries.keys())
+        self.assertTrue({"skd-compile", "skd-edit"}.isdisjoint(entries.keys()))
+        primitive_path = "crates/unica-coder/src/infrastructure/native_operations/dcs_primitives.rs"
+        for skill in HISTORICAL_SKILLS:
             entry = entries[skill]
-            active_contract = json.dumps(
-                {
-                    "notes": entry.get("notes"),
-                    "localPaths": entry.get("localPaths"),
-                    "contractPaths": entry.get("contractPaths"),
-                },
-                ensure_ascii=False,
-            )
-            self.assertIsNone(SKD_IDENTIFIER.search(active_contract), skill)
+            self.assertFalse(entry["promptSkill"])
+            self.assertIn(primitive_path, entry["localPaths"])
+            self.assertIn("tests/fixtures/acceptance/scenario-corpus.json", entry["contractPaths"])
+            for active_path in entry["localPaths"] + entry["contractPaths"]:
+                self.assertTrue((REPO_ROOT / active_path).exists(), active_path)
             self.assertTrue(
-                any("skd" in upstream_path.lower() for upstream_path in entry["upstreamPaths"]),
+                any("skd" in donor.lower() for donor in entry["upstreamPaths"]),
                 f"{skill} must retain its verbatim donor path",
             )
 

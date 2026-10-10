@@ -135,7 +135,7 @@ pub enum PreviewStrategy {
 /// Закрытый переходный список — типизированные мутаторы, чей
 /// предпросмотр ещё отвечает общим успехом без предметных данных. Список
 /// только сокращается; новый мутатор обязан родиться с честным предпросмотром.
-/// Судьбы: `dcs-edit` — срез #377, `subsystem-edit` — #380, `interface-edit` —
+/// Судьбы: `subsystem-edit` — #380, `interface-edit` —
 /// #382, `cf-edit`/`cfe-*`/`form-*`/`support-edit` и внешние скаффолды
 /// `epf-init`/`erf-init` — последующие срезы волны и вехи. Снятые срезом #375
 /// `template-*` и `help-add` список уже покинули.
@@ -144,7 +144,6 @@ pub const PREVIEW_GATED_OPERATIONS: &[&str] = &[
     "cfe-borrow",
     "cfe-init",
     "cfe-patch-method",
-    "dcs-edit",
     "epf-init",
     "erf-init",
     "interface-edit",
@@ -2740,28 +2739,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
                 event: Some(DomainEventKind::SubsystemChanged),
             },
         },
-        ToolSpec {
-            name: "unica.dcs.compile",
-            description: "Compile Data Composition Schema XML from JSON DSL.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("dcs-compile", Some(DomainEventKind::DcsChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "dcs-compile",
-                event: Some(DomainEventKind::DcsChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.dcs.edit",
-            description: "Edit Data Composition Schema Template.xml.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::Typed,
-            cache_access: cache_access_for("dcs-edit", Some(DomainEventKind::DcsChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "dcs-edit",
-                event: Some(DomainEventKind::DcsChanged),
-            },
-        },
         // Чтение макета остаётся за v0.12: канонический `view` на узле
         // `Template` отдаёт только адрес и заголовок, содержимого
         // табличного документа у него пока нет.
@@ -4288,6 +4265,16 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn retired_dcs_transformers_fail_as_unknown_tools() {
+        for retired in ["unica.dcs.compile", "unica.dcs.edit", "unica.dcs.decompile"] {
+            let error = UnicaApplication::new()
+                .call_tool(retired, &Map::new())
+                .expect_err("retired DCS transformer must not dispatch");
+            assert_eq!(error, format!("unknown unica tool: {retired}"));
+        }
+    }
+
+    #[test]
     fn retired_meta_routes_fail_as_unknown_tools() {
         for retired in [
             "unica.meta.compile",
@@ -4308,7 +4295,6 @@ pub(crate) mod tests {
         const PARITY_COVERED_TOOLS: &[&str] = &[
             "unica.form.compile",
             "unica.subsystem.compile",
-            "unica.dcs.compile",
             "unica.mxl.compile",
             "unica.mxl.decompile",
             "unica.role.compile",
@@ -4329,7 +4315,6 @@ pub(crate) mod tests {
             "unica.cfe.borrow",
             "unica.cfe.patch_method",
             "unica.subsystem.edit",
-            "unica.dcs.edit",
             "unica.form.edit",
             "unica.meta.info",
         ];
@@ -7608,8 +7593,6 @@ pub(crate) mod tests {
             [
                 "cf-edit",
                 "code-patch",
-                "dcs-compile",
-                "dcs-edit",
                 "form-compile",
                 "form-edit",
                 "interface-edit",
@@ -7732,16 +7715,6 @@ pub(crate) mod tests {
             (
                 "subsystem-edit",
                 &["SubsystemPath", "subsystemPath", "Path", "path"][..],
-                "HandlerResolved",
-            ),
-            (
-                "dcs-compile",
-                &["OutputPath", "outputPath"][..],
-                "DeclaredArgs",
-            ),
-            (
-                "dcs-edit",
-                &["TemplatePath", "templatePath", "Path", "path"][..],
                 "HandlerResolved",
             ),
             (
@@ -7969,51 +7942,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn declared_existing_dcs_output_rejects_wrong_root_before_handler() {
-        let root = test_workspace_root("unica-dcs-existing-wrong-root");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let output = workspace.join("Template.xml");
-        std::fs::write(&output, b"<garbage/>").unwrap();
-        let before = std::fs::read(&output).unwrap();
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            (
-                "Value".to_string(),
-                Value::String(
-                    json!({
-                        "dataSets": [{
-                            "name": "Data",
-                            "query": "SELECT 1 AS Value",
-                            "fields": ["Value"]
-                        }]
-                    })
-                    .to_string(),
-                ),
-            ),
-            (
-                "OutputPath".to_string(),
-                Value::String(output.display().to_string()),
-            ),
-            ("dryRun".to_string(), Value::Bool(false)),
-        ]);
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.dcs.compile", &args)
-            .unwrap();
-
-        assert!(!result.ok, "{result:?}");
-        let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
-        assert_eq!(diagnostic["code"], "formatVersionInvalid", "{result:?}");
-        assert_eq!(diagnostic["compatibility"], "invalid", "{result:?}");
-        assert_eq!(std::fs::read(&output).unwrap(), before);
-        assert!(result.changes.is_empty(), "{result:?}");
-        assert!(result.artifacts.is_empty(), "{result:?}");
-        assert!(result.cache.events.is_empty(), "{result:?}");
-        std::fs::remove_dir_all(root).unwrap();
+    fn dcs_component_writer_refuses_wrong_existing_root_without_a_postimage() {
+        use crate::infrastructure::native_operations::dcs_primitives::{apply, Target};
+        let original = "<garbage/>";
+        let mut candidate = original.to_string();
+        let error = apply(
+            &mut candidate,
+            "dataSource.add",
+            json!({"items":[{"name":"Data","kind":"Local"}]})
+                .as_object()
+                .unwrap(),
+            &Target {
+                datasets: Vec::new(),
+                variant: String::new(),
+                terminal: None,
+            },
+        )
+        .expect_err("a DCS component writer must refuse a foreign XML root");
+        assert!(error.contains("DataCompositionSchema"), "{error}");
+        assert_eq!(
+            candidate, original,
+            "a refusal must not return a publishable postimage"
+        );
     }
 
     #[test]
@@ -8838,7 +8788,7 @@ pub(crate) mod tests {
 
     #[test]
     fn source_format_sensitive_descriptors_name_source_paths() {
-        for operation in ["cf-info", "form-edit", "dcs-edit", "role-info"] {
+        for operation in ["cf-info", "form-edit", "role-info"] {
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
             assert!(
                 !descriptor.source_path_args.is_empty(),
@@ -8999,14 +8949,6 @@ pub(crate) mod tests {
                     "dryRun": false
                 }),
                 &[("SubsystemPath", "subsystemPath")][..],
-            ),
-            (
-                "unica.dcs.edit",
-                json!({
-                    "templatePath": "src/Reports/Sales/Templates/Main/Ext/Template.xml",
-                    "dryRun": false
-                }),
-                &[("TemplatePath", "templatePath")][..],
             ),
             (
                 "unica.form.compile",

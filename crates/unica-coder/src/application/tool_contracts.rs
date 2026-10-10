@@ -2617,10 +2617,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
         "Absolute path to the workspace root holding v8project.yaml; it becomes the runner's working directory, so every other path argument is read relative to it",
     ),
     (
-        "dataSet",
-        "`unica.dcs.edit` only: name of the data set the operation applies to, defaulting to the first data set in the schema",
-    ),
-    (
         "database",
         "String forwarded to unica.build.* as --database with no behaviour documented in the skills; prefer connection on operation config-init when working through unica.runtime.execute",
     ),
@@ -2638,7 +2634,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "definitionFile",
-        "Path to a JSON file holding a batch of operations or a full definition, for `unica.cf.edit`, `interface.edit`, `subsystem.edit`/`compile` and `dcs.compile`; relative to `cwd`",
+        "Path to a JSON file holding a batch of operations or a full definition, for `unica.cf.edit`, `interface.edit`, `subsystem.edit`/`compile`; relative to `cwd`",
     ),
     (
         "delivery",
@@ -2872,12 +2868,8 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     ("noRole", "`unica.cfe.init` only: boolean, skip scaffolding the extension's main role"),
     (
-        "noSelection",
-        "`unica.dcs.edit` only: do not add the new field to the settings variant's selection; pass a real JSON boolean, a string is ignored",
-    ),
-    (
         "noValidate",
-        "Boolean for `unica.cf.edit`, `interface.edit`, `subsystem.edit` and `dcs.edit`/`compile`: hide the verbose auto-validation report; the mandatory 8.3.27 check before commit still runs. `unica.subsystem.compile` accepts the argument but ignores it.",
+        "Boolean for `unica.cf.edit`, `interface.edit`, `subsystem.edit`: hide the verbose auto-validation report; the mandatory 8.3.27 check before commit still runs. `unica.subsystem.compile` accepts the argument but ignores it.",
     ),
     (
         "object",
@@ -2913,7 +2905,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "outputPath",
-        "Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.dcs.compile` and `unica.mxl.compile`",
+        "Path of the single file to generate: the `Form.xml` for `unica.form.compile` or the `Template.xml` for `unica.mxl.compile`",
     ),
     (
         "parent",
@@ -3053,7 +3045,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "templatePath",
-        "Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.edit`/`info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`; `unica.dcs.compile` writes through `outputPath` and ignores this argument.",
+        "Path to a `Template.xml`, or its directory which auto-resolves to `Ext/Template.xml`, for `unica.dcs.info`/`validate` and `unica.mxl.info`/`validate`/`decompile`, relative to `cwd`.",
     ),
     (
         "templateType",
@@ -3109,11 +3101,7 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     ),
     (
         "value",
-        "Payload for `operation`: a shorthand string batched with `;;`, a JSON string, or the whole inline JSON definition for `unica.dcs.compile` and `unica.subsystem.compile`",
-    ),
-    (
-        "variant",
-        "`unica.dcs.edit` only: name of the settings variant the operation applies to, defaulting to the first variant in the schema",
+        "Payload for `operation`: a shorthand string batched with `;;`, a JSON string, or the whole inline JSON definition for `unica.subsystem.compile`",
     ),
     (
         "vendor",
@@ -3988,7 +3976,6 @@ pub(crate) mod tests {
                 "cfe-borrow",
                 "cfe-init",
                 "cfe-patch-method",
-                "dcs-edit",
                 "epf-init",
                 "erf-init",
                 "interface-edit",
@@ -4613,11 +4600,6 @@ pub(crate) mod tests {
                 "unica.code.patch",
                 entry("code-patch", "1042:989b04365351871e"),
             ),
-            (
-                "unica.dcs.compile",
-                entry("dcs-compile", "4108:b0f80a2146d2dc5f"),
-            ),
-            ("unica.dcs.edit", entry("dcs-edit", "4070:d972ebcbd6eb3275")),
             ("unica.epf.init", entry("epf-init", "301:609ff516112efe75")),
             ("unica.erf.init", entry("erf-init", "301:609ff516112efe75")),
             (
@@ -4796,15 +4778,6 @@ pub(crate) mod tests {
                     json!({"subsystemPath": "Subsystems/Sales.xml"}),
                     json!({"Path": "Subsystems/Sales.xml"}),
                     json!({"path": "Subsystems/Sales.xml"}),
-                ],
-            ),
-            (
-                "unica.dcs.edit",
-                json!({"TemplatePath": "Ext/Template.xml"}),
-                vec![
-                    json!({"templatePath": "Ext/Template.xml"}),
-                    json!({"Path": "Ext/Template.xml"}),
-                    json!({"path": "Ext/Template.xml"}),
                 ],
             ),
             (

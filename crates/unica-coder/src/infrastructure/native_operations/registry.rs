@@ -61,11 +61,6 @@ pub(crate) fn native_mutation_file_input_contract(
                 secondary_from_object_platform_xml: false,
             }
         }
-        "dcs-compile" => NativeMutationFileInputContract {
-            top_level: TopLevelJsonInput::OptionalDefinitionFile,
-            secondary_at_query_files: true,
-            secondary_from_object_platform_xml: false,
-        },
         "form-compile" => NativeMutationFileInputContract {
             top_level: TopLevelJsonInput::OptionalJsonPath,
             secondary_at_query_files: false,
@@ -79,11 +74,6 @@ pub(crate) fn native_mutation_file_input_contract(
         "mxl-compile" | "role-compile" => NativeMutationFileInputContract {
             top_level: TopLevelJsonInput::RequiredJsonPath,
             secondary_at_query_files: false,
-            secondary_from_object_platform_xml: false,
-        },
-        "dcs-edit" => NativeMutationFileInputContract {
-            top_level: TopLevelJsonInput::None,
-            secondary_at_query_files: true,
             secondary_from_object_platform_xml: false,
         },
         "code-patch" | "xdto-edit" | "cf-init" | "support-edit" | "cfe-borrow" | "cfe-init"
@@ -230,7 +220,6 @@ pub(crate) fn invoke_mutation(
         .or_else(|| form::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| interface::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| subsystem::invoke_mutation(operation, tool_name, args, context))
-        .or_else(|| dcs::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| mxl::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| role::invoke_mutation(operation, tool_name, args, context))
         .or_else(|| support::invoke_mutation(operation, tool_name, args, context))
@@ -275,11 +264,6 @@ mod tests {
                 "cf-edit",
                 (TopLevelJsonInput::OptionalDefinitionFile, false, false),
             ),
-            (
-                "dcs-compile",
-                (TopLevelJsonInput::OptionalDefinitionFile, true, false),
-            ),
-            ("dcs-edit", (TopLevelJsonInput::None, true, false)),
             (
                 "form-compile",
                 (TopLevelJsonInput::OptionalJsonPath, false, true),
@@ -340,7 +324,7 @@ mod tests {
         }
 
         assert_eq!(actual_file_backed, expected_file_backed);
-        assert_eq!(actual_file_backed.len(), 10);
+        assert_eq!(actual_file_backed.len(), 8);
         assert_eq!(
             actual_file_backed
                 .values()

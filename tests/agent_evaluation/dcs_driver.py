@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import platform
+import re
 import shutil
 import shlex
 import signal
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from tests.ci.acceptance_profiles import REPO, host_target, isolated_environment
@@ -23,6 +25,11 @@ from tests.ci.acceptance_profiles import REPO, host_target, isolated_environment
 FIXTURE = REPO / "tests/fixtures/acceptance/agent-dcs"
 XML = "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
 DCS_TEMPLATE = "cf:Report.F05Report.Template.F05Schema"
+DCS_OWNER = "cf:Report.F05Report"
+NEW_DCS_TEMPLATE = DCS_OWNER + ".Template.Agent1310Schema"
+NEW_DCS_XML = "src/cf/Reports/F05Report/Templates/Agent1310Schema/Ext/Template.xml"
+DCS_CHANGED_PATHS = {XML, "src/cf/Reports/F05Report.xml",
+                     "src/cf/Reports/F05Report/Templates/Agent1310Schema.xml", NEW_DCS_XML}
 DISABLED = ("unified_exec", "plugins", "apps", "memories", "hooks",
             "multi_agent", "skill_search", "skill_mcp_dependency_install",
             "browser_use", "computer_use", "image_generation",
@@ -168,7 +175,8 @@ def audit_cli(events, allowed_tools, help_path):
     return completed
 
 
-def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_operations=None):
+def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_operations=None,
+              extra_templates=()):
     requests = {}
     calls = []
     allowed = None
@@ -197,6 +205,7 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
     contracts = {}
     plans = {}
     executed = []
+    templates = (target_template, *extra_templates)
     for call in calls:
         tool = call["params"]["name"]
         args = call["params"]["arguments"]
@@ -227,18 +236,28 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                     # The public DCS contract also selects a dataset/variant
                     # by name. That effective node may differ from the common
                     # apply root, while still belonging to the same template.
-                    in_template = isinstance(target, str) and (target == target_template or target.startswith(target_template + "."))
+                    owning_template = next((template for template in templates
+                                            if isinstance(target, str) and
+                                            (target == template or target.startswith(template + "."))), None)
+                    in_template = owning_template is not None
                     creation_owner = op == "template.add" and owner is not None and target == owner
                     if not (in_template or creation_owner):
                         raise ValueError("operation target is outside the evaluated template or its creation owner")
-                    template = target_template
+                    if creation_owner:
+                        # Scope creation to the actual requested template, so a
+                        # publication of a new schema cannot satisfy an effect
+                        # or invalidate a completed verification of its peer.
+                        names = {item.get("name") for item in operation.get("args", {}).get("items", [])}
+                        owning_template = next((template for template in templates
+                                                if template.rsplit(".Template.", 1)[-1] in names), target_template)
+                    template = owning_template
                     if isinstance(values.get("variant"), str) and values["variant"]:
                         target = template + ".Setting." + values["variant"]
                     elif isinstance(values.get("dataSet"), str) and values["dataSet"]:
                         target = template + ".DataSet." + values["dataSet"]
                     if contracts.get((target, op), call["index"]) >= call["index"]:
                         raise ValueError("detailed contract did not precede the apply target/op")
-                    ops.append(op)
+                    ops.append((op, template))
                 token = data.get("executionToken")
                 if not isinstance(token, str) or not token or token in plans:
                     raise ValueError("missing or repeated preview token")
@@ -249,10 +268,11 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                     raise ValueError("execute did not consume its observed preview")
                 if data.get("effects") != plan[3] or call["before"] == call["after"]:
                     raise ValueError("execution did not publish its XML effect")
-                executed.extend((op, call["done"]) for op in plan[0])
+                executed.extend((op, template, call["done"]) for op, template in plan[0])
             else:
                 raise ValueError("unobserved asynchronous apply")
-    operations = {op for op, _ in executed}
+    selected = [(op, done) for op, template, done in executed if template == target_template]
+    operations = {op for op, _ in selected}
     # A preview may be abandoned or become stale after another publication.
     # Only consumed plans prove effects; every publication was checked above.
     if required_operations is None:
@@ -261,7 +281,7 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
             raise ValueError("agent did not publish the requested field, query and grouping effects")
     elif not required_operations <= operations:
         raise ValueError("agent did not publish all requested template operations")
-    last = max(done for _, done in executed)
+    last = max(done for _, done in selected)
     if not any(call["index"] > last and call["params"]["name"] == "unica.check"
                and call["params"]["arguments"].get("at") == target_template
                and (call["result"] or {}).get("ok") is True
@@ -275,6 +295,96 @@ def audit_mcp(records, *, target_template=DCS_TEMPLATE, owner=None, required_ope
                for call in calls):
         raise ValueError("agent did not reread the final image")
     return allowed, raw_calls
+
+
+def audit_dcs_contract(records):
+    """Each schema must have its own published effects and final verification."""
+    allowed, calls = audit_mcp(records, owner=DCS_OWNER,
+                               extra_templates=(NEW_DCS_TEMPLATE,))
+    audit_mcp(records, target_template=NEW_DCS_TEMPLATE, owner=DCS_OWNER,
+              extra_templates=(DCS_TEMPLATE,),
+              required_operations={"template.add", "dataSource.add", "dataSet.add",
+                                   "field.add", "variant.add", "selection.add"})
+    return allowed, calls
+
+
+def verify_dcs_images(workspace):
+    """Observe XML independently of the agent's final claims and MCP projections."""
+    schema_ns = "http://v8.1c.ru/8.1/data-composition-system/schema"
+    settings_ns = "http://v8.1c.ru/8.1/data-composition-system/settings"
+    core_ns = "http://v8.1c.ru/8.1/data/core"
+    md_ns = "http://v8.1c.ru/8.3/MDClasses"
+    xsi_ns = "http://www.w3.org/2001/XMLSchema-instance"
+    s, t = "{" + schema_ns + "}", "{" + settings_ns + "}"
+
+    def one(parent, path):
+        nodes = parent.findall(path)
+        if len(nodes) != 1:
+            raise ValueError(f"expected exactly one XML node: {path}")
+        return nodes[0]
+
+    def query_constants(query, text, amount, added):
+        for pattern in [rf'"{text}"\s+(?:КАК|AS)\s+Category\b',
+                        rf'(?<![\w.]){amount}\s+(?:КАК|AS)\s+Amount\b',
+                        rf'(?<![\w.]){added}\s+(?:КАК|AS)\s+Added\b']:
+            if re.search(pattern, query, re.IGNORECASE) is None:
+                raise ValueError("published query does not assign the requested constants to the fields")
+
+    old = ET.parse(workspace / XML).getroot()
+    old_data = one(old, s + "dataSet[" + s + "name='F05Data']")
+    old_fields = [field.findtext(s + "dataPath") for field in old_data.findall(s + "field")]
+    if old_fields != ["Category", "Amount", "Added"]:
+        raise ValueError("existing schema field names changed or Added is missing")
+    added_field = one(old_data, s + "field[" + s + "dataPath='Added']")
+    if added_field.findtext(s + "title/{" + core_ns + "}item/{" + core_ns + "}content") != "Added":
+        raise ValueError("existing schema Added title is wrong")
+    old_query = one(old_data, s + "query").text or ""
+    query_constants(old_query, "Agent1310", 3, 4)
+    old_settings = one(old, s + "settingsVariant[" + t + "name='F05Variant']/" + t + "settings")
+    old_group = one(old_settings, t + "item[" + t + "name='F05Group']")
+    old_group_by = [node.text for node in old_group.findall(t + "groupItems/" + t + "item/" + t + "field")]
+    if old_group_by != ["Amount"]:
+        raise ValueError("existing named group was not patched to Amount")
+
+    new = ET.parse(workspace / NEW_DCS_XML).getroot()
+    if new.tag != s + "DataCompositionSchema" or "version" in new.attrib:
+        raise ValueError("created schema has a wrong root or a version attribute")
+    new_source = one(new, s + "dataSource[" + s + "name='AgentSource']")
+    if new_source.findtext(s + "dataSourceType") != "Local":
+        raise ValueError("new schema does not contain its requested Local source")
+    new_data = one(new, s + "dataSet[" + s + "name='AgentData']")
+    if new_data.attrib.get("{" + xsi_ns + "}type", "").rsplit(":", 1)[-1] != "DataSetQuery":
+        raise ValueError("new AgentData is not a Query dataset")
+    if new_data.findtext(s + "dataSource") != "AgentSource":
+        raise ValueError("new dataset refers to a different data source")
+    new_fields = [field.findtext(s + "dataPath") for field in new_data.findall(s + "field")]
+    if len(new_fields) != 3 or set(new_fields) != {"Category", "Amount", "Added"}:
+        raise ValueError("new schema does not contain exactly its three requested fields")
+    for field in new_data.findall(s + "field"):
+        if field.findtext(s + "field") != field.findtext(s + "dataPath") or field.find(s + "valueType") is not None:
+            raise ValueError("new query field name/type does not follow the query field contract")
+    new_query = one(new_data, s + "query").text or ""
+    query_constants(new_query, "Agent1310New", 7, 8)
+    new_settings = one(new, s + "settingsVariant[" + t + "name='AgentVariant']/" + t + "settings")
+    new_group = one(new_settings, t + "item[" + t + "name='AgentGroup']")
+    new_group_by = [node.text for node in new_group.findall(t + "groupItems/" + t + "item/" + t + "field")]
+    if new_group_by != ["Category"]:
+        raise ValueError("new AgentGroup does not group by Category")
+    selected = [node.text for node in new_settings.findall(t + "selection/" + t + "item/" + t + "field")]
+    if len(selected) != 3 or set(selected) != {"Category", "Amount", "Added"}:
+        raise ValueError("new variant does not select exactly its three requested fields")
+    owner = ET.parse(workspace / "src/cf/Reports/F05Report.xml").getroot()
+    registered = [node.text for node in owner.findall("./{" + md_ns + "}Report/{" + md_ns + "}ChildObjects/{" + md_ns + "}Template")]
+    if registered != ["F05Schema", "Agent1310Schema"]:
+        raise ValueError("report template registration lost the original or added an unrequested template")
+    descriptor = ET.parse(workspace / "src/cf/Reports/F05Report/Templates/Agent1310Schema.xml").getroot()
+    if descriptor.findtext("./{" + md_ns + "}Template/{" + md_ns + "}Properties/{" + md_ns + "}TemplateType") != "DataCompositionSchema":
+        raise ValueError("created template descriptor is not DataCompositionSchema")
+    return {"existing": {"fields": old_fields, "query": old_query, "group": "F05Group", "groupBy": old_group_by},
+            "created": {"template": NEW_DCS_TEMPLATE, "dataSource": "AgentSource", "dataSet": "AgentData",
+                        "fields": new_fields, "query": new_query, "variant": "AgentVariant",
+                        "group": "AgentGroup", "groupBy": new_group_by, "selection": selected},
+            "registeredTemplates": registered}
 
 
 def terminal_calls(calls):
@@ -344,7 +454,9 @@ def stop_owned_daemons(state, binary):
                     raise TimeoutError("owned evaluation daemon survived cleanup")
 
 
-def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source=XML, changed_paths=None, auditor=audit_mcp):
+def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", changed_paths=None, auditor=None):
+    is_dcs_contract = fixture == FIXTURE and auditor is None
+    auditor = audit_dcs_contract if is_dcs_contract else (auditor or audit_mcp)
     proof = proof_root / (scenario["id"] + "-" + uuid.uuid4().hex)
     proof.mkdir(parents=True)
     (proof / "scenario.json").write_text(json.dumps(scenario, ensure_ascii=False, indent=2))
@@ -395,9 +507,14 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source=XML, chang
                     for path in (server.workspace / "src").rglob("*") if path.is_file()}
     changed = {path for path in source_before.keys() | source_after.keys()
                if source_before.get(path) != source_after.get(path)}
-    if changed != (changed_paths if changed_paths is not None else {XML}) or packager().package_tree_sha256(packet) != package_hash:
+    expected_changes = changed_paths if changed_paths is not None else (DCS_CHANGED_PATHS if is_dcs_contract else {XML})
+    if changed != expected_changes or packager().package_tree_sha256(packet) != package_hash:
         raise ValueError("agent changed an unrequested source or its prepared packet")
     allowed, calls = auditor(records)
+    if is_dcs_contract:
+        observations = verify_dcs_images(server.workspace)
+        (proof / "file-observations.json").write_text(json.dumps(observations, ensure_ascii=False, indent=2))
+        manifest["fileObservationsSha256"] = packager().sha256(proof / "file-observations.json")
     completed = audit_cli(events, allowed, help_path)
     if len(completed) != len(calls):
         raise ValueError("CLI and raw MCP transcripts disagree on tool calls")
@@ -422,11 +539,25 @@ def independent_review(proof, *, rubric=None):
                 "final": json.loads((proof / "final.json").read_text()),
                 "mcp": [json.loads(line) for line in (proof / "mcp.jsonl").read_text().splitlines()],
                 "verification": json.loads((proof / "verification.json").read_text())}
+    if (proof / "file-observations.json").exists():
+        evidence["fileObservations"] = json.loads((proof / "file-observations.json").read_text())
     default_rubric = ("Три заданных изменения действительно опубликованы и прочитаны; запрос "
               "задаёт строку Agent1310 и числа 3/4 правильным полям; имя исходной группы сохранено; "
-              "check проходит. Ответ честно объясняет, что создание template даёт только каркас "
-              "без набора данных и полная новая схема с набором/запросом/полями не поддерживается "
-              "текущими публичными операциями. Нельзя обещать её сборку или советовать обход XML.")
+              "check исходной схемы проходит. Дополнительно реально создан и зарегистрирован "
+              "макет Agent1310Schema вида DataCompositionSchema. В нём Local источник AgentSource, "
+              "Query набор AgentData с Category=строка Agent1310New, Amount=число 7, Added=число 8; "
+              "объявлены эти три поля. Вариант AgentVariant выбирает эти поля и содержит именованную "
+              "группировку AgentGroup по Category. Создание и наполнение выполнены публичными "
+              "базовыми операциями, подробные контракты фактически выбранных операций прочитаны "
+              "до их применения. Каждая публикация потребляет наблюдённый preview; preview и отказ "
+              "не меняют исходники. Каждая схема перечитана и проверена после собственных последних "
+              "изменений. Независимые fileObservations подтверждают оба постобраза и регистрацию. "
+              "Существующая схема и её группа сохранены, нет незапрошенных изменений. Ответ "
+              "сообщает выполненное создание, а не прежний отказ о невозможности; не предлагает "
+              "ручную запись XML или полный JSON DSL. Агент не выдаёт физическое чтение драйвера "
+              "за собственное чтение XML и не заявляет загрузку или выполнение отчёта в 1С без "
+              "соответствующего протокола. Отдельное предупреждение об отсутствии запуска 1С "
+              "не требуется.")
     prompt = ("Независимо проверь приёмку. Любое невыполненное требование означает accepted=false. "
               "Требования: " + (rubric if rubric is not None else default_rubric) +
               " Приведи конкретные причины вердикта. Инструменты не используй.\nЗапрос:\n" + intent +
@@ -441,6 +572,8 @@ def independent_review(proof, *, rubric=None):
                "files": {name: packager().sha256(proof / name) for name in
                          ("agent.jsonl", "mcp.jsonl", "manifest.json", "final.json", "verification.json", "scenario.json",
                           "review-prompt.md", "review.schema.json", "reviewer.jsonl", "review.json")}}
+    if (proof / "file-observations.json").exists():
+        receipt["files"]["file-observations.json"] = packager().sha256(proof / "file-observations.json")
     (proof / "receipt.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2))
     if receipt["accepted"] is not True or not receipt["reasons"]:
         raise AssertionError(f"independent evaluation refused: {receipt['reasons']}; proof: {proof}")
