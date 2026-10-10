@@ -105,7 +105,9 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 )
 # LAST_VERIFIED records the previous successful full platform run. Two
 # independent generations agree on the current direct-DCS public contract.
-# Advance LAST_VERIFIED only after the full exact 8.3.27.2074 gate succeeds.
+# All five direct-DCS cases pass with normalization and stable round-trips.
+# The full gate accepted 63/69; six existing MXL/empty-template imports timed
+# out with incomplete cleanup (SIGKILL EPERM). Keep LAST_VERIFIED unchanged.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
     "a1e9a25bcb480071b1704672a79fe5d52337e12e1fc21b1437497a98121f2cab"
 )
