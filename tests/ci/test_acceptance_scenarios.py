@@ -405,13 +405,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 351)
+        self.assertEqual(len(scenarios), 352)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 581,
-            "a wire step went missing: the corpus freezes 581 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 585,
+            "a wire step went missing: the corpus freezes 585 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 352)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 353)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -423,7 +423,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
         self.assertEqual(agent, {"S328", "S335"})
-        self.assertEqual(delivery, {"S324", "S339", "S340", "S341", "S342", "S343", "S350"})
+        self.assertEqual(delivery, {"S324", "S339", "S340", "S341", "S342", "S343", "S351"})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -431,7 +431,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-missing"},
+                {self.corpus["workspace"], FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-missing"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):

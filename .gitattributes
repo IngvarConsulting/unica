@@ -35,3 +35,4 @@ tests/fixtures/acceptance/workspace-diagnostics/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-metadata-warning/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external/** -text whitespace=cr-at-eol
 tests/fixtures/acceptance/workspace-external-missing/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-metadata-values/** -text whitespace=cr-at-eol
