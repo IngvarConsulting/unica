@@ -537,12 +537,23 @@ pub(crate) fn validate_mxl(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
+    match resolve_mxl_validate_path(args, context).and_then(|path| {
+        fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))
+            .map(|text| (path, text))
+    }) {
+        Ok((path, text)) => validate_mxl_input(args, &text, path),
+        Err(error) => mxl_validation_error(error),
+    }
+}
 
+pub(crate) fn validate_mxl_input(
+    args: &Map<String, Value>,
+    text: &str,
+    template_path: PathBuf,
+) -> AdapterOutcome {
+    const NS_D: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
     let result = (|| -> Result<(bool, String, PathBuf, Vec<String>), String> {
-        let template_path = resolve_mxl_validate_path(args, context)?;
-        let text = fs::read_to_string(&template_path)
-            .map_err(|err| format!("failed to read {}: {err}", template_path.display()))?;
         let doc = Document::parse(text.trim_start_matches('\u{feff}'))
             .map_err(|err| format!("XML parse error in {}: {err}", template_path.display()))?;
         let root = doc.root_element();
@@ -883,17 +894,21 @@ pub(crate) fn validate_mxl(
             stderr: Some(String::new()),
             command: None,
         },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.mxl.validate failed in native spreadsheet validator".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
-        },
+        Err(error) => mxl_validation_error(error),
+    }
+}
+
+fn mxl_validation_error(error: String) -> AdapterOutcome {
+    AdapterOutcome {
+        ok: false,
+        summary: "unica.mxl.validate failed in native spreadsheet validator".to_string(),
+        changes: Vec::new(),
+        warnings: Vec::new(),
+        errors: vec![error.clone()],
+        artifacts: Vec::new(),
+        stdout: None,
+        stderr: Some(format!("{error}\n")),
+        command: None,
     }
 }
 

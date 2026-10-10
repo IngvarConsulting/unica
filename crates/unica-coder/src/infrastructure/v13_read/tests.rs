@@ -6949,3 +6949,154 @@ fn external_leaf_preserves_an_explicit_finite_relative_read_limit() {
         json!([{"kind":"ExternalDataProcessor","name":"Large"}])
     );
 }
+
+#[test]
+fn mxl_check_consumes_captured_body_without_reopening_its_display_path() {
+    let fixture = RealReaderFixture::new();
+    fs::copy(fixture_path("acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"), fixture.source.join("Reports/ParityReport/Templates/Print/Ext/Template.xml")).unwrap();
+    let at = QualifiedAddress::parse("main:Report.ParityReport.Template.Print").unwrap();
+    let authority = fixture.read_authority();
+    let input = authority.mxl_validation_input(&at).unwrap();
+    fs::remove_file(&input.artifact).unwrap();
+    let result = crate::infrastructure::native_operations::mxl::validate_mxl_input(
+        &serde_json::Map::new(),
+        &input.text,
+        input.artifact,
+    );
+    assert!(result.ok, "{:?}", result.errors);
+    assert!(authority.mxl_validation_input(&at).is_err());
+    let schema = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    assert!(authority.mxl_validation_input(&schema).is_err());
+}
+
+#[test]
+fn retained_mxl_check_supports_configuration_extension_epf_and_erf_owners() {
+    let body = fixture_text(
+        "acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+    );
+    let wrapper =
+        fixture_text("acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template.xml")
+            .replace("F06Template", "Print");
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Templates/Print.xml"),
+        &wrapper,
+    );
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Templates/Print/Ext/Template.xml"),
+        &body,
+    );
+    for authority in [fixture.read_authority(), fixture.extension_read_authority()] {
+        let at = QualifiedAddress::parse("main:Report.ParityReport.Template.Print").unwrap();
+        let input = authority.mxl_validation_input(&at).unwrap();
+        assert!(matches!(
+            input.format_guard,
+            crate::application::ports::FormatGuardCheck::Allow
+        ));
+        assert!(
+            crate::infrastructure::native_operations::mxl::validate_mxl_input(
+                &serde_json::Map::new(),
+                &input.text,
+                input.artifact
+            )
+            .ok
+        );
+    }
+    let fixture = RealExternalReaderFixture::new();
+    for (root, kind, source_set, owner) in [
+        (
+            &fixture.processor,
+            SourceSetKind::ExternalProcessor,
+            "epf",
+            "ExternalDataProcessor.Import",
+        ),
+        (
+            &fixture.report,
+            SourceSetKind::ExternalReport,
+            "erf",
+            "ExternalReport.Sales",
+        ),
+    ] {
+        let name = owner.split('.').nth(1).unwrap();
+        let descriptor = root.join(format!("{name}.xml"));
+        let xml = fs::read_to_string(&descriptor).unwrap().replace(
+            "</ChildObjects>",
+            "<Template>Print</Template></ChildObjects>",
+        );
+        write(&descriptor, &xml);
+        write(&root.join(format!("{name}/Templates/Print.xml")), &wrapper);
+        write(
+            &root.join(format!("{name}/Templates/Print/Ext/Template.xml")),
+            &body,
+        );
+        let authority = fixture.read_authority(source_set, kind);
+        let at = QualifiedAddress::parse(&format!("{source_set}:{owner}.Template.Print")).unwrap();
+        let input = authority.mxl_validation_input(&at).unwrap();
+        assert!(matches!(
+            input.format_guard,
+            crate::application::ports::FormatGuardCheck::Allow
+        ));
+        assert!(
+            crate::infrastructure::native_operations::mxl::validate_mxl_input(
+                &serde_json::Map::new(),
+                &input.text,
+                input.artifact
+            )
+            .ok
+        );
+        let orphan =
+            QualifiedAddress::parse(&format!("{source_set}:{owner}.Template.Orphan")).unwrap();
+        assert!(authority.mxl_validation_input(&orphan).is_err());
+    }
+}
+
+#[test]
+fn retained_mxl_check_keeps_unbounded_body_read_and_format_warnings() {
+    let fixture = RealReaderFixture::new();
+    let body = fixture_text(
+        "acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+    );
+    let wrapper =
+        fixture_text("acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template.xml")
+            .replace("F06Template", "Print")
+            .replace("version=\"2.20\"", "version=\"2.19\"");
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Templates/Print.xml"),
+        &wrapper,
+    );
+    let padded = body.replacen(
+        "</document>",
+        &format!("<!--{}--></document>", "x".repeat(8 * 1024 * 1024)),
+        1,
+    );
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Templates/Print/Ext/Template.xml"),
+        &padded,
+    );
+    let authority = fixture.read_authority();
+    let at = QualifiedAddress::parse("main:Report.ParityReport.Template.Print").unwrap();
+    let input = authority.mxl_validation_input(&at).unwrap();
+    assert_eq!(input.text, padded);
+    assert!(matches!(
+        input.format_guard,
+        crate::application::ports::FormatGuardCheck::Warn { .. }
+    ));
+    assert!(
+        crate::infrastructure::native_operations::mxl::validate_mxl_input(
+            &serde_json::Map::new(),
+            &input.text,
+            input.artifact
+        )
+        .ok
+    );
+    fixture.cancellation.cancel();
+    assert!(authority.mxl_validation_input(&at).is_err());
+}

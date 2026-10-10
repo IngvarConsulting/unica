@@ -95,13 +95,37 @@ pub(crate) fn evaluate_retained_dcs_format_guard(
         crate::domain::project_sources::SourceSetKind,
     ),
 ) -> Result<FormatGuardCheck, FormatGuardError> {
+    evaluate_retained_template_format_guard(
+        "dcs-validate",
+        DCS_ROOT,
+        artifact,
+        text,
+        wrapper,
+        source_owner,
+    )
+}
+
+/// Template check owns these documents through its retained source authority. Reuse
+/// the owner parser and version policy without reopening the display paths.
+pub(crate) fn evaluate_retained_template_format_guard(
+    operation: &str,
+    root: PlatformXmlRootExpectation,
+    artifact: &Path,
+    text: &str,
+    wrapper: (PathBuf, Vec<u8>),
+    source_owner: (
+        PathBuf,
+        Vec<u8>,
+        crate::domain::project_sources::SourceSetKind,
+    ),
+) -> Result<FormatGuardCheck, FormatGuardError> {
     use crate::infrastructure::platform_xml_owner::{
         source_set_owner_from_bytes, version_owning_target_from_bytes,
     };
     let owners = (|| {
         let mut owners = Vec::new();
         if let Some(owner) =
-            version_owning_target_from_bytes(artifact, text.as_bytes().to_vec(), Some(DCS_ROOT))?
+            version_owning_target_from_bytes(artifact, text.as_bytes().to_vec(), Some(root))?
         {
             owners.push(owner);
         }
@@ -116,10 +140,8 @@ pub(crate) fn evaluate_retained_dcs_format_guard(
         Ok(owners)
     })();
     match owners {
-        Ok(owners) => evaluate_resolved_format_owners("dcs-validate", false, owners, None),
-        Err(error) => {
-            evaluate_resolved_format_owners("dcs-validate", false, Vec::new(), Some(error))
-        }
+        Ok(owners) => evaluate_resolved_format_owners(operation, false, owners, None),
+        Err(error) => evaluate_resolved_format_owners(operation, false, Vec::new(), Some(error)),
     }
 }
 
