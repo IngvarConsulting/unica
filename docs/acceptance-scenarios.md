@@ -4,15 +4,15 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **379 сценариев** реальных задач разработчика конфигурации и **812 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **380 сценариев** реальных задач разработчика конфигурации и **824 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 367 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 3. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL через настоящий процесс и публичный check; это не проверка опубликованного анализатора. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 368 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 3. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL через настоящий процесс и публичный check; это не проверка опубликованного анализатора. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 696 |
+| `ok` | результат | 708 |
 | `refused` | умышленный типизированный отказ | 70 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 20 |
 | `provider` | провайдер недоступен | 12 |
@@ -111,7 +111,7 @@
 | `column.add` | `items` | да | S085 |
 | `column.set` | `values` | да | S086 |
 | `column.remove` | `values` | да | S087 |
-| `template.add` | `items` | да | S196, S199, S203, S277, S284, S330, S331, S361, S362, S363, S364, S365, S367, S368, S370, S371, S372, S373, S374, S375, S376, S377, S378, S379 |
+| `template.add` | `items` | да | S196, S199, S203, S277, S284, S330, S331, S361, S362, S363, S364, S365, S367, S368, S370, S371, S372, S373, S374, S375, S376, S377, S378, S379, S380 |
 | `template.set` | `values` | да | S197 |
 | `template.remove` | `values` | да | S198 |
 | `command.add` | `items` | да | **не покрыто — предложите задачу** |
@@ -155,15 +155,15 @@
 | `dataSource.add` | `items` | да | S361 |
 | `dataSource.set` | `values` | да | S361 |
 | `dataSource.remove` | `values` | да | S361, S366 |
-| `dataSet.add` | `items` | да | S361, S367, S368, S370 |
+| `dataSet.add` | `items` | да | S361, S367, S368, S370, S380 |
 | `dataSet.set` | `values` | да | S361 |
 | `dataSet.remove` | только `at` | да | S361 |
-| `field.add` | `items` | да | S181, S326, S361, S366, S368 |
-| `field.set` | `values` | да | S182, S361 |
+| `field.add` | `items` | да | S181, S326, S361, S366, S368, S380 |
+| `field.set` | `values` | да | S182, S361, S380 |
 | `field.remove` | только `at` | да | S183, S368 |
 | `fieldRole.set` | `values` | да | S361 |
-| `parameter.add` | `items` | да | S184, S185, S362, S376 |
-| `parameter.set` | `values` | да | S185, S362, S376 |
+| `parameter.add` | `items` | да | S184, S185, S362, S376, S380 |
+| `parameter.set` | `values` | да | S185, S362, S376, S380 |
 | `parameter.remove` | только `at` | да | S362 |
 | `parameter.rename` | `values` | да | S362 |
 | `parameter.reorder` | `items` | да | S362 |
@@ -269,7 +269,7 @@
 | `cf` | S224, S267, S271, S301 |
 | `cfe` | S290, S313, S314 |
 | `form` | S225, S268, S302, S325 |
-| `dcs` | S194, S326, S328, S329, S330, S361, S364 |
+| `dcs` | S194, S326, S328, S329, S330, S361, S364, S380 |
 | `mxl` | S201, S331, S332, S335, S350 |
 | `role` | S175, S179, S269, S291, S303 |
 | `subsystem` | S210, S212, S270 |
@@ -280,9 +280,9 @@
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 213 |
-| `unica.view` | 101 |
-| `unica.check` | 62 |
+| `unica.apply` | 214 |
+| `unica.view` | 102 |
+| `unica.check` | 63 |
 | `unica.search` | 33 |
 | `unica.docs` | 24 |
 | `unica.diff` | 15 |
@@ -290,7 +290,7 @@
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (48) · Свойства объектов (27) · Реквизиты и состав (46) · Создание и удаление объектов (22) · Формы (26) · Код BSL (37) · Роли и права (15) · СКД (40) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (19) · Тесты и запуск (1) · Документация и стандарты (17) · Поддержка поставщика (16) · Расширения конфигурации (7) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (4)
+Области: Навигация и чтение (48) · Свойства объектов (27) · Реквизиты и состав (46) · Создание и удаление объектов (22) · Формы (26) · Код BSL (37) · Роли и права (15) · СКД (41) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (19) · Тесты и запуск (1) · Документация и стандарты (17) · Поддержка поставщика (16) · Расширения конфигурации (7) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (4)
 
 ### Навигация и чтение
 
@@ -592,6 +592,7 @@
 | S377 | Условное оформление имеет отдельный typed filter, use=false, Color и многоязычный формат; заголовок и enum параметра вывода сохраняют платформенные типы | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `conditionalAppearance.add` `outputParameter.set` `outputParameter.set` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `outputParameter.set` `outputParameter.set`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S378 | Folder создаётся отдельно от детей; parentIndexes из чтения точно выбирают вложенную выборку при set/remove и сохраняют соседей, заголовки и placement | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.clear` `selection.add` `selection.add` `selection.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.set` `selection.set` `selection.remove`<br>`apply`<br>`view`<br>`apply` `selection.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S379 | Один итог имеет несколько explicit group bindings; set заменяет весь список, пустой список снимает привязки, соседний итог сохраняется | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `total.add`<br>`apply`<br>`view`<br>`apply` `total.set` `total.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S380 | Явные пустые value/title/expression/presentationExpression записываются; повтор такого же сохранённого плана оставляет XML без изменений и имеет нулевой эффект | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add` `field.add` `parameter.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Макеты
 

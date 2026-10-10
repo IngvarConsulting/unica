@@ -118,7 +118,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "ConfigPath",
     "Context",
     "CreateIfMissing",
-    "DataSet",
     "DefinitionFile",
     "Detailed",
     "EmitDsl",
@@ -143,7 +142,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "ModulePath",
     "Name",
     "NamePrefix",
-    "NoSelection",
     "NoRole",
     "NoValidate",
     "Object",
@@ -172,7 +170,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "TemplateType",
     "TargetPath",
     "Value",
-    "Variant",
     "Vendor",
     "Version",
     "WithText",
@@ -185,7 +182,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "configPath",
     "context",
     "createIfMissing",
-    "dataSet",
     "definitionFile",
     "detailed",
     "emitDsl",
@@ -210,7 +206,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "modulePath",
     "name",
     "namePrefix",
-    "noSelection",
     "noRole",
     "noValidate",
     "object",
@@ -239,7 +234,6 @@ const NATIVE_XML_DSL_ARGS: &[&str] = &[
     "templateType",
     "targetPath",
     "value",
-    "variant",
     "vendor",
     "version",
     "withText",
@@ -4585,16 +4579,16 @@ pub(crate) mod tests {
             (operation.to_string(), signature.to_string())
         }
         let expected = BTreeMap::from([
-            ("unica.cf.edit", entry("cf-edit", "4058:96bdb1efa6421e58")),
-            ("unica.cf.init", entry("cf-init", "4144:cfbc31105f029ec5")),
+            ("unica.cf.edit", entry("cf-edit", "3882:a5dd0d041f4db130")),
+            ("unica.cf.init", entry("cf-init", "3968:a8503a4a76d2cb11")),
             (
                 "unica.cfe.borrow",
-                entry("cfe-borrow", "4096:0051396e4b9591db"),
+                entry("cfe-borrow", "3920:57db4508b59e7b97"),
             ),
-            ("unica.cfe.init", entry("cfe-init", "3995:a6660e876399a229")),
+            ("unica.cfe.init", entry("cfe-init", "3819:b860582d3f0f0555")),
             (
                 "unica.cfe.patch_method",
-                entry("cfe-patch-method", "4598:547d7d1c2a7f4683"),
+                entry("cfe-patch-method", "4422:63881e3b29b5bdd9"),
             ),
             (
                 "unica.code.patch",
@@ -4604,15 +4598,15 @@ pub(crate) mod tests {
             ("unica.erf.init", entry("erf-init", "301:609ff516112efe75")),
             (
                 "unica.form.compile",
-                entry("form-compile", "4045:c3e209b3bc3e1df2"),
+                entry("form-compile", "3869:2e8369c6b61d7d10"),
             ),
             (
                 "unica.form.edit",
-                entry("form-edit", "4594:62307fb707529224"),
+                entry("form-edit", "4418:9886aafe6b92f956"),
             ),
             (
                 "unica.interface.edit",
-                entry("interface-edit", "4070:d659e259820c903f"),
+                entry("interface-edit", "3894:ce6cfee05e0e66fb"),
             ),
             (
                 "unica.meta.add",
@@ -4624,11 +4618,11 @@ pub(crate) mod tests {
             ),
             (
                 "unica.mxl.compile",
-                entry("mxl-compile", "4137:7b48252d9a57a0d6"),
+                entry("mxl-compile", "3961:ecbb35dae574f5e2"),
             ),
             (
                 "unica.role.compile",
-                entry("role-compile", "4137:278664daf24e8eae"),
+                entry("role-compile", "3961:ed99afdd2ffe1362"),
             ),
             (
                 "unica.role.edit",
@@ -4636,11 +4630,11 @@ pub(crate) mod tests {
             ),
             (
                 "unica.subsystem.compile",
-                entry("subsystem-compile", "4093:63b27fd38abfb192"),
+                entry("subsystem-compile", "3917:e025205c160a8052"),
             ),
             (
                 "unica.subsystem.edit",
-                entry("subsystem-edit", "4070:12e9e6b5eb9a0dbb"),
+                entry("subsystem-edit", "3894:a2c477348a4d8161"),
             ),
         ]);
         assert_eq!(actual, expected);

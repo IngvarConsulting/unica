@@ -307,6 +307,8 @@ mod call_graph_section_tests {
 
     #[test]
     fn dcs_and_mxl_template_can_follow_the_actual_body_format() {
+        use super::project_view_operation;
+        use crate::domain::refusal::RefusalCode;
         for (format, accepted, rejected) in [
             ("DataCompositionSchema", "dataSet.add", "mxl.set"),
             ("SpreadsheetDocument", "mxl.set", "dataSet.add"),

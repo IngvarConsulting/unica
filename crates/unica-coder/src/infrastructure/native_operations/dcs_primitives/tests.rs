@@ -1628,3 +1628,109 @@ fn output_title_uses_core_parameter_item_and_localized_string_instead_of_json_te
         &[("ru", "Отчёт по остаткам"), ("en", "Balances report")],
     );
 }
+
+#[test]
+fn empty_string_patches_clear_parameter_value_expression_and_field_presentation_expression() {
+    let untouched = "<u:future xmlns:u='urn:future'> untouched </u:future>";
+    let mut xml = query_schema("SELECT 1 AS Amount")
+        .replace("<field>Amount</field></field>", "<field>Amount</field><presentationExpression>Amount + 1</presentationExpression></field>")
+        .replace("<settingsVariant>", &format!("<parameter><name>Choice</name><valueType><v8:Type>xs:string</v8:Type></valueType><value xsi:type='xs:string'>old default</value><expression>old expression</expression>{untouched}</parameter><settingsVariant>"));
+    let args = normalized(
+        Primitive::ParameterSet,
+        json!({"values":{"name":"Choice","value":"","expression":""}}),
+    );
+    run(&mut xml, Primitive::ParameterSet, args, &target(&[], "")).unwrap();
+    {
+        let doc = Document::parse(&xml).unwrap();
+        let parameter = named(doc.root_element(), S, "parameter", "name", "Choice");
+        let value = direct(parameter, S, "value");
+        assert_value_qname(value, "http://www.w3.org/2001/XMLSchema", "string");
+        assert_eq!(direct_text(parameter, S, "value"), "");
+        assert_eq!(direct_text(parameter, S, "expression"), "");
+        assert_eq!(
+            direct_text(direct(parameter, S, "valueType"), V, "Type"),
+            "xs:string"
+        );
+    }
+    let args = normalized(
+        Primitive::FieldSet,
+        json!({"values":{"field":"Amount","presentationExpression":""}}),
+    );
+    run(&mut xml, Primitive::FieldSet, args, &target(&["Data"], "")).unwrap();
+    let doc = Document::parse(&xml).unwrap();
+    let field = named(
+        direct(doc.root_element(), S, "dataSet"),
+        S,
+        "field",
+        "dataPath",
+        "Amount",
+    );
+    assert_eq!(direct_text(field, S, "presentationExpression"), "");
+    assert_eq!(direct_text(field, S, "field"), "Amount");
+    assert_eq!(
+        direct_text(
+            named(doc.root_element(), S, "parameter", "name", "Choice"),
+            S,
+            "value"
+        ),
+        "",
+        "later field patch must retain the earlier parameter edit"
+    );
+    assert!(xml.contains(untouched));
+    for old in ["old default", "old expression", "Amount + 1"] {
+        assert!(!xml.contains(old));
+    }
+}
+
+#[test]
+fn equal_typed_string_preserves_split_text_cdata_comment_bytes_but_spaces_are_not_empty() {
+    for (old_content, requested, same) in [
+        ("a<![CDATA[b]]><!--note-->c", "abc", true),
+        (" <!--note--> ", "", false),
+    ] {
+        let original = schema(&format!("<parameter><name>Text</name><valueType><v8:Type>xs:string</v8:Type></valueType><value xmlns:q='http://www.w3.org/2001/XMLSchema' xsi:type = 'q:string'>{old_content}</value></parameter>"));
+        let mut xml = original.clone();
+        let args = normalized(
+            Primitive::ParameterSet,
+            json!({"values":{"name":"Text","value":requested}}),
+        );
+        run(&mut xml, Primitive::ParameterSet, args, &target(&[], "")).unwrap();
+        if same {
+            assert_eq!(xml, original, "equal decoded text must retain original CDATA, comment, prefix and attribute bytes");
+        } else {
+            assert_ne!(
+                xml, original,
+                "two spaces are a nonempty string and must actually be cleared"
+            );
+        }
+        let doc = Document::parse(&xml).unwrap();
+        let parameter = named(doc.root_element(), S, "parameter", "name", "Text");
+        let value = direct(parameter, S, "value");
+        assert_value_qname(value, "http://www.w3.org/2001/XMLSchema", "string");
+        assert_eq!(direct_text(parameter, S, "value"), requested);
+    }
+}
+
+#[test]
+fn dcs_component_writer_refuses_wrong_existing_root_without_a_postimage() {
+    let original = "<garbage/>";
+    let mut candidate = original.to_string();
+    let error = apply(
+        &mut candidate,
+        "dataSource.add",
+        json!({"items":[{"name":"Data","kind":"Local"}]})
+            .as_object()
+            .unwrap(),
+        &Target {
+            datasets: Vec::new(),
+            variant: String::new(),
+            terminal: None,
+        },
+    )
+    .expect_err("a DCS component writer must refuse a foreign XML root");
+    assert!(error.contains("DataCompositionSchema"), "{error}");
+    assert_eq!(
+        candidate, original,
+        "a refusal must not return a publishable postimage"
+    );
+}

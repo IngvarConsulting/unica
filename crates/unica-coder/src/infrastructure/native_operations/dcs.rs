@@ -3798,7 +3798,6 @@ pub(crate) mod tests {
     /// One schema carrying a representative of every fact the retired `Mode`
     /// reports used to print. The settings elements deliberately sit in the
     /// `dcsset` namespace, which is where the platform puts them.
-
     fn complete_dcs_xml() -> &'static str {
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"

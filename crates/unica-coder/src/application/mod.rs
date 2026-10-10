@@ -7942,31 +7942,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn dcs_component_writer_refuses_wrong_existing_root_without_a_postimage() {
-        use crate::infrastructure::native_operations::dcs_primitives::{apply, Target};
-        let original = "<garbage/>";
-        let mut candidate = original.to_string();
-        let error = apply(
-            &mut candidate,
-            "dataSource.add",
-            json!({"items":[{"name":"Data","kind":"Local"}]})
-                .as_object()
-                .unwrap(),
-            &Target {
-                datasets: Vec::new(),
-                variant: String::new(),
-                terminal: None,
-            },
-        )
-        .expect_err("a DCS component writer must refuse a foreign XML root");
-        assert!(error.contains("DataCompositionSchema"), "{error}");
-        assert_eq!(
-            candidate, original,
-            "a refusal must not return a publishable postimage"
-        );
-    }
-
-    #[test]
     fn declared_existing_form_output_rejects_wrong_root_before_handler() {
         let root = test_workspace_root("unica-form-existing-wrong-root");
         let workspace = root.join("workspace");

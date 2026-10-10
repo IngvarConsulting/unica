@@ -463,6 +463,15 @@ fn equal_element(left: Node<'_, '_>, right: Node<'_, '_>) -> bool {
     }
     let has_elements = left.children().any(|node| node.is_element())
         || right.children().any(|node| node.is_element());
+    if !has_elements {
+        let text = |node: Node<'_, '_>| {
+            node.children()
+                .filter(Node::is_text)
+                .filter_map(|node| node.text())
+                .collect::<String>()
+        };
+        return text(left) == text(right);
+    }
     let meaningful = |node: &Node<'_, '_>| {
         node.is_element()
             || (node.is_text()
@@ -896,7 +905,7 @@ fn value_type(value: &str) -> Result<String, String> {
     super::dcs_xml::emit_value_type(&mut lines, value, "")?;
     Ok(xml(
         "valueType",
-        &lines
+        lines
             .join("")
             .trim_start_matches("<valueType>")
             .trim_end_matches("</valueType>"),
@@ -1458,6 +1467,7 @@ fn apply_item(
                 super::dcs_xml::parse_value_type(string(values, "type"))?;
             }
             let name = string(values, "field");
+            named(dataset(root, target, values)?, S, "field", "dataPath", name)?;
             for key in [
                 "sourceField",
                 "title",
@@ -1466,10 +1476,7 @@ fn apply_item(
                 "presentationExpression",
                 "type",
             ] {
-                let Some(value) = values
-                    .get(key)
-                    .filter(|v| !v.as_str().is_some_and(str::is_empty))
-                else {
+                let Some(value) = values.get(key) else {
                     continue;
                 };
                 let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
@@ -1582,10 +1589,7 @@ fn apply_item(
             if tag == "calculatedField" {
                 body += &simple("expression", string(values, "expression"), S);
             }
-            if let Some(title) = values
-                .get("title")
-                .filter(|v| !v.as_str().is_some_and(str::is_empty))
-            {
+            if let Some(title) = values.get("title") {
                 body += &mltext("title", title, S)?;
             }
             if tag == "calculatedField" {
@@ -1654,6 +1658,7 @@ fn apply_item(
             )
         }
         "parameter.set" => {
+            named(root, S, "parameter", "name", string(values, "name"))?;
             for key in [
                 "title",
                 "type",
@@ -1667,10 +1672,7 @@ fn apply_item(
                 "denyIncompleteValues",
                 "use",
             ] {
-                let Some(value) = values
-                    .get(key)
-                    .filter(|v| !v.as_str().is_some_and(str::is_empty))
-                else {
+                let Some(value) = values.get(key) else {
                     continue;
                 };
                 let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
@@ -2686,6 +2688,17 @@ fn patch_settings_parameter(
     values: &Map<String, Value>,
     container: &str,
 ) -> Result<(), String> {
+    {
+        let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
+        let setting = settings(document.root_element(), target, values)?;
+        let collection = child(setting, T, container).ok_or("parameter collection missing")?;
+        unique(
+            collection.children().filter(|node| {
+                is(*node, C, "item") && text(*node, C, "parameter") == string(values, "name")
+            }),
+            string(values, "name"),
+        )?;
+    }
     for key in [
         "use",
         "value",

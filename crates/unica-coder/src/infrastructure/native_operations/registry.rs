@@ -43,8 +43,7 @@ const NO_FILE_INPUT: NativeMutationFileInputContract = NativeMutationFileInputCo
 /// inputs for every public native mutator.
 ///
 /// A non-`None` top-level input is parsed from one exact byte snapshot and
-/// bound to the writer transaction. DCS `@query-file` inputs are independently
-/// snapshotted and bound only when they are actually selected. Form compilation
+/// bound to the writer transaction. Form compilation
 /// from `FromObject`/`ObjectPath` binds the selected platform XML snapshot.
 ///
 /// Mutation targets and platform owner/provenance files are guarded separately
@@ -334,7 +333,7 @@ mod tests {
                         + usize::from(*from_object_platform_xml)
                 })
                 .sum::<usize>(),
-            12
+            9
         );
         assert_eq!(native_mutation_file_input_contract("unknown-mutator"), None);
         assert_eq!(

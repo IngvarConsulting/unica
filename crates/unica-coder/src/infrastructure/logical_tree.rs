@@ -155,6 +155,9 @@ pub(crate) fn route_logical_address(
     }) || (segments
         .iter()
         .any(|segment| segment.kind() == NodeKind::Template && segment.name().is_some())
+        && !segments
+            .iter()
+            .any(|segment| segment.kind() == NodeKind::Area)
         && segments
             .iter()
             .any(|segment| matches!(segment.kind(), NodeKind::Item | NodeKind::Parameter)))
