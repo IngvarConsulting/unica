@@ -27033,6 +27033,14 @@
        "eq": [
         ""
        ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Period']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}variant[@{http://www.w3.org/2001/XMLSchema-instance}type='v8:StandardPeriodVariant']",
+       "eq": [
+        "ThisMonth"
+       ]
       }
      ]
     },
@@ -27171,6 +27179,14 @@
        "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Empty']/{http://v8.1c.ru/8.1/data-composition-system/schema}value[@{http://www.w3.org/2001/XMLSchema-instance}nil='true']",
        "eq": [
         ""
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedValues/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter[{http://v8.1c.ru/8.1/data-composition-system/schema}name='CustomPeriod']/{http://v8.1c.ru/8.1/data-composition-system/schema}value/{http://v8.1c.ru/8.1/data/core}variant[@{http://www.w3.org/2001/XMLSchema-instance}type='v8:StandardPeriodVariant']",
+       "eq": [
+        "Today"
        ]
       }
      ]

@@ -1,0 +1,118 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dataSource>
+    <name>ИсточникДанных1</name>
+    <dataSourceType>Local</dataSourceType>
+  </dataSource>
+  <dataSet xsi:type="DataSetQuery">
+    <name>Main</name>
+    <field xsi:type="DataSetFieldField">
+      <dataPath>Value</dataPath>
+      <field>Value</field>
+    </field>
+    <field xsi:type="DataSetFieldField">
+      <dataPath>Amount</dataPath>
+      <field>Amount</field>
+    </field>
+    <dataSource>ИсточникДанных1</dataSource>
+    <query>SELECT 1 AS Value, 10 AS Amount</query>
+  </dataSet>
+  <dataSet xsi:type="DataSetObject">
+    <name>CatalogObject</name>
+    <field xsi:type="DataSetFieldField">
+      <dataPath>Description</dataPath>
+      <field>Description</field>
+      <presentationExpression>Description</presentationExpression>
+      <valueType>
+        <v8:Type>xs:string</v8:Type>
+        <v8:StringQualifiers>
+          <v8:Length>0</v8:Length>
+          <v8:AllowedLength>Variable</v8:AllowedLength>
+        </v8:StringQualifiers>
+      </valueType>
+    </field>
+    <dataSource>ИсточникДанных1</dataSource>
+    <objectName>Catalog.CorpusCatalog</objectName>
+  </dataSet>
+  <dataSet xsi:type="DataSetUnion">
+    <name>Combined</name>
+    <field xsi:type="DataSetFieldField">
+      <dataPath>Value</dataPath>
+      <field>Value</field>
+      <valueType>
+        <v8:Type>xs:string</v8:Type>
+        <v8:StringQualifiers>
+          <v8:Length>0</v8:Length>
+          <v8:AllowedLength>Variable</v8:AllowedLength>
+        </v8:StringQualifiers>
+      </valueType>
+    </field>
+    <item xsi:type="DataSetQuery">
+      <name>UnionFirst</name>
+      <field xsi:type="DataSetFieldField">
+        <dataPath>Value</dataPath>
+        <field>Value</field>
+      </field>
+      <dataSource>ИсточникДанных1</dataSource>
+      <query>SELECT 1 AS Value</query>
+    </item>
+    <item xsi:type="DataSetQuery">
+      <name>UnionSecond</name>
+      <field xsi:type="DataSetFieldField">
+        <dataPath>Value</dataPath>
+        <field>Value</field>
+      </field>
+      <dataSource>ИсточникДанных1</dataSource>
+      <query>SELECT 2 AS Value</query>
+    </item>
+  </dataSet>
+  <dataSetLink>
+    <sourceDataSet>Main</sourceDataSet>
+    <destinationDataSet>CatalogObject</destinationDataSet>
+    <sourceExpression>Value</sourceExpression>
+    <destinationExpression>Description</destinationExpression>
+    <parameter>Режим</parameter>
+    <parameterListAllowed>true</parameterListAllowed>
+    <linkConditionExpression>Value = Description</linkConditionExpression>
+    <startExpression>Value</startExpression>
+  </dataSetLink>
+  <calculatedField>
+    <dataPath>CalculatedAmount</dataPath>
+    <expression>Amount * 2</expression>
+    <title xsi:type="v8:LocalStringType">
+      <v8:item>
+        <v8:lang>ru</v8:lang>
+        <v8:content>Calculated amount</v8:content>
+      </v8:item>
+    </title>
+    <useRestriction>
+      <field>true</field>
+      <condition>true</condition>
+      <group>true</group>
+      <order>true</order>
+    </useRestriction>
+    <valueType>
+      <v8:Type>xs:decimal</v8:Type>
+      <v8:NumberQualifiers>
+        <v8:Digits>15</v8:Digits>
+        <v8:FractionDigits>2</v8:FractionDigits>
+        <v8:AllowedSign>Any</v8:AllowedSign>
+      </v8:NumberQualifiers>
+    </valueType>
+  </calculatedField>
+  <parameter>
+    <name>Период</name>
+    <valueType>
+      <v8:Type>v8:StandardPeriod</v8:Type>
+    </valueType>
+    <value xsi:type="v8:StandardPeriod">
+      <v8:variant xsi:type="v8:StandardPeriodVariant">LastMonth</v8:variant>
+    </value>
+    <useRestriction>false</useRestriction>
+  </parameter>
+  <settingsVariant>
+    <dcsset:name>Основной</dcsset:name>
+    <dcsset:presentation xsi:type="xs:string">Основной</dcsset:presentation>
+    <dcsset:settings xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows"/>
+  </settingsVariant>
+</DataCompositionSchema>

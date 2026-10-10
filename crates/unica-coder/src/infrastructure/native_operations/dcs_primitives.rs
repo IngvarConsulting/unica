@@ -816,7 +816,12 @@ fn scalar_value(
         if !super::dcs_xml::is_standard_period_variant(variant) {
             return Err("invalid StandardPeriod variant".to_string());
         }
-        let mut body = simple("variant", variant, V);
+        let mut body = typed(
+            "variant",
+            "v8:StandardPeriodVariant",
+            &escape_xml(variant),
+            V,
+        );
         if variant == "Custom" {
             let empty = Map::new();
             let dates = value.as_object().unwrap_or(&empty);

@@ -422,6 +422,10 @@ fn standard_period_parameter_value_has_nested_variant_without_custom_only_dates(
     let value = direct(direct(doc.root_element(), S, "parameter"), S, "value");
     assert_eq!(value.attribute((X, "type")), Some("v8:StandardPeriod"));
     assert_eq!(direct_text(value, V, "variant"), "LastMonth");
+    assert_eq!(
+        direct(value, V, "variant").attribute((X, "type")),
+        Some("v8:StandardPeriodVariant")
+    );
     assert_eq!(names(value), ["variant"]);
     assert_refuses(
         &schema(""),
@@ -448,6 +452,10 @@ fn custom_standard_period_settings_value_has_validated_dates() {
     assert_eq!(value.attribute((X, "type")), Some("v8:StandardPeriod"));
     assert_eq!(names(value), ["variant", "startDate", "endDate"]);
     assert_eq!(direct_text(value, V, "variant"), "Custom");
+    assert_eq!(
+        direct(value, V, "variant").attribute((X, "type")),
+        Some("v8:StandardPeriodVariant")
+    );
     assert_eq!(direct_text(value, V, "startDate"), "2026-01-01T00:00:00");
     assert_eq!(direct_text(value, V, "endDate"), "2026-01-31T23:59:59");
     assert_refuses(

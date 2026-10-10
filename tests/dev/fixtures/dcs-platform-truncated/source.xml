@@ -1,0 +1,339 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <dataSource>
+    <name>ИсточникДанных1</name>
+    <dataSourceType>Local</dataSourceType>
+  </dataSource>
+  <dataSet xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xsi:type="DataSetQuery">
+    <name>Main</name>
+    <field xsi:type="DataSetFieldField">
+      <dataPath>Value</dataPath>
+      <field>Value</field>
+    </field>
+    <field xsi:type="DataSetFieldField">
+      <dataPath>Amount</dataPath>
+      <field>Amount</field>
+    </field>
+    <dataSource>ИсточникДанных1</dataSource>
+    <query>SELECT 1 AS Value, 10 AS Amount</query>
+  </dataSet>
+  <dataSet xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xsi:type="DataSetObject">
+    <name>CatalogObject</name>
+    <field xsi:type="DataSetFieldField">
+      <dataPath>Description</dataPath>
+      <field>Description</field>
+      <presentationExpression>Description</presentationExpression>
+      <valueType>
+        <v8:Type>xs:string</v8:Type>
+        <v8:StringQualifiers>
+          <v8:Length>0</v8:Length>
+          <v8:AllowedLength>Variable</v8:AllowedLength>
+        </v8:StringQualifiers>
+      </valueType>
+    </field>
+    <dataSource>ИсточникДанных1</dataSource>
+    <objectName>Catalog.CorpusCatalog</objectName>
+  </dataSet>
+  <dataSet xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xsi:type="DataSetUnion">
+    <name>Combined</name>
+    <field xsi:type="DataSetFieldField">
+      <dataPath>Value</dataPath>
+      <field>Value</field>
+      <valueType>
+        <v8:Type>xs:string</v8:Type>
+        <v8:StringQualifiers>
+          <v8:Length>0</v8:Length>
+          <v8:AllowedLength>Variable</v8:AllowedLength>
+        </v8:StringQualifiers>
+      </valueType>
+    </field>
+    <item xsi:type="DataSetQuery">
+      <name>UnionFirst</name>
+      <field xsi:type="DataSetFieldField">
+        <dataPath>Value</dataPath>
+        <field>Value</field>
+      </field>
+      <dataSource>ИсточникДанных1</dataSource>
+      <query>SELECT 1 AS Value</query>
+    </item>
+    <item xsi:type="DataSetQuery">
+      <name>UnionSecond</name>
+      <field xsi:type="DataSetFieldField">
+        <dataPath>Value</dataPath>
+        <field>Value</field>
+      </field>
+      <dataSource>ИсточникДанных1</dataSource>
+      <query>SELECT 2 AS Value</query>
+    </item>
+  </dataSet>
+  <dataSetLink xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style">
+    <sourceDataSet>Main</sourceDataSet>
+    <destinationDataSet>CatalogObject</destinationDataSet>
+    <sourceExpression>Value</sourceExpression>
+    <destinationExpression>Description</destinationExpression>
+    <parameter>Режим</parameter>
+    <parameterListAllowed>true</parameterListAllowed>
+    <linkConditionExpression>Value = Description</linkConditionExpression>
+    <startExpression>Value</startExpression>
+  </dataSetLink>
+  <calculatedField xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style">
+    <dataPath>CalculatedAmount</dataPath>
+    <expression>Amount * 2</expression>
+    <title xsi:type="v8:LocalStringType">
+      <v8:item>
+        <v8:lang>ru</v8:lang>
+        <v8:content>Calculated amount</v8:content>
+      </v8:item>
+    </title>
+    <useRestriction>
+      <field>true</field>
+      <condition>true</condition>
+      <group>true</group>
+      <order>true</order>
+    </useRestriction>
+    <valueType>
+      <v8:Type>xs:decimal</v8:Type>
+      <v8:NumberQualifiers>
+        <v8:Digits>15</v8:Digits>
+        <v8:FractionDigits>2</v8:FractionDigits>
+        <v8:AllowedSign>Any</v8:AllowedSign>
+      </v8:NumberQualifiers>
+    </valueType>
+  </calculatedField>
+  <parameter xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style">
+    <name>Период</name>
+    <valueType>
+      <v8:Type>v8:StandardPeriod</v8:Type>
+    </valueType>
+    <value xsi:type="v8:StandardPeriod">
+      <v8:variant>LastMonth</v8:variant>
+    </value>
+  </parameter>
+  <parameter xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style">
+    <name>ДатаНачала</name>
+    <title xsi:type="v8:LocalStringType">
+      <v8:item>
+        <v8:lang>ru</v8:lang>
+        <v8:content>Начало периода</v8:content>
+      </v8:item>
+    </title>
+    <valueType>
+      <v8:Type>xs:dateTime</v8:Type>
+      <v8:DateQualifiers>
+        <v8:DateFractions>DateTime</v8:DateFractions>
+      </v8:DateQualifiers>
+    </valueType>
+    <value xsi:type="xs:dateTime">0001-01-01T00:00:00</value>
+    <useRestriction>true</useRestriction>
+    <expression>&amp;Период.ДатаНачала</expression>
+  </parameter>
+  <parameter xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style">
+    <name>ДатаОкончания</name>
+    <title xsi:type="v8:LocalStringType">
+      <v8:item>
+        <v8:lang>ru</v8:lang>
+        <v8:content>Конец периода</v8:content>
+      </v8:item>
+    </title>
+    <valueType>
+      <v8:Type>xs:dateTime</v8:Type>
+      <v8:DateQualifiers>
+        <v8:DateFractions>DateTime</v8:DateFractions>
+      </v8:DateQualifiers>
+    </valueType>
+    <value xsi:type="xs:dateTime">0001-01-01T00:00:00</value>
+    <useRestriction>true</useRestriction>
+    <expression>&amp;Период.ДатаОкончания</expression>
+  </parameter>
+  <parameter xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style">
+    <name>ТипКорпуса</name>
+    <valueType>
+      <v8:Type>xs:string</v8:Type>
+      <v8:StringQualifiers>
+        <v8:Length>16</v8:Length>
+        <v8:AllowedLength>Variable</v8:AllowedLength>
+      </v8:StringQualifiers>
+    </valueType>
+    <availableAsField>false</availableAsField>
+    <use>Always</use>
+  </parameter>
+  <parameter xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style">
+    <name>Режим</name>
+    <title xsi:type="v8:LocalStringType">
+      <v8:item>
+        <v8:lang>ru</v8:lang>
+        <v8:content>Mode</v8:content>
+      </v8:item>
+    </title>
+    <valueType>
+      <v8:Type>xs:string</v8:Type>
+      <v8:StringQualifiers>
+        <v8:Length>16</v8:Length>
+        <v8:AllowedLength>Variable</v8:AllowedLength>
+      </v8:StringQualifiers>
+    </valueType>
+    <value xsi:type="xs:string">A</value>
+    <useRestriction>true</useRestriction>
+    <expression>&amp;Source.Mode</expression>
+    <availableValue>
+      <value xsi:type="xs:string">A</value>
+      <presentation xsi:type="v8:LocalStringType">
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>Alpha</v8:content>
+        </v8:item>
+      </presentation>
+    </availableValue>
+    <availableValue>
+      <value xsi:type="xs:string">B</value>
+      <presentation xsi:type="v8:LocalStringType">
+        <v8:item>
+          <v8:lang>ru</v8:lang>
+          <v8:content>Beta</v8:content>
+        </v8:item>
+      </presentation>
+    </availableValue>
+    <valueListAllowed>true</valueListAllowed>
+    <availableAsField>false</availableAsField>
+    <denyIncompleteValues>true</denyIncompleteValues>
+    <use>Always</use>
+  </parameter>
+  <settingsVariant xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:style="http://v8.1c.ru/8.1/data/ui/style">
+    <dcsset:name>Main</dcsset:name>
+    <dcsset:presentation xsi:type="v8:LocalStringType">
+      <v8:item>
+        <v8:lang>ru</v8:lang>
+        <v8:content>Corpus settings</v8:content>
+      </v8:item>
+    </dcsset:presentation>
+    <dcsset:settings>
+      <dcsset:selection>
+        <dcsset:item xsi:type="dcsset:SelectedItemField">
+          <dcsset:field>Value</dcsset:field>
+        </dcsset:item>
+        <dcsset:item xsi:type="dcsset:SelectedItemField">
+          <dcsset:field>Amount</dcsset:field>
+        </dcsset:item>
+      </dcsset:selection>
+      <dcsset:filter>
+        <dcsset:item xsi:type="dcsset:FilterItemComparison">
+          <dcsset:left xsi:type="dcscor:Field">Amount</dcsset:left>
+          <dcsset:comparisonType>Greater</dcsset:comparisonType>
+          <dcsset:right xsi:type="xs:decimal">0</dcsset:right>
+        </dcsset:item>
+      </dcsset:filter>
+      <dcsset:dataParameters>
+        <dcscor:item xsi:type="dcsset:SettingsParameterValue">
+          <dcscor:parameter>Режим</dcscor:parameter>
+          <dcscor:value xsi:type="xs:string">A</dcscor:value>
+        </dcscor:item>
+      </dcsset:dataParameters>
+      <dcsset:order>
+        <dcsset:item xsi:type="dcsset:OrderItemField">
+          <dcsset:field>Amount</dcsset:field>
+          <dcsset:orderType>Desc</dcsset:orderType>
+        </dcsset:item>
+      </dcsset:order>
+      <dcsset:conditionalAppearance>
+        <dcsset:item>
+          <dcsset:selection>
+            <dcsset:item>
+              <dcsset:field>Amount</dcsset:field>
+            </dcsset:item>
+          </dcsset:selection>
+          <dcsset:filter>
+            <dcsset:item xsi:type="dcsset:FilterItemComparison">
+              <dcsset:left xsi:type="dcscor:Field">Amount</dcsset:left>
+              <dcsset:comparisonType>Greater</dcsset:comparisonType>
+              <dcsset:right xsi:type="xs:decimal">0</dcsset:right>
+            </dcsset:item>
+          </dcsset:filter>
+          <dcsset:appearance>
+            <dcscor:item xsi:type="dcsset:SettingsParameterValue">
+              <dcscor:parameter>ЦветТекста</dcscor:parameter>
+              <dcscor:value xsi:type="v8ui:Color">web:Red</dcscor:value>
+            </dcscor:item>
+          </dcsset:appearance>
+        </dcsset:item>
+      </dcsset:conditionalAppearance>
+      <dcsset:outputParameters>
+        <dcscor:item xsi:type="dcsset:SettingsParameterValue">
+          <dcscor:parameter>Заголовок</dcscor:parameter>
+          <dcscor:value xsi:type="v8:LocalStringType">
+            <v8:item>
+              <v8:lang>ru</v8:lang>
+              <v8:content>Corpus report</v8:content>
+            </v8:item>
+          </dcscor:value>
+        </dcscor:item>
+      </dcsset:outputParameters>
+      <dcsset:item xsi:type="dcsset:StructureItemGroup">
+        <dcsset:name>Corpus group</dcsset:name>
+        <dcsset:groupItems>
+          <dcsset:item xsi:type="dcsset:GroupItemField">
+            <dcsset:field>Value</dcsset:field>
+            <dcsset:groupType>Items</dcsset:groupType>
+            <dcsset:periodAdditionType>None</dcsset:periodAdditionType>
+          </dcsset:item>
+        </dcsset:groupItems>
+        <dcsset:filter>
+          <dcsset:item xsi:type="dcsset:FilterItemComparison">
+            <dcsset:left xsi:type="dcscor:Field">Amount</dcsset:left>
+            <dcsset:comparisonType>Greater</dcsset:comparisonType>
+            <dcsset:right xsi:type="xs:decimal">0</dcsset:right>
+          </dcsset:item>
+        </dcsset:filter>
+        <dcsset:order>
+          <dcsset:item xsi:type="dcsset:OrderItemField">
+            <dcsset:field>Amount</dcsset:field>
+            <dcsset:orderType>Desc</dcsset:orderType>
+          </dcsset:item>
+        </dcsset:order>
+        <dcsset:selection>
+          <dcsset:item xsi:type="dcsset:SelectedItemField">
+            <dcsset:field>Value</dcsset:field>
+          </dcsset:item>
+          <dcsset:item xsi:type="dcsset:SelectedItemField">
+            <dcsset:field>Amount</dcsset:field>
+          </dcsset:item>
+        </dcsset:selection>
+        <dcsset:conditionalAppearance>
+          <dcsset:item>
+            <dcsset:selection>
+              <dcsset:item>
+                <dcsset:field>Amount</dcsset:field>
+              </dcsset:item>
+            </dcsset:selection>
+            <dcsset:filter>
+              <dcsset:item xsi:type="dcsset:FilterItemComparison">
+                <dcsset:left xsi:type="dcscor:Field">Amount</dcsset:left>
+                <dcsset:comparisonType>Greater</dcsset:comparisonType>
+                <dcsset:right xsi:type="xs:decimal">0</dcsset:right>
+              </dcsset:item>
+            </dcsset:filter>
+            <dcsset:appearance>
+              <dcscor:item xsi:type="dcsset:SettingsParameterValue">
+                <dcscor:parameter>ЦветТекста</dcscor:parameter>
+                <dcscor:value xsi:type="v8ui:Color">web:Red</dcscor:value>
+              </dcscor:item>
+            </dcsset:appearance>
+          </dcsset:item>
+        </dcsset:conditionalAppearance>
+        <dcsset:outputParameters>
+          <dcscor:item xsi:type="dcsset:SettingsParameterValue">
+            <dcscor:parameter>Заголовок</dcscor:parameter>
+            <dcscor:value xsi:type="v8:LocalStringType">
+              <v8:item>
+                <v8:lang>ru</v8:lang>
+                <v8:content>Corpus group</v8:content>
+              </v8:item>
+            </dcscor:value>
+          </dcscor:item>
+        </dcsset:outputParameters>
+        <dcsset:item xsi:type="dcsset:StructureItemGroup">
+          <dcsset:name>Details</dcsset:name>
+        </dcsset:item>
+      </dcsset:item>
+    </dcsset:settings>
+  </settingsVariant>
+</DataCompositionSchema>

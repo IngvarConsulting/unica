@@ -105,11 +105,11 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 )
 # LAST_VERIFIED records the previous successful full platform run. Two
 # independent generations agree on the current direct-DCS public contract.
-# All five direct-DCS cases pass with normalization and stable round-trips.
-# The full gate accepted 63/69; six existing MXL/empty-template imports timed
-# out with incomplete cleanup (SIGKILL EPERM). Keep LAST_VERIFIED unchanged.
+# The first run exposed DCS semantic loss hidden by a stable normalized
+# export; it is not accepted. Six existing MXL/empty-template imports also
+# timed out with incomplete cleanup (SIGKILL EPERM). Keep LAST_VERIFIED.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "a1e9a25bcb480071b1704672a79fe5d52337e12e1fc21b1437497a98121f2cab"
+    "5b5159540280fdb99bb8c8e282c03777e21fe0ad2aed9ba1ad658546d85dac25"
 )
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -348,8 +348,7 @@ def _semantic_element(node: etree._Element, label: str):
     return ("element", element_name, tuple(attributes), text, children)
 
 
-def semantic_xml(payload: bytes, label: str = "XML"):
-    """Return a QName-aware tree with only approved lexical differences removed."""
+def _parsed_xml(payload: bytes, label: str):
     parser = etree.XMLParser(
         resolve_entities=False,
         load_dtd=False,
@@ -363,7 +362,161 @@ def semantic_xml(payload: bytes, label: str = "XML"):
         raise SourceError(f"invalid XML {label}: {error}") from error
     if document.getroottree().docinfo.doctype:
         raise SourceError(f"DOCTYPE/entity declarations are forbidden in {label}")
-    return _semantic_element(document, label)
+    return document
+
+
+def semantic_xml(payload: bytes, label: str = "XML"):
+    """Return a QName-aware tree with only approved lexical differences removed."""
+    return _semantic_element(_parsed_xml(payload, label), label)
+
+
+DCS_SCHEMA_NS = "http://v8.1c.ru/8.1/data-composition-system/schema"
+DCS_ROOT = f"{{{DCS_SCHEMA_NS}}}DataCompositionSchema"
+
+
+def _dcs_normalize_parameter_defaults(root):
+    # Measured in 8.3.27.2074's first export: an absent parameter
+    # useRestriction becomes false. This is the documented accessible default,
+    # not permission to omit arbitrary booleans or whole settings containers.
+    for parameter in root.findall(f"{{{DCS_SCHEMA_NS}}}parameter"):
+        flags = parameter.findall(f"{{{DCS_SCHEMA_NS}}}useRestriction")
+        if len(flags) != 1:
+            continue
+        flag = flags[0]
+        if (
+            not flag.attrib and not len(flag) and flag.text == "false"
+            and (flag.tail is None or not flag.tail.strip())
+        ):
+            parameter.remove(flag)
+
+
+DCS_SETTINGS_NS = "http://v8.1c.ru/8.1/data-composition-system/settings"
+XML_SCHEMA_NS = "http://www.w3.org/2001/XMLSchema"
+
+
+def _dcs_allow_evidenced_insertions(source, exported, label):
+    type_attr = f"{{{XSI_NS}}}type"
+    # Retained A/B export (variant-type, 2026-10-10): a string parameter with
+    # no default value receives a single empty nil value. A supplied default,
+    # any other type, attributes, children or nonempty text has no exemption.
+    if source.tag == exported.tag == f"{{{DCS_SCHEMA_NS}}}parameter":
+        value_tag = f"{{{DCS_SCHEMA_NS}}}value"
+        types = source.findall(f"{{{DCS_SCHEMA_NS}}}valueType/{{{CORE_NS}}}Type")
+        values = exported.findall(value_tag)
+        if (
+            not source.findall(value_tag) and len(types) == 1
+            and _expanded_lexical_qname(types[0].text or "", types[0], label) == f"{{{XML_SCHEMA_NS}}}string"
+            and len(values) == 1 and dict(values[0].attrib) == {f"{{{XSI_NS}}}nil": "true"}
+            and not len(values[0]) and values[0].text in (None, "")
+            and (values[0].tail is None or not values[0].tail.strip())
+        ):
+            exported.remove(values[0])
+    # The same A/B adds zero date bounds specifically to a non-periodic Items
+    # GroupItemField. Do not discard authored bounds, other group modes, wrong
+    # xsi:types or date values, duplicate bounds, or similarly named foreign XML.
+    if (
+        source.tag == exported.tag == f"{{{DCS_SETTINGS_NS}}}item"
+        and source.getparent() is not None
+        and source.getparent().tag == f"{{{DCS_SETTINGS_NS}}}groupItems"
+        and source.get(type_attr) is not None
+        and _expanded_lexical_qname(source.get(type_attr), source, label) == f"{{{DCS_SETTINGS_NS}}}GroupItemField"
+        and source.findtext(f"{{{DCS_SETTINGS_NS}}}groupType") == "Items"
+        and source.findtext(f"{{{DCS_SETTINGS_NS}}}periodAdditionType") == "None"
+    ):
+        for name in ("periodAdditionBegin", "periodAdditionEnd"):
+            tag = f"{{{DCS_SETTINGS_NS}}}{name}"
+            values = exported.findall(tag)
+            if not source.findall(tag) and len(values) == 1:
+                value = values[0]
+                if (
+                    set(value.attrib) == {type_attr} and not len(value)
+                    and _expanded_lexical_qname(value.get(type_attr), value, label) == f"{{{XML_SCHEMA_NS}}}dateTime"
+                    and value.text == "0001-01-01T00:00:00"
+                    and (value.tail is None or not value.tail.strip())
+                ):
+                    exported.remove(value)
+    # The same retained export inserts this exact type on StandardPeriod.variant.
+    # Only an insertion is allowed; a supplied type must remain unchanged, and
+    # an identically named foreign-namespace element has no such exemption.
+    for before, after in zip(source, exported):
+        if not isinstance(before.tag, str) or before.tag != after.tag:
+            continue
+        if (
+            before.tag == f"{{{CORE_NS}}}variant"
+            and type_attr not in before.attrib and type_attr in after.attrib
+            and before.getparent().tag == f"{{{DCS_SCHEMA_NS}}}value"
+            and before.getparent().get(type_attr) is not None
+            and _expanded_lexical_qname(
+                before.getparent().get(type_attr), before.getparent(), label
+            ) == f"{{{CORE_NS}}}StandardPeriod"
+            and _expanded_lexical_qname(
+                after.get(type_attr), after, label
+            ) == f"{{{CORE_NS}}}StandardPeriodVariant"
+        ):
+            del after.attrib[type_attr]
+        _dcs_allow_evidenced_insertions(before, after, label)
+
+
+def _dcs_facts(root, label):
+    """Diagnostic facts retain types, values, multiplicity and child order."""
+    facts = {}
+
+    def visit(node, path):
+        semantic = _semantic_element(node, label)
+        facts[path] = semantic[1:4] + (
+            tuple(child[0][1:4] for child in semantic[4]),
+        )
+        counters = {}
+        for child in node:
+            if not isinstance(child.tag, str):
+                continue
+            tag = _expanded_name(child.tag)
+            counters[tag] = counters.get(tag, 0) + 1
+            visit(child, f"{path}/{tag}[{counters[tag]}]")
+
+    visit(root, DCS_ROOT)
+    return facts
+
+
+def compare_dcs_retention(source_snapshot: dict, export_snapshot: dict) -> dict:
+    """Reject first-export DCS loss even when the damaged second export is stable.
+
+    This is deliberately stricter than 'all original facts are a subset': unknown
+    additions, changed values/types, duplicates and reordered settings also need
+    evidence before being accepted as a platform normalization.
+    """
+    cases = []
+    exported_payloads = export_snapshot["comparisonPayloads"]
+    source_dcs_paths = set()
+    for path, payload in sorted(source_snapshot["comparisonPayloads"].items()):
+        source = _parsed_xml(payload, path)
+        if source.tag != DCS_ROOT:
+            continue
+        source_dcs_paths.add(path)
+        if path not in exported_payloads:
+            cases.append({"path": path, "preserved": False, "reason": "missing-dcs"})
+            continue
+        exported = _parsed_xml(exported_payloads[path], path)
+        if exported.tag != DCS_ROOT:
+            cases.append({"path": path, "preserved": False, "reason": "changed-dcs-root"})
+            continue
+        counts = [sum(isinstance(node.tag, str) for node in root.iter()) for root in (source, exported)]
+        _dcs_normalize_parameter_defaults(source)
+        _dcs_normalize_parameter_defaults(exported)
+        _dcs_allow_evidenced_insertions(source, exported, path)
+        before, after = _dcs_facts(source, path), _dcs_facts(exported, path)
+        cases.append({
+            "path": path,
+            "preserved": _semantic_element(source, path) == _semantic_element(exported, path),
+            "sourceElementCount": counts[0], "exportElementCount": counts[1],
+            "removedFacts": sorted(before.keys() - after.keys()),
+            "addedFacts": sorted(after.keys() - before.keys()),
+            "changedFacts": sorted(key for key in before.keys() & after.keys() if before[key] != after[key]),
+        })
+    for path in sorted(exported_payloads.keys() - source_dcs_paths):
+        if _parsed_xml(exported_payloads[path], path).tag == DCS_ROOT:
+            cases.append({"path": path, "preserved": False, "reason": "unrequested-dcs"})
+    return {"preserved": all(case["preserved"] for case in cases), "files": cases}
 
 
 def _read_regular_payload(path: Path, metadata, label: str) -> bytes:
@@ -4040,6 +4193,7 @@ def run_checkpoint(
 
     try:
         source_comparison = compare_xml_snapshots(source_snapshot, export_snapshots[0])
+        dcs_retention = compare_dcs_retention(source_snapshot, export_snapshots[0])
         roundtrip_comparison = compare_xml_snapshots(
             export_snapshots[0], export_snapshots[1]
         )
@@ -4059,7 +4213,9 @@ def run_checkpoint(
         raise checkpoint_error(error, 2, "semantic-compare") from error
     round1_owners_valid = all(entry["valid"] for entry in export_owner_evidence[0])
     round2_owners_valid = all(entry["valid"] for entry in export_owner_evidence[1])
-    if not roundtrip_comparison["equal"] or not round2_owners_valid:
+    if not dcs_retention["preserved"]:
+        verdict = "rejected"
+    elif not roundtrip_comparison["equal"] or not round2_owners_valid:
         verdict = "unstable-roundtrip"
     elif not source_comparison["equal"] or not round1_owners_valid:
         verdict = "accepted-normalized"
@@ -4071,13 +4227,14 @@ def run_checkpoint(
         "kind": kind,
         "coveredCaseIds": item["checkpoint"]["coveredCaseIds"],
         "verdict": verdict,
-        "failedRound": None,
-        "failedStage": None,
+        "failedRound": 1 if not dcs_retention["preserved"] else None,
+        "failedStage": "dcs-semantic-retention" if not dcs_retention["preserved"] else None,
         "commands": commands,
         "commandCount": len(commands),
         "durationMs": sum(entry["durationMs"] for entry in commands),
         "platformAliasedModulesDropped": sorted(set(platform_aliased_modules)),
         "sourceComparison": source_comparison,
+        "dcsSemanticRetention": dcs_retention,
         "roundtripComparison": roundtrip_comparison,
         "evidenceSha256": evidence_hashes(),
         "ownerVersions": {
@@ -4354,6 +4511,7 @@ def _build_gate_report(
         "observedPlatformVersion": platform.get("version") if platform else None,
         "status": status,
         "comparisonPolicy": {
+            "dcsFirstExport": "complete structural and typed-fact retention; only evidenced parameter useRestriction=false default, StandardPeriod.variant type insertion, absent string-parameter nil default, and absent non-periodic Items GroupItemField zero-date bounds are exempt",
             "xml": "QName-aware semantic equality with only documented lexical normalization",
             "nonXml": "exact logical path and byte equality",
             "directories": "exact empty-directory logical path equality",
