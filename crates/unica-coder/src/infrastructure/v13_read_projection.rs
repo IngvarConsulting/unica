@@ -1446,6 +1446,12 @@ fn metadata_item_node(address: &QualifiedAddress, kind: NodeKind, item: &Value) 
     {
         props.insert("type".to_string(), value);
     }
+    if let Some(value) = item
+        .get("fillValue")
+        .and_then(|value| bounded_prop("fillValue", value))
+    {
+        props.insert("fillValue".to_string(), value);
+    }
     let mut branches = [
         ("attributes", NodeKind::Attribute),
         ("methods", NodeKind::Method),

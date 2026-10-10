@@ -18,6 +18,7 @@ DCS_WORKSPACE = "tests/fixtures/acceptance/workspace-dcs"
 MXL_WORKSPACE = "tests/fixtures/acceptance/workspace-mxl"
 AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
 SOURCE_WORKSPACES = {
+    "tests/fixtures/acceptance/workspace-metadata-values",
     "tests/fixtures/acceptance/workspace-external",
     "tests/fixtures/acceptance/workspace-external-invalid",
     "tests/fixtures/acceptance/workspace-external-linked",

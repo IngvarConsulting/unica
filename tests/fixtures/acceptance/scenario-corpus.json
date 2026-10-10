@@ -16857,6 +16857,228 @@
   },
   {
    "id": "S349",
+   "name": "metadata-observed-reference-values",
+   "issue": 533,
+   "area": "Приёмочный корпус",
+   "task": "EmptyRef, EnumValue и Characteristic читаются без потери данных и изменения XML",
+   "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Values.Attribute.EmptyItem"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\"}],\"mutationCapability\":\"editable\"}"
+      },
+      {
+       "pointer": "/data/props/incomplete",
+       "absent": true
+      },
+      {
+       "pointer": "/data/props/fillValue",
+       "eq": "{\"kind\":\"reference\",\"metadataPath\":\"Catalog.Items\",\"item\":\"EmptyRef\"}"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Items.xml",
+       "eq": "988aed1b2a185c3b65db0799719eddae65ee181ca84d1b6ecef45598b6906c81"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Values.xml",
+       "eq": "89d164905ba72f20bafe262ceaed03044cb9e7195570ccb9fc779aea973592c4"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+       "eq": "1638ee44476cc34749a3939a73074e33fb138133ce16403464213a45e671517f"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "12ee6c4829520ecaabe724c8e9506707b6315194c90d7af7ccc42b98f557ad62"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Enums/Flags.xml",
+       "eq": "196482c826aa0559c4bbac1d35ee81d0d9ed4c3bcd238af902f1b04de117134c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Values.Attribute.Flag"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"variants\":[{\"kind\":\"reference\",\"metadataPath\":\"Enum.Flags\"}],\"mutationCapability\":\"editable\"}"
+      },
+      {
+       "pointer": "/data/props/incomplete",
+       "absent": true
+      },
+      {
+       "pointer": "/data/props/fillValue",
+       "eq": "{\"kind\":\"reference\",\"metadataPath\":\"Enum.Flags\",\"item\":\"EnumValue.Yes\"}"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Items.xml",
+       "eq": "988aed1b2a185c3b65db0799719eddae65ee181ca84d1b6ecef45598b6906c81"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Values.xml",
+       "eq": "89d164905ba72f20bafe262ceaed03044cb9e7195570ccb9fc779aea973592c4"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+       "eq": "1638ee44476cc34749a3939a73074e33fb138133ce16403464213a45e671517f"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "12ee6c4829520ecaabe724c8e9506707b6315194c90d7af7ccc42b98f557ad62"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Enums/Flags.xml",
+       "eq": "196482c826aa0559c4bbac1d35ee81d0d9ed4c3bcd238af902f1b04de117134c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Values.Attribute.Value"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"variants\":[{\"kind\":\"characteristicTypes\",\"metadataPath\":\"ChartOfCharacteristicTypes.Properties\"}],\"mutationCapability\":\"readOnly\"}"
+      },
+      {
+       "pointer": "/data/props/incomplete",
+       "absent": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Items.xml",
+       "eq": "988aed1b2a185c3b65db0799719eddae65ee181ca84d1b6ecef45598b6906c81"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Values.xml",
+       "eq": "89d164905ba72f20bafe262ceaed03044cb9e7195570ccb9fc779aea973592c4"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+       "eq": "1638ee44476cc34749a3939a73074e33fb138133ce16403464213a45e671517f"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "12ee6c4829520ecaabe724c8e9506707b6315194c90d7af7ccc42b98f557ad62"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Enums/Flags.xml",
+       "eq": "196482c826aa0559c4bbac1d35ee81d0d9ed4c3bcd238af902f1b04de117134c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Values"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Items.xml",
+       "eq": "988aed1b2a185c3b65db0799719eddae65ee181ca84d1b6ecef45598b6906c81"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Values.xml",
+       "eq": "89d164905ba72f20bafe262ceaed03044cb9e7195570ccb9fc779aea973592c4"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+       "eq": "1638ee44476cc34749a3939a73074e33fb138133ce16403464213a45e671517f"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "12ee6c4829520ecaabe724c8e9506707b6315194c90d7af7ccc42b98f557ad62"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Enums/Flags.xml",
+       "eq": "196482c826aa0559c4bbac1d35ee81d0d9ed4c3bcd238af902f1b04de117134c"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S350",
    "name": "external-owned-form-and-mxl",
    "issue": 627,
    "area": "Приёмочный корпус",
@@ -17909,7 +18131,7 @@
    ]
   },
   {
-   "id": "S350",
+   "id": "S351",
    "name": "external-orphan-refusal",
    "issue": 627,
    "area": "Приёмочный корпус",
@@ -18153,7 +18375,7 @@
    ]
   },
   {
-   "id": "S351",
+   "id": "S352",
    "name": "external-corrupt-payload-refusal",
    "issue": 627,
    "area": "Приёмочный корпус",
@@ -18551,7 +18773,7 @@
    ]
   },
   {
-   "id": "S352",
+   "id": "S353",
    "name": "external-linked-payload-refusal",
    "issue": 627,
    "area": "Приёмочный корпус",

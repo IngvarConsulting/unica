@@ -953,6 +953,48 @@ fn a_configuration_source_set_carries_no_borrowing_props() {
 }
 
 #[test]
+fn metadata_attribute_fill_value_is_a_bounded_observed_fact() {
+    let fixture = RealReaderFixture::new();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    let original = fs::read_to_string(&descriptor).unwrap();
+    let document = roxmltree::Document::parse(&original).unwrap();
+    let range = document
+        .root_element()
+        .first_element_child()
+        .unwrap()
+        .children()
+        .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "ChildObjects")))
+        .unwrap()
+        .range();
+    let attributes = r#"<Attribute xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Properties><Name>Empty</Name><Type><v8:Type>cfg:CatalogRef.Items</v8:Type></Type><FillValue xsi:type="xr:DesignTimeRef">Catalog.Items.EmptyRef</FillValue></Properties></Attribute><Attribute xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Properties><Name>Flag</Name><Type><v8:Type>cfg:EnumRef.Flags</v8:Type></Type><FillValue xsi:type="xr:DesignTimeRef">Enum.Flags.EnumValue.Yes</FillValue></Properties></Attribute>"#;
+    write(
+        &descriptor,
+        &format!(
+            "{}<ChildObjects>{attributes}</ChildObjects>{}",
+            &original[..range.start],
+            &original[range.end..]
+        ),
+    );
+    let service = fixture.view_service();
+    for (name, owner, item) in [
+        ("Empty", "Catalog.Items", "EmptyRef"),
+        ("Flag", "Enum.Flags", "EnumValue.Yes"),
+    ] {
+        let result = service
+            .view(ViewRequest::new(&format!("main:Catalog.Items.Attribute.{name}")).unwrap());
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let props = &result.data.as_ref().unwrap()["props"];
+        assert!(props.get("incomplete").is_none(), "{props}");
+        let observed: serde_json::Value =
+            serde_json::from_str(props["fillValue"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            observed,
+            json!({"kind": "reference", "metadataPath": owner, "item": item})
+        );
+    }
+}
+
+#[test]
 fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     let fixture = RealReaderFixture::new();
     let service = fixture.view_service();
