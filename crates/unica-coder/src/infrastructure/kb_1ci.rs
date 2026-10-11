@@ -133,7 +133,11 @@ pub fn children(
     let url = format!(
         "{base}/bin/get/OnecInt/Extensions/GuideNavigation/NavigationSource/WebHome?language=en&outputSyntax=plain&data=children&id={encoded}"
     );
-    let body = transport.get(&url)?;
+    navigation_nodes(transport, &url)
+}
+
+fn navigation_nodes(transport: &dyn KbTransport, url: &str) -> Result<Vec<KbNode>, String> {
+    let body = transport.get(url)?;
     let value: Value = serde_json::from_str(&body)
         .map_err(|error| format!("дерево навигации не разбирается: {error}"))?;
     let entries = value
@@ -329,6 +333,34 @@ fn find_category<'nodes>(nodes: &'nodes [KbNode], needle: &str) -> Option<&'node
     nodes.iter().find(|node| node.title.contains(needle))
 }
 
+fn parent_node_id(node_id: &str) -> Option<String> {
+    let mut segments = content_segments(node_id)?;
+    segments.pop()?;
+    if segments.is_empty() {
+        return None;
+    }
+    let escaped: Vec<String> = segments
+        .iter()
+        .map(|segment| segment.replace('\\', "\\\\").replace('.', "\\."))
+        .collect();
+    Some(format!("OnecInt.KB.{}.WebHome", escaped.join(".")))
+}
+
+/// Запрос переключателя версий: категория может показывать только текущую
+/// версию. Полный список объявлен у её родительского узла руководства.
+fn root_versions(
+    transport: &dyn KbTransport,
+    base: &str,
+    root_id: &str,
+    current_id: &str,
+) -> Result<Vec<KbNode>, String> {
+    let url = format!(
+        "{base}/bin/get/OnecInt/Extensions/GuideNavigation/NavigationSource/WebHome?language=en&outputSyntax=plain&data=children&id={}&currentDoc={}&getRootVersions=true",
+        url_encode(root_id), url_encode(current_id)
+    );
+    navigation_nodes(transport, &url)
+}
+
 /// Каталог руководств от корня дерева: категории находятся по именам, версии
 /// собираются с ОБОИХ уровней раскладки разработчика (прямые дети категории и
 /// дети контейнеров без версии в имени), а режимы администратора берутся из
@@ -347,14 +379,45 @@ pub fn discover_guides(transport: &dyn KbTransport, base: &str) -> Result<GuideC
 
     let mut catalog = GuideCatalog::default();
     if let Some(developer) = find_category(&categories, "Developer Guides") {
+        let mut version_roots = std::collections::BTreeSet::new();
         for child in children(transport, base, &developer.id)? {
             if let Some(version) = version_in(&child.title) {
                 if child.title.contains("Developer Guide") {
-                    catalog.developer.push(KbGuideVersion {
-                        version,
-                        node_id: child.id.clone(),
-                        mode: None,
-                    });
+                    if !catalog
+                        .developer
+                        .iter()
+                        .any(|guide| guide.node_id == child.id)
+                    {
+                        catalog.developer.push(KbGuideVersion {
+                            version,
+                            node_id: child.id.clone(),
+                            mode: None,
+                        });
+                    }
+                    if let Some(root) = parent_node_id(&child.id) {
+                        // Legacy version-named roots are already direct category
+                        // children. A nested version has its own guide selector.
+                        if root != developer.id && version_roots.insert(root.clone()) {
+                            for sibling in root_versions(transport, base, &root, &child.id)? {
+                                if parent_node_id(&sibling.id).as_deref() != Some(root.as_str())
+                                    || !sibling.title.contains("Developer Guide")
+                                    || catalog
+                                        .developer
+                                        .iter()
+                                        .any(|guide| guide.node_id == sibling.id)
+                                {
+                                    continue;
+                                }
+                                if let Some(version) = version_in(&sibling.title) {
+                                    catalog.developer.push(KbGuideVersion {
+                                        version,
+                                        node_id: sibling.id,
+                                        mode: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
             } else if child.title.contains("Developer Guide") && child.has_children {
                 // Контейнер текущих версий («1C:Enterprise Developer Guide»):
@@ -362,7 +425,12 @@ pub fn discover_guides(transport: &dyn KbTransport, base: &str) -> Result<GuideC
                 // (например, руководство библиотеки) ничего не добавляют.
                 for grandchild in children(transport, base, &child.id)? {
                     if let Some(version) = version_in(&grandchild.title) {
-                        if grandchild.title.contains("Developer Guide") {
+                        if grandchild.title.contains("Developer Guide")
+                            && !catalog
+                                .developer
+                                .iter()
+                                .any(|guide| guide.node_id == grandchild.id)
+                        {
                             catalog.developer.push(KbGuideVersion {
                                 version,
                                 node_id: grandchild.id.clone(),
@@ -375,7 +443,53 @@ pub fn discover_guides(transport: &dyn KbTransport, base: &str) -> Result<GuideC
         }
     }
     if let Some(administrator) = find_category(&categories, "Administrator Guides") {
+        let mut version_roots = std::collections::BTreeSet::new();
         for mode in children(transport, base, &administrator.id)? {
+            // Площадка также размещает версии прямо под категорией.
+            // Дети такого узла — главы; обходить их как версии нельзя.
+            if let Some(version) = version_in(&mode.title) {
+                // Ключ режима берётся из ID родителя версии: оформление
+                // заголовка меняется между версиями и раскладками.
+                let mode_key = content_segments(&mode.id)
+                    .and_then(|segments| segments.get(segments.len().checked_sub(2)?).cloned());
+                if !catalog
+                    .administrator
+                    .iter()
+                    .any(|guide| guide.node_id == mode.id)
+                {
+                    catalog.administrator.push(KbGuideVersion {
+                        version,
+                        node_id: mode.id.clone(),
+                        mode: mode_key,
+                    });
+                }
+                if let Some(root) = parent_node_id(&mode.id) {
+                    if version_roots.insert(root.clone()) {
+                        for sibling in root_versions(transport, base, &root, &mode.id)? {
+                            // Не принимать главы или версии другого руководства
+                            // за соседние версии обнаруженного режима.
+                            if parent_node_id(&sibling.id).as_deref() != Some(root.as_str()) {
+                                continue;
+                            }
+                            if let Some(version) = version_in(&sibling.title) {
+                                if !catalog
+                                    .administrator
+                                    .iter()
+                                    .any(|guide| guide.node_id == sibling.id)
+                                {
+                                    catalog.administrator.push(KbGuideVersion {
+                                        version,
+                                        node_id: sibling.id,
+                                        mode: content_segments(&root)
+                                            .and_then(|segments| segments.last().cloned()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
             if !mode.has_children {
                 continue;
             }
@@ -384,7 +498,8 @@ pub fn discover_guides(transport: &dyn KbTransport, base: &str) -> Result<GuideC
                     catalog.administrator.push(KbGuideVersion {
                         version,
                         node_id: child.id.clone(),
-                        mode: Some(mode.title.clone()),
+                        mode: content_segments(&mode.id)
+                            .and_then(|segments| segments.last().cloned()),
                     });
                 }
             }
@@ -1407,6 +1522,176 @@ mod provider_tests {
         );
     }
 
+    #[test]
+    fn developer_default_node_discovers_selector_versions_and_reads_the_pinned_family() {
+        use crate::infrastructure::documentation_policy::NetworkAccess;
+        let _serial = kb_test_lock();
+        let base = "https://kb.developer-selector";
+        let mut responses = standard_site(base);
+        let root = "OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.WebHome";
+        let current = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.8\.3\.27.WebHome";
+        let older = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.8\.3\.26.WebHome";
+        let chapter = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.8\.3\.26.Introduction.WebHome";
+        responses.insert(
+            tree_url(
+                base,
+                "OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.WebHome",
+            ),
+            Ok(format!(
+                "[{}]",
+                node(current, "1C:Enterprise 8.3.27 Developer Guide", true)
+            )),
+        );
+        let mut nodes: Vec<String> = (22..=27).map(|minor| node(&format!(r"OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.8\.3\.{minor}.WebHome"), &format!("1C:Enterprise 8.3.{minor} Developer Guide"), true)).collect();
+        nodes.push(node(current, "1C:Enterprise 8.3.27 Developer Guide", true));
+        nodes.push(node(chapter, "Chapter 8.3.26 Developer Guide", true));
+        nodes.push(node(
+            r"OnecInt.KB.Foreign.8\.5\.1.WebHome",
+            "1C:Enterprise 8.5.1 Developer Guide",
+            true,
+        ));
+        responses.insert(
+            format!(
+                "{}&currentDoc={}&getRootVersions=true",
+                tree_url(base, root),
+                url_encode(current)
+            ),
+            Ok(format!("[{}]", nodes.join(","))),
+        );
+        let catalog = discover_guides(
+            &FakeTransport {
+                responses: responses.clone(),
+                calls: AtomicUsize::new(0),
+            },
+            base,
+        )
+        .expect("catalog");
+        assert_eq!(
+            catalog.developer.len(),
+            6,
+            "all selector versions, without duplicates or foreign chapters"
+        );
+        for minor in 22..=27 {
+            let family = format!("8.3.{minor}");
+            let selected = Kb1ciProvider::selected_guides(&catalog.developer, Some(&family));
+            assert_eq!(selected.len(), 1, "family {family}");
+            assert_eq!(selected[0].version, family);
+        }
+        assert!(Kb1ciProvider::selected_guides(&catalog.developer, Some("8.5.1")).is_empty());
+        assert_eq!(
+            Kb1ciProvider::selected_guides(&catalog.developer, None)[0].version,
+            "8.3.27"
+        );
+        responses.insert(tree_url(base, older), Ok(format!("[{}]", node_href(chapter, "Introduction", false, "/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/8.3.26/Introduction/"))));
+        responses.insert(content_url(base, chapter).unwrap(), Ok("<h1>Introduction</h1><main><div id=\"xwikicontent\">Developer Guide for the selected 8.3.26 family.</div></main>".into()));
+        let (provider, _) = provider_over(base, responses, NetworkAccess::Allow);
+        let (request, context) = request("Introduction", Some("8.3.26.1540"));
+        let sections = provider.search(&request, &context);
+        let section = corpus_section(&sections, "kb-developer-guide");
+        assert!(
+            matches!(section.status, DocumentationSectionStatus::Ok),
+            "{:?}",
+            section.status
+        );
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.hits[0].applicable_version, "8.3.26");
+        assert!(section
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("8.3.26.1540")));
+        let document = provider
+            .get(&section.hits[0].document_id, "en", &context)
+            .expect("locator routed")
+            .expect("document read");
+        assert_eq!(document.applicable_version, "8.3.26");
+        assert!(document.text.contains("selected 8.3.26 family"));
+    }
+
+    #[test]
+    fn administrator_default_node_discovers_hidden_versions_and_reads_the_pinned_family() {
+        let _serial = kb_test_lock();
+        let base = "https://kb.selector";
+        let mut responses = standard_site(base);
+        let root = "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_File_Mode.WebHome";
+        let current = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_File_Mode.8\.5\.1.WebHome";
+        let older = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_File_Mode.8\.3\.27.WebHome";
+        let chapter = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_File_Mode.8\.3\.27.Chapter_1\._Installation.WebHome";
+        let href = "/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_File_Mode/8.3.27/Chapter_1._Installation/";
+        responses.insert(
+            tree_url(
+                base,
+                "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.WebHome",
+            ),
+            Ok(format!(
+                "[{}]",
+                node(current, "1C:Enterprise 8.5.1 Administrator Guide", true)
+            )),
+        );
+        responses.insert(
+            format!(
+                "{}&currentDoc={}&getRootVersions=true",
+                tree_url(base, root),
+                url_encode(current)
+            ),
+            Ok(format!(
+                "[{},{},{},{}]",
+                node(current, "1C:Enterprise 8.5.1 Administrator Guide", true),
+                node(
+                    older,
+                    "1C:Enterprise 8.3.27 Administrator Guide. File Mode",
+                    true
+                ),
+                node(chapter, "Chapter 1. Installation", false),
+                node(
+                    r"OnecInt.KB.Foreign.8\.3\.28.WebHome",
+                    "1C:Enterprise 8.3.28 Administrator Guide",
+                    true
+                )
+            )),
+        );
+        responses.insert(
+            tree_url(base, older),
+            Ok(format!(
+                "[{}]",
+                node_href(chapter, "Chapter 1. Installation", false, href)
+            )),
+        );
+        responses.insert(content_url(base, chapter).unwrap(), Ok("<h1>Chapter 1. Installation</h1><main><div id=\"xwikicontent\">Install the 8.3.27 file-mode platform.</div></main>".into()));
+        let (provider, _) = provider_over(base, responses, NetworkAccess::Allow);
+        let (request, context) = request("Installation", Some("8.3.27.2342"));
+        let sections = provider.search(&request, &context);
+        let section = corpus_section(&sections, "kb-administrator-guide");
+        assert!(
+            matches!(section.status, DocumentationSectionStatus::Ok),
+            "hidden 8.3.27 must be available: {:?}",
+            section.status
+        );
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.hits[0].applicable_version, "8.3.27");
+        assert!(section.hits[0].snippet.contains("8.3.27 file-mode"));
+        assert!(section
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("8.3.27.2342")));
+        let document = provider
+            .get(&section.hits[0].document_id, "en", &context)
+            .unwrap()
+            .unwrap();
+        assert_eq!(document.applicable_version, "8.3.27");
+        assert!(document.text.contains("8.3.27 file-mode"));
+        assert!(!document.text.contains("8.5.1"));
+        let (request, context) = self::request("Installation", Some("8.3.28.100"));
+        let sections = provider.search(&request, &context);
+        let section = corpus_section(&sections, "kb-administrator-guide");
+        assert!(matches!(
+            section.status,
+            DocumentationSectionStatus::Unavailable {
+                reason: crate::domain::documentation::UnavailableReason::VersionMissing,
+                ..
+            }
+        ));
+    }
+
     /// Чужое семейство не подставляется и для пина сборки: усечение — не
     /// разрешение брать соседнее руководство.
     #[test]
@@ -2154,12 +2439,196 @@ mod tests {
             .map(|guide| (guide.version.as_str(), guide.mode.as_deref()))
             .collect();
         assert!(
-            administrator.contains(&("8.5.1", Some("Administrator Guide.Client/Server Mode"))),
+            administrator.contains(&("8.5.1", Some("Administrator_Guide_Client_Server_Mode"))),
             "режим администратора обязан прийти из дерева: {administrator:?}"
         );
         assert!(
-            administrator.contains(&("8.3.27", Some("Administrator Guide.Client/Server Mode"))),
+            administrator.contains(&("8.3.27", Some("Administrator_Guide_Client_Server_Mode"))),
             "все версии режима собираются: {administrator:?}"
         );
+    }
+
+    #[test]
+    fn discover_guides_collects_direct_administrator_versions_without_reading_chapters() {
+        let base = "https://kb.test";
+        let mut responses = standard_site(base);
+        let file = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_File_Mode.8\.5\.1.WebHome";
+        let server = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_Client_Server_Mode.8\.5\.1.WebHome";
+        let old_server = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_Client_Server_Mode.8\.3\.27.WebHome";
+        let file_root = "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_File_Mode.WebHome";
+        let server_root = "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_Client_Server_Mode.WebHome";
+        responses.insert(
+            format!(
+                "{}&currentDoc={}&getRootVersions=true",
+                tree_url(base, file_root),
+                url_encode(file)
+            ),
+            Ok(format!(
+                "[{}]",
+                node(file, "1C:Enterprise 8.5.1 Administrator Guide", true)
+            )),
+        );
+        let server_versions = format!(
+            "[{},{}]",
+            node(
+                server,
+                "1C:Enterprise 8.5.1 Administrator Guide.Client/Server Mode",
+                true
+            ),
+            node(
+                old_server,
+                "1C:Enterprise 8.3.27 Administrator Guide. Client/Server Mode",
+                true
+            )
+        );
+        responses.insert(
+            format!(
+                "{}&currentDoc={}&getRootVersions=true",
+                tree_url(base, server_root),
+                url_encode(server)
+            ),
+            Ok(server_versions.clone()),
+        );
+        responses.insert(
+            tree_url(
+                base,
+                "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.WebHome",
+            ),
+            Ok(format!(
+                "[{},{},{}]",
+                node(file, "1C:Enterprise 8.5.1 Administrator Guide", true),
+                node(
+                    server,
+                    "1C:Enterprise 8.5.1 Administrator Guide.Client/Server Mode",
+                    true
+                ),
+                node(
+                    old_server,
+                    "1C:Enterprise 8.3.27 Administrator Guide. Client/Server Mode",
+                    true
+                )
+            )),
+        );
+        let transport = FakeTransport {
+            responses,
+            calls: AtomicUsize::new(0),
+        };
+        let catalog = discover_guides(&transport, base)
+            .expect("direct version nodes are guides, not mode containers");
+        assert_eq!(catalog.administrator.len(), 3);
+        assert!(catalog
+            .administrator
+            .iter()
+            .any(|g| g.version == "8.5.1" && g.node_id == file));
+        assert!(catalog
+            .administrator
+            .iter()
+            .any(|g| g.version == "8.5.1" && g.node_id == server));
+        assert_ne!(catalog.administrator[0].mode, catalog.administrator[1].mode);
+        assert_eq!(
+            catalog.administrator[0].mode.as_deref(),
+            Some("Administrator_Guide_File_Mode")
+        );
+        assert!(Kb1ciProvider::selected_guides(&catalog.administrator, Some("8.3.26")).is_empty());
+        let newest = Kb1ciProvider::selected_guides(&catalog.administrator, None);
+        assert_eq!(newest.len(), 2);
+        assert!(newest.iter().all(|g| g.version == "8.5.1"));
+        assert_eq!(
+            Kb1ciProvider::selected_guides(&catalog.administrator, Some("8.5.1")).len(),
+            2
+        );
+
+        let mut mixed = standard_site(base);
+        mixed.insert(
+            format!(
+                "{}&currentDoc={}&getRootVersions=true",
+                tree_url(base, server_root),
+                url_encode(server)
+            ),
+            Ok(server_versions),
+        );
+        mixed.insert(
+            tree_url(base, "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.WebHome"),
+            Ok(format!("[{},{}]",
+                node("OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_Client_Server_Mode.WebHome", "Administrator Guide.Client/Server Mode", true),
+                node(server, "1C:Enterprise 8.5.1 Administrator Guide.Client/Server Mode", true))),
+        );
+        let mixed = discover_guides(
+            &FakeTransport {
+                responses: mixed,
+                calls: AtomicUsize::new(0),
+            },
+            base,
+        )
+        .expect("mixed layout");
+        let newest = Kb1ciProvider::selected_guides(&mixed.administrator, None);
+        assert_eq!(
+            newest.len(),
+            1,
+            "the same mode in both layouts is one group"
+        );
+        assert_eq!(newest[0].version, "8.5.1");
+    }
+
+    #[test]
+    fn administrator_selector_exposes_all_versions_for_each_discovered_mode() {
+        let base = "https://kb.all-versions";
+        let mut responses = standard_site(base);
+        let versions = [
+            "8.5.1", "8.3.27", "8.3.26", "8.3.25", "8.3.24", "8.3.23", "8.3.22",
+        ];
+        let mut defaults = Vec::new();
+        for mode in ["File", "Client_Server"] {
+            let root = format!("OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_{mode}_Mode.WebHome");
+            let prefix = root.strip_suffix(".WebHome").unwrap();
+            let current = format!("{prefix}.8\\.5\\.1.WebHome");
+            let title = format!("1C:Enterprise 8.5.1 Administrator Guide. {mode}");
+            defaults.push(node(&current, &title, true));
+            let siblings: Vec<String> = versions
+                .iter()
+                .map(|version| {
+                    node(
+                        &format!("{prefix}.{}.WebHome", version.replace('.', "\\.")),
+                        &format!("1C:Enterprise {version} Administrator Guide. {mode}"),
+                        true,
+                    )
+                })
+                .collect();
+            responses.insert(
+                format!(
+                    "{}&currentDoc={}&getRootVersions=true",
+                    tree_url(base, &root),
+                    url_encode(&current)
+                ),
+                Ok(format!("[{}]", siblings.join(","))),
+            );
+        }
+        responses.insert(
+            tree_url(
+                base,
+                "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.WebHome",
+            ),
+            Ok(format!("[{}]", defaults.join(","))),
+        );
+        let transport = FakeTransport {
+            responses,
+            calls: AtomicUsize::new(0),
+        };
+        let catalog = discover_guides(&transport, base).unwrap();
+        assert_eq!(
+            catalog.administrator.len(),
+            14,
+            "default entries must not duplicate selector versions"
+        );
+        for version in versions {
+            let selected = Kb1ciProvider::selected_guides(&catalog.administrator, Some(version));
+            assert_eq!(selected.len(), 2, "each version has both modes: {version}");
+            assert!(selected.iter().all(|guide| guide.version == version));
+            assert_ne!(selected[0].mode, selected[1].mode);
+        }
+        let newest = Kb1ciProvider::selected_guides(&catalog.administrator, None);
+        assert_eq!(newest.len(), 2);
+        assert!(newest.iter().all(|guide| guide.version == "8.5.1"));
+        assert!(Kb1ciProvider::selected_guides(&catalog.administrator, Some("8.3.28")).is_empty());
     }
 }

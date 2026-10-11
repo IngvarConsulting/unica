@@ -29062,6 +29062,94 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S381",
+   "area": "Документация платформы",
+   "task": "Найти Developer Guide закреплённой 8.3.26 и прочитать обзор и вложенный раздел",
+   "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.26",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "Overview",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    },
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/8.3.26/Introduction/Overview/",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    },
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/8.3.26/Chapter_11._Accounting/11.1._Overview/",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S382",
+   "area": "Документация платформы",
+   "task": "Найти Administrator Guide закреплённой 8.3.27 и прочитать обзор обоих режимов",
+   "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.27",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "Overview",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    },
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_File_Mode/8.3.27/Introduction/Overview/",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    },
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_Client_Server_Mode/8.3.27/Introduction/Overview/",
+      "source": "platform-help"
+     },
+     "expect": [
+      "ok",
+      "provider",
+      "task"
+     ]
+    }
+   ]
   }
  ]
 }
