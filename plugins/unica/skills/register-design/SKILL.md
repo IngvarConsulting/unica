@@ -32,7 +32,7 @@ description: "Проектирование регистров 1С. Исполь�
 Four decisions, in this order, and each one narrows the next:
 
 - **Which class**: information register for state keyed by dimensions, accumulation register with `RegisterType = Balance` for what comes in and goes out, `RegisterType = Turnovers` when balance is meaningless, accounting register for double entry, calculation register for accruals with an action period.
-- **What is a key**: a dimension is a key, a resource is an aggregatable value, an attribute is neither. For a `Balance` register a dimension must be meaningful for both receipt and expense.
+- **What is a key**: a dimension is a key, a resource is an aggregatable value, an attribute is neither. For a `Balance` register a dimension must be meaningful for both receipt and expense. The type also fixes the movement fields: only a `Balance` register has the standard `ВидДвижения` (`RecordType`, `Приход`/`Расход`); a `Turnovers` register has none, so posting code that sets `ВидДвижения` on its records fails.
 - **How it is read**: `Остатки` gets the platform's cheapest plan only without totals separation, without a date parameter, and with every virtual table dimension used in the outer query (std733).
 - **How it is written**: one set per batch, not one write per row (std792).
 
