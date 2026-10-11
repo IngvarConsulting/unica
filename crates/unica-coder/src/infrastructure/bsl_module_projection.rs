@@ -582,6 +582,20 @@ fn method_projections(
             })
             .map(|token| lines.line_of(u32::from(token.text_range().start())))
             .unwrap_or(node_to);
+        // Annotations, the compilation directive and `Асинх` belong to the
+        // method even when they stand on lines above the declaration keyword.
+        let async_line = node
+            .descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+            .find(|token| token.kind() == SyntaxKind::KW_ASYNC)
+            .map(|token| lines.line_of(u32::from(token.text_range().start())));
+        let from_line = annotations
+            .iter()
+            .map(|annotation| lines.line_of(u32::from(annotation.syntax().text_range().start())))
+            .chain(async_line)
+            .chain([header_line])
+            .min()
+            .unwrap_or(header_line);
         let body_from_line = signature_end_line.saturating_add(1);
         let body_to_line = closing_line.saturating_sub(1);
         let compilation_count = compilation
@@ -634,6 +648,8 @@ fn method_projections(
                 handles: method_handles,
                 extension,
                 compilation_count,
+                from_line,
+                to_line: closing_line,
                 body_from_line,
                 body_to_line,
             },
