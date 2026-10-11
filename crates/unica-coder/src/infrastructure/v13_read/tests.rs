@@ -953,6 +953,48 @@ fn a_configuration_source_set_carries_no_borrowing_props() {
 }
 
 #[test]
+fn metadata_attribute_fill_value_is_a_bounded_observed_fact() {
+    let fixture = RealReaderFixture::new();
+    let descriptor = fixture.source.join("Catalogs/Items.xml");
+    let original = fs::read_to_string(&descriptor).unwrap();
+    let document = roxmltree::Document::parse(&original).unwrap();
+    let range = document
+        .root_element()
+        .first_element_child()
+        .unwrap()
+        .children()
+        .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "ChildObjects")))
+        .unwrap()
+        .range();
+    let attributes = r#"<Attribute xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Properties><Name>Empty</Name><Type><v8:Type>cfg:CatalogRef.Items</v8:Type></Type><FillValue xsi:type="xr:DesignTimeRef">Catalog.Items.EmptyRef</FillValue></Properties></Attribute><Attribute xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><Properties><Name>Flag</Name><Type><v8:Type>cfg:EnumRef.Flags</v8:Type></Type><FillValue xsi:type="xr:DesignTimeRef">Enum.Flags.EnumValue.Yes</FillValue></Properties></Attribute>"#;
+    write(
+        &descriptor,
+        &format!(
+            "{}<ChildObjects>{attributes}</ChildObjects>{}",
+            &original[..range.start],
+            &original[range.end..]
+        ),
+    );
+    let service = fixture.view_service();
+    for (name, owner, item) in [
+        ("Empty", "Catalog.Items", "EmptyRef"),
+        ("Flag", "Enum.Flags", "EnumValue.Yes"),
+    ] {
+        let result = service
+            .view(ViewRequest::new(&format!("main:Catalog.Items.Attribute.{name}")).unwrap());
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let props = &result.data.as_ref().unwrap()["props"];
+        assert!(props.get("incomplete").is_none(), "{props}");
+        let observed: serde_json::Value =
+            serde_json::from_str(props["fillValue"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            observed,
+            json!({"kind": "reference", "metadataPath": owner, "item": item})
+        );
+    }
+}
+
+#[test]
 fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     let fixture = RealReaderFixture::new();
     let service = fixture.view_service();
@@ -6906,4 +6948,155 @@ fn external_leaf_preserves_an_explicit_finite_relative_read_limit() {
         configuration_payload(&reader).unwrap()["registeredObjects"],
         json!([{"kind":"ExternalDataProcessor","name":"Large"}])
     );
+}
+
+#[test]
+fn mxl_check_consumes_captured_body_without_reopening_its_display_path() {
+    let fixture = RealReaderFixture::new();
+    fs::copy(fixture_path("acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"), fixture.source.join("Reports/ParityReport/Templates/Print/Ext/Template.xml")).unwrap();
+    let at = QualifiedAddress::parse("main:Report.ParityReport.Template.Print").unwrap();
+    let authority = fixture.read_authority();
+    let input = authority.mxl_validation_input(&at).unwrap();
+    fs::remove_file(&input.artifact).unwrap();
+    let result = crate::infrastructure::native_operations::mxl::validate_mxl_input(
+        &serde_json::Map::new(),
+        &input.text,
+        input.artifact,
+    );
+    assert!(result.ok, "{:?}", result.errors);
+    assert!(authority.mxl_validation_input(&at).is_err());
+    let schema = QualifiedAddress::parse("main:Report.ParityReport.Template.MainSchema").unwrap();
+    assert!(authority.mxl_validation_input(&schema).is_err());
+}
+
+#[test]
+fn retained_mxl_check_supports_configuration_extension_epf_and_erf_owners() {
+    let body = fixture_text(
+        "acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+    );
+    let wrapper =
+        fixture_text("acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template.xml")
+            .replace("F06Template", "Print");
+    let fixture = RealReaderFixture::new();
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Templates/Print.xml"),
+        &wrapper,
+    );
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Templates/Print/Ext/Template.xml"),
+        &body,
+    );
+    for authority in [fixture.read_authority(), fixture.extension_read_authority()] {
+        let at = QualifiedAddress::parse("main:Report.ParityReport.Template.Print").unwrap();
+        let input = authority.mxl_validation_input(&at).unwrap();
+        assert!(matches!(
+            input.format_guard,
+            crate::application::ports::FormatGuardCheck::Allow
+        ));
+        assert!(
+            crate::infrastructure::native_operations::mxl::validate_mxl_input(
+                &serde_json::Map::new(),
+                &input.text,
+                input.artifact
+            )
+            .ok
+        );
+    }
+    let fixture = RealExternalReaderFixture::new();
+    for (root, kind, source_set, owner) in [
+        (
+            &fixture.processor,
+            SourceSetKind::ExternalProcessor,
+            "epf",
+            "ExternalDataProcessor.Import",
+        ),
+        (
+            &fixture.report,
+            SourceSetKind::ExternalReport,
+            "erf",
+            "ExternalReport.Sales",
+        ),
+    ] {
+        let name = owner.split('.').nth(1).unwrap();
+        let descriptor = root.join(format!("{name}.xml"));
+        let xml = fs::read_to_string(&descriptor).unwrap().replace(
+            "</ChildObjects>",
+            "<Template>Print</Template></ChildObjects>",
+        );
+        write(&descriptor, &xml);
+        write(&root.join(format!("{name}/Templates/Print.xml")), &wrapper);
+        write(
+            &root.join(format!("{name}/Templates/Print/Ext/Template.xml")),
+            &body,
+        );
+        let authority = fixture.read_authority(source_set, kind);
+        let at = QualifiedAddress::parse(&format!("{source_set}:{owner}.Template.Print")).unwrap();
+        let input = authority.mxl_validation_input(&at).unwrap();
+        assert!(matches!(
+            input.format_guard,
+            crate::application::ports::FormatGuardCheck::Allow
+        ));
+        assert!(
+            crate::infrastructure::native_operations::mxl::validate_mxl_input(
+                &serde_json::Map::new(),
+                &input.text,
+                input.artifact
+            )
+            .ok
+        );
+        let orphan =
+            QualifiedAddress::parse(&format!("{source_set}:{owner}.Template.Orphan")).unwrap();
+        assert!(authority.mxl_validation_input(&orphan).is_err());
+    }
+}
+
+#[test]
+fn retained_mxl_check_keeps_unbounded_body_read_and_format_warnings() {
+    let fixture = RealReaderFixture::new();
+    let body = fixture_text(
+        "acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+    );
+    let wrapper =
+        fixture_text("acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template.xml")
+            .replace("F06Template", "Print")
+            .replace("version=\"2.20\"", "version=\"2.19\"");
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Templates/Print.xml"),
+        &wrapper,
+    );
+    let padded = body.replacen(
+        "</document>",
+        &format!("<!--{}--></document>", "x".repeat(8 * 1024 * 1024)),
+        1,
+    );
+    write(
+        &fixture
+            .source
+            .join("Reports/ParityReport/Templates/Print/Ext/Template.xml"),
+        &padded,
+    );
+    let authority = fixture.read_authority();
+    let at = QualifiedAddress::parse("main:Report.ParityReport.Template.Print").unwrap();
+    let input = authority.mxl_validation_input(&at).unwrap();
+    assert_eq!(input.text, padded);
+    assert!(matches!(
+        input.format_guard,
+        crate::application::ports::FormatGuardCheck::Warn { .. }
+    ));
+    assert!(
+        crate::infrastructure::native_operations::mxl::validate_mxl_input(
+            &serde_json::Map::new(),
+            &input.text,
+            input.artifact
+        )
+        .ok
+    );
+    fixture.cancellation.cancel();
+    assert!(authority.mxl_validation_input(&at).is_err());
 }

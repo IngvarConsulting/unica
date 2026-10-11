@@ -1478,8 +1478,6 @@ mod tests {
             "unica.cfe.init",
             "unica.cfe.patch_method",
             "unica.code.patch",
-            "unica.dcs.compile",
-            "unica.dcs.edit",
             "unica.epf.init",
             "unica.erf.init",
             "unica.form.compile",

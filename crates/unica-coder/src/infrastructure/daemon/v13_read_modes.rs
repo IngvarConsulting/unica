@@ -99,7 +99,7 @@ const VIEW_SECTION_SLOTS: &[&str] = &[
 /// kind. `None` means the dictionary is not computed for this kind yet — the
 /// caller answers `unsupported_section`, never a valid-looking empty node.
 /// The first phase covers the Configuration root and the metadata kinds.
-fn computed_can_entries(kind: &str) -> Option<Vec<Value>> {
+fn computed_can_entries(kind: &str, data: &Map<String, Value>) -> Option<Vec<Value>> {
     // Every parseable node kind carries its dictionary: the applicability
     // model covers all kinds, so the only uncomputable case is a kind the
     // address grammar does not know.
@@ -108,7 +108,10 @@ fn computed_can_entries(kind: &str) -> Option<Vec<Value>> {
         OperationRegistry::closed()
             .descriptors()
             .iter()
-            .filter(|descriptor| descriptor.applies_to(node_kind))
+            .filter(|descriptor| {
+                descriptor.applies_to(node_kind)
+                    && template_family_applies(descriptor.family(), node_kind, data)
+            })
             .map(|descriptor| {
                 json!({
                     "op": descriptor.name(),
@@ -118,6 +121,32 @@ fn computed_can_entries(kind: &str) -> Option<Vec<Value>> {
             })
             .collect(),
     )
+}
+
+fn template_family_applies(
+    family: crate::domain::apply::OperationFamily,
+    kind: NodeKind,
+    data: &Map<String, Value>,
+) -> bool {
+    use crate::domain::apply::OperationFamily;
+    if kind != NodeKind::Template {
+        return true;
+    }
+    match family {
+        OperationFamily::Dcs => {
+            data.get("props")
+                .and_then(|props| props.get("format"))
+                .and_then(Value::as_str)
+                == Some("DataCompositionSchema")
+        }
+        OperationFamily::Mxl => {
+            data.get("props")
+                .and_then(|props| props.get("format"))
+                .and_then(Value::as_str)
+                == Some("SpreadsheetDocument")
+        }
+        _ => true,
+    }
 }
 
 pub(super) fn project_view_sections(
@@ -166,7 +195,7 @@ pub(super) fn project_view_sections(
     }
     for slot in selected {
         match slot {
-            "can" => match computed_can_entries(kind) {
+            "can" => match computed_can_entries(kind, data) {
                 Some(entries) => {
                     projected.insert(slot.to_string(), Value::Array(entries));
                 }
@@ -213,7 +242,13 @@ pub(super) fn project_view_operation(
         .ok_or_else(|| {
             ReadModeError::unsupported_section("operation details require a known node kind")
         })?;
-    if !descriptor.applies_to(kind) {
+    if !descriptor.applies_to(kind)
+        || !template_family_applies(
+            descriptor.family(),
+            kind,
+            data.as_object().expect("view data is object"),
+        )
+    {
         return Err(ReadModeError::bad_value(format!(
             "operation `{operation}` does not apply to {}",
             kind.as_str()
@@ -237,7 +272,7 @@ mod call_graph_section_tests {
     use serde_json::json;
 
     #[test]
-    fn detailed_dcs_can_keeps_legacy_entries_and_distinguishes_unimplemented_operations() {
+    fn detailed_dcs_can_publishes_structured_operands_and_refuses_retired_schema_input() {
         use super::project_view_operation;
         use crate::domain::refusal::RefusalCode;
         let data = json!({"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data","kind":"DataSet","title":"F05Data"});
@@ -260,13 +295,43 @@ mod call_graph_section_tests {
             "string"
         );
         assert!(serde_json::to_vec(&detailed).unwrap().len() < 64 * 1024);
-        let unimplemented =
-            project_view_operation(&data, &json!(["can"]), Some("dcs.set")).unwrap();
-        assert_eq!(unimplemented["can"][0]["implemented"], false);
-        assert_eq!(unimplemented["can"][0]["contract"], serde_json::Value::Null);
-        for op in ["query.unknown", "enumValue.add"] {
+        for op in ["dcs.set", "query.unknown", "enumValue.add"] {
             assert_eq!(
                 project_view_operation(&data, &json!(["can"]), Some(op))
+                    .unwrap_err()
+                    .code(),
+                RefusalCode::BadValue
+            );
+        }
+    }
+
+    #[test]
+    fn dcs_and_mxl_template_can_follow_the_actual_body_format() {
+        use super::project_view_operation;
+        use crate::domain::refusal::RefusalCode;
+        for (format, accepted, rejected) in [
+            ("DataCompositionSchema", "dataSet.add", "mxl.set"),
+            ("SpreadsheetDocument", "mxl.set", "dataSet.add"),
+        ] {
+            let data = json!({"at":"cf:Report.F05Report.Template.Layout","kind":"Template","title":"Layout","props":{"format":format}});
+            let listed = project_view_sections(&data, &json!(["can"])).unwrap();
+            assert!(
+                listed.get("props").is_none(),
+                "can-only reads need not publish properties"
+            );
+            assert!(listed["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["op"] == accepted));
+            assert!(!listed["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["op"] == rejected));
+            project_view_operation(&data, &json!(["can"]), Some(accepted)).unwrap();
+            assert_eq!(
+                project_view_operation(&data, &json!(["can"]), Some(rejected))
                     .unwrap_err()
                     .code(),
                 RefusalCode::BadValue
@@ -474,26 +539,15 @@ mod tests {
             entry("form.add"),
             json!({"op": "form.add", "args": "items", "implemented": true})
         );
-        // The honesty flag stays false for a registry name without a planner.
         let data_set = project_view_sections(
-            &json!({
-                "at": "main:Report.Sales.Template.Layout.DataSet.Main",
-                "kind": "DataSet",
-                "title": "Main",
-                "props": {}
-            }),
+            &json!({"at":"main:Report.Sales.Template.Layout.DataSet.Main","kind":"DataSet","title":"Main","props":{}}),
             &json!(["can"]),
-        )
-        .unwrap();
+        ).unwrap();
         let data_set_can = data_set["can"].as_array().expect("computed can entries");
-        let dcs_set = data_set_can
+        assert!(data_set_can.iter().all(|entry| entry["op"] != "dcs.set"));
+        assert!(data_set_can
             .iter()
-            .find(|entry| entry["op"] == "dcs.set")
-            .unwrap_or_else(|| panic!("missing `dcs.set` in {data_set_can:?}"));
-        assert_eq!(
-            dcs_set,
-            &json!({"op": "dcs.set", "args": "values", "implemented": false})
-        );
+            .any(|entry| entry == &json!({"op":"dataSet.set","args":"values","implemented":true})));
         assert_eq!(
             entry("object.remove"),
             json!({"op": "object.remove", "args": "at", "implemented": true})

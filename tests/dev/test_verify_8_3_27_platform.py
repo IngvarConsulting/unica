@@ -1037,7 +1037,7 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual(
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "9c8b3ef88d04af0f7ad18db0d63a484512834439b9eeb2ca34d9498dca6750b4",
+            "5b5159540280fdb99bb8c8e282c03777e21fe0ad2aed9ba1ad658546d85dac25",
         )
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
@@ -2623,6 +2623,169 @@ class CommandBuilderTests(unittest.TestCase):
             )
 
 
+class DcsSemanticRetentionTests(unittest.TestCase):
+    # Captured from 8.3.27.2074, dcs-compile-owned-template, first run
+    # 2026-10-10. The first export lost 151 facts (239 -> 89 elements).
+    # Fixture formatting/namespace declaration deduplication was checked against
+    # semantic_xml; the original immutable platform corpus was not changed.
+    FIXTURE = ROOT / "tests/dev/fixtures/dcs-platform-truncated"
+    PATH = "Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml"
+
+    def compare(self, source, exported):
+        return load_verifier().compare_dcs_retention(
+            {"comparisonPayloads": {self.PATH: source}},
+            {"comparisonPayloads": {self.PATH: exported}},
+        )
+
+    def source(self):
+        return (self.FIXTURE / "source.xml").read_bytes()
+
+    def test_actual_stable_truncation_is_not_semantic_retention(self):
+        source = self.source()
+        exported = (self.FIXTURE / "export.xml").read_bytes()
+        result = self.compare(source, exported)
+        self.assertFalse(result["preserved"])
+        case = result["files"][0]
+        self.assertEqual((case["sourceElementCount"], case["exportElementCount"]), (239, 89))
+        self.assertTrue(any("parameter[2]" in path for path in case["removedFacts"]))
+        self.assertTrue(any("settingsVariant[1]" in path and "selection" in path for path in case["removedFacts"]))
+        self.assertTrue(any("settingsVariant[1]" in path and "name[1]" in path for path in case["changedFacts"]))
+
+    def test_only_measured_default_and_period_type_insertion_are_allowed(self):
+        verifier = load_verifier()
+        root = verifier._parsed_xml(self.source(), "source")
+        ns = verifier.DCS_SCHEMA_NS
+        core = verifier.CORE_NS
+        period = root.find(f"{{{ns}}}parameter")
+        flag = verifier.etree.SubElement(period, f"{{{ns}}}useRestriction")
+        flag.text = "false"
+        variant = period.find(f"{{{ns}}}value/{{{core}}}variant")
+        variant.set(f"{{{verifier.XSI_NS}}}type", "v8:StandardPeriodVariant")
+        exported = verifier.etree.tostring(root)
+        self.assertNotEqual(verifier.semantic_xml(self.source()), verifier.semantic_xml(exported))
+        self.assertTrue(self.compare(self.source(), exported)["preserved"])
+        # An explicit accessible default may likewise be omitted. A supplied
+        # StandardPeriodVariant type, however, may not disappear.
+        del variant.attrib[f"{{{verifier.XSI_NS}}}type"]
+        with_default = verifier.etree.tostring(root)
+        self.assertTrue(self.compare(with_default, self.source())["preserved"])
+        self.assertFalse(self.compare(exported, self.source())["preserved"])
+
+    def test_parameter_values_types_queries_filters_and_structure_are_preserved(self):
+        verifier = load_verifier()
+        ns = verifier.DCS_SCHEMA_NS
+        settings = "http://v8.1c.ru/8.1/data-composition-system/settings"
+        mutations = {
+            "parameter-name": (f"{{{ns}}}parameter[2]/{{{ns}}}name", "LostName"),
+            "period-value": (f"{{{ns}}}parameter/{{{ns}}}value/{{{verifier.CORE_NS}}}variant", "NextMonth"),
+            "query": (f"{{{ns}}}dataSet/{{{ns}}}query", "SELECT 2 AS Value"),
+            "filter-value": (f"{{{ns}}}settingsVariant/{{{settings}}}settings/{{{settings}}}filter/{{{settings}}}item/{{{settings}}}right", "1"),
+            "group-name": (f"{{{ns}}}settingsVariant/{{{settings}}}settings/{{{settings}}}item/{{{settings}}}name", "OtherGroup"),
+        }
+        for label, (path, value) in mutations.items():
+            with self.subTest(label=label):
+                root = verifier._parsed_xml(self.source(), "source")
+                node = root.find(path)
+                self.assertIsNotNone(node, path)
+                node.text = value
+                self.assertFalse(self.compare(self.source(), verifier.etree.tostring(root))["preserved"])
+        root = verifier._parsed_xml(self.source(), "source")
+        value = root.find(f"{{{ns}}}parameter[2]/{{{ns}}}value")
+        value.set(f"{{{verifier.XSI_NS}}}type", "xs:string")
+        self.assertFalse(self.compare(self.source(), verifier.etree.tostring(root))["preserved"])
+
+    def test_unknown_additions_duplicate_defaults_nondefault_and_reorder_refuse(self):
+        verifier = load_verifier()
+        ns = verifier.DCS_SCHEMA_NS
+        for mutation in ("unknown", "duplicate-default", "nondefault", "reorder", "foreign-default"):
+            with self.subTest(mutation=mutation):
+                root = verifier._parsed_xml(self.source(), "source")
+                parameter = root.find(f"{{{ns}}}parameter")
+                if mutation == "reorder":
+                    root.insert(0, root[-1])
+                elif mutation == "unknown":
+                    verifier.etree.SubElement(parameter, f"{{{ns}}}unexpected")
+                else:
+                    tag = "{urn:foreign}useRestriction" if mutation == "foreign-default" else f"{{{ns}}}useRestriction"
+                    for _ in range(2 if mutation == "duplicate-default" else 1):
+                        verifier.etree.SubElement(parameter, tag).text = "true" if mutation == "nondefault" else "false"
+                self.assertFalse(self.compare(self.source(), verifier.etree.tostring(root))["preserved"])
+
+    def test_wrong_period_type_foreign_variant_and_typeless_value_are_not_exempt(self):
+        verifier = load_verifier()
+        ns, core, xsi = verifier.DCS_SCHEMA_NS, verifier.CORE_NS, verifier.XSI_NS
+        for mutation in ("wrong-type", "foreign-variant", "typeless-parent"):
+            with self.subTest(mutation=mutation):
+                root = verifier._parsed_xml(self.source(), "source")
+                value = root.find(f"{{{ns}}}parameter/{{{ns}}}value")
+                variant = value.find(f"{{{core}}}variant")
+                variant.set(f"{{{xsi}}}type", "xs:string" if mutation == "wrong-type" else "v8:StandardPeriodVariant")
+                if mutation == "foreign-variant":
+                    variant.tag = "{urn:foreign}variant"
+                if mutation == "typeless-parent":
+                    del value.attrib[f"{{{xsi}}}type"]
+                self.assertFalse(self.compare(self.source(), verifier.etree.tostring(root))["preserved"])
+
+    def test_missing_file_wrong_root_and_namespace_refuse_and_other_families_stay_outside(self):
+        verifier = load_verifier()
+        snapshot = {"comparisonPayloads": {self.PATH: self.source()}}
+        self.assertFalse(verifier.compare_dcs_retention(snapshot, {"comparisonPayloads": {}})["preserved"])
+        for payload in (b"<DataCompositionSchema/>", b"<other xmlns='http://v8.1c.ru/8.1/data-composition-system/schema'/>"):
+            self.assertFalse(self.compare(self.source(), payload)["preserved"])
+        self.assertTrue(self.compare(b"<ordinary><data>1</data></ordinary>", b"<ordinary/>")["preserved"])
+        self.assertFalse(verifier.compare_dcs_retention(
+            snapshot, {"comparisonPayloads": {self.PATH: self.source(), "Other.xml": self.source()}}
+        )["preserved"])
+
+    def test_actual_fixed_ab_preserves_every_fact_and_accepts_only_directed_defaults(self):
+        source = (self.FIXTURE / "fixed-source.xml").read_bytes()
+        exported = (self.FIXTURE / "fixed-export.xml").read_bytes()
+        result = self.compare(source, exported)
+        self.assertTrue(result["preserved"], result)
+        self.assertEqual((result["files"][0]["sourceElementCount"], result["files"][0]["exportElementCount"]), (239, 244))
+        self.assertFalse(self.compare(exported, source)["preserved"], "explicit nil and date bounds may not disappear")
+
+    def test_nil_and_date_insertion_exemptions_are_exact_and_do_not_erase_explicit_values(self):
+        verifier = load_verifier()
+        source = (self.FIXTURE / "fixed-source.xml").read_bytes()
+        exported = (self.FIXTURE / "fixed-export.xml").read_bytes()
+        ns, settings, xsi = verifier.DCS_SCHEMA_NS, verifier.DCS_SETTINGS_NS, verifier.XSI_NS
+        for mutation in ("nil-false", "nil-text", "nil-type", "date", "date-type", "group-mode", "period-mode", "explicit-value", "explicit-date", "duplicate-date"):
+            with self.subTest(mutation=mutation):
+                before = verifier._parsed_xml(source, "source")
+                after = verifier._parsed_xml(exported, "export")
+                nil = after.find(f"{{{ns}}}parameter[4]/{{{ns}}}value")
+                group = after.find(f"{{{ns}}}settingsVariant/{{{settings}}}settings/{{{settings}}}item/{{{settings}}}groupItems/{{{settings}}}item")
+                begin = group.find(f"{{{settings}}}periodAdditionBegin")
+                original_group = before.find(f"{{{ns}}}settingsVariant/{{{settings}}}settings/{{{settings}}}item/{{{settings}}}groupItems/{{{settings}}}item")
+                if mutation == "nil-false":
+                    nil.set(f"{{{xsi}}}nil", "false")
+                elif mutation == "nil-text":
+                    nil.text = "changed"
+                elif mutation == "nil-type":
+                    before.find(f"{{{ns}}}parameter[4]/{{{ns}}}valueType/{{{verifier.CORE_NS}}}Type").text = "xs:anyType"
+                    after.find(f"{{{ns}}}parameter[4]/{{{ns}}}valueType/{{{verifier.CORE_NS}}}Type").text = "xs:anyType"
+                elif mutation == "date":
+                    begin.text = "2026-01-01T00:00:00"
+                elif mutation == "date-type":
+                    begin.set(f"{{{xsi}}}type", "xs:string")
+                elif mutation in ("group-mode", "period-mode"):
+                    tag, text = ("groupType", "Hierarchy") if mutation == "group-mode" else ("periodAdditionType", "Day")
+                    original_group.find(f"{{{settings}}}{tag}").text = text
+                    group.find(f"{{{settings}}}{tag}").text = text
+                elif mutation == "explicit-value":
+                    value = verifier.etree.SubElement(before.find(f"{{{ns}}}parameter[4]"), f"{{{ns}}}value")
+                    value.set(f"{{{xsi}}}type", "xs:string")
+                    value.text = "authored"
+                elif mutation == "explicit-date":
+                    value = verifier.etree.SubElement(original_group, f"{{{settings}}}periodAdditionBegin")
+                    value.set(f"{{{xsi}}}type", "xs:dateTime")
+                    value.text = "2026-01-01T00:00:00"
+                else:
+                    group.append(copy.deepcopy(begin))
+                self.assertFalse(self.compare(verifier.etree.tostring(before), verifier.etree.tostring(after))["preserved"])
+
+
 class CheckpointExecutionTests(unittest.TestCase):
     def fake_ibcmd(self, root: Path, mode: str) -> Path:
         install = root / "platform-install"
@@ -2640,6 +2803,7 @@ class CheckpointExecutionTests(unittest.TestCase):
                 from xml.etree import ElementTree as ET
 
                 MODE = {mode!r}
+                DCS_TRUNCATED_EXPORT = {(ROOT / 'tests/dev/fixtures/dcs-platform-truncated/export.xml').read_bytes()!r}
                 args = sys.argv[1:]
                 if args == ["--version"]:
                     print("8.3.28.1" if MODE == "wrong-version" else "8.3.27.2074")
@@ -2771,6 +2935,10 @@ class CheckpointExecutionTests(unittest.TestCase):
                 candidates = sorted(
                     path for path in destination.rglob("*.xml") if path.name != "ConfigDumpInfo.xml"
                 )
+                if MODE == "dcs-truncated":
+                    for path in candidates:
+                        if ET.parse(path).getroot().tag == "{{http://v8.1c.ru/8.1/data-composition-system/schema}}DataCompositionSchema":
+                            path.write_bytes(DCS_TRUNCATED_EXPORT)
                 if MODE in {{"normalized", "unstable"}} or (
                     MODE == "mutate-round1-input" and destination.parent.name == "round1"
                 ):
@@ -2852,6 +3020,28 @@ class CheckpointExecutionTests(unittest.TestCase):
                     self.assertEqual(result["failedStage"], "check")
                 else:
                     self.assertTrue(result["roundtripComparison"] is not None)
+
+    def test_stable_first_export_dcs_loss_is_rejected_through_checkpoint(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source"
+            write(source / "Configuration.xml", CONFIG_XML)
+            body = source / DcsSemanticRetentionTests.PATH
+            body.parent.mkdir(parents=True)
+            body.write_bytes((DcsSemanticRetentionTests.FIXTURE / "source.xml").read_bytes())
+            result = verifier.run_checkpoint(
+                self.checkpoint_item(source), self.fake_ibcmd(root, "dcs-truncated"),
+                verifier.CommandRunner(timeout_seconds=15), root / "evidence", root,
+            )
+            self.assertTrue(result["roundtripComparison"]["equal"], result)
+            self.assertFalse(result["sourceComparison"]["equal"], result)
+            self.assertEqual(result["verdict"], "rejected", result)
+            self.assertEqual(result["failedRound"], 1)
+            self.assertEqual(result["failedStage"], "dcs-semantic-retention")
+            facts = result["dcsSemanticRetention"]["files"][0]
+            self.assertEqual((facts["sourceElementCount"], facts["exportElementCount"]), (239, 89))
+            self.assertFalse(facts["preserved"])
 
     def test_non_xml_add_remove_and_change_affect_platform_verdicts(self):
         verifier = load_verifier()
@@ -4577,6 +4767,214 @@ class CliTests(unittest.TestCase):
                         ]
                     )
                 self.assertEqual(error.exception.code, 2)
+
+
+class DcsPublicationContractTests(unittest.TestCase):
+    case_id = "dcs-compile-owned-template"
+    body = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml"
+
+    def publication_report(self, root):
+        verifier = load_verifier()
+        intermediate_path = f"cases/{self.case_id}/publications/1/xml"
+        workspace_path = f"cases/{self.case_id}/workspace"
+        before = {"src/Configuration.xml": sha256(CONFIG_XML.encode())}
+        for base in [intermediate_path, workspace_path]:
+            write(root / base / "src/Configuration.xml", CONFIG_XML)
+        empty = '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>'
+        populated = '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"><parameter><name>Period</name></parameter></DataCompositionSchema>'
+        write(root / intermediate_path / self.body, empty)
+        write(root / workspace_path / self.body, populated)
+        intermediate = dict(sorted({**before, self.body: sha256(empty.encode())}.items()))
+        after = dict(sorted({**before, self.body: sha256(populated.encode())}.items()))
+        creation = {"cwd":"$CASE_WORKSPACE", "dryRun":False,
+                    "at":"main:Report.CorpusReport", "ops":[{
+                        "op":"template.add", "args":{"items":[{"name":"CorpusTemplate","templateType":"DataCompositionSchema"}]}
+                    }]}
+        components = {"cwd":"$CASE_WORKSPACE", "dryRun":False,
+                      "at":"main:Report.CorpusReport.Template.CorpusTemplate", "ops":[{
+                          "op":"parameter.add", "args":{"items":[{"name":"Period","type":"date"}]}
+                      }]}
+        report = {"toolId":"unica.apply", "publicArguments":creation, "publications":[
+            {"snapshotPath":intermediate_path,"toolId":"unica.apply","publicArguments":creation,
+             "summary":"created", "preXmlSha256":before,"postXmlSha256":intermediate,
+             "delta":verifier._classify_delta(before,intermediate)},
+            {"snapshotPath":workspace_path,"toolId":"unica.apply","publicArguments":components,
+             "summary":"filled", "preXmlSha256":intermediate,"postXmlSha256":after,
+             "delta":verifier._classify_delta(intermediate,after)},
+        ]}
+        return report, before, after
+
+    def test_both_publications_bind_real_intermediate_bytes_and_component_call(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report, before, after = self.publication_report(root)
+            normalized = verifier._validate_dcs_publications(root,self.case_id,report,before,after)
+            self.assertEqual(len(normalized),2)
+            self.assertEqual(normalized[0]["delta"]["created"],[self.body])
+            self.assertEqual(normalized[1]["delta"]["modified"],[self.body])
+            self.assertEqual(normalized[1]["publicArguments"]["ops"][0]["op"],"parameter.add")
+            baseline = verifier.case_contract_sha256([{"id":self.case_id}], [{"id":self.case_id,"publications":normalized}])
+            changed = copy.deepcopy(normalized)
+            changed[1]["publicArguments"]["ops"][0]["args"]["items"][0]["name"] = "Other"
+            self.assertNotEqual(baseline,verifier.case_contract_sha256([{"id":self.case_id}],[{"id":self.case_id,"publications":changed}]))
+
+    def test_missing_or_forged_creation_publication_is_rejected(self):
+        verifier = load_verifier()
+        mutations = {
+            "missing": lambda report: report.pop("publications"),
+            "only_creation": lambda report: report["publications"].pop(),
+            "wrong_hash_chain": lambda report: report["publications"][1].update(preXmlSha256={}),
+            "wrong_delta": lambda report: report["publications"][1]["delta"].update(modified=[]),
+            "wrong_snapshot": lambda report: report["publications"][0].update(snapshotPath=f"cases/{self.case_id}/workspace"),
+            "forged_initial_bytes": lambda report: report["publications"][0]["postXmlSha256"].update({self.body:"0"*64}),
+            "unrecorded_first_call": lambda report: report["publications"][0].update(publicArguments={}),
+            "unknown_fields": lambda report: report["publications"][0].update(gateVerdict="pass"),
+            "wrong_operation_shape": lambda report: report["publications"][1]["publicArguments"]["ops"][0].update(at="main:Report.CorpusReport.Template.CorpusTemplate"),
+            "second_creation": lambda report: report["publications"][1]["publicArguments"]["ops"][0].update(op="template.add"),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                report,before,after = self.publication_report(root)
+                mutate(report)
+                with self.assertRaises(verifier.CorpusError):
+                    verifier._validate_dcs_publications(root,self.case_id,report,before,after)
+
+    def test_intermediate_file_drift_and_cross_case_claims_are_rejected(self):
+        verifier = load_verifier()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report,before,after = self.publication_report(root)
+            write(root / report["publications"][0]["snapshotPath"] / self.body,"<wrong/>")
+            with self.assertRaisesRegex(verifier.CorpusError,"captured snapshot bytes"):
+                verifier._validate_dcs_publications(root,self.case_id,report,before,after)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            report,before,after = self.publication_report(root)
+            with self.assertRaisesRegex(verifier.CorpusError,"cannot claim"):
+                verifier._validate_dcs_publications(root,"dcs-edit-owned-template",report,before,after)
+
+
+    def write_loadable_case(self, root):
+        verifier = load_verifier()
+        case = write_platform_case(root, self.case_id)
+        publications, before, after = self.publication_report(root)
+        add_pre_file(root, case, "src/Configuration.xml", CONFIG_XML, "metadata", source_set_owner=True)
+        case.update(toolId="unica.apply", operation="dcs-component-create", branch="owned-template")
+        owner = f'{case["workspacePath"]}/src/Configuration.xml'
+        body = f'{case["workspacePath"]}/{self.body}'
+        case["files"][0].update(seed=True, delta="unchanged")
+        case["files"].append({"path":body,"sha256":after[self.body],"family":"dcs",
+                              "seed":False,"delta":"created","ownerPath":owner})
+        case["files"].sort(key=lambda entry:entry["path"])
+        report = read_case_report(root,case)
+        report.update(publications)
+        for field in ["toolId","operation","branch","preFiles","preOwnerVersions"]:
+            report[field] = copy.deepcopy(case[field])
+        report.update(preXmlSha256=before,postXmlSha256=after,
+                      delta=verifier._classify_delta(before,after),
+                      seedOutputs=sorted(before),remainingXml=sorted(after),
+                      ownerLinks={body:owner})
+        write_case_report(root,case,report)
+        manifest = write_manifest(root,[case])
+        return case,manifest
+
+    def load_case(self, root, manifest):
+        return load_verifier().load_corpus(manifest,repo_root=ROOT,home_root=Path.home(),
+                                          mandatory_case_ids={self.case_id})
+
+    def test_load_corpus_accounts_for_intermediate_xml_and_both_real_publications(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            case,manifest = self.write_loadable_case(root)
+            corpus = self.load_case(root,manifest)
+            publications = corpus["cases"][0]["publications"]
+            self.assertEqual(len(publications),2)
+            paths = {entry["path"] for entry in publications[0]["snapshotXmlFiles"]}
+            self.assertEqual(paths,{
+                f"cases/{self.case_id}/publications/1/xml/src/Configuration.xml",
+                f"cases/{self.case_id}/publications/1/xml/{self.body}",
+            })
+            self.assertTrue(paths.issubset(corpus["snapshot"]["files"]))
+            self.assertEqual(publications[1]["snapshotXmlFiles"],[])
+            self.assertEqual(publications[1]["delta"]["modified"],[self.body])
+            baseline = corpus["caseContractSha256"]
+            report = read_case_report(root,case)
+            report["publications"][1]["publicArguments"]["ops"][0]["args"]["items"][0]["name"] = "Other"
+            write_case_report(root,case,report)
+            self.assertNotEqual(baseline,self.load_case(root,manifest)["caseContractSha256"])
+
+    def test_load_corpus_rejects_unreferenced_files_around_publication_snapshots(self):
+        mutations = {
+            "orphan_xml": (f"cases/{self.case_id}/publications/2/xml/extra.xml","<extra/>","XML inventory is not exact"),
+            "snapshot_non_xml": (f"cases/{self.case_id}/publications/1/xml/readme.txt","undeclared","regular-file inventory/hash is not exact"),
+        }
+        for name,(path,payload,error) in mutations.items():
+            with self.subTest(mutation=name),tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                _case,manifest = self.write_loadable_case(root)
+                write(root/path,payload)
+                with self.assertRaisesRegex(load_verifier().CorpusError,error):
+                    self.load_case(root,manifest)
+
+    def test_load_corpus_binds_empty_directories_in_publication_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            case,manifest = self.write_loadable_case(root)
+            baseline = self.load_case(root,manifest)["caseContractSha256"]
+            path = f"cases/{self.case_id}/publications/1/xml/empty"
+            (root/path).mkdir()
+            with self.assertRaisesRegex(load_verifier().CorpusError,"empty directory inventory is not exact"):
+                self.load_case(root,manifest)
+            manifest = write_manifest(root,[case])
+            corpus = self.load_case(root,manifest)
+            self.assertIn(path,corpus["emptyDirectoryPaths"])
+            self.assertEqual(corpus["cases"][0]["publications"][0]["emptyDirectoryPaths"],[path])
+            self.assertNotEqual(baseline,corpus["caseContractSha256"])
+            (root/path).rmdir()
+            with self.assertRaisesRegex(load_verifier().CorpusError,"empty directory inventory is not exact"):
+                self.load_case(root,manifest)
+
+    def test_load_corpus_refuses_cross_case_snapshot_and_hardlinked_bytes(self):
+        for mutation in ["cross_case","hardlink"]:
+            with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                case,manifest = self.write_loadable_case(root)
+                if mutation == "cross_case":
+                    report = read_case_report(root,case)
+                    report["publications"][0]["snapshotPath"] = "cases/other/publications/1/xml"
+                    write_case_report(root,case,report)
+                    error = "dedicated canonical path"
+                else:
+                    snapshot = root/f"cases/{self.case_id}/publications/1/xml/src/Configuration.xml"
+                    snapshot.unlink()
+                    os.link(root/case["workspacePath"]/"src/Configuration.xml",snapshot)
+                    error = "hardlink"
+                with self.assertRaisesRegex(load_verifier().CorpusError,error):
+                    self.load_case(root,manifest)
+
+
+    def test_load_corpus_refuses_invalid_intermediate_scaffold_even_with_consistent_hashes(self):
+        invalid = [
+            '<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.20"/>',
+            '<DataCompositionSchema xmlns="urn:foreign"/>',
+        ]
+        verifier = load_verifier()
+        for payload in invalid:
+            with self.subTest(payload=payload),tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                case,manifest = self.write_loadable_case(root)
+                report = read_case_report(root,case)
+                initial,final = report["publications"]
+                write(root/initial["snapshotPath"]/self.body,payload)
+                initial["postXmlSha256"][self.body] = sha256(payload.encode())
+                initial["delta"] = verifier._classify_delta(initial["preXmlSha256"],initial["postXmlSha256"])
+                final["preXmlSha256"] = copy.deepcopy(initial["postXmlSha256"])
+                final["delta"] = verifier._classify_delta(final["preXmlSha256"],final["postXmlSha256"])
+                write_case_report(root,case,report)
+                with self.assertRaisesRegex(verifier.CorpusError,"versionless DCS scaffold"):
+                    self.load_case(root,manifest)
 
 
 if __name__ == "__main__":

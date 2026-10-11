@@ -4,24 +4,25 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **351 сценариев** реальных задач разработчика конфигурации и **639 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **383 сценариев** реальных задач разработчика конфигурации и **891 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 340 сценария; `delivery/bsl-analyzer` — 6; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 3. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL через настоящий процесс и публичный check; это не проверка опубликованного анализатора. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 371 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 3. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL через настоящий процесс и публичный check; это не проверка опубликованного анализатора. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 502 |
-| `refused` | умышленный типизированный отказ | 99 |
+| `ok` | результат | 743 |
+| `refused` | умышленный типизированный отказ | 102 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 20 |
-| `provider` | провайдер недоступен | 8 |
-| `gap` | задокументированный пробел | 3 |
+| `provider` | провайдер недоступен | 12 |
+| `gap` | задокументированный пробел | 6 |
 | `unsupported` | закрытый список | 3 |
 | `ok` / `provider` | любой из: результат; провайдер недоступен | 2 |
 | `ok` / `provider` / `task` / `unsupported` | любой из: результат; провайдер недоступен; длинная задача; закрытый список | 2 |
+| `gap` / `unsupported` | любой из: задокументированный пробел; закрытый список | 1 |
 
-Провод проходной, когда каждый его шаг отвечает результатом или типизированным отказом своего класса. Сырой транспортный сбой и незадокументированный типизированный отказ роняют прогон. Шагов с пробелом (`gap`) сейчас: **3** в **3 сценариях** (S299, S319, S325).
+Провод проходной, когда каждый его шаг отвечает результатом или типизированным отказом своего класса. Сырой транспортный сбой и незадокументированный типизированный отказ роняют прогон. Шагов с пробелом (`gap`) сейчас: **7** в **7 сценариях** (S299, S319, S325, S354, S355, S356, S357).
 
 ### Известные пробелы
 
@@ -32,6 +33,10 @@
 | S299 | `gap` | Канонический `view` отказывает чужому курсору кодом `invalid_cursor`, который не входит в закрытый набор отказов поверхности (bad_value, not_found, invalid_state, invalid_source, stale_revision). |
 | S319 | `gap` | Заимствование регистрирует общий модуль без каталога модуля, а первая запись модуля через `apply` его не создаёт: планировщик требует существующий каталог (`MissingParent`), и превью отвечает `provider_unavailable` «staged source evidence is unavailable» (#955, #1245). |
 | S325 | `gap`: известный ошибочный `ok` (#791) | #791: связанный ChoiceProcessing имеет три параметра вместо пяти; check ошибочно отвечает passed. Исправление должно дать failed и требует снять gap. |
+| S354 | `gap` | #896: IncludeHelpInContents отчёта отсутствует в типизированном props.set |
+| S355 | `gap` | #852: props.set не принимает RegisterType=Turnovers после успешного создания регистра |
+| S356 | `gap` / `unsupported` | #919: операция переноса существующего поля отсутствует в каноническом реестре |
+| S357 | `gap` | #895: замена метода текстом из четырёх методов пока даёт postcondition_failed; в 13.1 согласована полная поддержка |
 
 ## Как предложить сценарий или операцию
 
@@ -75,14 +80,14 @@
 
 ## Покрытие реестра `apply`
 
-Закрытый реестр держит **102 операций**; сценарии покрывают **73**, помечены реализованными **87**. Операция без сценария — первая кандидатура для новой задачи.
+Закрытый реестр держит **120 операций**; сценарии покрывают **112**, помечены реализованными **120**. Операция без сценария — первая кандидатура для новой задачи.
 
 ### Метаданные: объекты и коллекции
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
 | `object.borrow` | `From` | да | S313, S319 |
-| `object.create` | `values` | да | S103, S104, S105, S106, S107, S108, S109, S110, S117, S119, S120, S121, S122, S123, S124, S314 |
+| `object.create` | `values` | да | S103, S104, S105, S106, S107, S108, S109, S110, S117, S119, S120, S121, S122, S123, S124, S314, S355 |
 | `object.remove` | только `at` | да | S111, S112, S285, S293, S296, S314 |
 | `relation.add` | `values` | да | S113, S115 |
 | `relation.remove` | `values` | да | S115 |
@@ -106,7 +111,7 @@
 | `column.add` | `items` | да | S085 |
 | `column.set` | `values` | да | S086 |
 | `column.remove` | `values` | да | S087 |
-| `template.add` | `items` | да | S196, S199, S203, S277, S284, S330, S331 |
+| `template.add` | `items` | да | S196, S199, S203, S277, S284, S330, S331, S361, S362, S363, S364, S365, S367, S368, S370, S371, S372, S373, S374, S375, S376, S377, S378, S379, S380 |
 | `template.set` | `values` | да | S197 |
 | `template.remove` | `values` | да | S198 |
 | `command.add` | `items` | да | **не покрыто — предложите задачу** |
@@ -120,7 +125,7 @@
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `props.set` | `values` | да | S037, S038, S039, S040, S041, S042, S043, S044, S045, S046, S047, S048, S049, S054, S055, S057, S058, S091, S096, S099, S226, S227, S256, S257, S258, S275, S276, S281, S287, S288, S310 |
+| `props.set` | `values` | да | S037, S038, S039, S040, S041, S042, S043, S044, S045, S046, S047, S048, S049, S054, S055, S057, S058, S091, S096, S099, S226, S227, S256, S257, S258, S275, S276, S281, S287, S288, S310, S354, S355 |
 
 ### Формы
 
@@ -147,41 +152,59 @@
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `dcs.set` | `values` | нет | **не покрыто — предложите задачу** |
-| `field.add` | `items` | да | S181, S326 |
-| `field.set` | `values` | да | S182 |
-| `field.remove` | только `at` | да | S183 |
-| `fieldRole.set` | `values` | да | **не покрыто — предложите задачу** |
-| `total.add` | `items` | да | S191 |
-| `total.remove` | только `at` | нет | **не покрыто — предложите задачу** |
-| `calculatedField.add` | `items` | да | S190 |
-| `calculatedField.remove` | только `at` | нет | **не покрыто — предложите задачу** |
-| `parameter.add` | `items` | да | S184 |
-| `parameter.set` | `values` | да | S185 |
-| `parameter.rename` | `values` | нет | **не покрыто — предложите задачу** |
-| `parameter.reorder` | `items` | нет | **не покрыто — предложите задачу** |
-| `parameter.remove` | только `at` | да | **не покрыто — предложите задачу** |
-| `filter.add` | `items` | да | S186 |
-| `filter.set` | `values` | нет | **не покрыто — предложите задачу** |
-| `filter.remove` | только `at` | нет | **не покрыто — предложите задачу** |
-| `filter.clear` | только `at` | да | S187 |
-| `dataParameter.add` | `items` | нет | **не покрыто — предложите задачу** |
-| `dataParameter.set` | `values` | нет | **не покрыто — предложите задачу** |
-| `query.set` | `values` | да | S188, S326, S327, S329 |
-| `query.patch` | `values` | да | S189, S327, S329 |
-| `selection.add` | `items` | да | **не покрыто — предложите задачу** |
-| `selection.clear` | только `at` | да | **не покрыто — предложите задачу** |
-| `order.add` | `items` | нет | **не покрыто — предложите задачу** |
-| `order.clear` | только `at` | да | **не покрыто — предложите задачу** |
-| `conditionalAppearance.add` | `items` | нет | **не покрыто — предложите задачу** |
-| `conditionalAppearance.clear` | только `at` | да | **не покрыто — предложите задачу** |
-| `dataSetLink.add` | `items` | нет | **не покрыто — предложите задачу** |
-| `dataSet.add` | `items` | нет | **не покрыто — предложите задачу** |
-| `variant.add` | `items` | да | S192 |
-| `drilldown.add` | `items` | нет | **не покрыто — предложите задачу** |
-| `outputParameter.set` | `values` | нет | **не покрыто — предложите задачу** |
-| `structure.set` | `values` | да | S193 |
-| `structure.patch` | `values` | да | S326, S327 |
+| `dataSource.add` | `items` | да | S361 |
+| `dataSource.set` | `values` | да | S361 |
+| `dataSource.remove` | `values` | да | S361, S366 |
+| `dataSet.add` | `items` | да | S361, S367, S368, S370, S380 |
+| `dataSet.set` | `values` | да | S361 |
+| `dataSet.remove` | только `at` | да | S361 |
+| `field.add` | `items` | да | S181, S326, S361, S366, S368, S380 |
+| `field.set` | `values` | да | S182, S361, S380 |
+| `field.remove` | только `at` | да | S183, S368 |
+| `fieldRole.set` | `values` | да | S361 |
+| `parameter.add` | `items` | да | S184, S185, S362, S376, S380 |
+| `parameter.set` | `values` | да | S185, S362, S376, S380 |
+| `parameter.remove` | только `at` | да | S362 |
+| `parameter.rename` | `values` | да | S362 |
+| `parameter.reorder` | `items` | да | S362 |
+| `calculatedField.add` | `items` | да | S190, S362, S371 |
+| `calculatedField.remove` | `values` | да | S362 |
+| `total.add` | `items` | да | S191, S362, S371, S379 |
+| `total.remove` | `values` | да | S362 |
+| `variant.add` | `items` | да | S192, S363 |
+| `variant.set` | `values` | да | S363 |
+| `variant.remove` | `values` | да | S363 |
+| `query.set` | `values` | да | S188, S326, S327, S329, S361 |
+| `query.patch` | `values` | да | S189, S327, S329, S361, S367 |
+| `filter.add` | `items` | да | S186, S363, S364, S365 |
+| `filter.set` | `values` | да | S363 |
+| `filter.remove` | `values` | да | S363 |
+| `filter.clear` | `values` | да | S187, S365, S369 |
+| `selection.add` | `items` | да | S363, S364, S365, S368, S372, S374, S378 |
+| `selection.clear` | `values` | да | S365, S374, S378 |
+| `order.add` | `items` | да | S363, S364, S365, S372, S374 |
+| `order.clear` | `values` | да | S365, S374 |
+| `dataParameter.add` | `items` | да | S363, S372 |
+| `dataParameter.set` | `values` | да | S363 |
+| `outputParameter.set` | `values` | да | S363, S365, S372, S373, S377 |
+| `conditionalAppearance.add` | `items` | да | S363, S365, S373, S377 |
+| `conditionalAppearance.clear` | `values` | да | S365 |
+| `structure.add` | `items` | да | S364, S375 |
+| `structure.set` | `values` | да | S193, S364 |
+| `structure.patch` | `values` | да | S326, S327, S364, S375 |
+| `structure.remove` | `values` | да | S364 |
+| `dataSetLink.add` | `items` | да | S361, S370 |
+| `calculatedField.set` | `values` | да | S371 |
+| `total.set` | `values` | да | S371, S379 |
+| `selection.set` | `values` | да | S372, S374, S378 |
+| `selection.remove` | `values` | да | S372, S374, S378 |
+| `order.set` | `values` | да | S372, S374 |
+| `order.remove` | `values` | да | S372, S374 |
+| `dataParameter.remove` | `values` | да | S372 |
+| `outputParameter.remove` | `values` | да | S372 |
+| `conditionalAppearance.remove` | `values` | да | S373 |
+| `dataSetLink.set` | `values` | да | S370 |
+| `dataSetLink.remove` | `values` | да | S370 |
 
 ### Табличные документы
 
@@ -231,7 +254,7 @@
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
 | `code.insert` | `text` | да | S156, S159, S278, S314, S319, S325, S336, S337, S338 |
-| `code.replace` | `text` | да | S157, S316, S338 |
+| `code.replace` | `text` | да | S157, S316, S338, S357 |
 
 ### События
 
@@ -246,20 +269,20 @@
 | `cf` | S224, S267, S271, S301 |
 | `cfe` | S290, S313, S314 |
 | `form` | S225, S268, S302, S325 |
-| `dcs` | S194, S326, S328, S329, S330 |
-| `mxl` | S201, S331, S332, S335 |
+| `dcs` | S194, S326, S328, S329, S330, S361, S364, S380 |
+| `mxl` | S201, S331, S332, S335, S350 |
 | `role` | S175, S179, S269, S291, S303 |
 | `subsystem` | S210, S212, S270 |
 | `interface` | S266 |
-| `meta` | S035, S101, S222, S223, S228, S264, S347, S348 |
+| `meta` | S035, S101, S222, S223, S228, S264, S347, S348, S349 |
 
 ## Инструменты в проводах
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 190 |
-| `unica.view` | 75 |
-| `unica.check` | 55 |
+| `unica.apply` | 214 |
+| `unica.view` | 102 |
+| `unica.check` | 63 |
 | `unica.search` | 33 |
 | `unica.docs` | 24 |
 | `unica.diff` | 15 |
@@ -267,7 +290,7 @@
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (51) · Свойства объектов (27) · Реквизиты и состав (46) · Создание и удаление объектов (22) · Формы (26) · Код BSL (37) · Роли и права (15) · СКД (21) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (19) · Тесты и запуск (1) · Документация и стандарты (17) · Поддержка поставщика (16) · Расширения конфигурации (7) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2)
+Области: Навигация и чтение (51) · Свойства объектов (27) · Реквизиты и состав (46) · Создание и удаление объектов (22) · Формы (26) · Код BSL (37) · Роли и права (15) · СКД (41) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (19) · Тесты и запуск (1) · Документация и стандарты (17) · Поддержка поставщика (16) · Расширения конфигурации (7) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (4)
 
 ### Навигация и чтение
 
@@ -321,9 +344,9 @@
 | S305 | Прочитать узел старой выгрузки — чтение открыто, совет о формате остаётся за check | `source` | `view` | `ok` |
 | S307 | Перевести путь из чужого диффа в логический адрес | `source` | `resolve` | `ok` |
 | S308 | Узнать файл и строки метода, чтобы открыть его вне Unica | `source` | `resolve` | `ok` |
-| S349 | Разрешить методы, тела и вложенные области в разных модулях | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
-| S350 | Разрешить реквизиты и элементы форм в содержащий их XML | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
-| S351 | Сохранить обратное разрешение пути и расположение владельца | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok` |
+| S381 | Разрешить методы, тела и вложенные области в разных модулях | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
+| S382 | Разрешить реквизиты и элементы форм в содержащий их XML | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
+| S383 | Сохранить обратное разрешение пути и расположение владельца | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Свойства объектов
 
@@ -537,7 +560,7 @@
 | S182 | Изменить заголовок поля СКД | `source` | `apply` `field.set` | `ok` |
 | S183 | Удалить поле из схемы | `source` | `apply` `field.remove` | `ok` |
 | S184 | Добавить параметр периода | `source` | `apply` `parameter.add` | `ok` |
-| S185 | Задать значение параметра по умолчанию | `source` | `apply` `parameter.set` | `ok` |
+| S185 | Задать значение параметра по умолчанию | `source` | `apply` `parameter.add` `parameter.set` | `ok` |
 | S186 | Добавить отбор по автору | `source` | `apply` `filter.add` | `ok` |
 | S187 | Очистить отборы схемы | `source` | `apply` `filter.clear` | `ok` |
 | S188 | Поменять текст запроса набора данных | `source` | `apply` `query.set` | `ok` |
@@ -549,10 +572,30 @@
 | S194 | Проверить схему компоновки данных | `source` | `check` валидаторы `dcs` | `ok` |
 | S195 | Изучить словарь операций схемы | `source` | `view` | `ok` |
 | S326 | По контракту подсказчика изменить поле, запрос и именованную группу из исходного #1299; preview не пишет, три XML-эффекта и check подтверждены | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`apply` `field.add`<br>`apply`<br>`view`<br>`apply` `query.set`<br>`apply`<br>`view`<br>`apply` `structure.patch`<br>`apply`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S327 | Ошибочные цели, типы, can-фильтры, имена групп и число замен дают точный отказ без изменения XML, включая частично подходящую структуру | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`diff`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `query.patch`<br>`apply` `query.patch`<br>`apply` `structure.patch`<br>`apply` `structure.patch`<br>`apply` `structure.patch`<br>`apply` `query.patch`<br>`apply` `query.patch` | `ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`unsupported`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
+| S327 | Ошибочные цели, типы, can-фильтры, имена групп и число замен дают точный отказ без изменения XML, включая частично подходящую структуру | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`diff`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `query.patch`<br>`apply` `query.patch`<br>`apply` `structure.patch`<br>`apply` `structure.patch` `structure.patch`<br>`apply` `structure.patch`<br>`apply` `query.patch`<br>`apply` `query.patch` | `ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`unsupported`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
 | S328 | Реальный Codex без навыков/обходов самостоятельно находит контракт, публикует три изменения, проверяет XML и честно описывает границу создания схем; полный transcript оценивает независимый агент | `agent-evaluation/codex` | `view`<br>`view`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 | S329 | Текст запроса одинаков при raw quotes/entities; once сохраняет пробелы и пустую замену; preview читается как исходная версия, устаревший токен не публикуется; XML comments/PI сохраняются побайтно | `source` | `view`<br>`apply` `query.set`<br>`view`<br>`apply` `query.patch`<br>`apply`<br>`apply`<br>`apply` `query.patch`<br>`apply`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S330 | Новый DCS template — каркас с Основной, без DataSet; коллекция и XML честно показывают отсутствие набора данных | `source` | `view`<br>`apply` `template.add`<br>`apply`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S361 | Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSource.add` `dataSource.set` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `field.add` `field.add` `field.add` `field.add` `dataSet.set` `dataSet.set`<br>`apply`<br>`view`<br>`apply` `field.set` `fieldRole.set` `query.set` `query.patch` `dataSetLink.add`<br>`apply`<br>`view`<br>`view`<br>`check` валидаторы `dcs`<br>`view`<br>`apply` `dataSet.remove` `dataSource.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S362 | Параметры, вычисления и итоги имеют отдельные операции; rename сохраняет ссылки, reorder сохраняет чужие элементы, удаления проверены после положительных эффектов | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `parameter.add` `calculatedField.add` `total.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `parameter.rename` `parameter.reorder`<br>`apply`<br>`view`<br>`apply` `parameter.remove` `calculatedField.remove` `total.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S363 | Создать отдельный вариант: явная выборка, сортировка, отбор, параметры данных/вывода и оформление; set меняет только выбранное свойство и сохраняет соседние настройки | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `variant.add`<br>`apply`<br>`view`<br>`apply` `selection.add` `order.add` `filter.add` `dataParameter.add` `outputParameter.set` `conditionalAppearance.add`<br>`apply`<br>`view`<br>`apply` `variant.set` `filter.set` `dataParameter.set` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `filter.remove`<br>`apply`<br>`view`<br>`apply` `variant.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S364 | Составить table/chart с осями и именованными вложенными группами; локальная настройка и patch сохраняют остальные элементы; заменить и удалить структуру явно | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `structure.add` `structure.add`<br>`apply`<br>`view`<br>`apply` `structure.patch` `selection.add` `filter.add` `order.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `structure.remove`<br>`apply`<br>`view`<br>`apply` `structure.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S365 | Положительные эффекты четырёх настроек наблюдаются перед clear; очистка одной коллекции сохраняет остальные и параметры вывода | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.add` `filter.add` `order.add` `conditionalAppearance.add` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `selection.clear`<br>`apply`<br>`view`<br>`apply` `filter.clear` `order.clear` `conditionalAppearance.clear`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S366 | Поздняя ошибка удаления используемого источника отменяет ранее подготовленное поле; XML остаётся побайтно прежним, token не выдаётся | `source` | `view`<br>`apply` `field.add` `dataSource.remove` | `ok`<br>`refused` |
+| S367 | Типизированный query.patch принимает прежние управляющие последовательности как буквальный текст и сохраняет остальные запросы | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `query.patch`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S368 | Добавление и удаление поля не изменяет выборку; явная selection.add сохраняется после field.remove, соседние поля неизменны | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `field.add`<br>`apply`<br>`view`<br>`apply` `selection.add`<br>`apply`<br>`view`<br>`apply` `field.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S369 | Повтор пустой очистки не нормализует декларацию, соседние байты или переводы строк; итоговый SHA256 остаётся прежним | `source` | `view`<br>`apply` `filter.clear`<br>`apply` | `ok`<br>`ok`<br>`ok` |
+| S370 | Изменить связь по четырём явным селекторам; проверить условие/параметр, затем удалить выбранную связь сохранив соседнюю | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add` `dataSetLink.add`<br>`apply`<br>`view`<br>`apply` `dataSetLink.set`<br>`apply`<br>`view`<br>`view`<br>`apply` `dataSetLink.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S371 | calculatedField.set и total.set сохраняют непереданные заголовок и группировку, меняют только явно переданное выражение | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `calculatedField.add` `total.add`<br>`apply`<br>`view`<br>`apply` `calculatedField.set` `total.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S372 | Патч и удаление выбранного элемента не очищают соседние элементы выборки/сортировки, параметры данных и вывода удаляются отдельно | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.add` `order.add` `dataParameter.add` `outputParameter.set` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `selection.set` `order.set`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.remove` `order.remove` `dataParameter.remove` `outputParameter.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S373 | conditionalAppearance.remove использует прочитанный индекс и удаляет один элемент; второй элемент и параметры вывода сохраняются | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `conditionalAppearance.add` `outputParameter.set`<br>`apply`<br>`view`<br>`view`<br>`apply` `conditionalAppearance.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S374 | Явно вернуть Auto после clear; set/remove выбирают прочитанный индекс Auto, сохраняют соседние Field элементы | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.clear` `order.clear` `selection.add` `order.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.set` `order.set`<br>`apply`<br>`view`<br>`apply` `selection.remove` `order.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S375 | Отключение и пользовательские свойства Table/Chart/Group; повторные именованные оси и patch groupBy=[] с сохранением соседей | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `structure.add` `structure.add`<br>`apply`<br>`view`<br>`apply` `structure.patch` `structure.patch` `structure.patch`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S376 | Типизированные значения reference/nil, список default/available values и именованный/Custom StandardPeriod; изменение ссылки сохраняет заявленный тип | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `parameter.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `parameter.set` `parameter.set`<br>`apply`<br>`view`<br>`apply` `parameter.set` `parameter.set` `parameter.set` `parameter.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S377 | Условное оформление имеет отдельный typed filter, use=false, Color и многоязычный формат; заголовок и enum параметра вывода сохраняют платформенные типы | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `conditionalAppearance.add` `outputParameter.set` `outputParameter.set` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `outputParameter.set` `outputParameter.set`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S378 | Folder создаётся отдельно от детей; parentIndexes из чтения точно выбирают вложенную выборку при set/remove и сохраняют соседей, заголовки и placement | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.clear` `selection.add` `selection.add` `selection.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.set` `selection.set` `selection.remove`<br>`apply`<br>`view`<br>`apply` `selection.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S379 | Один итог имеет несколько explicit group bindings; set заменяет весь список, пустой список снимает привязки, соседний итог сохраняется | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `total.add`<br>`apply`<br>`view`<br>`apply` `total.set` `total.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S380 | Явные пустые value/title/expression/presentationExpression записываются; повтор такого же сохранённого плана оставляет XML без изменений и имеет нулевой эффект | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add` `field.add` `parameter.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Макеты
 
@@ -719,3 +762,25 @@
 | --- | --- | --- | --- | --- |
 | S347 | Предупреждение имеет свой код и сохраняет вердикт passed | `source` | `view`<br>`check` валидаторы `meta` | `ok`<br>`ok` |
 | S348 | Предупреждение имеет свой код и сохраняет вердикт failed | `source` | `view`<br>`check` валидаторы `meta` | `ok`<br>`ok` |
+
+### Приёмочный корпус
+
+| № | Задача | Профиль | Провод | Классы шагов |
+| --- | --- | --- | --- | --- |
+| S349 | EmptyRef, EnumValue и Characteristic читаются без потери данных и изменения XML | `source` | `view`<br>`view`<br>`view`<br>`check` валидаторы `meta` | `ok`<br>`ok`<br>`ok`<br>`ok` |
+| S350 | Форма и области MXL принадлежат точному владельцу внешнего набора | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `mxl` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S351 | Физически существующие незарегистрированные форма/макет недоступны | `source` | `view`<br>`view` | `refused`<br>`refused` |
+| S352 | Повреждённый payload не становится успехом; соседний владелец сохраняется | `source` | `view`<br>`check`<br>`view` | `provider`<br>`provider`<br>`ok` |
+| S353 | Ссылка на payload соседнего владельца отклоняется; собственная соседняя форма доступна | `source` | `view`<br>`view`<br>`view` | `provider`<br>`provider`<br>`ok` |
+| S358 | EPF/ERF без main доступны, отсутствует требование sourceDir | `source` | `view`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
+| S359 | Отдельные Object-модули EPF/ERF и модуль формы достигают терминального BSL результата | `delivery/bsl-analyzer-external` | `check`<br>`check` валидаторы `bsl`<br>`check` валидаторы `bsl`<br>`check` валидаторы `bsl` | `ok`<br>`ok`<br>`ok`<br>`ok` |
+| S360 | Недоступный объявленный внешний набор даёт failed с source_set.path_missing | `source` | `view`<br>`check` | `ok`<br>`ok` |
+
+### Известные пробелы
+
+| № | Задача | Профиль | Провод | Классы шагов |
+| --- | --- | --- | --- | --- |
+| S354 | Включить справку отчёта: props.set IncludeHelpInContents пока отказывает (#896) | `source` | `apply` `props.set` | `gap` |
+| S355 | Создать регистр, затем сменить RegisterType на Turnovers: props.set пока отказывает (#852) | `source` | `apply` `object.create`<br>`apply`<br>`apply` `props.set` | `ok`<br>`ok`<br>`gap` |
+| S356 | Перенести существующее поле вместе с companions в существующую группу: element.move пока отсутствует (#919) | `source` | `apply` `element.move` | `gap` / `unsupported` |
+| S357 | Выделить три helper-метода одной заменой: текущий отказ сохранён до исправления #895 | `source` | `apply` `code.replace` | `gap` |

@@ -461,7 +461,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     pub(crate) fn dcs_validation_input(
         &self,
         at: &QualifiedAddress,
-    ) -> Result<crate::infrastructure::v13_read_port::DcsValidationInput, ViewError> {
+    ) -> Result<crate::infrastructure::v13_read_port::TemplateValidationInput, ViewError> {
         let admitted = self.snapshot(at)?;
         let canonical = self.canonical_address(at, &admitted)?;
         let target =
@@ -483,6 +483,37 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let input = self
             .read
             .dcs_validation_input(&target, &mut || self.read_checkpoint())?;
+        self.read_checkpoint()?;
+        Ok(input)
+    }
+
+    /// Proves a MXL template through the same registration and descriptor
+    /// authority as view, then reads its body through the retained source root.
+    pub(crate) fn mxl_validation_input(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::infrastructure::v13_read_port::TemplateValidationInput, ViewError> {
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let target =
+            crate::infrastructure::native_operations::mxl::typed_mxl_reader_target(&canonical)
+                .ok_or_else(|| {
+                    ViewError::new(RefusalCode::BadValue, "MXL validation requires a template")
+                })?;
+        self.verify_registered_owner(&target, &admitted)?;
+        if !matches!(
+            self.read.metadata_child_profile(&target)?,
+            MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)
+        ) {
+            return Err(ViewError::new(
+                RefusalCode::BadValue,
+                "template is not a spreadsheet document",
+            ));
+        }
+        self.read_checkpoint()?;
+        let input = self
+            .read
+            .mxl_validation_input(&target, &mut || self.read_checkpoint())?;
         self.read_checkpoint()?;
         Ok(input)
     }
@@ -1795,6 +1826,18 @@ impl LogicalViewReadAuthority<'_> {
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
         let mut projected = projected;
+        let format = match self.read.metadata_child_profile(&child) {
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
+                Some("DataCompositionSchema")
+            }
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
+                Some("SpreadsheetDocument")
+            }
+            _ => None,
+        };
+        if let Some(format) = format {
+            projected = projected.with_prop("format", Value::String(format.into()));
+        }
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
                 projected = projected.with_branch(BranchRef::new(
@@ -1829,6 +1872,18 @@ impl LogicalViewReadAuthority<'_> {
                             .get("variants")
                             .and_then(Value::as_array)
                             .map_or(0, Vec::len),
+                    ),
+                    (
+                        NodeKind::Item,
+                        ["dataSources", "links"]
+                            .iter()
+                            .map(|key| {
+                                payload
+                                    .get(*key)
+                                    .and_then(Value::as_array)
+                                    .map_or(0, Vec::len)
+                            })
+                            .sum(),
                     ),
                 ]
             }

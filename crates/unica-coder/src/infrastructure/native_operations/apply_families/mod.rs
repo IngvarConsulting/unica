@@ -760,11 +760,19 @@ mod tests {
         }
 
         pub(super) fn admission(&self) -> ApplyAdmission {
+            self.admission_with_dry_run(true)
+        }
+
+        pub(super) fn actor(&self) -> &WorkspaceActor {
+            &self.actor
+        }
+
+        pub(super) fn admission_with_dry_run(&self, dry_run: bool) -> ApplyAdmission {
             self.actor
                 .admit_apply(
                     &self.binding,
                     None,
-                    true,
+                    dry_run,
                     ProviderDeadline::from_budget(Duration::from_secs(5)),
                     &CancellationToken::new(),
                 )

@@ -13,6 +13,27 @@ from tests.ci.acceptance_profiles import (
 
 
 class AcceptanceProfileTests(unittest.TestCase):
+    def test_external_delivery_reaches_only_the_declared_read_only_checks(self):
+        workspace = "tests/fixtures/acceptance/workspace-external"
+        addresses = [None, "epf:ExternalDataProcessor.Import.Module.Object",
+                     "epf:ExternalDataProcessor.Import.Form.Main.Module.Form",
+                     "erf:ExternalReport.Sales.Module.Object"]
+        scenario = {"id": "external", "profile": "delivery",
+                    "driver": "bsl-analyzer-external", "workspace": workspace,
+                    "wire": [{"tool": "unica.check", "args": {} if at is None else {"at": at}}
+                             for at in addresses]}
+        corpus = {"workspace": workspace, "scenarios": [scenario]}
+        self.assertEqual(select_profile(corpus, "delivery")["scenarios"], [scenario])
+        for field, value in [
+            ("workspace", SYMBOL_WORKSPACE), ("evaluation", "authors-toml"),
+            ("wire", [{"tool": "unica.apply", "args": {}}]),
+            ("wire", [{"tool": "unica.check", "args": {"at": "epf:ExternalDataProcessor.Other.Module.Object"}}]),
+            ("wire", [{"tool": "unica.check", "args": {"sourceDir": "epf"}}]),
+            ("wire", [{"tool": "unica.view", "args": {}}]),
+        ]:
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                select_profile({**corpus, "scenarios": [{**scenario, field: value}]}, "source")
+
     def corpus(self):
         return {"workspace": "tests/fixtures/acceptance/workspace", "scenarios": [
             {"id": "source", "wire": [{"tool": "unica.view", "args": {}}]},

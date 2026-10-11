@@ -14,16 +14,13 @@ use crate::infrastructure::native_operations::apply_families::request::{
 use crate::infrastructure::workspace_actor::{DcsMxlApplyAuthority, ProviderRootBinding};
 use serde_json::{Map, Value};
 
-/// One planned DCS edit: the legacy `dcs-edit` operation name with the value
-/// strings it consumes, addressed by the schema template and its dataset or
-/// settings variant.
+/// A normalized basic operation and its captured logical target.
 #[derive(Debug, Clone)]
-struct DcsEdit {
+struct DcsPrimitivePlan {
     template: MetadataAddress,
-    legacy: &'static str,
-    values: Vec<String>,
-    data_set: String,
-    variant: String,
+    operation: crate::infrastructure::native_operations::dcs_primitives::Primitive,
+    args: Map<String, Value>,
+    target: crate::infrastructure::native_operations::dcs_primitives::Target,
 }
 
 /// One cell write of `mxl.set`: 1-based row and column inside the area.
@@ -44,7 +41,7 @@ struct MxlEdit {
 
 #[derive(Debug, Clone)]
 enum DcsMxlPlanKind {
-    Dcs(DcsEdit),
+    Dcs(DcsPrimitivePlan),
     Mxl(MxlEdit),
     Unsupported,
 }
@@ -65,7 +62,7 @@ impl DcsMxlPlanOperation {
 /// query, settings variant, field or parameter the address descends into.
 struct DcsTarget {
     template: MetadataAddress,
-    data_set: String,
+    datasets: Vec<String>,
     variant: String,
     terminal: Option<(NodeKind, String)>,
 }
@@ -101,29 +98,29 @@ fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, A
         ),
     )
     .map_err(|error| bad(&error.to_string()))?;
-    let mut data_set = String::new();
+    let mut datasets = Vec::new();
     let mut variant = String::new();
     let mut terminal = None;
     for segment in rest {
+        if terminal.is_some() {
+            return Err(bad("a DCS terminal has no addressed children"));
+        }
         let name = segment
             .name()
             .ok_or_else(|| bad("DCS address segments below the template must be named"))?
             .to_string();
-        match segment.kind() {
-            NodeKind::DataSet | NodeKind::Query => data_set = name,
-            NodeKind::Setting => variant = name,
-            NodeKind::Field | NodeKind::Parameter => terminal = Some((segment.kind(), name)),
-            other => {
-                return Err(bad(&format!(
-                    "DCS operations do not address `{}` nodes",
-                    other.as_str()
-                )))
-            }
+        match segment.kind(){
+            NodeKind::DataSet if variant.is_empty()=>datasets.push(name),
+            NodeKind::Query if datasets.is_empty()&&variant.is_empty()=>datasets.push(name),
+            NodeKind::Setting if datasets.is_empty()&&variant.is_empty()=>variant=name,
+            NodeKind::Field if !datasets.is_empty()&&variant.is_empty()=>terminal=Some((NodeKind::Field,name)),
+            NodeKind::Parameter if variant.is_empty()=>terminal=Some((NodeKind::Parameter,name)),
+            _=>return Err(bad("DCS address must select a Template, nested DataSet, Setting, or terminal Field/Parameter")),
         }
     }
     Ok(DcsTarget {
         template,
-        data_set,
+        datasets,
         variant,
         terminal,
     })
@@ -179,61 +176,6 @@ fn item_object<'a>(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "each item must be an object")
             .at_path(location.to_string())
     })
-}
-
-/// `name[:type] [title]` — the legacy field, parameter and calculated-field
-/// head syntax.
-fn typed_head(name: &str, type_name: Option<&str>, title: Option<&str>) -> String {
-    let mut head = name.to_string();
-    if let Some(type_name) = type_name {
-        head.push(':');
-        head.push_str(type_name);
-    }
-    if let Some(title) = title {
-        head.push_str(&format!(" [{title}]"));
-    }
-    head
-}
-
-fn comparison_token(comparison: &str) -> Option<&'static str> {
-    Some(match comparison {
-        "Equal" => "=",
-        "NotEqual" => "<>",
-        "Greater" => ">",
-        "GreaterOrEqual" => ">=",
-        "Less" => "<",
-        "LessOrEqual" => "<=",
-        "Contains" => "contains",
-        "NotContains" => "notContains",
-        "BeginsWith" => "beginsWith",
-        "NotBeginsWith" => "notBeginsWith",
-        "InList" => "in",
-        "NotInList" => "notIn",
-        "InHierarchy" => "inHierarchy",
-        "InListByHierarchy" => "inListByHierarchy",
-        "Filled" => "filled",
-        "NotFilled" => "notFilled",
-        _ => return None,
-    })
-}
-
-fn terminal_name(
-    target: &DcsTarget,
-    kind: NodeKind,
-    op_index: usize,
-    what: &str,
-) -> Result<String, ApplyPlanError> {
-    match &target.terminal {
-        Some((found, name)) if *found == kind => Ok(name.clone()),
-        _ => Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!(
-                "the target address must end with the {what} to remove: `...{}.<name>`",
-                kind.as_str()
-            ),
-        )
-        .at_path(format!("ops[{op_index}].args.at"))),
-    }
 }
 
 pub(crate) fn parse_dcs_mxl_plan_operation(
@@ -292,363 +234,40 @@ fn parse_dcs_operation(
         .expect("the DCS contract requires object arguments");
     let address = qualified_target(args, op_index, binding)?;
     let target = dcs_target(&address, op_index)?;
-    let items_path = format!("ops[{op_index}].args.items");
-    let values_path = format!("ops[{op_index}].args.values");
-    let mut data_set = target.data_set.clone();
-    let mut variant = target.variant.clone();
-    let (legacy, values): (&'static str, Vec<String>) = match operation {
-        "field.add" => {
-            let mut values = Vec::new();
-            for (index, item) in required_items(args, op_index)?.iter().enumerate() {
-                let location = format!("{items_path}[{index}]");
-                let item = item_object(item, &location)?;
-                let name = text_field(item, &["dataPath"]).ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::BadValue,
-                        "a field needs `dataPath` (or `name`)",
-                    )
-                    .at_path(format!("{location}.dataPath"))
-                })?;
-                values.push(checked_head(
-                    name,
-                    text_field(item, &["type"]),
-                    text_field(item, &["title"]),
-                    &location,
-                )?);
-            }
-            ("add-field", values)
-        }
-        "field.set" => {
-            let values = required_values(args, op_index)?;
-            let field = required_text(values, &["field"], &values_path)?;
-            (
-                "modify-field",
-                vec![checked_head(
-                    field,
-                    text_field(values, &["type"]),
-                    text_field(values, &["title"]),
-                    &values_path,
-                )?],
+    if matches!(operation, "field.remove" | "parameter.remove") {
+        let expected = if operation == "field.remove" {
+            NodeKind::Field
+        } else {
+            NodeKind::Parameter
+        };
+        if !target
+            .terminal
+            .as_ref()
+            .is_some_and(|(kind, _)| *kind == expected)
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("address a named {}", expected.as_str()),
             )
+            .at_path(format!("ops[{op_index}].args.at")));
         }
-        "field.remove" => (
-            "remove-field",
-            vec![terminal_name(&target, NodeKind::Field, op_index, "field")?],
-        ),
-        "fieldRole.set" => {
-            let values = required_values(args, op_index)?;
-            let field = required_text(values, &["field"], &values_path)?;
-            let role = required_text(values, &["role"], &values_path)?;
-            reject_tokens(field, HEAD_TOKENS, &format!("{values_path}.field"))?;
-            reject_tokens(role, HEAD_TOKENS, &format!("{values_path}.role"))?;
-            let role = if crate::domain::operation_contract::DCS_ROLE_FLAGS.contains(&role) {
-                format!("@{role}")
-            } else {
-                role.to_string()
-            };
-            ("set-field-role", vec![format!("{field} {role}")])
-        }
-        "parameter.add" => {
-            let mut values = Vec::new();
-            for (index, item) in required_items(args, op_index)?.iter().enumerate() {
-                let location = format!("{items_path}[{index}]");
-                let item = item_object(item, &location)?;
-                let name = required_text(item, &["name"], &location)?;
-                let mut value = checked_head(
-                    name,
-                    text_field(item, &["type"]),
-                    text_field(item, &["title"]),
-                    &location,
-                )?;
-                if let Some(default) = text_field(item, &["value"]) {
-                    reject_tokens(default, PARAMETER_TOKENS, &format!("{location}.value"))?;
-                    value.push('=');
-                    value.push_str(default);
-                }
-                values.push(value);
-            }
-            ("add-parameter", values)
-        }
-        "parameter.set" => {
-            let values = required_values(args, op_index)?;
-            let name = required_text(values, &["name"], &values_path)?;
-            reject_tokens(name, PARAMETER_TOKENS, &format!("{values_path}.name"))?;
-            let mut value = name.to_string();
-            if let Some(default) = text_field(values, &["value"]) {
-                reject_tokens(default, PARAMETER_TOKENS, &format!("{values_path}.value"))?;
-                value.push_str(&format!(" value={default}"));
-            }
-            if let Some(title) = text_field(values, &["title"]) {
-                reject_tokens(title, PARAMETER_TOKENS, &format!("{values_path}.title"))?;
-                value.push_str(&format!(" [{title}]"));
-            }
-            if let Some(type_name) = text_field(values, &["type"]) {
-                reject_tokens(type_name, PARAMETER_TOKENS, &format!("{values_path}.type"))?;
-                value.push_str(&format!(" type={type_name}"));
-            }
-            ("modify-parameter", vec![value])
-        }
-        "parameter.remove" => (
-            "remove-parameter",
-            vec![terminal_name(
-                &target,
-                NodeKind::Parameter,
-                op_index,
-                "parameter",
-            )?],
-        ),
-        "filter.add" => {
-            let mut values = Vec::new();
-            for (index, item) in required_items(args, op_index)?.iter().enumerate() {
-                let location = format!("{items_path}[{index}]");
-                let item = item_object(item, &location)?;
-                let field = required_text(item, &["field"], &location)?;
-                let comparison = text_field(item, &["comparison"]).unwrap_or("Equal");
-                let token = comparison_token(comparison).ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::BadValue,
-                        format!("unknown filter comparison `{comparison}`"),
-                    )
-                    .at_path(format!("{location}.comparison"))
-                })?;
-                let value = item
-                    .get("value")
-                    .map(|value| match value {
-                        Value::String(text) => text.clone(),
-                        other => other.to_string(),
-                    })
-                    .unwrap_or_default();
-                reject_tokens(field, FILTER_TOKENS, &format!("{location}.field"))?;
-                reject_tokens(&value, FILTER_TOKENS, &format!("{location}.value"))?;
-                values.push(format!("{field} {token} {value}").trim_end().to_string());
-            }
-            ("add-filter", values)
-        }
-        "filter.clear" => ("clear-filter", vec!["all".to_string()]),
-        "selection.add" => {
-            let mut values = Vec::new();
-            for (index, item) in required_items(args, op_index)?.iter().enumerate() {
-                let location = format!("{items_path}[{index}]");
-                let item = item_object(item, &location)?;
-                let field = required_text(item, &["field"], &location)?;
-                reject_tokens(field, HEAD_TOKENS, &format!("{location}.field"))?;
-                values.push(field.to_string());
-            }
-            ("add-selection", values)
-        }
-        "selection.clear" => ("clear-selection", vec!["all".to_string()]),
-        "order.clear" => ("clear-order", vec!["all".to_string()]),
-        "conditionalAppearance.clear" => ("clear-conditionalAppearance", vec!["all".to_string()]),
-        "query.set" => {
-            let values = required_values(args, op_index)?;
-            if let Some(named) = text_field(values, &["dataSet"]) {
-                data_set = named.to_string();
-            }
-            let query = required_text(values, &["query"], &values_path)?;
-            if query.trim_start().starts_with('@') {
-                // The legacy editor reads `@path` as a file to load; the
-                // typed surface takes the query text itself.
-                return Err(ApplyPlanError::new(
-                    ApplyPlanErrorKind::BadValue,
-                    "`query` is the query text itself; file references (`@path`) are not accepted",
-                )
-                .at_path(format!("{values_path}.query")));
-            }
-            ("set-query", vec![query.to_string()])
-        }
-        "query.patch" => {
-            let values = required_values(args, op_index)?;
-            if let Some(named) = text_field(values, &["dataSet"]) {
-                data_set = named.to_string();
-            }
-            let find = required_text(values, &["find"], &values_path)?;
-            let replace = values
-                .get("replace")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let once = values.get("once").and_then(Value::as_bool).unwrap_or(false);
-            for (text, field) in [(find, "find"), (replace, "replace")] {
-                reject_tokens(text, &[" => ", "@once"], &format!("{values_path}.{field}"))?;
-            }
-            let mut value = format!("{find} => {replace}");
-            if once {
-                value.push_str(" @once");
-            }
-            ("patch-query", vec![value])
-        }
-        "calculatedField.add" => {
-            let mut values = Vec::new();
-            for (index, item) in required_items(args, op_index)?.iter().enumerate() {
-                let location = format!("{items_path}[{index}]");
-                let item = item_object(item, &location)?;
-                let name = required_text(item, &["name"], &location)?;
-                let expression = required_text(item, &["expression"], &location)?;
-                reject_tokens(expression, &["@"], &format!("{location}.expression"))?;
-                values.push(format!(
-                    "{}={expression}",
-                    checked_head(
-                        name,
-                        text_field(item, &["type"]),
-                        text_field(item, &["title"]),
-                        &location,
-                    )?
-                ));
-            }
-            ("add-calculated-field", values)
-        }
-        "total.add" => {
-            let mut values = Vec::new();
-            for (index, item) in required_items(args, op_index)?.iter().enumerate() {
-                let location = format!("{items_path}[{index}]");
-                let item = item_object(item, &location)?;
-                let field = required_text(item, &["field"], &location)?;
-                reject_tokens(field, &["@", ":"], &format!("{location}.field"))?;
-                if let Some(expression) = text_field(item, &["expression"]) {
-                    reject_tokens(expression, &["@"], &format!("{location}.expression"))?;
-                }
-                values.push(match text_field(item, &["expression"]) {
-                    Some(expression) => format!("{field}:{expression}"),
-                    None => field.to_string(),
-                });
-            }
-            ("add-total", values)
-        }
-        "variant.add" => {
-            let mut values = Vec::new();
-            for (index, item) in required_items(args, op_index)?.iter().enumerate() {
-                let location = format!("{items_path}[{index}]");
-                let item = item_object(item, &location)?;
-                let name = required_text(item, &["name"], &location)?;
-                reject_tokens(name, HEAD_TOKENS, &format!("{location}.name"))?;
-                if let Some(title) = text_field(item, &["title"]) {
-                    reject_tokens(title, HEAD_TOKENS, &format!("{location}.title"))?;
-                }
-                values.push(match text_field(item, &["title"]) {
-                    Some(title) => format!("{name} [{title}]"),
-                    None => name.to_string(),
-                });
-            }
-            ("add-variant", values)
-        }
-        "structure.set" | "structure.patch" => {
-            let values = required_values(args, op_index)?;
-            if let Some(named) = text_field(values, &["variant"]) {
-                variant = named.to_string();
-            }
-            let group_by = values
-                .get("groupBy")
-                .and_then(Value::as_array)
-                .map(|fields| {
-                    fields
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::trim)
-                        .filter(|field| !field.is_empty())
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let details = values
-                .get("details")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            let mut segments = Vec::new();
-            if !group_by.is_empty() {
-                segments.push(group_by.join(","));
-            }
-            if details || segments.is_empty() {
-                segments.push("details".to_string());
-            }
-            (
-                if operation == "structure.set" {
-                    "set-structure"
-                } else {
-                    "modify-structure"
-                },
-                vec![segments.join(" > ")],
-            )
-        }
-        _ => return Ok(DcsMxlPlanKind::Unsupported),
-    };
-    if variant.is_empty() {
-        // Settings-level operations need a variant. Основной is the
-        // conventional default name; it is not the first
-        // variant discovered in this schema.
-        variant = "Основной".to_string();
     }
-    Ok(DcsMxlPlanKind::Dcs(DcsEdit {
+    let operation =
+        crate::infrastructure::native_operations::dcs_primitives::Primitive::parse(operation)
+            .expect("every DCS contract has a primitive");
+    Ok(DcsMxlPlanKind::Dcs(DcsPrimitivePlan {
         template: target.template,
-        legacy,
-        values,
-        data_set,
-        variant,
+        operation,
+        args: args.clone(),
+        target: crate::infrastructure::native_operations::dcs_primitives::Target {
+            datasets: target.datasets,
+            variant: target.variant,
+            terminal: target.terminal.map(|(_, name)| name),
+        },
     }))
 }
 
 use crate::domain::operation_contract::parse_mxl_cell_address as parse_cell_address;
-
-/// The legacy schema editor reads its values as a small text language with
-/// reserved tokens (`@on`, `@user`, `[title]`, `name:type`, ` => `). Typed
-/// arguments must not carry them, or the intent changes silently.
-fn reject_tokens(value: &str, tokens: &[&str], location: &str) -> Result<(), ApplyPlanError> {
-    if let Some(token) = tokens.iter().find(|token| value.contains(**token)) {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!(
-                "the value contains `{}`, a token reserved by the schema editor",
-                token.trim()
-            ),
-        )
-        .at_path(location.to_string()));
-    }
-    Ok(())
-}
-
-/// Tokens the field shorthand `name:type [title]` reads specially.
-const HEAD_TOKENS: &[&str] = &["@", "#", "[", "]"];
-/// Operator markers of the filter expression grammar.
-const FILTER_TOKENS: &[&str] = &[
-    "@",
-    " notBeginsWith",
-    " beginsWith",
-    " inListByHierarchy",
-    " inHierarchy",
-    " notContains",
-    " contains",
-    " notFilled",
-    " filled",
-    " notIn",
-    " in",
-    " <>",
-    " >=",
-    " <=",
-    " =",
-    " >",
-    " <",
-];
-/// Tokens of the parameter edit grammar.
-const PARAMETER_TOKENS: &[&str] = &["@", "[", "]", " value=", " type=", " title="];
-
-fn checked_head(
-    name: &str,
-    type_name: Option<&str>,
-    title: Option<&str>,
-    location: &str,
-) -> Result<String, ApplyPlanError> {
-    for (value, field) in [(Some(name), "name"), (type_name, "type"), (title, "title")] {
-        let Some(value) = value else {
-            continue;
-        };
-        reject_tokens(value, HEAD_TOKENS, &format!("{location}.{field}"))?;
-        if field != "title" && (value.contains(':') || value.contains(char::is_whitespace)) {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::BadValue,
-                format!("`{field}` must not contain `:` or whitespace"),
-            )
-            .at_path(format!("{location}.{field}")));
-        }
-    }
-    Ok(typed_head(name, type_name, title))
-}
 
 /// A spreadsheet the cell editor can rewrite without losing content: only the
 /// constructs the decompile/compile cores model may be present.
@@ -831,7 +450,7 @@ fn parse_mxl_set(
         .at_path(format!("ops[{op_index}].args.at")));
     }
     let target = dcs_target(&address, op_index)?;
-    if target.terminal.is_some() || !target.data_set.is_empty() || !target.variant.is_empty() {
+    if target.terminal.is_some() || !target.datasets.is_empty() || !target.variant.is_empty() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
             "mxl.set addresses the spreadsheet template itself: `Owner.Name.Template.T`",
@@ -1017,64 +636,19 @@ pub(crate) fn plan_dcs_mxl_batch(
                     .at_path(at_path.clone())
             })?;
         }
-        let original_line_ending = if xml_text.contains("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        };
         let original = xml_text.clone();
-        let root = authority.source_root();
-        let template_dir = root.join(&relative);
-        let base_dir = template_dir.parent().unwrap_or(root);
-        let mut query_inputs = Vec::new();
-        let mut stdout = String::new();
-        let mut force_save = false;
-        let value_path = format!("ops[{op_index}].args");
-        for value in &edit.values {
-            let applied = crate::infrastructure::native_operations::dcs::dcs_edit_apply_operation(
-                &mut xml_text,
-                edit.legacy,
-                value,
-                &edit.data_set,
-                &edit.variant,
-                false,
-                base_dir,
-                root,
-                &mut query_inputs,
-                &mut stdout,
-                &mut force_save,
-            );
-            match applied {
-                Ok(()) => {}
-                // Clearing a section the schema never had is already the
-                // requested state, not a failure.
-                Err(message)
-                    if edit.legacy.starts_with("clear-") && message.contains("section found") =>
-                {
-                    xml_text = original.clone();
-                }
-                Err(message) => {
-                    return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                        .at_path(value_path));
-                }
-            }
-        }
-        for input in &query_inputs {
-            input
-                .bind_to_staged(root, &mut staged)
-                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
-        }
-        if !force_save && xml_text == original {
+        crate::infrastructure::native_operations::dcs_primitives::apply(
+            &mut xml_text,
+            edit.operation.as_str(),
+            &edit.args,
+            &edit.target,
+        )
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                .at_path(format!("ops[{op_index}].args"))
+        })?;
+        if xml_text == original {
             continue;
-        }
-        let mut xml_text = xml_text.replacen("encoding=\"UTF-8\"", "encoding=\"utf-8\"", 1);
-        if original_line_ending == "\r\n" {
-            xml_text = xml_text.replace("\r\n", "\n").replace('\n', "\r\n");
-        } else {
-            xml_text = xml_text.replace("\r\n", "\n");
-        }
-        if !xml_text.ends_with('\n') {
-            xml_text.push_str(original_line_ending);
         }
         let mut postimage = Vec::with_capacity(bom.len() + xml_text.len());
         postimage.extend_from_slice(bom);
@@ -1176,8 +750,8 @@ fn stage_mxl_edit(
 mod tests {
     use super::DcsMxlPlanKind;
     use super::{
-        checked_head, parse_cell_address, parse_dcs_mxl_plan_operation, plan_dcs_mxl_batch,
-        reject_tokens, require_editable_spreadsheet, typed_head, FILTER_TOKENS,
+        parse_cell_address, parse_dcs_mxl_plan_operation, plan_dcs_mxl_batch,
+        require_editable_spreadsheet,
     };
     use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
     use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
@@ -1327,7 +901,13 @@ mod tests {
         };
         assert!(current.starts_with(b"\xef\xbb\xbf"));
         let text = String::from_utf8(current[3..].to_vec()).unwrap();
-        assert!(text.contains("<dataPath>Автор</dataPath>"), "{text}");
+        assert!(
+            roxmltree::Document::parse(&text)
+                .unwrap()
+                .descendants()
+                .any(|node| node.tag_name().name() == "dataPath" && node.text() == Some("Автор")),
+            "{text}"
+        );
         assert!(text.contains("Автор версии"), "{text}");
         assert!(text.contains("ТипОбъекта"), "{text}");
     }
@@ -1349,7 +929,7 @@ mod tests {
             "fieldRole.set",
             &json!({
                 "at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1",
-                "values":{"field":"РазмерДанных","role":"dimension"}
+                "values":{"field":"РазмерДанных","role":{"dimension":true}}
             }),
             0,
             &fixture.binding,
@@ -1415,7 +995,7 @@ mod tests {
             let DcsMxlPlanKind::Dcs(edit) = plan.kind else {
                 panic!("DCS operation")
             };
-            assert_eq!(edit.values, vec!["Amount"]);
+            assert_eq!(edit.args["items"][0]["dataPath"], json!("Amount"));
         }
         assert!(field(json!({"dataPath":"","name":"Amount"})).is_err());
         let query = |values| {
@@ -1435,16 +1015,14 @@ mod tests {
             let DcsMxlPlanKind::Dcs(edit) = plan.kind else {
                 panic!("DCS operation")
             };
-            assert_eq!(edit.values, vec!["ВЫБРАТЬ 1"]);
+            assert_eq!(edit.args["values"]["query"], json!("ВЫБРАТЬ 1"));
         }
         assert!(query(json!({"query":"","text":"ВЫБРАТЬ 1"})).is_err());
     }
 
     #[test]
     fn typed_dcs_role_preserves_every_supported_key_and_replaces_previous_entries() {
-        use crate::infrastructure::native_operations::dcs::{
-            dcs_edit_set_field_role, DCS_COMMON_NS,
-        };
+        use crate::infrastructure::native_operations::dcs::DCS_COMMON_NS;
         for (role, expected) in [
             ("periodNumber=2", vec![("periodNumber", "2")]),
             ("periodType=Main", vec![("periodType", "Main")]),
@@ -1489,20 +1067,48 @@ mod tests {
                 .join("Reports/Versions/Templates/Schema/Ext");
             std::fs::create_dir_all(&template_dir).unwrap();
             let mut original = SCHEMA.to_string();
-            dcs_edit_set_field_role(
-                &mut original,
-                "НаборДанных1",
-                "РазмерДанных required=false",
-                &mut String::new(),
-            )
-            .unwrap();
+            let document =
+                roxmltree::Document::parse(original.trim_start_matches('\u{feff}')).unwrap();
+            let field = document
+                .descendants()
+                .find(|node| {
+                    node.children().any(|child| {
+                        child.tag_name().name() == "dataPath"
+                            && child.text() == Some("РазмерДанных")
+                    })
+                })
+                .unwrap();
+            let insert = field
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == "appearance")
+                .unwrap()
+                .range()
+                .start
+                + usize::from(original.starts_with('\u{feff}')) * 3;
+            original.insert_str(
+                insert,
+                "<role><dcscom:required>false</dcscom:required></role>",
+            );
+            let role_args = expected
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        (*key).to_string(),
+                        if matches!(*value, "true" | "false") {
+                            json!(*value == "true")
+                        } else {
+                            json!(value)
+                        },
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>();
             std::fs::write(template_dir.join("Template.xml"), original.as_bytes()).unwrap();
             let admission = fixture.admission();
             let staged = admission.staged_state().unwrap();
             let authority = admission
                 .dcs_mxl_planning_authority(&fixture.binding)
                 .unwrap();
-            let operation=parse_dcs_mxl_plan_operation("fieldRole.set",&json!({"at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1","values":{"field":"РазмерДанных","role":role}}),0,&fixture.binding).unwrap();
+            let operation=parse_dcs_mxl_plan_operation("fieldRole.set",&json!({"at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1","values":{"field":"РазмерДанных","role":role_args}}),0,&fixture.binding).unwrap();
             let (staged, effects) = plan_dcs_mxl_batch(
                 staged,
                 authority,
@@ -1558,29 +1164,13 @@ mod tests {
     }
 
     #[test]
-    fn dcs_mxl_apply_seam_routes_actor_authorized_batch_to_stable_unsupported() {
-        let fixture = ApplySeamFixture::new();
-        let admission = fixture.admission();
-        let staged = admission.staged_state().unwrap();
-        let authority = admission
-            .dcs_mxl_planning_authority(&fixture.binding)
-            .unwrap();
-        let operation = parse_dcs_mxl_plan_operation(
-            "dcs.set",
-            &json!({"at": "main:Report.Sales.Template.Layout"}),
-            0,
-            &fixture.binding,
-        )
-        .unwrap();
-
-        let operation = IndexedPlanOperation::new(0, operation);
-        let error = plan_dcs_mxl_batch(staged, authority, &[operation]).unwrap_err();
-
-        assert_eq!(error.kind(), ApplyPlanErrorKind::ProviderUnavailable);
-        assert_eq!(error.path(), Some("ops[0].op"));
-        assert_eq!(
-            error.to_string(),
-            "hidden v0.13 apply family is not implemented"
+    fn full_schema_input_is_absent_from_the_closed_registry() {
+        assert!(crate::domain::apply::OperationRegistry::closed()
+            .lookup("dcs.set")
+            .is_none());
+        assert!(
+            crate::infrastructure::native_operations::dcs_primitives::Primitive::parse("dcs.set")
+                .is_none()
         );
     }
 
@@ -1608,26 +1198,16 @@ mod tests {
     }
 
     #[test]
-    fn typed_dcs_arguments_reject_editor_tokens() {
-        let error =
-            checked_head("Sum", None, Some("Итого [шт]"), "ops[0].args.items[0]").unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
-        assert_eq!(error.path(), Some("ops[0].args.items[0].title"));
-        let error = checked_head("Sum:Number", None, None, "ops[0].args.items[0]").unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
-        assert_eq!(error.path(), Some("ops[0].args.items[0].name"));
-        assert_eq!(
-            checked_head("Sum", Some("Number"), Some("Итого"), "ops[0].args.items[0]").unwrap(),
-            typed_head("Sum", Some("Number"), Some("Итого"))
-        );
-        let error = reject_tokens(
-            "work in progress",
-            FILTER_TOKENS,
-            "ops[0].args.items[0].value",
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
-        assert!(reject_tokens("in progress", FILTER_TOKENS, "x").is_ok());
-        assert!(reject_tokens("@user", FILTER_TOKENS, "x").is_err());
+    fn typed_dcs_operands_do_not_pass_through_editor_tokens() {
+        let fixture = ApplySeamFixture::new();
+        let operation=parse_dcs_mxl_plan_operation("field.add",&json!({"at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1","items":[{"dataPath":"Sum","title":"Итого [шт] @user"}]}),0,&fixture.binding).unwrap();
+        let DcsMxlPlanKind::Dcs(edit) = operation.kind else {
+            panic!("DCS")
+        };
+        assert_eq!(edit.args["items"][0]["title"], json!("Итого [шт] @user"));
     }
 }
+
+#[cfg(test)]
+#[path = "dcs_mxl_guard_tests.rs"]
+mod guard_tests;

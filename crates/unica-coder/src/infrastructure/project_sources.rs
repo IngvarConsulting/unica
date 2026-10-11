@@ -2,7 +2,7 @@ use crate::domain::project_sources::{
     config_dump_info_xml_kind, ConfigDumpInfoXmlKind, ProjectSourceMap, ProjectSourceSet,
     SourceFormat, SourceSetKind, SourceSetState,
 };
-use crate::domain::source_roots::select_default_source_set;
+use crate::domain::source_roots::select_project_default_source_set;
 use crate::infrastructure::native_operations::compile_transaction::{
     CompileTransaction, DirectoryMembershipSelector, DirectoryMembershipSnapshot,
     DirectoryTopologyEntry, DirectoryTopologyEntryKind,
@@ -568,8 +568,9 @@ fn discover_project_source_map_internal(
     }
     checkpoint()?;
     let (effective_source_set, effective_source_root, source_selection_error) =
-        match select_default_source_set(&project_source_sets) {
-            Ok(source_set) => {
+        match select_project_default_source_set(&project_source_sets) {
+            Ok(None) => (None, None, None),
+            Ok(Some(source_set)) => {
                 let normalized = if state.captures_actor_evidence() {
                     retained_actor_source_root_path(workspace_root, &source_set.path)
                 } else {

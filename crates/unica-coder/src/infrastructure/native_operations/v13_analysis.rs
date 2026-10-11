@@ -48,11 +48,19 @@ pub(crate) fn validate_with_availability(
 /// Canonical DCS input keeps the same format diagnostics and validator as the
 /// legacy path entry point, without resolving a second logical target.
 pub(crate) fn validate_dcs_input(
-    input: crate::infrastructure::v13_read_port::DcsValidationInput,
+    input: crate::infrastructure::v13_read_port::TemplateValidationInput,
 ) -> NativeCheckOutcome {
     let args = Map::from_iter([("TemplatePath".into(), json!(input.artifact))]);
     with_format_guard(Ok(input.format_guard), || {
         super::dcs::validate_dcs_input(&args, &input.text, input.artifact)
+    })
+}
+
+pub(crate) fn validate_mxl_input(
+    input: crate::infrastructure::v13_read_port::TemplateValidationInput,
+) -> NativeCheckOutcome {
+    with_format_guard(Ok(input.format_guard), || {
+        super::mxl::validate_mxl_input(&Map::new(), &input.text, input.artifact)
     })
 }
 

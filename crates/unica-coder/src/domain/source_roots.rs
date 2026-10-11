@@ -7,6 +7,26 @@ pub struct ResolvedSourceRoot {
     pub path: PathBuf,
 }
 
+/// An external-only project has addressable owners without a configuration
+/// default. A named main still follows normal selection and root validation.
+pub(crate) fn select_project_default_source_set(
+    source_sets: &[ProjectSourceSet],
+) -> Result<Option<&ProjectSourceSet>, String> {
+    if !source_sets.is_empty()
+        && source_sets.iter().all(|source| {
+            matches!(
+                source.kind,
+                SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+            )
+        })
+        && !source_sets.iter().any(|source| source.name == "main")
+    {
+        Ok(None)
+    } else {
+        select_default_source_set(source_sets).map(Some)
+    }
+}
+
 pub fn select_default_source_set(
     source_sets: &[ProjectSourceSet],
 ) -> Result<&ProjectSourceSet, String> {
@@ -53,6 +73,32 @@ mod tests {
             format_evidence: Vec::new(),
             format_probe_error: None,
         }
+    }
+
+    #[test]
+    fn external_only_project_has_no_default_but_named_main_still_selects() {
+        let mut sets = vec![
+            source_set("epf", SourceSetKind::ExternalProcessor),
+            source_set("erf", SourceSetKind::ExternalReport),
+        ];
+        assert!(super::select_project_default_source_set(&sets)
+            .unwrap()
+            .is_none());
+        assert!(select_default_source_set(&sets).is_err());
+        sets[0].name = "main".to_string();
+        assert_eq!(
+            super::select_project_default_source_set(&sets)
+                .unwrap()
+                .unwrap()
+                .name,
+            "main"
+        );
+        assert!(super::select_project_default_source_set(&[]).is_err());
+        assert!(super::select_project_default_source_set(&[source_set(
+            "ext",
+            SourceSetKind::Extension
+        )])
+        .is_err());
     }
 
     #[test]
