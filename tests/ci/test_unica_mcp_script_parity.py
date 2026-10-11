@@ -278,32 +278,6 @@ SUCCESS_SCENARIOS = [
         compare_files=True,
     ),
     ParityScenario(
-        name="dcs-compile-simple",
-        tool="unica.dcs.compile",
-        skill="dcs-compile",
-        script="dcs-compile.py",
-        arguments={
-            "DefinitionFile": "fixtures/dcs-simple.json",
-            "OutputPath": "templates/DCS.xml",
-        },
-        fixtures=(FileFixture("dcs-simple.json", "fixtures/dcs-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="dcs-compile-bsp-data-usage",
-        tool="unica.dcs.compile",
-        skill="dcs-compile",
-        script="dcs-compile.py",
-        arguments={
-            "DefinitionFile": "fixtures/dcs-bsp-data-usage.json",
-            "OutputPath": "templates/DCS.xml",
-        },
-        fixtures=(FileFixture("dcs-bsp-data-usage.json", "fixtures/dcs-bsp-data-usage.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
         name="mxl-compile-simple",
         tool="unica.mxl.compile",
         skill="mxl-compile",
@@ -422,15 +396,13 @@ MIN_NATIVE_PARITY_COVERAGE = 1.0
 NATIVE_PARITY_TOOLS = {
     "unica.form.compile",
     "unica.subsystem.compile",
-    "unica.dcs.compile",
     "unica.mxl.compile",
     "unica.mxl.decompile",
     "unica.role.compile",
 }
 
-MUTATING_FORM_DCS_PARITY_TOOLS = {
+MUTATING_FORM_PARITY_TOOLS = {
     "unica.form.compile",
-    "unica.dcs.compile",
 }
 
 # A tool that answers with typed data has no prose to compare against the
@@ -462,7 +434,6 @@ TYPED_RESULT_TOOLS = {
 EXPECTED_TOOLS = {
     "unica.form.compile",
     "unica.subsystem.compile",
-    "unica.dcs.compile",
     "unica.mxl.compile",
     "unica.mxl.decompile",
     "unica.role.compile",
@@ -475,43 +446,6 @@ BSP_PARITY_REQUIRED_TOOLS = {
 
 BSP_MUTATING_REQUIRED_TOOLS = {
     "unica.mxl.compile",
-}
-
-DCS_EDIT_REQUIRED_OPS = {
-    "add-field",
-    "add-total",
-    "add-calculated-field",
-    "add-parameter",
-    "add-filter",
-    "add-dataParameter",
-    "add-order",
-    "add-selection",
-    "add-dataSetLink",
-    "add-dataSet",
-    "add-variant",
-    "add-conditionalAppearance",
-    "add-drilldown",
-    "set-outputParameter",
-    "set-query",
-    "patch-query",
-    "set-structure",
-    "modify-field",
-    "modify-filter",
-    "modify-dataParameter",
-    "modify-parameter",
-    "modify-structure",
-    "set-field-role",
-    "rename-parameter",
-    "reorder-parameters",
-    "clear-selection",
-    "clear-order",
-    "clear-filter",
-    "clear-conditionalAppearance",
-    "remove-field",
-    "remove-total",
-    "remove-calculated-field",
-    "remove-parameter",
-    "remove-filter",
 }
 
 UUID_RE = re.compile(
@@ -565,8 +499,8 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
             if scenario.expect_ok and scenario.compare_files
         }
         self.assertEqual(
-            covered_by_success_snapshot & MUTATING_FORM_DCS_PARITY_TOOLS,
-            MUTATING_FORM_DCS_PARITY_TOOLS,
+            covered_by_success_snapshot & MUTATING_FORM_PARITY_TOOLS,
+            MUTATING_FORM_PARITY_TOOLS,
         )
 
     def test_native_parity_coverage_stays_above_required_threshold(self) -> None:
@@ -661,29 +595,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
                 self.assertGreater(len(scenarios), 0)
                 if tool in BSP_MUTATING_REQUIRED_TOOLS:
                     self.assertTrue(any(scenario.compare_files for scenario in scenarios))
-
-    def test_every_documented_dcs_edit_operation_stays_under_test(self) -> None:
-        # unica.dcs.edit left the scenario stand for typed data, so
-        # the "no documented operation goes untested" guard now points at the
-        # tests that live with the tool instead of at retired scenarios.
-        dcs_rs = (
-            REPO_ROOT
-            / "crates"
-            / "unica-coder"
-            / "src"
-            / "infrastructure"
-            / "native_operations"
-            / "dcs.rs"
-        ).read_text(encoding="utf-8")
-        marker = "mod tests"
-        self.assertIn(marker, dcs_rs)
-        tests_source = dcs_rs[dcs_rs.index(marker) :]
-        untested = {
-            operation
-            for operation in DCS_EDIT_REQUIRED_OPS
-            if f'"{operation}"' not in tests_source
-        }
-        self.assertEqual(untested, set())
 
     def test_event_subscription_fixture_exports_its_declared_handler(self) -> None:
         with tempfile.TemporaryDirectory(prefix="unica-event-handler-fixture-") as temp:
@@ -1192,9 +1103,10 @@ def run_cc_python_script(
 # Donor cases compare tool stdout against the cc-1c reference scripts. A tool
 # that migrated to typed data has no prose left to compare, so it
 # leaves this stand the same way it leaves the scenario stand. `cfe-borrow`
-# left with unica.cfe.borrow; the donor snapshot itself is untouched.
+# left with unica.cfe.borrow. Whole-schema DCS transformations retired in
+# #1310; their independent donor snapshots and reviewed relations stay intact.
+# Direct component operations are checked by the public acceptance corpus.
 CC_CASE_TOOLS = {
-    "skd-compile": "unica.dcs.compile",
     "form-compile": "unica.form.compile",
     "form-compile-from-object": "unica.form.compile",
 }
