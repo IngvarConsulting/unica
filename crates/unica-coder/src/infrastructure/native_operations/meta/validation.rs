@@ -54,6 +54,7 @@ use super::xml_model::{
 };
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+const PLATFORM_DEFAULT_HIERARCHY_TYPE: &str = "HierarchyFoldersAndItems";
 
 pub(crate) fn validate_metadata_owner_shape_8_3_27(
     object_path: &Path,
@@ -3202,9 +3203,12 @@ pub(super) fn meta_validate_check_cross_properties(
     };
     let mut check_ok = true;
     let mut issues = 0usize;
+    // Platform 8.3.27 writes HierarchyType for every catalog, and a
+    // non-hierarchical one carries the default HierarchyFoldersAndItems.
+    // Only another type on a non-hierarchical object is an inert setting.
     if meta_info_child_text(props_node, "Hierarchical").as_deref() == Some("false") {
-        if let Some(hierarchy_type) =
-            meta_info_child_text(props_node, "HierarchyType").filter(|value| !value.is_empty())
+        if let Some(hierarchy_type) = meta_info_child_text(props_node, "HierarchyType")
+            .filter(|value| !value.is_empty() && value != PLATFORM_DEFAULT_HIERARCHY_TYPE)
         {
             report.warn(format!(
                 "10. HierarchyType='{hierarchy_type}' but Hierarchical=false"
@@ -6526,6 +6530,67 @@ mod tests {
             .warnings
             .iter()
             .all(|warning| !warning.contains("no Source types specified")));
+    }
+
+    #[test]
+    fn hierarchy_type_is_reported_only_when_it_departs_from_the_platform_dump_shape() {
+        let registration = owner(&[("Catalog", "Stores")]);
+        let catalog = |hierarchical: &str, hierarchy_type: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="{MD_NS}" version="2.20">
+<Catalog uuid="66666666-6666-4666-8666-666666666666">
+<Properties><Name>Stores</Name><Hierarchical>{hierarchical}</Hierarchical><HierarchyType>{hierarchy_type}</HierarchyType></Properties><ChildObjects/>
+</Catalog></MetaDataObject>"#
+            )
+        };
+        let hierarchy_findings = |hierarchical: &str, hierarchy_type: &str| {
+            let descriptor = catalog(hierarchical, hierarchy_type);
+            let proof = subject("Catalog.Stores", Some(&descriptor), &registration, &[]);
+            let result = MetadataValidator.validate(&proof, &context());
+            let findings = result
+                .diagnostics
+                .into_iter()
+                .filter(|item| item.message.contains("HierarchyType"))
+                .collect::<Vec<_>>();
+            (result.status, findings)
+        };
+
+        // The pair every 8.3.27 dump and the catalog template write for a
+        // non-hierarchical catalog, and a valid hierarchical catalog, are clean.
+        for (hierarchical, hierarchy_type) in [
+            ("false", "HierarchyFoldersAndItems"),
+            ("true", "HierarchyFoldersAndItems"),
+            ("true", "HierarchyOfItems"),
+        ] {
+            let (_, findings) = hierarchy_findings(hierarchical, hierarchy_type);
+            assert!(
+                findings.is_empty(),
+                "Hierarchical={hierarchical}, HierarchyType={hierarchy_type}: {findings:?}"
+            );
+        }
+
+        // A non-default type on a non-hierarchical catalog has no effect and
+        // stays a warning that does not fail the verdict.
+        let (_, findings) = hierarchy_findings("false", "HierarchyOfItems");
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].message,
+            "10. HierarchyType='HierarchyOfItems' but Hierarchical=false"
+        );
+        assert_eq!(findings[0].severity, MetaDiagnosticSeverity::Warning);
+        assert_eq!(findings[0].code, MetaDiagnosticCode::ValidationWarning);
+
+        // An invalid type on a hierarchical catalog is still a validation error.
+        let (status, findings) = hierarchy_findings("true", "HierarchyOfFolders");
+        assert_eq!(status, MetaValidationStatus::Failed);
+        assert!(
+            findings.iter().any(|item| {
+                item.severity == MetaDiagnosticSeverity::Error
+                    && item.code == MetaDiagnosticCode::ValidationFailed
+                    && item.message.contains("'HierarchyOfFolders'")
+            }),
+            "{findings:?}"
+        );
     }
 
     #[test]

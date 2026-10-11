@@ -31571,6 +31571,85 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S387",
+   "name": "created-catalog-checks-without-hierarchy-warning",
+   "issue": 910,
+   "area": "Проверки качества",
+   "task": "Создать неиерархический справочник и проверить его: штатная пара Hierarchical=false и HierarchyType по умолчанию не даёт предупреждения",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Catalog",
+          "name": "Склады"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Склады"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics/0",
+       "absent": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Склады.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Hierarchical",
+       "eq": [
+        "false"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Склады.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}HierarchyType",
+       "eq": [
+        "HierarchyFoldersAndItems"
+       ]
+      }
+     ]
+    }
+   ]
   }
  ]
 }
