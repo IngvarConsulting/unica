@@ -54,7 +54,6 @@ use super::xml_model::{
 };
 
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-const PLATFORM_DEFAULT_HIERARCHY_TYPE: &str = "HierarchyFoldersAndItems";
 
 pub(crate) fn validate_metadata_owner_shape_8_3_27(
     object_path: &Path,
@@ -3203,19 +3202,8 @@ pub(super) fn meta_validate_check_cross_properties(
     };
     let mut check_ok = true;
     let mut issues = 0usize;
-    // Platform 8.3.27 writes HierarchyType for every catalog, and a
-    // non-hierarchical one carries the default HierarchyFoldersAndItems.
-    // Only another type on a non-hierarchical object is an inert setting.
-    if meta_info_child_text(props_node, "Hierarchical").as_deref() == Some("false") {
-        if let Some(hierarchy_type) = meta_info_child_text(props_node, "HierarchyType")
-            .filter(|value| !value.is_empty() && value != PLATFORM_DEFAULT_HIERARCHY_TYPE)
-        {
-            report.warn(format!(
-                "10. HierarchyType='{hierarchy_type}' but Hierarchical=false"
-            ));
-            issues += 1;
-        }
-    }
+    // HierarchyType is inactive while Hierarchical=false: platform 8.3.27
+    // writes it for every catalog, and any value is valid in that state.
     if md_type == "CommonModule" {
         let any_enabled = [
             "Server",
@@ -6533,7 +6521,7 @@ mod tests {
     }
 
     #[test]
-    fn hierarchy_type_is_reported_only_when_it_departs_from_the_platform_dump_shape() {
+    fn hierarchy_type_is_not_checked_on_a_non_hierarchical_catalog() {
         let registration = owner(&[("Catalog", "Stores")]);
         let catalog = |hierarchical: &str, hierarchy_type: &str| {
             format!(
@@ -6569,16 +6557,10 @@ mod tests {
             );
         }
 
-        // A non-default type on a non-hierarchical catalog has no effect and
-        // stays a warning that does not fail the verdict.
+        // HierarchyType is inactive on a non-hierarchical catalog, so no value
+        // there is a finding.
         let (_, findings) = hierarchy_findings("false", "HierarchyOfItems");
-        assert_eq!(findings.len(), 1, "{findings:?}");
-        assert_eq!(
-            findings[0].message,
-            "10. HierarchyType='HierarchyOfItems' but Hierarchical=false"
-        );
-        assert_eq!(findings[0].severity, MetaDiagnosticSeverity::Warning);
-        assert_eq!(findings[0].code, MetaDiagnosticCode::ValidationWarning);
+        assert!(findings.is_empty(), "{findings:?}");
 
         // An invalid type on a hierarchical catalog is still a validation error.
         let (status, findings) = hierarchy_findings("true", "HierarchyOfFolders");
