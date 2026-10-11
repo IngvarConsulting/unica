@@ -3202,16 +3202,8 @@ pub(super) fn meta_validate_check_cross_properties(
     };
     let mut check_ok = true;
     let mut issues = 0usize;
-    if meta_info_child_text(props_node, "Hierarchical").as_deref() == Some("false") {
-        if let Some(hierarchy_type) =
-            meta_info_child_text(props_node, "HierarchyType").filter(|value| !value.is_empty())
-        {
-            report.warn(format!(
-                "10. HierarchyType='{hierarchy_type}' but Hierarchical=false"
-            ));
-            issues += 1;
-        }
-    }
+    // HierarchyType is inactive while Hierarchical=false: platform 8.3.27
+    // writes it for every catalog, and any value is valid in that state.
     if md_type == "CommonModule" {
         let any_enabled = [
             "Server",
@@ -6526,6 +6518,61 @@ mod tests {
             .warnings
             .iter()
             .all(|warning| !warning.contains("no Source types specified")));
+    }
+
+    #[test]
+    fn hierarchy_type_is_not_checked_on_a_non_hierarchical_catalog() {
+        let registration = owner(&[("Catalog", "Stores")]);
+        let catalog = |hierarchical: &str, hierarchy_type: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="{MD_NS}" version="2.20">
+<Catalog uuid="66666666-6666-4666-8666-666666666666">
+<Properties><Name>Stores</Name><Hierarchical>{hierarchical}</Hierarchical><HierarchyType>{hierarchy_type}</HierarchyType></Properties><ChildObjects/>
+</Catalog></MetaDataObject>"#
+            )
+        };
+        let hierarchy_findings = |hierarchical: &str, hierarchy_type: &str| {
+            let descriptor = catalog(hierarchical, hierarchy_type);
+            let proof = subject("Catalog.Stores", Some(&descriptor), &registration, &[]);
+            let result = MetadataValidator.validate(&proof, &context());
+            let findings = result
+                .diagnostics
+                .into_iter()
+                .filter(|item| item.message.contains("HierarchyType"))
+                .collect::<Vec<_>>();
+            (result.status, findings)
+        };
+
+        // The pair every 8.3.27 dump and the catalog template write for a
+        // non-hierarchical catalog, and a valid hierarchical catalog, are clean.
+        for (hierarchical, hierarchy_type) in [
+            ("false", "HierarchyFoldersAndItems"),
+            ("true", "HierarchyFoldersAndItems"),
+            ("true", "HierarchyOfItems"),
+        ] {
+            let (_, findings) = hierarchy_findings(hierarchical, hierarchy_type);
+            assert!(
+                findings.is_empty(),
+                "Hierarchical={hierarchical}, HierarchyType={hierarchy_type}: {findings:?}"
+            );
+        }
+
+        // HierarchyType is inactive on a non-hierarchical catalog, so no value
+        // there is a finding.
+        let (_, findings) = hierarchy_findings("false", "HierarchyOfItems");
+        assert!(findings.is_empty(), "{findings:?}");
+
+        // An invalid type on a hierarchical catalog is still a validation error.
+        let (status, findings) = hierarchy_findings("true", "HierarchyOfFolders");
+        assert_eq!(status, MetaValidationStatus::Failed);
+        assert!(
+            findings.iter().any(|item| {
+                item.severity == MetaDiagnosticSeverity::Error
+                    && item.code == MetaDiagnosticCode::ValidationFailed
+                    && item.message.contains("'HierarchyOfFolders'")
+            }),
+            "{findings:?}"
+        );
     }
 
     #[test]
