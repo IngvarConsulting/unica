@@ -112,8 +112,10 @@ pub struct KbPage {
 pub struct KbGuideVersion {
     pub version: String,
     pub node_id: String,
-    /// Режим руководства администратора (текст узла категории режима);
-    /// у руководства разработчика режима нет.
+    /// Режим руководства администратора — последний сегмент адреса узла
+    /// режима, родителя версии (`Administrator_Guide_File_Mode`): заголовки
+    /// режима оформлены по-разному в разных версиях и раскладках, адрес
+    /// одинаков. У руководства разработчика режима нет.
     pub mode: Option<String>,
 }
 
@@ -121,6 +123,11 @@ pub struct KbGuideVersion {
 pub struct GuideCatalog {
     pub developer: Vec<KbGuideVersion>,
     pub administrator: Vec<KbGuideVersion>,
+    /// Почему список версий руководств разработчика может быть неполон:
+    /// переключатель версий не ответил, известна только версия по умолчанию.
+    pub developer_gaps: Vec<String>,
+    /// То же для руководств администратора.
+    pub administrator_gaps: Vec<String>,
 }
 
 /// Дети узла дерева. `id` корня — `#`.
@@ -346,6 +353,20 @@ fn parent_node_id(node_id: &str) -> Option<String> {
     Some(format!("OnecInt.KB.{}.WebHome", escaped.join(".")))
 }
 
+/// Последний сегмент адреса узла — устойчивый ключ режима администратора:
+/// оформление заголовков меняется между версиями и раскладками, адрес нет.
+fn last_segment(node_id: &str) -> Option<String> {
+    content_segments(node_id).and_then(|segments| segments.last().cloned())
+}
+
+/// Один узел — одна версия: одно руководство приходит и из категории, и из
+/// контейнера, и из переключателя.
+fn push_unique(guides: &mut Vec<KbGuideVersion>, guide: KbGuideVersion) {
+    if !guides.iter().any(|known| known.node_id == guide.node_id) {
+        guides.push(guide);
+    }
+}
+
 /// Запрос переключателя версий: категория может показывать только текущую
 /// версию. Полный список объявлен у её родительского узла руководства.
 fn root_versions(
@@ -361,11 +382,94 @@ fn root_versions(
     navigation_nodes(transport, &url)
 }
 
+/// Как собирать версии одного вида руководств.
+struct GuideKind<'kind> {
+    /// Узел категории: версии прежней раскладки лежат прямо в ней, и её
+    /// саму переключатель не спрашивают.
+    category_id: &'kind str,
+    /// Обязательная часть заголовка соседней версии, если вид её требует.
+    title_marker: Option<&'kind str>,
+    /// Ключ режима берётся из адреса родителя версии.
+    keyed_by_mode: bool,
+    /// Родители, чей переключатель уже спрошен: один запрос на руководство.
+    seen_roots: std::collections::BTreeSet<String>,
+}
+
+/// Версия по умолчанию и её соседи из переключателя родительского узла.
+///
+/// Сбой переключателя (сеть, HTML вместо дерева, не-массив) не роняет
+/// каталог: версия по умолчанию остаётся, список не расширяется, а причина
+/// уходит в `gaps` — поиск называет её рядом с ответом. Отсутствием версии
+/// такой сбой не считается.
+fn collect_version_with_selector(
+    transport: &dyn KbTransport,
+    base: &str,
+    kind: &mut GuideKind<'_>,
+    current: &KbNode,
+    version: String,
+    guides: &mut Vec<KbGuideVersion>,
+    gaps: &mut Vec<String>,
+) {
+    let root = parent_node_id(&current.id);
+    let mode = if kind.keyed_by_mode {
+        root.as_deref().and_then(last_segment)
+    } else {
+        None
+    };
+    push_unique(
+        guides,
+        KbGuideVersion {
+            version,
+            node_id: current.id.clone(),
+            mode: mode.clone(),
+        },
+    );
+    let Some(root) = root else {
+        return;
+    };
+    if root == kind.category_id || !kind.seen_roots.insert(root.clone()) {
+        return;
+    }
+    let siblings = match root_versions(transport, base, &root, &current.id) {
+        Ok(siblings) => siblings,
+        Err(error) => {
+            gaps.push(format!(
+                "список версий руководства {root} не получен ({error}); известна только версия по умолчанию"
+            ));
+            return;
+        }
+    };
+    for sibling in siblings {
+        // Главы и версии другого руководства соседними версиями не являются.
+        if parent_node_id(&sibling.id).as_deref() != Some(root.as_str()) {
+            continue;
+        }
+        if kind
+            .title_marker
+            .is_some_and(|marker| !sibling.title.contains(marker))
+        {
+            continue;
+        }
+        if let Some(version) = version_in(&sibling.title) {
+            push_unique(
+                guides,
+                KbGuideVersion {
+                    version,
+                    node_id: sibling.id,
+                    mode: mode.clone(),
+                },
+            );
+        }
+    }
+}
+
 /// Каталог руководств от корня дерева: категории находятся по именам, версии
 /// собираются с ОБОИХ уровней раскладки разработчика (прямые дети категории и
 /// дети контейнеров без версии в имени), а режимы администратора берутся из
 /// дерева, а не из списка, — файловый режим уже исчезал из него целиком, и
 /// зашитый перечень режимов превратил бы переезд площадки в ложный отказ.
+/// Версия, найденная прямо в категории, дополняется соседями из
+/// переключателя версий её руководства.
 pub fn discover_guides(transport: &dyn KbTransport, base: &str) -> Result<GuideCatalog, String> {
     let roots = children(transport, base, "#")?;
     let platform = find_category(&roots, "1C:Enterprise Platform")
@@ -379,63 +483,40 @@ pub fn discover_guides(transport: &dyn KbTransport, base: &str) -> Result<GuideC
 
     let mut catalog = GuideCatalog::default();
     if let Some(developer) = find_category(&categories, "Developer Guides") {
-        let mut version_roots = std::collections::BTreeSet::new();
+        let mut kind = GuideKind {
+            category_id: &developer.id,
+            title_marker: Some("Developer Guide"),
+            keyed_by_mode: false,
+            seen_roots: std::collections::BTreeSet::new(),
+        };
         for child in children(transport, base, &developer.id)? {
             if let Some(version) = version_in(&child.title) {
                 if child.title.contains("Developer Guide") {
-                    if !catalog
-                        .developer
-                        .iter()
-                        .any(|guide| guide.node_id == child.id)
-                    {
-                        catalog.developer.push(KbGuideVersion {
-                            version,
-                            node_id: child.id.clone(),
-                            mode: None,
-                        });
-                    }
-                    if let Some(root) = parent_node_id(&child.id) {
-                        // Legacy version-named roots are already direct category
-                        // children. A nested version has its own guide selector.
-                        if root != developer.id && version_roots.insert(root.clone()) {
-                            for sibling in root_versions(transport, base, &root, &child.id)? {
-                                if parent_node_id(&sibling.id).as_deref() != Some(root.as_str())
-                                    || !sibling.title.contains("Developer Guide")
-                                    || catalog
-                                        .developer
-                                        .iter()
-                                        .any(|guide| guide.node_id == sibling.id)
-                                {
-                                    continue;
-                                }
-                                if let Some(version) = version_in(&sibling.title) {
-                                    catalog.developer.push(KbGuideVersion {
-                                        version,
-                                        node_id: sibling.id,
-                                        mode: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
+                    collect_version_with_selector(
+                        transport,
+                        base,
+                        &mut kind,
+                        &child,
+                        version,
+                        &mut catalog.developer,
+                        &mut catalog.developer_gaps,
+                    );
                 }
             } else if child.title.contains("Developer Guide") && child.has_children {
                 // Контейнер текущих версий («1C:Enterprise Developer Guide»):
-                // версии лежат уровнем ниже. Контейнеры без версионных детей
+                // версии лежат на уровень глубже; другие дети без версии
                 // (например, руководство библиотеки) ничего не добавляют.
                 for grandchild in children(transport, base, &child.id)? {
                     if let Some(version) = version_in(&grandchild.title) {
-                        if grandchild.title.contains("Developer Guide")
-                            && !catalog
-                                .developer
-                                .iter()
-                                .any(|guide| guide.node_id == grandchild.id)
-                        {
-                            catalog.developer.push(KbGuideVersion {
-                                version,
-                                node_id: grandchild.id.clone(),
-                                mode: None,
-                            });
+                        if grandchild.title.contains("Developer Guide") {
+                            push_unique(
+                                &mut catalog.developer,
+                                KbGuideVersion {
+                                    version,
+                                    node_id: grandchild.id.clone(),
+                                    mode: None,
+                                },
+                            );
                         }
                     }
                 }
@@ -443,51 +524,25 @@ pub fn discover_guides(transport: &dyn KbTransport, base: &str) -> Result<GuideC
         }
     }
     if let Some(administrator) = find_category(&categories, "Administrator Guides") {
-        let mut version_roots = std::collections::BTreeSet::new();
+        let mut kind = GuideKind {
+            category_id: &administrator.id,
+            title_marker: None,
+            keyed_by_mode: true,
+            seen_roots: std::collections::BTreeSet::new(),
+        };
         for mode in children(transport, base, &administrator.id)? {
             // Площадка также размещает версии прямо под категорией.
             // Дети такого узла — главы; обходить их как версии нельзя.
             if let Some(version) = version_in(&mode.title) {
-                // Ключ режима берётся из ID родителя версии: оформление
-                // заголовка меняется между версиями и раскладками.
-                let mode_key = content_segments(&mode.id)
-                    .and_then(|segments| segments.get(segments.len().checked_sub(2)?).cloned());
-                if !catalog
-                    .administrator
-                    .iter()
-                    .any(|guide| guide.node_id == mode.id)
-                {
-                    catalog.administrator.push(KbGuideVersion {
-                        version,
-                        node_id: mode.id.clone(),
-                        mode: mode_key,
-                    });
-                }
-                if let Some(root) = parent_node_id(&mode.id) {
-                    if version_roots.insert(root.clone()) {
-                        for sibling in root_versions(transport, base, &root, &mode.id)? {
-                            // Не принимать главы или версии другого руководства
-                            // за соседние версии обнаруженного режима.
-                            if parent_node_id(&sibling.id).as_deref() != Some(root.as_str()) {
-                                continue;
-                            }
-                            if let Some(version) = version_in(&sibling.title) {
-                                if !catalog
-                                    .administrator
-                                    .iter()
-                                    .any(|guide| guide.node_id == sibling.id)
-                                {
-                                    catalog.administrator.push(KbGuideVersion {
-                                        version,
-                                        node_id: sibling.id,
-                                        mode: content_segments(&root)
-                                            .and_then(|segments| segments.last().cloned()),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
+                collect_version_with_selector(
+                    transport,
+                    base,
+                    &mut kind,
+                    &mode,
+                    version,
+                    &mut catalog.administrator,
+                    &mut catalog.administrator_gaps,
+                );
                 continue;
             }
             if !mode.has_children {
@@ -495,12 +550,14 @@ pub fn discover_guides(transport: &dyn KbTransport, base: &str) -> Result<GuideC
             }
             for child in children(transport, base, &mode.id)? {
                 if let Some(version) = version_in(&child.title) {
-                    catalog.administrator.push(KbGuideVersion {
-                        version,
-                        node_id: child.id.clone(),
-                        mode: content_segments(&mode.id)
-                            .and_then(|segments| segments.last().cloned()),
-                    });
+                    push_unique(
+                        &mut catalog.administrator,
+                        KbGuideVersion {
+                            version,
+                            node_id: child.id.clone(),
+                            mode: last_segment(&mode.id),
+                        },
+                    );
                 }
             }
         }
@@ -646,6 +703,11 @@ impl Kb1ciProvider {
             }
         }
         let catalog = std::sync::Arc::new(discover_guides(self.transport.as_ref(), &self.base)?);
+        // Неполный каталог (переключатель не ответил) не кешируется: иначе
+        // разовый сбой площадки на часы спрятал бы её старые версии.
+        if !catalog.developer_gaps.is_empty() || !catalog.administrator_gaps.is_empty() {
+            return Ok(catalog);
+        }
         let mut slot = KB_CATALOG
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -889,8 +951,16 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
         };
         let family = context.platform_version.as_deref();
         let corpora = [
-            ("kb-developer-guide", &catalog.developer),
-            ("kb-administrator-guide", &catalog.administrator),
+            (
+                "kb-developer-guide",
+                &catalog.developer,
+                &catalog.developer_gaps,
+            ),
+            (
+                "kb-administrator-guide",
+                &catalog.administrator,
+                &catalog.administrator_gaps,
+            ),
         ];
         // Расширения ru→en считаются один раз на вызов: лексикон отвечает из
         // процессного индекса справки установки, без установки расширений нет
@@ -902,7 +972,7 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
             .unwrap_or_default();
         corpora
             .into_iter()
-            .map(|(corpus_id, guides)| {
+            .map(|(corpus_id, guides, gaps)| {
                 let selected = Self::selected_guides(guides, family);
                 if selected.is_empty() {
                     let mut available: Vec<String> = guides
@@ -912,13 +982,31 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                         .into_iter()
                         .collect();
                     available.sort_by_key(|version| numeric_version(version));
-                    let detail = if available.is_empty() {
-                        "на площадке нет ни одной версии руководства".to_string()
+                    // Без ответа переключателя список версий неполон, и
+                    // отсутствие версии в нём не доказано: это отказ площадки,
+                    // а не `version-missing`.
+                    let (reason, detail) = if !gaps.is_empty() {
+                        (
+                            UnavailableReason::Timeout,
+                            format!(
+                                "площадка недоступна: {}; известны версии: {}",
+                                gaps.join("; "),
+                                available.join(", ")
+                            ),
+                        )
+                    } else if available.is_empty() {
+                        (
+                            UnavailableReason::VersionMissing,
+                            "на площадке нет ни одной версии руководства".to_string(),
+                        )
                     } else {
-                        format!(
-                            "версии {} на площадке нет; доступны: {}",
-                            family.unwrap_or("запрошенной"),
-                            available.join(", ")
+                        (
+                            UnavailableReason::VersionMissing,
+                            format!(
+                                "версии {} на площадке нет; доступны: {}",
+                                family.unwrap_or("запрошенной"),
+                                available.join(", ")
+                            ),
                         )
                     };
                     return DocumentationSection {
@@ -927,10 +1015,7 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                         source_kind: SourceKind::PlatformHelp,
                         authority: Authority::Vendor,
                         language: request.language.clone(),
-                        status: DocumentationSectionStatus::Unavailable {
-                            reason: UnavailableReason::VersionMissing,
-                            detail,
-                        },
+                        status: DocumentationSectionStatus::Unavailable { reason, detail },
                         warnings: Vec::new(),
                         hits: Vec::new(),
                     };
@@ -979,7 +1064,9 @@ impl crate::domain::documentation::DocumentationProvider for Kb1ciProvider {
                         hits: Vec::new(),
                     };
                 }
-                let mut warnings = Vec::new();
+                // Неполный список версий называется рядом с ответом: старшая
+                // версия семейства могла остаться невидимой.
+                let mut warnings = gaps.clone();
                 // Усечение пина сборки до семейства — не молчаливая
                 // подстановка: секция называет и сборку, и семейство.
                 if let Some(requested) = family {
@@ -1690,6 +1777,118 @@ mod provider_tests {
                 ..
             }
         ));
+    }
+
+    /// Переключатель версий — дополнение, а не опора каталога: его сбой
+    /// (сеть, HTML вместо дерева, не-массив) оставляет версию по умолчанию,
+    /// называет неполноту рядом с ответом и не выдаёт непроверенное
+    /// отсутствие за `version-missing`. Неполный каталог не кешируется.
+    #[test]
+    fn a_failed_version_selector_keeps_the_default_version_and_names_the_gap() {
+        let _serial = kb_test_lock();
+        let root = "OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.WebHome";
+        let current = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.8\.3\.27.WebHome";
+        let chapter = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.1C_Enterprise_Developer_Guide.8\.3\.27.Introduction.WebHome";
+        let failures: [(&str, Result<String, String>); 3] = [
+            ("network", Err("connection reset".to_string())),
+            (
+                "html",
+                Ok("<html><body>404 Not Found</body></html>".to_string()),
+            ),
+            ("object", Ok(r#"{"versions":[]}"#.to_string())),
+        ];
+        for (label, selector) in failures {
+            let base = format!("https://kb.selector-{label}");
+            let base = base.as_str();
+            let mut responses = standard_site(base);
+            responses.insert(
+                tree_url(
+                    base,
+                    "OnecInt.KB.1C_Enterprise_Platform.Guides.Developer_Guides.WebHome",
+                ),
+                Ok(format!(
+                    "[{}]",
+                    node(current, "1C:Enterprise 8.3.27 Developer Guide", true)
+                )),
+            );
+            let selector_url = format!(
+                "{}&currentDoc={}&getRootVersions=true",
+                tree_url(base, root),
+                url_encode(current)
+            );
+            responses.insert(selector_url.clone(), selector);
+            responses.insert(
+                tree_url(base, current),
+                Ok(format!(
+                    "[{}]",
+                    node_href(
+                        chapter,
+                        "Introduction",
+                        false,
+                        "/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_Developer_Guide/8.3.27/Introduction/"
+                    )
+                )),
+            );
+            responses.insert(
+                content_url(base, chapter).unwrap(),
+                Ok("<h1>Introduction</h1><main><div id=\"xwikicontent\">Default 8.3.27 guide.</div></main>".into()),
+            );
+
+            let catalog = discover_guides(
+                &FakeTransport {
+                    responses: responses.clone(),
+                    calls: AtomicUsize::new(0),
+                },
+                base,
+            )
+            .unwrap_or_else(|error| panic!("{label}: catalog must survive: {error}"));
+            let versions: Vec<&str> = catalog
+                .developer
+                .iter()
+                .map(|guide| guide.version.as_str())
+                .collect();
+            assert_eq!(versions, ["8.3.27"], "{label}: only the default version");
+            assert_eq!(catalog.developer_gaps.len(), 1, "{label}");
+
+            let (provider, transport) = provider_over(base, responses, NetworkAccess::Allow);
+            let (found, context) = request("Introduction", Some("8.3.27"));
+            let sections = provider.search(&found, &context);
+            let section = corpus_section(&sections, "kb-developer-guide");
+            assert!(
+                matches!(section.status, DocumentationSectionStatus::Ok),
+                "{label}: {:?}",
+                section.status
+            );
+            assert_eq!(section.hits[0].applicable_version, "8.3.27");
+            assert!(
+                section
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("список версий")),
+                "{label}: the incomplete catalog is named: {:?}",
+                section.warnings
+            );
+
+            let (older, context) = request("Introduction", Some("8.3.26"));
+            let sections = provider.search(&older, &context);
+            let section = corpus_section(&sections, "kb-developer-guide");
+            match &section.status {
+                DocumentationSectionStatus::Unavailable { reason, detail } => {
+                    assert_eq!(*reason, UnavailableReason::Timeout, "{label}: {detail}");
+                    assert!(detail.contains("8.3.27"), "{label}: {detail}");
+                }
+                other => panic!("{label}: an unproven absence is not an answer: {other:?}"),
+            }
+            assert!(section.hits.is_empty(), "{label}: no neighbouring family");
+
+            let before = transport.calls.load(Ordering::SeqCst);
+            provider.search(&older, &context);
+            let selector_requests = transport.calls.load(Ordering::SeqCst) - before;
+            assert!(
+                selector_requests > 0,
+                "{label}: an incomplete catalog is rediscovered, not cached"
+            );
+        }
     }
 
     /// Чужое семейство не подставляется и для пина сборки: усечение — не
@@ -2568,6 +2767,101 @@ mod tests {
             "the same mode in both layouts is one group"
         );
         assert_eq!(newest[0].version, "8.5.1");
+    }
+
+    /// Прямой узел версии раньше контейнера того же режима: переключатель и
+    /// контейнер называют одни и те же узлы, и каждый становится версией
+    /// один раз — порядок детей категории на это не влияет.
+    #[test]
+    fn a_direct_version_before_its_mode_container_is_not_duplicated() {
+        let base = "https://kb.direct-first";
+        let mut responses = standard_site(base);
+        let container = "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_Client_Server_Mode.WebHome";
+        let server = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_Client_Server_Mode.8\.5\.1.WebHome";
+        let old = r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.Administrator_Guide_Client_Server_Mode.8\.3\.27.WebHome";
+        let versions = format!(
+            "[{},{}]",
+            node(server, "1C:Enterprise 8.5.1 Administrator Guide", true),
+            node(old, "1C:Enterprise 8.3.27 Administrator Guide", true)
+        );
+        responses.insert(
+            format!(
+                "{}&currentDoc={}&getRootVersions=true",
+                tree_url(base, container),
+                url_encode(server)
+            ),
+            Ok(versions.clone()),
+        );
+        responses.insert(tree_url(base, container), Ok(versions));
+        responses.insert(
+            tree_url(
+                base,
+                "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.WebHome",
+            ),
+            Ok(format!(
+                "[{},{}]",
+                node(server, "1C:Enterprise 8.5.1 Administrator Guide", true),
+                node(container, "Administrator Guide.Client/Server Mode", true)
+            )),
+        );
+        let catalog = discover_guides(
+            &FakeTransport {
+                responses,
+                calls: AtomicUsize::new(0),
+            },
+            base,
+        )
+        .expect("mixed layout, direct node first");
+        let mut found: Vec<(&str, Option<&str>)> = catalog
+            .administrator
+            .iter()
+            .map(|guide| (guide.version.as_str(), guide.mode.as_deref()))
+            .collect();
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            [
+                ("8.3.27", Some("Administrator_Guide_Client_Server_Mode")),
+                ("8.5.1", Some("Administrator_Guide_Client_Server_Mode")),
+            ]
+        );
+    }
+
+    /// Версия прямо в категории администратора — прежняя раскладка без
+    /// узла режима: саму категорию переключатель не спрашивает.
+    #[test]
+    fn a_version_directly_in_the_administrator_category_does_not_query_the_category() {
+        let base = "https://kb.category-version";
+        let mut responses = standard_site(base);
+        let version =
+            r"OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.8\.5\.1.WebHome";
+        responses.insert(
+            tree_url(
+                base,
+                "OnecInt.KB.1C_Enterprise_Platform.Guides.Administrator_Guides.WebHome",
+            ),
+            Ok(format!(
+                "[{}]",
+                node(version, "1C:Enterprise 8.5.1 Administrator Guide", true)
+            )),
+        );
+        // Запрос переключателя у категории фейку неизвестен: он уронил бы
+        // каталог в пробел, и проверка ниже это заметит.
+        let catalog = discover_guides(
+            &FakeTransport {
+                responses,
+                calls: AtomicUsize::new(0),
+            },
+            base,
+        )
+        .expect("catalog");
+        assert!(
+            catalog.administrator_gaps.is_empty(),
+            "{:?}",
+            catalog.administrator_gaps
+        );
+        assert_eq!(catalog.administrator.len(), 1);
+        assert_eq!(catalog.administrator[0].version, "8.5.1");
     }
 
     #[test]

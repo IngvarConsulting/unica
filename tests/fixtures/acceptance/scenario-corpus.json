@@ -29065,7 +29065,7 @@
   },
   {
    "id": "S381",
-   "area": "Документация платформы",
+   "area": "Документация и стандарты",
    "task": "Найти Developer Guide закреплённой 8.3.26 и прочитать обзор и вложенный раздел",
    "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.26",
    "wire": [
@@ -29109,7 +29109,7 @@
   },
   {
    "id": "S382",
-   "area": "Документация платформы",
+   "area": "Документация и стандарты",
    "task": "Найти Administrator Guide закреплённой 8.3.27 и прочитать обзор обоих режимов",
    "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.27",
    "wire": [
