@@ -6328,6 +6328,34 @@ pub(crate) mod tests {
                 MetaPropertyValue::String("RecorderSubordinate".into()),
                 &[InformationRegister],
             ),
+            (
+                "RegisterType",
+                "RegisterType",
+                MetaPropertyValue::String("Turnovers".into()),
+                &[AccumulationRegister],
+            ),
+            (
+                "IncludeHelpInContents",
+                "IncludeHelpInContents",
+                MetaPropertyValue::Boolean(true),
+                &[
+                    Catalog,
+                    Document,
+                    InformationRegister,
+                    AccumulationRegister,
+                    AccountingRegister,
+                    CalculationRegister,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    BusinessProcess,
+                    Task,
+                    ExchangePlan,
+                    DocumentJournal,
+                    Report,
+                    DataProcessor,
+                ],
+            ),
         ];
 
         for (public_name, xml_tag, value, kinds) in cases {
@@ -6388,6 +6416,111 @@ pub(crate) mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn include_help_in_contents_on_a_platform_report_changes_only_its_value() {
+        let original = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acceptance/workspace/src/Reports/",
+            "АнализВерсийОбъектов.xml"
+        ));
+        let mut xml = original.to_string();
+        let changes = MetaPropertyChanges::convert(
+            crate::domain::metadata::MetadataKind::Report,
+            vec![MetaPropertyInput::new(
+                "IncludeHelpInContents",
+                MetaPropertyValue::Boolean(true),
+            )],
+        )
+        .unwrap();
+
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::SetProperties { values: changes }],
+        )
+        .unwrap();
+
+        // The platform element keeps its place and formatting; every other
+        // byte of the dumped descriptor survives.
+        assert_eq!(
+            xml,
+            original.replacen(
+                "<IncludeHelpInContents>false</IncludeHelpInContents>",
+                "<IncludeHelpInContents>true</IncludeHelpInContents>",
+                1,
+            )
+        );
+    }
+
+    #[test]
+    fn register_type_switch_keeps_the_8_3_27_property_order_and_reports_both_values() {
+        let kind = crate::domain::metadata::MetadataKind::AccumulationRegister;
+        let (mut xml, _) =
+            super::super::template_catalog::minimal_metadata_xml_for_tests(kind, "Sales").unwrap();
+        let before = xml.clone();
+        let changes = MetaPropertyChanges::convert(
+            kind,
+            vec![MetaPropertyInput::new(
+                "RegisterType",
+                MetaPropertyValue::String("Turnovers".into()),
+            )],
+        )
+        .unwrap();
+
+        let counts = apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::SetProperties { values: changes }],
+        )
+        .unwrap();
+
+        assert_eq!(
+            xml,
+            before.replacen(
+                "<RegisterType>Balance</RegisterType>",
+                "<RegisterType>Turnovers</RegisterType>",
+                1,
+            )
+        );
+        // Root property sequence of every turnover register in the 8.3.27
+        // vendor dump (format 2.20).
+        let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let object = meta_edit_object_node(&document).unwrap();
+        let order = meta_info_child(object, "Properties")
+            .unwrap()
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "UseStandardCommands",
+                "DefaultListForm",
+                "AuxiliaryListForm",
+                "RegisterType",
+                "IncludeHelpInContents",
+                "StandardAttributes",
+                "DataLockControlMode",
+                "FullTextSearch",
+                "EnableTotalsSplitting",
+                "ListPresentation",
+                "ExtendedListPresentation",
+                "Explanation",
+            ]
+        );
+        assert_eq!(counts.effects.len(), 1);
+        assert_eq!(
+            counts.effects[0].before,
+            Some(serde_json::json!({"RegisterType": "Balance"}))
+        );
+        assert_eq!(
+            counts.effects[0].after,
+            Some(serde_json::json!({"RegisterType": "Turnovers"}))
+        );
     }
 
     #[test]

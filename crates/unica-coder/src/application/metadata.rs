@@ -4055,11 +4055,18 @@ mod tests {
     }
 
     #[test]
-    fn property_schema_excludes_removed_register_type() {
+    fn property_schema_publishes_the_platform_register_type_domain() {
         let values = published_root_property_values(MetadataOperation::Edit);
         let properties = values["properties"].as_object().unwrap();
 
-        assert!(!properties.contains_key("RegisterType"));
+        assert_eq!(
+            properties["RegisterType"],
+            json!({"type": "string", "enum": ["Balance", "Turnovers"]})
+        );
+        assert_eq!(
+            properties["IncludeHelpInContents"],
+            json!({"type": "boolean"})
+        );
     }
 
     #[test]
