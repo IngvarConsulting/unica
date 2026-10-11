@@ -11,15 +11,19 @@ class of answer the surface gives today:
 
   ok          ok:true result without a task receipt
   task        ok:true queued/working Task receipt
-  unsupported typed refusal whose code starts with unsupported_
+  unsupported typed refusal whose code starts with unsupported_, or
+              target_kind_unsupported
   provider    typed provider_unavailable refusal
   cancelled   typed task_cancelled outcome of an intended cancellation
   failed      typed task_failed terminal outcome
-  refused     an intended bad_value probe of refusal quality
+  refused     an intended typed refusal: a code from the closed dictionary in
+              crates/unica-coder/src/domain/refusal.rs whose default outcome
+              is fixCall or fixSource, or invalid_state (needsHuman);
+              postcondition_failed is a product defect, not a refusal
   gap         a documented non-passable spot with its reason
 
 A wire is passable when every step answers its frozen class; a raw error, an
-unknown tool, or an undocumented bad_value fails the run.  A step marked
+unknown tool, or an undocumented typed refusal fails the run.  A step marked
 `form: true` is sent the way a form client sends it: every published schema
 default fills an argument the step leaves out.  Environment-shaped
 steps (docs search, platform runs, task follow-ups) freeze the set of classes
@@ -62,7 +66,78 @@ from tests.ci.acceptance_profiles import (
     DIAGNOSTICS_WORKSPACE, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment, select_profile,
 )
 
-REFUSAL_CODES = {"bad_value", "not_found", "invalid_state", "invalid_source", "stale_revision"}
+REFUSAL_DICTIONARY = REPO_ROOT / "crates/unica-coder/src/domain/refusal.rs"
+
+# Outcomes that send the next move to the caller: its arguments or its
+# sources.  A code that answers one of them says the request has to change,
+# which is what a `refused` step freezes.
+CALLER_OUTCOMES = {"FixCall", "FixSource"}
+# Of the needsHuman codes only invalid_state is a refusal of the request (the
+# workspace state forbids it); the rest, such as rollback_incomplete or
+# task_backend_failed, are failures of the environment, not refusals.
+NEEDS_HUMAN_REFUSALS = {"invalid_state"}
+# Unsupported answers whose code lacks the `unsupported_` prefix; they belong
+# to the `unsupported` class like the prefixed ones.
+UNSUPPORTED_CODES = {"target_kind_unsupported"}
+# Caller-side codes that are still not refusals of the request:
+# provider_unavailable has its own class, and postcondition_failed is the
+# product failing its own postcondition — a defect to document as a gap,
+# never an intended refusal.
+NOT_REFUSALS = {"provider_unavailable", "postcondition_failed"}
+
+
+def is_unsupported(code: str) -> bool:
+    return code.startswith("unsupported_") or code in UNSUPPORTED_CODES
+
+
+def _impl_function(impl_body: str, name: str) -> str:
+    match = re.search(
+        rf"^    pub const fn {name}\(self\)[^{{]*\{{\n(.*?)^    \}}$",
+        impl_body,
+        re.MULTILINE | re.DOTALL,
+    )
+    if match is None:
+        raise AssertionError(f"RefusalCode::{name} not found in {REFUSAL_DICTIONARY}")
+    return match.group(1)
+
+
+def refusal_dictionary() -> dict[str, str]:
+    """The closed refusal dictionary of the canonical surface, read from the
+    one place that defines it: wire name -> default outcome variant.
+
+    The harness keeps no copy of its own, so a code the product adds or
+    removes reaches the corpus classes with the same change (#1340)."""
+    text = REFUSAL_DICTIONARY.read_text(encoding="utf-8")
+    impl = re.search(r"^impl RefusalCode \{\n(.*?)^\}$", text, re.MULTILINE | re.DOTALL)
+    if impl is None:
+        raise AssertionError(f"impl RefusalCode not found in {REFUSAL_DICTIONARY}")
+    body = impl.group(1)
+    names = dict(re.findall(r'Self::(\w+) => "(\w+)",', _impl_function(body, "as_str")))
+    outcomes = dict(
+        re.findall(r"Self::(\w+) => Outcome::(\w+),", _impl_function(body, "outcome"))
+    )
+    declared = re.findall(r"Self::(\w+),", body.split("pub const ALL:", 1)[-1])
+    if not names or set(names) != set(outcomes) or set(names) != set(declared):
+        raise AssertionError(
+            f"{REFUSAL_DICTIONARY}: as_str, outcome and ALL disagree on the variants"
+        )
+    return {names[variant]: outcomes[variant] for variant in names}
+
+
+def caller_refusal_codes(dictionary: dict[str, str]) -> set[str]:
+    """Codes a `refused` step may freeze: every dictionary code whose default
+    outcome is fixCall or fixSource, plus the named needsHuman refusals, minus
+    those another class owns."""
+    return {
+        code
+        for code, outcome in dictionary.items()
+        if (outcome in CALLER_OUTCOMES or code in NEEDS_HUMAN_REFUSALS)
+        and not is_unsupported(code)
+        and code not in NOT_REFUSALS
+    }
+
+
+REFUSAL_CODES = caller_refusal_codes(refusal_dictionary())
 
 EXPECT_CLASSES = {
     "ok",
@@ -124,7 +199,7 @@ def classify(response, context):
     diagnostics = structured.get("diagnostics") or [{}]
     code = diagnostics[0].get("code", "<none>")
     message = diagnostics[0].get("message", "")
-    if code.startswith("unsupported_"):
+    if is_unsupported(code):
         return "unsupported", code
     if code == "provider_unavailable":
         return "provider", message[:160]
@@ -223,7 +298,7 @@ def matches(expected: list[str], actual: str) -> bool:
     if actual in expected:
         return True
     # A documented gap freezes today's non-passable answer; a refusal probe
-    # freezes an intended bad_value.  Both arrive through the same classes.
+    # freezes an intended typed refusal.  Both arrive through the same classes.
     if "gap" in expected and actual in {"refused", "gap-candidate", "provider"}:
         return True
     return False
@@ -517,6 +592,55 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
                             "a check over a node freezes the validators its kind owns",
                         )
 
+    def test_refusal_classes_come_from_the_product_dictionary(self) -> None:
+        def classify_diagnostic(code):
+            response = {"result": {"structuredContent": {
+                "ok": False, "diagnostics": [{"code": code, "message": "m"}]}}}
+            return classify(response, {})
+
+        # The harness reads the closed dictionary instead of keeping a copy:
+        # every variant is found, and a legitimate caller-side refusal such
+        # as `view`'s foreign cursor (#1340) is a `refused`, not a gap.
+        dictionary = refusal_dictionary()
+        declared = re.search(
+            r"pub const ALL: \[Self; (\d+)\]",
+            REFUSAL_DICTIONARY.read_text(encoding="utf-8"),
+        )
+        self.assertIsNotNone(declared)
+        assert declared is not None
+        self.assertEqual(len(dictionary), int(declared.group(1)))
+        self.assertLessEqual(REFUSAL_CODES, set(dictionary))
+        self.assertLessEqual(
+            {"bad_value", "not_found", "invalid_state", "invalid_source",
+             "stale_revision", "invalid_cursor"},
+            REFUSAL_CODES,
+        )
+        self.assertEqual(dictionary["invalid_cursor"], "FixCall")
+        self.assertEqual(dictionary["invalid_state"], "NeedsHuman")
+        # Environment failures are not refusals of the request.
+        for failure in ("rollback_incomplete", "task_backend_failed"):
+            self.assertIn(failure, dictionary)
+            self.assertNotIn(failure, REFUSAL_CODES)
+        for code in REFUSAL_CODES:
+            self.assertTrue(
+                dictionary[code] in CALLER_OUTCOMES or code in NEEDS_HUMAN_REFUSALS,
+                code,
+            )
+            # `unsupported` and `provider` own their codes before `refused`.
+            self.assertFalse(code.startswith("unsupported_"), code)
+        self.assertIn("target_kind_unsupported", dictionary)
+        self.assertNotIn("target_kind_unsupported", REFUSAL_CODES)
+        self.assertEqual(
+            classify_diagnostic("target_kind_unsupported")[0], "unsupported"
+        )
+        # A failed product postcondition is a defect, never an intended refusal.
+        self.assertEqual(dictionary["postcondition_failed"], "FixSource")
+        self.assertNotIn("postcondition_failed", REFUSAL_CODES)
+        self.assertEqual(
+            classify_diagnostic("postcondition_failed")[0], "gap-candidate"
+        )
+        self.assertNotIn("provider_unavailable", REFUSAL_CODES)
+
     def test_gaps_stay_a_bounded_exception_not_a_habit(self) -> None:
         gap_steps = [
             (scenario["id"], step)
@@ -526,10 +650,10 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         ]
         # Every documented gap names a reproduced surface defect in its text.
         # The rendered registry lists them; the ceiling from the fixture README
-        # (eight) is a ratchet against silent growth, not a target.
+        # (six) is a ratchet against silent growth, not a target.
         self.assertLessEqual(
             len(gap_steps),
-            8,
+            6,
             "documented gaps grew: either fix the surface or re-approve the corpus",
         )
 
