@@ -759,6 +759,25 @@ mod tests {
             }
         }
 
+        /// Switches the fixture's only language from Russian to English.
+        pub(super) fn use_english_only_language(&self) {
+            let configuration = self.source_dir().join("Configuration.xml");
+            let text = std::fs::read_to_string(&configuration)
+                .unwrap()
+                .replace("Language.Русский", "Language.English")
+                .replace(
+                    "<Language>Русский</Language>",
+                    "<Language>English</Language>",
+                );
+            std::fs::write(&configuration, text).unwrap();
+            std::fs::remove_file(self.source_dir().join("Languages/Русский.xml")).unwrap();
+            std::fs::write(
+                self.source_dir().join("Languages/English.xml"),
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>English</Name><Comment/><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#,
+            )
+            .unwrap();
+        }
+
         pub(super) fn admission(&self) -> ApplyAdmission {
             self.admission_with_dry_run(true)
         }

@@ -347,9 +347,18 @@ fn typed(tag: &str, kind: &str, body: &str, ns: &str) -> String {
         1,
     )
 }
-fn mltext(tag: &str, value: &Value, ns: &str) -> Result<String, String> {
+/// Refusal of a plain-string multilingual value written without a language;
+/// [`apply`] reports it as [`ApplyError::TextLanguageRequired`].
+const TEXT_LANGUAGE_REQUIRED: &str = "a plain-string multilingual value needs the default language";
+/// A `v8:LocalStringType` element from `value`. A plain string is the text
+/// of the `lang` language: the `LanguageCode` of the source set's default
+/// language (#1257). A language-to-text object is written as given.
+fn mltext(tag: &str, value: &Value, ns: &str, lang: Option<&str>) -> Result<String, String> {
     let languages = match value {
-        Value::String(s) => vec![("ru", s.as_str())],
+        Value::String(s) => vec![(
+            lang.ok_or_else(|| TEXT_LANGUAGE_REQUIRED.to_string())?,
+            s.as_str(),
+        )],
         Value::Object(values) => values
             .iter()
             .map(|(lang, text)| {
@@ -371,6 +380,39 @@ fn mltext(tag: &str, value: &Value, ns: &str) -> Result<String, String> {
         })
         .collect::<String>();
     Ok(typed(tag, "v8:LocalStringType", &body, ns))
+}
+/// The new image of an existing multilingual `existing` element set to
+/// `value`, or the fresh [`mltext`] where there is nothing to keep.
+///
+/// A plain string changes only the item of the default language `lang` and
+/// keeps the other translations byte for byte, as `props.set` does for
+/// metadata synonyms (#909). A language-to-text object replaces the value as
+/// given. An empty string removes the `lang` item while other translations
+/// remain; when it is the only item, the value is rewritten as before.
+fn mltext_update(
+    xml_text: &str,
+    existing: Option<Node<'_, '_>>,
+    tag: &str,
+    value: &Value,
+    ns: &str,
+    lang: Option<&str>,
+) -> Result<String, String> {
+    if let (Some(existing), Value::String(new_text)) = (existing, value) {
+        let lang = lang.ok_or_else(|| TEXT_LANGUAGE_REQUIRED.to_string())?;
+        let items = existing
+            .children()
+            .filter(|node| is(*node, V, "item"))
+            .collect::<Vec<_>>();
+        let only_default = items
+            .iter()
+            .all(|item| text(*item, V, "lang").trim() == lang);
+        if !items.is_empty() && !(new_text.is_empty() && only_default) {
+            return Ok(super::meta::meta_mltext_property_replacement(
+                xml_text, existing, "", lang, new_text,
+            ));
+        }
+    }
+    mltext(tag, value, ns, lang)
 }
 fn content(xml_text: &str, node: Node<'_, '_>) -> Result<Range<usize>, String> {
     let range = node.range();
@@ -768,6 +810,7 @@ fn scalar_value(
     value: &Value,
     declared: Option<&str>,
     ns: &str,
+    lang: Option<&str>,
 ) -> Result<String, String> {
     let kind = match declared {
         Some(kind) => Some(canonical_value_type(kind)?),
@@ -797,7 +840,7 @@ fn scalar_value(
         kind
     };
     if kind == "v8:LocalStringType" {
-        return mltext(tag, value, ns);
+        return mltext(tag, value, ns, lang);
     }
     if kind == "v8:StandardPeriod" {
         let variant = if let Some(object) = value.as_object() {
@@ -871,7 +914,7 @@ fn scalar_value(
     }
     Ok(typed(tag, kind, &escape_xml(&value), ns))
 }
-fn appearance_value(name: &str, value: &Value) -> Result<String, String> {
+fn appearance_value(name: &str, value: &Value, lang: Option<&str>) -> Result<String, String> {
     if let Some(atom) = value
         .as_object()
         .filter(|atom| atom.contains_key("valueType"))
@@ -891,6 +934,7 @@ fn appearance_value(name: &str, value: &Value) -> Result<String, String> {
             atom.get("value").ok_or("appearance atom requires value")?,
             Some(kind),
             C,
+            lang,
         );
     }
     let kind = if matches!(
@@ -904,9 +948,14 @@ fn appearance_value(name: &str, value: &Value) -> Result<String, String> {
     } else {
         None
     };
-    scalar_value("value", value, kind, C)
+    scalar_value("value", value, kind, C, lang)
 }
-fn output_value(name: &str, value: &Value, declared: Option<&str>) -> Result<String, String> {
+fn output_value(
+    name: &str,
+    value: &Value,
+    declared: Option<&str>,
+    lang: Option<&str>,
+) -> Result<String, String> {
     let expected = output_declared_type(name);
     let declared = declared.map(canonical_value_type).transpose()?;
     if let Some(expected) = expected.filter(|kind| output_enum_values(kind).is_some()) {
@@ -914,7 +963,7 @@ fn output_value(name: &str, value: &Value, declared: Option<&str>) -> Result<Str
             return Err(format!("output parameter {name} requires {expected}"));
         }
     }
-    scalar_value("value", value, declared.as_deref().or(expected), C)
+    scalar_value("value", value, declared.as_deref().or(expected), C, lang)
 }
 fn value_type(value: &str) -> Result<String, String> {
     let mut lines = Vec::new();
@@ -974,22 +1023,30 @@ fn restriction(tag: &str, value: &Value) -> Result<String, String> {
     }
     Ok(xml(tag, &body, S))
 }
-fn available_values(values: &Value, kind: Option<&str>) -> Result<String, String> {
+fn available_values(
+    values: &Value,
+    kind: Option<&str>,
+    lang: Option<&str>,
+) -> Result<String, String> {
     let mut body = String::new();
     for item in values
         .as_array()
         .ok_or("availableValues must be an array")?
     {
         let value = item.get("value").ok_or("available value requires value")?;
-        let mut entry = scalar_value("value", value, kind, S)?;
+        let mut entry = scalar_value("value", value, kind, S, lang)?;
         if let Some(title) = item.get("presentation") {
-            entry += &mltext("presentation", title, S)?;
+            entry += &mltext("presentation", title, S, lang)?;
         }
         body += &xml("availableValue", &entry, S);
     }
     Ok(body)
 }
-fn field_fragment(item: &Map<String, Value>, query: bool) -> Result<String, String> {
+fn field_fragment(
+    item: &Map<String, Value>,
+    query: bool,
+    lang: Option<&str>,
+) -> Result<String, String> {
     let name = string(item, "dataPath");
     let field = item.get("field").and_then(Value::as_str).unwrap_or(name);
     if !string(item, "type").is_empty() {
@@ -997,7 +1054,7 @@ fn field_fragment(item: &Map<String, Value>, query: bool) -> Result<String, Stri
     }
     let mut body = simple("dataPath", name, S) + &simple("field", field, S);
     if let Some(title) = item.get("title") {
-        body += &mltext("title", title, S)?;
+        body += &mltext("title", title, S, lang)?;
     }
     for key in ["useRestriction", "attributeUseRestriction"] {
         if let Some(value) = item.get(key) {
@@ -1012,7 +1069,7 @@ fn field_fragment(item: &Map<String, Value>, query: bool) -> Result<String, Stri
     }
     Ok(typed("field", "DataSetFieldField", &body, S))
 }
-fn filter_fragment(item: &Map<String, Value>) -> Result<String, String> {
+fn filter_fragment(item: &Map<String, Value>, lang: Option<&str>) -> Result<String, String> {
     let mut body = String::new();
     if let Some(use_flag) = item.get("use") {
         body += &simple("use", &value_text(use_flag), T);
@@ -1036,6 +1093,7 @@ fn filter_fragment(item: &Map<String, Value>) -> Result<String, String> {
             value,
             item.get("valueType").and_then(Value::as_str),
             T,
+            lang,
         )?;
     }
     for key in ["viewMode", "userSettingID", "userSettingPresentation"] {
@@ -1167,19 +1225,24 @@ fn named_structure<'a, 'i>(setting: Node<'a, 'i>, name: &str) -> Result<Node<'a,
         name,
     )
 }
-fn structure_property(tag: &str, value: &Value, kind: &str) -> Result<String, String> {
+fn structure_property(
+    tag: &str,
+    value: &Value,
+    kind: &str,
+    lang: Option<&str>,
+) -> Result<String, String> {
     if (matches!(tag, "columnsViewMode" | "rowsViewMode") && kind != "table")
         || (matches!(tag, "pointsViewMode" | "seriesViewMode") && kind != "chart")
     {
         return Err(format!("{tag} is incompatible with {kind}"));
     }
     if tag == "userSettingPresentation" {
-        mltext(tag, value, T)
+        mltext(tag, value, T, lang)
     } else {
         Ok(simple(tag, &value_text(value), T))
     }
 }
-fn structure_fragment(item: &Map<String, Value>) -> Result<String, String> {
+fn structure_fragment(item: &Map<String, Value>, lang: Option<&str>) -> Result<String, String> {
     let kind = item.get("kind").and_then(Value::as_str).unwrap_or("group");
     let mut body = item
         .get("use")
@@ -1199,7 +1262,7 @@ fn structure_fragment(item: &Map<String, Value>) -> Result<String, String> {
     }
     for key in STRUCTURE_PROPERTIES.iter().filter(|key| **key != "use") {
         if let Some(value) = item.get(*key) {
-            body += &structure_property(key, value, kind)?;
+            body += &structure_property(key, value, kind, lang)?;
         }
     }
     let wire = match kind {
@@ -1213,17 +1276,49 @@ fn structure_fragment(item: &Map<String, Value>) -> Result<String, String> {
 
 /// Apply one normalized operation to captured XML. The caller owns atomic
 /// publication and discards this tentative image if any operation fails.
+///
+/// `lang` is the `LanguageCode` plain-string multilingual values are written
+/// in. The caller may pass `None` to avoid resolving the default language for
+/// operations that write no such value; an operation that does need it then
+/// fails with [`ApplyError::TextLanguageRequired`] and leaves `xml_text`
+/// unchanged.
 pub(crate) fn apply(
     xml_text: &mut String,
     operation: &str,
     args: &Map<String, Value>,
     target: &Target,
-) -> Result<(), String> {
+    lang: Option<&str>,
+) -> Result<(), ApplyError> {
     let mut candidate = xml_text.clone();
-    apply_candidate(&mut candidate, operation, args, target)?;
-    Document::parse(&candidate).map_err(|error| error.to_string())?;
+    apply_candidate(&mut candidate, operation, args, target, lang).map_err(|message| {
+        if message == TEXT_LANGUAGE_REQUIRED {
+            ApplyError::TextLanguageRequired
+        } else {
+            ApplyError::Invalid(message)
+        }
+    })?;
+    Document::parse(&candidate).map_err(|error| ApplyError::Invalid(error.to_string()))?;
     *xml_text = candidate;
     Ok(())
+}
+
+/// Why [`apply`] left the schema unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ApplyError {
+    /// The operation writes a plain-string multilingual value and no language
+    /// was given.
+    TextLanguageRequired,
+    /// The operation does not apply to this schema.
+    Invalid(String),
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TextLanguageRequired => formatter.write_str(TEXT_LANGUAGE_REQUIRED),
+            Self::Invalid(message) => formatter.write_str(message),
+        }
+    }
 }
 
 fn apply_candidate(
@@ -1231,6 +1326,7 @@ fn apply_candidate(
     operation: &str,
     args: &Map<String, Value>,
     target: &Target,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let empty = Map::new();
     let values = args
@@ -1282,11 +1378,12 @@ fn apply_candidate(
                 operation,
                 item.as_object().ok_or("item must be an object")?,
                 target,
+                lang,
             )?;
         }
         return Ok(());
     }
-    apply_item(xml_text, operation, values, target)
+    apply_item(xml_text, operation, values, target, lang)
 }
 
 fn apply_item(
@@ -1294,6 +1391,7 @@ fn apply_item(
     operation: &str,
     values: &Map<String, Value>,
     target: &Target,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
     let root = document.root_element();
@@ -1475,7 +1573,7 @@ fn apply_item(
             {
                 return Ok(());
             }
-            let fragment = field_fragment(values, qtype(ds, S, "DataSetQuery"))?;
+            let fragment = field_fragment(values, qtype(ds, S, "DataSetQuery"), lang)?;
             insert(xml_text, ds.range(), &fragment, S, "field", DATASET_ORDER)
         }
         "field.set" => {
@@ -1513,7 +1611,9 @@ fn apply_item(
                 } else {
                     let fragment = match key {
                         "type" => value_type(&value_text(value))?,
-                        "title" => mltext(tag, value, S)?,
+                        "title" => {
+                            mltext_update(xml_text, child(field, S, tag), tag, value, S, lang)?
+                        }
                         "useRestriction" | "attributeUseRestriction" => restriction(tag, value)?,
                         _ => simple(tag, &value_text(value), S),
                     };
@@ -1606,7 +1706,7 @@ fn apply_item(
                 body += &simple("expression", string(values, "expression"), S);
             }
             if let Some(title) = values.get("title") {
-                body += &mltext("title", title, S)?;
+                body += &mltext("title", title, S, lang)?;
             }
             if tag == "calculatedField" {
                 if let Some(value) = values.get("useRestriction") {
@@ -1618,7 +1718,7 @@ fn apply_item(
             }
             if let Some(value) = values.get("value") {
                 let kind = parameter_value_type(None, values)?;
-                body += &scalar_value("value", value, kind.as_deref(), S)?;
+                body += &scalar_value("value", value, kind.as_deref(), S, lang)?;
             }
             if let Some(list) = values.get("values") {
                 if values.contains_key("value") {
@@ -1626,7 +1726,7 @@ fn apply_item(
                 }
                 let kind = parameter_value_type(None, values)?;
                 for value in list.as_array().ok_or("values must be an array")? {
-                    body += &scalar_value("value", value, kind.as_deref(), S)?;
+                    body += &scalar_value("value", value, kind.as_deref(), S, lang)?;
                 }
             }
             let expression = string(values, "expression");
@@ -1647,7 +1747,7 @@ fn apply_item(
             }
             if let Some(list) = values.get("availableValues") {
                 let kind = parameter_value_type(None, values)?;
-                body += &available_values(list, kind.as_deref())?;
+                body += &available_values(list, kind.as_deref(), lang)?;
             }
             for key in [
                 "valueListAllowed",
@@ -1711,17 +1811,17 @@ fn apply_item(
                     }
                     let kind = parameter_value_type(Some(parameter), values)?;
                     let fragment = if key == "availableValues" {
-                        available_values(value, kind.as_deref())?
+                        available_values(value, kind.as_deref(), lang)?
                     } else if key == "values" {
                         value
                             .as_array()
                             .ok_or("values must be an array")?
                             .iter()
-                            .map(|value| scalar_value("value", value, kind.as_deref(), S))
+                            .map(|value| scalar_value("value", value, kind.as_deref(), S, lang))
                             .collect::<Result<Vec<_>, _>>()?
                             .join("")
                     } else {
-                        scalar_value("value", value, kind.as_deref(), S)?
+                        scalar_value("value", value, kind.as_deref(), S, lang)?
                     };
                     let old = parameter
                         .children()
@@ -1770,11 +1870,13 @@ fn apply_item(
                     continue;
                 }
                 let fragment = match key {
-                    "title" => mltext(tag, value, S)?,
+                    "title" => {
+                        mltext_update(xml_text, child(parameter, S, tag), tag, value, S, lang)?
+                    }
                     "type" => value_type(&value_text(value))?,
                     "value" => {
                         let kind = parameter_value_type(Some(parameter), values)?;
-                        scalar_value(tag, value, kind.as_deref(), S)?
+                        scalar_value(tag, value, kind.as_deref(), S, lang)?
                     }
                     _ => simple(tag, &value_text(value), S),
                 };
@@ -1836,7 +1938,7 @@ fn apply_item(
                 .cloned()
                 .unwrap_or_else(|| Value::String(name.to_string()));
             let body = simple("name", name, T)
-                + &mltext("presentation", &title, T)?
+                + &mltext("presentation", &title, T, lang)?
                 + &xml("settings", "", T);
             insert(
                 xml_text,
@@ -1869,10 +1971,13 @@ fn apply_item(
                     variant.range(),
                     T,
                     "presentation",
-                    &mltext(
+                    &mltext_update(
+                        xml_text,
+                        child(variant, T, "presentation"),
                         "presentation",
                         values.get("title").ok_or("title required")?,
                         T,
+                        lang,
                     )?,
                     &["name", "presentation", "settings"],
                 )
@@ -1941,12 +2046,17 @@ fn apply_item(
                             Document::parse(xml_text).map_err(|error| error.to_string())?;
                         let setting = settings(document.root_element(), target, values)?;
                         let group = named_structure(setting, name)?;
+                        let fragment = if *key == "userSettingPresentation" {
+                            mltext_update(xml_text, child(group, T, key), key, value, T, lang)?
+                        } else {
+                            structure_property(key, value, kind, lang)?
+                        };
                         upsert(
                             xml_text,
                             group.range(),
                             T,
                             key,
-                            &structure_property(key, value, kind)?,
+                            &fragment,
                             structure_order(group),
                         )?;
                     }
@@ -1967,14 +2077,14 @@ fn apply_item(
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
-                let mut fragment = structure_fragment(values)?;
+                let mut fragment = structure_fragment(values, lang)?;
                 if !fields.is_empty()
                     && values
                         .get("details")
                         .and_then(Value::as_bool)
                         .unwrap_or(true)
                 {
-                    let details = structure_fragment(&Map::new())?;
+                    let details = structure_fragment(&Map::new(), lang)?;
                     let close = fragment.rfind("</item>").ok_or("structure close missing")?;
                     fragment.insert_str(close, &details);
                 }
@@ -2010,7 +2120,7 @@ fn apply_item(
             }) {
                 return Err("structure name already exists".to_string());
             }
-            let fragment = structure_fragment(values)?;
+            let fragment = structure_fragment(values, lang)?;
             let axis = string(values, "axis");
             if !axis.is_empty() {
                 if !((qtype(parent, T, "StructureItemTable") && matches!(axis, "row" | "column"))
@@ -2067,7 +2177,7 @@ fn apply_item(
                         is(node, C, "item") && text(node, C, "parameter") == string(values, "name")
                     })
                 }) {
-                    return patch_settings_parameter(xml_text, target, values, container);
+                    return patch_settings_parameter(xml_text, target, values, container, lang);
                 }
             }
             let (container, mut fragment) = match operation {
@@ -2102,6 +2212,7 @@ fn apply_item(
                                 "lwsTitle",
                                 values.get("title").ok_or("Folder requires title")?,
                                 T,
+                                lang,
                             )? + &simple("placement", "Auto", T)
                         }
                         _ => return Err("unknown selection kind".to_string()),
@@ -2111,7 +2222,7 @@ fn apply_item(
                         typed("item", &format!("dcsset:SelectedItem{kind}"), &body, T),
                     )
                 }
-                "filter.add" => ("filter", filter_fragment(values)?),
+                "filter.add" => ("filter", filter_fragment(values, lang)?),
                 "order.add" => {
                     let auto = string(values, "kind") == "Auto";
                     if auto && values.contains_key("field") {
@@ -2164,6 +2275,7 @@ fn apply_item(
                                     value,
                                     values.get("valueType").and_then(Value::as_str),
                                     C,
+                                    lang,
                                 )?),
                             C,
                         ),
@@ -2187,6 +2299,7 @@ fn apply_item(
                                     string(values, "name"),
                                     value,
                                     values.get("valueType").and_then(Value::as_str),
+                                    lang,
                                 )?),
                             C,
                         ),
@@ -2219,7 +2332,7 @@ fn apply_item(
                         body += &typed(
                             "item",
                             "dcsset:SettingsParameterValue",
-                            &(simple("parameter", key, C) + &appearance_value(key, value)?),
+                            &(simple("parameter", key, C) + &appearance_value(key, value, lang)?),
                             C,
                         );
                     }
@@ -2235,6 +2348,7 @@ fn apply_item(
                                 filter
                                     .as_object()
                                     .ok_or("appearance filter must be object")?,
+                                lang,
                             )?;
                         }
                         entry += &xml("filter", &body, T);
@@ -2290,7 +2404,7 @@ fn apply_item(
                     });
                     if let Some(existing) = existing {
                         let _ = existing;
-                        patch_settings_parameter(xml_text, target, values, container)?;
+                        patch_settings_parameter(xml_text, target, values, container, lang)?;
                         return Ok(());
                     }
                 }
@@ -2354,6 +2468,7 @@ fn apply_item(
                         value,
                         values.get("valueType").and_then(Value::as_str),
                         T,
+                        lang,
                     )?
                 } else {
                     simple(tag, &value_text(value), T)
@@ -2417,7 +2532,7 @@ fn apply_item(
                     other => other,
                 };
                 let fragment = match property {
-                    "title" => mltext(tag, value, S)?,
+                    "title" => mltext_update(xml_text, child(node, S, tag), tag, value, S, lang)?,
                     "type" => value_type(&value_text(value))?,
                     "useRestriction" => restriction(tag, value)?,
                     "group" => total_groups(value)?,
@@ -2731,6 +2846,7 @@ fn patch_settings_parameter(
     target: &Target,
     values: &Map<String, Value>,
     container: &str,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     {
         let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
@@ -2774,13 +2890,22 @@ fn patch_settings_parameter(
                 None
             };
             let kind = declared.or(old_kind.as_deref());
-            if container.tag_name().name() == "outputParameters" {
-                output_value(string(values, "name"), value, kind)?
+            let fragment = if container.tag_name().name() == "outputParameters" {
+                output_value(string(values, "name"), value, kind, lang)?
             } else {
-                scalar_value(key, value, kind, C)?
+                scalar_value(key, value, kind, C, lang)?
+            };
+            // A plain-string text value, such as the report title output
+            // parameter, keeps the translations of its other languages.
+            if value.is_string()
+                && fragment.starts_with(&format!("<{key} xsi:type=\"v8:LocalStringType\""))
+            {
+                mltext_update(xml_text, child(item, C, key), key, value, C, lang)?
+            } else {
+                fragment
             }
         } else if key == "userSettingPresentation" {
-            mltext(key, value, ns)?
+            mltext_update(xml_text, child(item, ns, key), key, value, ns, lang)?
         } else {
             simple(key, &value_text(value), ns)
         };

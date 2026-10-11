@@ -1,4 +1,4 @@
-use super::{apply, Primitive, Target, C, S, T, V, X};
+use super::{apply, ApplyError, Primitive, Target, C, S, T, V, X};
 use crate::domain::operation_contract::OperationContract;
 use roxmltree::{Document, Node};
 use serde_json::{json, Value};
@@ -22,7 +22,25 @@ fn target(dataset: &[&str], variant: &str) -> Target {
 }
 
 fn run(xml: &mut String, operation: Primitive, args: Value, target: &Target) -> Result<(), String> {
-    apply(xml, operation.as_str(), args.as_object().unwrap(), target)
+    run_in(xml, operation, args, target, "ru")
+}
+
+/// Runs `operation` on a source set whose default language is `lang`.
+fn run_in(
+    xml: &mut String,
+    operation: Primitive,
+    args: Value,
+    target: &Target,
+    lang: &str,
+) -> Result<(), String> {
+    apply(
+        xml,
+        operation.as_str(),
+        args.as_object().unwrap(),
+        target,
+        Some(lang),
+    )
+    .map_err(|error| error.to_string())
 }
 
 fn normalized(operation: Primitive, args: Value) -> Value {
@@ -1734,8 +1752,12 @@ fn dcs_component_writer_refuses_wrong_existing_root_without_a_postimage() {
             variant: String::new(),
             terminal: None,
         },
+        None,
     )
     .expect_err("a DCS component writer must refuse a foreign XML root");
+    let ApplyError::Invalid(error) = error else {
+        panic!("a foreign root is invalid input, got {error:?}");
+    };
     assert!(error.contains("DataCompositionSchema"), "{error}");
     assert_eq!(
         candidate, original,
@@ -1971,4 +1993,294 @@ fn dataset_link_read_preserves_complete_literal_selectors_for_set_and_noop() {
         xml, after_change,
         "repeated targeted set must preserve the postimage"
     );
+}
+
+/// #1257: plain-string titles of new DCS nodes take the default language of
+/// the source set, here `en`; `ru` appears nowhere.
+#[test]
+fn plain_string_titles_of_new_nodes_use_the_given_default_language() {
+    let mut xml = query_schema("SELECT 1 AS Amount");
+    let selected = target(&["Data"], "Main");
+    for (operation, args) in [
+        (
+            Primitive::FieldAdd,
+            json!({"items":[{"dataPath":"Added","title":"Added"}]}),
+        ),
+        (
+            Primitive::ParameterAdd,
+            json!({"items":[{"name":"Period","title":"Period"}]}),
+        ),
+        (
+            Primitive::CalculatedFieldAdd,
+            json!({"items":[{"name":"Share","expression":"1","title":"Share"}]}),
+        ),
+        (
+            Primitive::VariantAdd,
+            json!({"items":[{"name":"Brief","title":"Brief"}]}),
+        ),
+        (
+            Primitive::SelectionAdd,
+            json!({"items":[{"kind":"Folder","title":"Folder"}]}),
+        ),
+        (
+            Primitive::OutputParameterSet,
+            json!({"values":{"name":"Заголовок","value":"Balances"}}),
+        ),
+    ] {
+        let args = normalized(operation, args);
+        run_in(&mut xml, operation, args, &selected, "en")
+            .unwrap_or_else(|error| panic!("{}: {error}", operation.as_str()));
+    }
+    assert!(!xml.contains("<v8:lang>ru</v8:lang>"), "{xml}");
+    let doc = Document::parse(&xml).unwrap();
+    let root = doc.root_element();
+    let data_set = direct(root, S, "dataSet");
+    assert_translations(
+        direct(named(data_set, S, "field", "dataPath", "Added"), S, "title"),
+        &[("en", "Added")],
+    );
+    assert_translations(
+        direct(named(root, S, "parameter", "name", "Period"), S, "title"),
+        &[("en", "Period")],
+    );
+    assert_translations(
+        direct(
+            named(root, S, "calculatedField", "dataPath", "Share"),
+            S,
+            "title",
+        ),
+        &[("en", "Share")],
+    );
+    assert_translations(
+        direct(variant(root, "Brief"), T, "presentation"),
+        &[("en", "Brief")],
+    );
+    let settings = direct(variant(root, "Main"), T, "settings");
+    let folder = direct(settings, T, "selection")
+        .children()
+        .find(|node| node.has_tag_name((T, "item")))
+        .unwrap();
+    assert_translations(direct(folder, T, "lwsTitle"), &[("en", "Folder")]);
+    assert_translations(
+        direct(
+            named(
+                direct(settings, T, "outputParameters"),
+                C,
+                "item",
+                "parameter",
+                "Заголовок",
+            ),
+            C,
+            "value",
+        ),
+        &[("en", "Balances")],
+    );
+}
+
+/// #1257: a plain-string set changes only the default-language item and
+/// keeps the other translations byte for byte; an explicit object replaces
+/// the value as given.
+#[test]
+fn plain_string_title_sets_keep_other_translations() {
+    let bilingual = |ru: &str, en: &str| {
+        format!("<v8:item><v8:lang>ru</v8:lang><v8:content>{ru}</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>{en}</v8:content></v8:item>")
+    };
+    let kept = "<v8:item><v8:lang>ru</v8:lang><v8:content>Сумма</v8:content></v8:item>";
+    let mut xml = query_schema("SELECT 1 AS Amount")
+        .replace(
+            "<field>Amount</field></field>",
+            &format!("<field>Amount</field><title xsi:type=\"v8:LocalStringType\">{}</title></field>", bilingual("Сумма", "Amount")),
+        )
+        .replace(
+            "<settingsVariant>",
+            &format!("<parameter><name>Period</name><title xsi:type=\"v8:LocalStringType\">{}</title></parameter><calculatedField><dataPath>Share</dataPath><expression>1</expression><title xsi:type=\"v8:LocalStringType\">{}</title></calculatedField><settingsVariant>", bilingual("Период", "Period"), bilingual("Доля", "Share")),
+        )
+        .replace(
+            "<t:name>Main</t:name>",
+            &format!("<t:name>Main</t:name><t:presentation xsi:type=\"v8:LocalStringType\">{}</t:presentation>", bilingual("Основной", "Main")),
+        )
+        .replace(
+            "<t:order/></t:settings>",
+            &format!("<t:order/><t:outputParameters><c:item xsi:type=\"t:SettingsParameterValue\"><c:parameter>Заголовок</c:parameter><c:value xsi:type=\"v8:LocalStringType\">{}</c:value></c:item></t:outputParameters><t:item xsi:type=\"t:StructureItemGroup\"><t:name>Group</t:name><t:userSettingPresentation xsi:type=\"v8:LocalStringType\">{}</t:userSettingPresentation></t:item></t:settings>", bilingual("Остатки", "Balances"), bilingual("Группа", "Group")),
+        );
+    let selected = target(&["Data"], "Main");
+    for (operation, args) in [
+        (
+            Primitive::FieldSet,
+            json!({"values":{"field":"Amount","title":"Amount total"}}),
+        ),
+        (
+            Primitive::ParameterSet,
+            json!({"values":{"name":"Period","title":"Report period"}}),
+        ),
+        (
+            Primitive::CalculatedFieldSet,
+            json!({"values":{"name":"Share","title":"Share of total"}}),
+        ),
+        (
+            Primitive::VariantSet,
+            json!({"values":{"name":"Main","title":"Main variant"}}),
+        ),
+        (
+            Primitive::OutputParameterSet,
+            json!({"values":{"name":"Заголовок","value":"Balances report"}}),
+        ),
+        (
+            Primitive::StructurePatch,
+            json!({"values":{"name":"Group","userSettingPresentation":"Grouping"}}),
+        ),
+    ] {
+        let args = normalized(operation, args);
+        run_in(&mut xml, operation, args, &selected, "en")
+            .unwrap_or_else(|error| panic!("{}: {error}", operation.as_str()));
+    }
+    assert!(
+        xml.contains(kept),
+        "the Russian item keeps its bytes\n{xml}"
+    );
+    let doc = Document::parse(&xml).unwrap();
+    let root = doc.root_element();
+    assert_translations(
+        direct(
+            named(direct(root, S, "dataSet"), S, "field", "dataPath", "Amount"),
+            S,
+            "title",
+        ),
+        &[("ru", "Сумма"), ("en", "Amount total")],
+    );
+    assert_translations(
+        direct(named(root, S, "parameter", "name", "Period"), S, "title"),
+        &[("ru", "Период"), ("en", "Report period")],
+    );
+    assert_translations(
+        direct(
+            named(root, S, "calculatedField", "dataPath", "Share"),
+            S,
+            "title",
+        ),
+        &[("ru", "Доля"), ("en", "Share of total")],
+    );
+    let main = variant(root, "Main");
+    assert_translations(
+        direct(main, T, "presentation"),
+        &[("ru", "Основной"), ("en", "Main variant")],
+    );
+    let settings = direct(main, T, "settings");
+    assert_translations(
+        direct(
+            named(
+                direct(settings, T, "outputParameters"),
+                C,
+                "item",
+                "parameter",
+                "Заголовок",
+            ),
+            C,
+            "value",
+        ),
+        &[("ru", "Остатки"), ("en", "Balances report")],
+    );
+    assert_translations(
+        direct(
+            named(settings, T, "item", "name", "Group"),
+            T,
+            "userSettingPresentation",
+        ),
+        &[("ru", "Группа"), ("en", "Grouping")],
+    );
+
+    // An explicit language-to-text object is written as given.
+    let args = normalized(
+        Primitive::FieldSet,
+        json!({"values":{"field":"Amount","title":{"en":"Only English"}}}),
+    );
+    run_in(&mut xml, Primitive::FieldSet, args, &selected, "en").unwrap();
+    let doc = Document::parse(&xml).unwrap();
+    assert_translations(
+        direct(
+            named(
+                direct(doc.root_element(), S, "dataSet"),
+                S,
+                "field",
+                "dataPath",
+                "Amount",
+            ),
+            S,
+            "title",
+        ),
+        &[("en", "Only English")],
+    );
+}
+
+/// An empty plain string drops only the default-language translation.
+#[test]
+fn empty_plain_string_title_removes_only_the_default_language_item() {
+    let mut xml = query_schema("SELECT 1 AS Amount").replace(
+        "<field>Amount</field></field>",
+        "<field>Amount</field><title xsi:type=\"v8:LocalStringType\"><v8:item><v8:lang>ru</v8:lang><v8:content>Сумма</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Amount</v8:content></v8:item></title></field>",
+    );
+    let args = normalized(
+        Primitive::FieldSet,
+        json!({"values":{"field":"Amount","title":""}}),
+    );
+    run_in(
+        &mut xml,
+        Primitive::FieldSet,
+        args,
+        &target(&["Data"], "Main"),
+        "en",
+    )
+    .unwrap();
+    let doc = Document::parse(&xml).unwrap();
+    assert_translations(
+        direct(
+            named(
+                direct(doc.root_element(), S, "dataSet"),
+                S,
+                "field",
+                "dataPath",
+                "Amount",
+            ),
+            S,
+            "title",
+        ),
+        &[("ru", "Сумма")],
+    );
+}
+
+/// Without a language a plain-string text is refused as such and leaves the
+/// schema unchanged; an operation that writes no plain-string text proceeds.
+#[test]
+fn plain_string_text_without_a_language_is_a_typed_refusal() {
+    let original = query_schema("SELECT 1 AS Amount");
+    let selected = target(&["Data"], "Main");
+    let mut xml = original.clone();
+    let args = normalized(
+        Primitive::FieldAdd,
+        json!({"items":[{"dataPath":"Added","title":"Added"}]}),
+    );
+    let error = apply(
+        &mut xml,
+        Primitive::FieldAdd.as_str(),
+        args.as_object().unwrap(),
+        &selected,
+        None,
+    )
+    .expect_err("a plain-string title needs a language");
+    assert_eq!(error, ApplyError::TextLanguageRequired);
+    assert_eq!(xml, original);
+
+    let args = normalized(
+        Primitive::FieldAdd,
+        json!({"items":[{"dataPath":"Added","title":{"en":"Added"}}]}),
+    );
+    apply(
+        &mut xml,
+        Primitive::FieldAdd.as_str(),
+        args.as_object().unwrap(),
+        &selected,
+        None,
+    )
+    .unwrap();
+    assert!(xml.contains("<v8:lang>en</v8:lang>"), "{xml}");
 }

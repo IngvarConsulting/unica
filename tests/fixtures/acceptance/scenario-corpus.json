@@ -29588,6 +29588,238 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S384",
+   "name": "default-language-form-and-dcs-titles",
+   "issue": 1257,
+   "area": "Формы",
+   "task": "В конфигурации с единственным языком en заголовки и подсказки новых элементов формы и заголовки СКД пишутся на en; ru не появляется",
+   "workspace": "tests/fixtures/acceptance/workspace-english",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.Sales",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "Main",
+           "type": "ObjectForm"
+          }
+         ]
+        }
+       },
+       {
+        "op": "formAttribute.add",
+        "args": {
+         "at": "cf:Report.Sales.Form.Main",
+         "items": [
+          {
+           "name": "Comment",
+           "type": "String",
+           "title": "Comment"
+          }
+         ]
+        }
+       },
+       {
+        "op": "element.add",
+        "args": {
+         "at": "cf:Report.Sales.Form.Main",
+         "items": [
+          {
+           "name": "Header",
+           "type": "Group",
+           "title": "Header"
+          },
+          {
+           "name": "CommentField",
+           "path": "Comment",
+           "title": "Comment field",
+           "tooltip": "Comment hint",
+           "inputHint": "Type a comment"
+          }
+         ]
+        }
+       },
+       {
+        "op": "formCommand.add",
+        "args": {
+         "at": "cf:Report.Sales.Form.Main",
+         "items": [
+          {
+           "name": "Refresh",
+           "title": "Refresh"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "captures": {
+      "formToken": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.formToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}lang",
+       "eq": [
+        "en",
+        "en",
+        "en",
+        "en",
+        "en",
+        "en"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/Sales/Forms/Main/Ext/Form.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "Header",
+        "Comment field",
+        "Comment hint",
+        "Type a comment",
+        "Comment",
+        "Refresh"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.Sales.Template.SalesSchema",
+      "ops": [
+       {
+        "op": "field.add",
+        "args": {
+         "at": "cf:Report.Sales.Template.SalesSchema.DataSet.SalesData",
+         "items": [
+          {
+           "dataPath": "Quantity",
+           "title": "Quantity"
+          }
+         ]
+        }
+       },
+       {
+        "op": "field.set",
+        "args": {
+         "at": "cf:Report.Sales.Template.SalesSchema.DataSet.SalesData",
+         "values": {
+          "field": "Amount",
+          "title": "Total amount"
+         }
+        }
+       },
+       {
+        "op": "parameter.add",
+        "args": {
+         "items": [
+          {
+           "name": "Period",
+           "title": "Period"
+          }
+         ]
+        }
+       },
+       {
+        "op": "variant.set",
+        "args": {
+         "values": {
+          "name": "Main",
+          "title": "Main variant"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "captures": {
+      "dcsToken": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.dcsToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/Sales/Templates/SalesSchema/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}lang",
+       "eq": [
+        "en",
+        "en",
+        "en",
+        "en"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/Sales/Templates/SalesSchema/Ext/Template.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "Total amount",
+        "Quantity"
+       ]
+      }
+     ]
+    }
+   ]
   }
  ]
 }
