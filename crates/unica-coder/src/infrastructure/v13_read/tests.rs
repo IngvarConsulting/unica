@@ -1400,7 +1400,7 @@ fn predefined_items_beyond_first_page_answer_by_address() {
         .as_array()
         .unwrap()
         .contains(&json!({"at": "main:Catalog.Items.PredefinedItem", "count": 72})));
-    for index in [1, 50, 51, 71, 72] {
+    for index in [1, 16, 17, 19, 21, 50, 51, 53, 54, 55, 72] {
         let result = service.view(
             ViewRequest::new(&format!("main:Catalog.Items.PredefinedItem.Item{index:03}")).unwrap(),
         );
@@ -1413,14 +1413,12 @@ fn predefined_items_beyond_first_page_answer_by_address() {
         );
         assert_eq!(data["props"]["code"], format!("{index:03}"));
         assert_eq!(data["props"]["description"], format!("Description {index}"));
-        assert_eq!(data["props"]["isFolder"], index == 71);
+        assert_eq!(data["props"]["isFolder"], predefined_page_is_folder(index));
         assert_eq!(
             data["props"]["parentId"],
-            if index == 72 {
-                json!("00000000-0000-4000-8000-000000000071")
-            } else {
-                json!(null)
-            }
+            predefined_page_parent(index).map_or(json!(null), |parent| json!(format!(
+                "00000000-0000-4000-8000-{parent:012}"
+            )))
         );
     }
     let missing =
@@ -1469,19 +1467,47 @@ fn predefined_items_pages_preserve_complete_document_order() {
     }
 }
 
+/// Родитель элемента страничной фикстуры. Группы стоят в середине списка и
+/// вложены в два уровня, а границы страниц 17 и 50 проходят внутри их
+/// поддеревьев: обход в ширину переставил бы детей в хвост, и порядок
+/// `Item001..Item072` перестал бы совпадать с документным.
+fn predefined_page_parent(index: usize) -> Option<usize> {
+    match index {
+        17 | 18 | 21 => Some(16),
+        19 | 20 => Some(18),
+        51 | 52 | 54 => Some(50),
+        53 => Some(52),
+        _ => None,
+    }
+}
+
+fn predefined_page_is_folder(index: usize) -> bool {
+    matches!(index, 16 | 18 | 50 | 52)
+}
+
+fn push_predefined_page_item(items: &mut String, index: usize) {
+    items.push_str(&format!(
+        "<Item id=\"00000000-0000-4000-8000-{index:012}\"><Name>Item{index:03}</Name><Code>{index:03}</Code><Description>Description {index}</Description><IsFolder>{}</IsFolder>",
+        predefined_page_is_folder(index),
+    ));
+    let children = (index + 1..=72)
+        .filter(|child| predefined_page_parent(*child) == Some(index))
+        .collect::<Vec<_>>();
+    if !children.is_empty() {
+        items.push_str("<ChildItems>");
+        for child in children {
+            push_predefined_page_item(items, child);
+        }
+        items.push_str("</ChildItems>");
+    }
+    items.push_str("</Item>");
+}
+
 fn predefined_page_fixture() -> RealReaderFixture {
     let fixture = RealReaderFixture::new();
     let mut items = String::new();
-    for index in 1..=72 {
-        items.push_str(&format!(
-            "<Item id=\"00000000-0000-4000-8000-{index:012}\"><Name>Item{index:03}</Name><Code>{index:03}</Code><Description>Description {index}</Description><IsFolder>{}</IsFolder>",
-            index == 71,
-        ));
-        match index {
-            71 => items.push_str("<ChildItems>"),
-            72 => items.push_str("</Item></ChildItems></Item>"),
-            _ => items.push_str("</Item>"),
-        }
+    for index in (1..=72).filter(|index| predefined_page_parent(*index).is_none()) {
+        push_predefined_page_item(&mut items, index);
     }
     write(&fixture.source.join("Catalogs/Items/Ext/Predefined.xml"), &format!(
         "<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CatalogPredefinedItems\" version=\"2.20\">{items}</PredefinedData>"
@@ -1520,7 +1546,14 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     assert_eq!(refusal_codes(&absent), ["not_found"]);
     let inapplicable =
         service.view(ViewRequest::new("main:Document.Order.PredefinedItem").unwrap());
+    // Неприменимому виду отказано в самой коллекции, а не в элементе:
+    // пустой список он не получает.
     assert!(!inapplicable.ok, "{inapplicable:?}");
+    assert_eq!(refusal_codes(&inapplicable), ["not_found"]);
+    assert_eq!(
+        inapplicable.diagnostics[0]["message"],
+        "metadata has no PredefinedItem collection"
+    );
     assert!(inapplicable.cursor.is_none());
 
     write(&path, "<PredefinedData><broken>");
@@ -1528,7 +1561,8 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
         .view_service()
         .view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
     assert!(!unreadable.ok, "{unreadable:?}");
-    assert_ne!(refusal_codes(&unreadable), ["not_found"]);
+    assert_eq!(refusal_codes(&unreadable), ["provider_unavailable"]);
+    assert_eq!(unreadable.diagnostics[0]["detailCode"], "source_unreadable");
     assert!(unreadable.cursor.is_none());
 }
 

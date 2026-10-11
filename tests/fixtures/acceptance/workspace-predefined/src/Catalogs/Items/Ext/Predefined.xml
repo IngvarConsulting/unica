@@ -141,18 +141,22 @@
   <Name>Item047</Name><Code>047</Code><Description>Description 47</Description><IsFolder>false</IsFolder>
  </Item>
  <Item id="00000000-0000-4000-8000-000000000048">
-  <Name>Item048</Name><Code>048</Code><Description>Description 48</Description><IsFolder>false</IsFolder>
- </Item>
- <Item id="00000000-0000-4000-8000-000000000049">
-  <Name>Item049</Name><Code>049</Code><Description>Description 49</Description><IsFolder>false</IsFolder>
- </Item>
- <Item id="00000000-0000-4000-8000-000000000050">
-  <Name>Item050</Name><Code>050</Code><Description>Description 50</Description><IsFolder>false</IsFolder>
- </Item>
- <Item id="00000000-0000-4000-8000-000000000051">
-  <Name>Item051</Name><Code>051</Code><Description>Description 51</Description><IsFolder>true</IsFolder>
+  <Name>Item048</Name><Code>048</Code><Description>Description 48</Description><IsFolder>true</IsFolder>
   <ChildItems>
+   <Item id="00000000-0000-4000-8000-000000000049">
+    <Name>Item049</Name><Code>049</Code><Description>Description 49</Description><IsFolder>false</IsFolder>
+   </Item>
+   <Item id="00000000-0000-4000-8000-000000000050">
+    <Name>Item050</Name><Code>050</Code><Description>Description 50</Description><IsFolder>true</IsFolder>
+    <ChildItems>
+     <Item id="00000000-0000-4000-8000-000000000051">
+      <Name>Item051</Name><Code>051</Code><Description>Description 51</Description><IsFolder>false</IsFolder>
+     </Item>
+    </ChildItems>
+   </Item>
+  </ChildItems>
+ </Item>
  <Item id="00000000-0000-4000-8000-000000000052">
   <Name>Item052</Name><Code>052</Code><Description>Description 52</Description><IsFolder>false</IsFolder>
- </Item></ChildItems></Item>
+ </Item>
 </PredefinedData>
