@@ -2144,7 +2144,11 @@ pub(crate) mod actor_capacity_tests {
         };
         if !external {
             std::fs::write(source.join("Configuration.xml"), descriptor(
-                "<Configuration uuid=\"10000000-0000-4000-8000-000000000001\"><Properties><Name>Control</Name></Properties><ChildObjects><Report>Sales</Report></ChildObjects></Configuration>".into()
+                "<Configuration uuid=\"10000000-0000-4000-8000-000000000001\"><Properties><Name>Control</Name><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Report>Sales</Report></ChildObjects></Configuration>".into()
+            )).unwrap();
+            std::fs::create_dir_all(source.join("Languages")).unwrap();
+            std::fs::write(source.join("Languages/Русский.xml"), descriptor(
+                "<Language uuid=\"10000000-0000-4000-8000-000000000002\"><Properties><Name>Русский</Name><Comment/><LanguageCode>ru</LanguageCode></Properties></Language>".into()
             )).unwrap();
         }
         std::fs::write(owner.with_extension("xml"), descriptor(format!(
