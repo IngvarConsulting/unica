@@ -1827,6 +1827,24 @@ fn apply_item(
                         .children()
                         .filter(|node| is(*node, S, tag))
                         .collect::<Vec<_>>();
+                    // A plain-string text value keeps the translations of its
+                    // other languages, as a settings parameter value does. The
+                    // replacement is spelled in the source's own namespace
+                    // prefixes, so it replaces the element in place.
+                    if let [existing] = old.as_slice() {
+                        if key == "value"
+                            && value.is_string()
+                            && fragment.starts_with("<value xsi:type=\"v8:LocalStringType\"")
+                        {
+                            let range = existing.range();
+                            let updated =
+                                mltext_update(xml_text, Some(*existing), "value", value, S, lang)?;
+                            if xml_text[range.clone()] != updated {
+                                xml_text.replace_range(range, &updated);
+                            }
+                            continue;
+                        }
+                    }
                     let wrapped = format!("<root>{fragment}</root>");
                     let parsed = Document::parse(&wrapped).map_err(|error| error.to_string())?;
                     let new = parsed

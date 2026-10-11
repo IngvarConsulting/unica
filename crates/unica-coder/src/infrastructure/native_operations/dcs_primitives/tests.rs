@@ -2214,6 +2214,31 @@ fn plain_string_title_sets_keep_other_translations() {
 
 /// An empty plain string drops only the default-language translation.
 #[test]
+fn plain_string_local_string_parameter_value_keeps_other_translations() {
+    let mut xml = query_schema("SELECT 1 AS Amount").replace(
+        "<settingsVariant>",
+        "<parameter><name>Caption</name><valueType><v8:Type>v8:LocalStringType</v8:Type></valueType><value xsi:type=\"v8:LocalStringType\"><v8:item><v8:lang>ru</v8:lang><v8:content>Отчёт</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content>Report</v8:content></v8:item></value></parameter><settingsVariant>",
+    );
+    let selected = target(&["Data"], "Main");
+    let args = normalized(
+        Primitive::ParameterSet,
+        json!({"values":{"name":"Caption","value":"Sales report"}}),
+    );
+    run_in(&mut xml, Primitive::ParameterSet, args, &selected, "en")
+        .unwrap_or_else(|error| panic!("parameter.set: {error}"));
+    assert!(
+        xml.contains("<v8:item><v8:lang>ru</v8:lang><v8:content>Отчёт</v8:content></v8:item>"),
+        "the Russian item keeps its bytes\n{xml}"
+    );
+    assert!(
+        xml.contains("<v8:content>Sales report</v8:content>"),
+        "{xml}"
+    );
+    assert!(!xml.contains("<v8:content>Report</v8:content>"), "{xml}");
+    assert_eq!(xml.matches("<v8:lang>en</v8:lang>").count(), 1, "{xml}");
+}
+
+#[test]
 fn empty_plain_string_title_removes_only_the_default_language_item() {
     let mut xml = query_schema("SELECT 1 AS Amount").replace(
         "<field>Amount</field></field>",
