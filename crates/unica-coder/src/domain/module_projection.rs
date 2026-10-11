@@ -182,6 +182,10 @@ pub(crate) struct MethodProjection {
     pub(crate) handles: Vec<HandleProjection>,
     pub(crate) extension: Option<ExtensionProjection>,
     pub(crate) compilation_count: usize,
+    /// Physical lines of the whole method: from its first annotation or
+    /// compilation directive to the closing keyword. Body lines lie inside.
+    pub(crate) from_line: usize,
+    pub(crate) to_line: usize,
     pub(crate) body_from_line: usize,
     pub(crate) body_to_line: usize,
 }
@@ -766,6 +770,8 @@ mod tests {
                 target_at: Some("main:Document.Заказ.Module.Object.Method.Проверить".to_string()),
             }),
             compilation_count: 1,
+            from_line: 5,
+            to_line: 9,
             body_from_line: 7,
             body_to_line: 8,
         };
@@ -1026,6 +1032,8 @@ mod tests {
             handles: Vec::new(),
             extension: None,
             compilation_count: 0,
+            from_line: 1,
+            to_line: 1,
             body_from_line: 1,
             body_to_line: 0,
         };

@@ -61,6 +61,10 @@ impl NodeView {
     pub(crate) fn at(&self) -> &str {
         &self.at
     }
+
+    pub(crate) fn kind(&self) -> &str {
+        &self.kind
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -127,6 +131,13 @@ impl NodeViewData {
         match self {
             Self::Node(node) => node.at(),
             Self::Collection(collection) => collection.node.at(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> &str {
+        match self {
+            Self::Node(node) => node.kind(),
+            Self::Collection(collection) => collection.node.kind(),
         }
     }
 

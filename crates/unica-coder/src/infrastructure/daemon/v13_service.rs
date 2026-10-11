@@ -2274,19 +2274,18 @@ impl CanonicalV13ReadService {
             Ok(directory) => directory,
             Err(refusal) => return *refusal,
         };
-        let owner = owning_metadata_address(address);
-        let Some(entry) = directory.locate_address(&owner) else {
+        let Some(entry) = directory.locate_address(&at) else {
             return error_result(
-                Some(at),
+                Some(at.clone()),
                 RefusalCode::NotFound,
-                format!("the source layout does not place `{owner}`"),
+                format!("the source layout does not place `{at}`"),
             );
         };
         let Some(placed) = entry.placed_path() else {
             return error_result(
-                Some(at),
+                Some(at.clone()),
                 RefusalCode::NotFound,
-                format!("the source layout does not place `{owner}`"),
+                format!("the source layout does not place `{at}`"),
             );
         };
         let kind = entry.kind().to_string();
@@ -2305,8 +2304,6 @@ impl CanonicalV13ReadService {
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
     ) -> Result<ResolvedSource, ViewError> {
-        use crate::application::v13::view::ViewFilter;
-
         let source = invocation
             .read_sources()
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
@@ -2320,8 +2317,7 @@ impl CanonicalV13ReadService {
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         let snapshot = authority.snapshot(address)?;
         let canonical = authority.canonical_address(address, &snapshot)?;
-        // Resolve needs the whole node's range, not the first public view page.
-        let projected = authority.read_exact(&canonical, &ViewFilter::default(), &snapshot)?;
+        let (kind, lines) = authority.source_lines(&canonical, &snapshot)?;
         let path = authority.existing_export_path(&canonical)?;
         if authority.snapshot(&canonical)?.revision != snapshot.revision {
             return Err(ViewError::new(
@@ -2330,35 +2326,9 @@ impl CanonicalV13ReadService {
             ));
         }
         authority.read_checkpoint()?;
-        let data = serde_json::to_value(projected).expect("node projections serialize to JSON");
-        let range = path
-            .ends_with(".bsl")
-            .then(|| {
-                let props = &data["props"];
-                props["line"]
-                    .as_u64()
-                    .zip(props["endLine"].as_u64())
-                    .filter(|(from, to)| from <= to)
-                    .or_else(|| {
-                        let items = data["items"].as_array()?;
-                        let last = items.last()?;
-                        items.first()?["line"]
-                            .as_u64()
-                            .zip(last["endLine"].as_u64().or_else(|| last["line"].as_u64()))
-                    })
-                    .filter(|(from, to)| from <= to)
-            })
-            .flatten();
-        let lines = match range {
-            Some((from, to)) => ResolvedLines::Range {
-                from: from as usize,
-                to: to as usize,
-            },
-            None => ResolvedLines::NotLineBased,
-        };
         Ok(ResolvedSource::new(
             canonical.to_string(),
-            data["kind"].as_str().expect("node projection has a kind"),
+            kind,
             path,
             lines,
         ))
@@ -2905,9 +2875,8 @@ fn resolve_result(resolved: ResolvedSource) -> DomainResult {
     result
 }
 
-/// Узел, который раскладка действительно размещает. Метод, область и тело
-/// лежат внутри файла своего владельца, поэтому путь берётся у владельца, а
-/// внутренняя часть адреса отвечает за строки.
+/// Владелец модуля, который размещает раскладка. Граф вызовов по нему
+/// находит файл BSL метода: метод, область и тело лежат внутри этого файла.
 fn owning_metadata_address(address: &QualifiedAddress) -> String {
     let segments = address.segments();
     let owned = segments
@@ -4428,133 +4397,6 @@ mod tests {
         workspace
     }
 
-    #[test]
-    fn resolve_common_module_terminals_use_bsl_and_validate_existence() {
-        use crate::application::invocation_store::ToolIdentity;
-        use crate::application::ports::TokioClock;
-        use crate::infrastructure::daemon::protocol::InvocationRequest;
-        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
-
-        let workspace = role_search_workspace();
-        let source = workspace.path().join("src");
-        std::fs::write(source.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>Probe</CommonModule></ChildObjects></Configuration></MetaDataObject>"#).unwrap();
-        std::fs::create_dir_all(source.join("CommonModules/Probe/Ext")).unwrap();
-        std::fs::write(source.join("CommonModules/Probe.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule><Properties><Name>Probe</Name><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#).unwrap();
-        let body = "    Сообщить(\"probe\");\n".repeat(61);
-        std::fs::write(
-            source.join("CommonModules/Probe/Ext/Module.bsl"),
-            format!(
-                "#Область Outer\nПроцедура Ping() Экспорт\n{body}КонецПроцедуры\n#КонецОбласти\n"
-            ),
-        )
-        .unwrap();
-        assert!(std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(workspace.path())
-            .status()
-            .unwrap()
-            .success());
-        let runtime = V5CanonicalInvocationRuntime::new(
-            Arc::new(super::CanonicalV13ReadService::default()),
-            Arc::new(TokioClock),
-        );
-        let resolve = |arguments| {
-            let request = InvocationRequest::new(
-                ToolIdentity::Resolve,
-                arguments,
-                std::fs::canonicalize(workspace.path())
-                    .unwrap()
-                    .to_string_lossy(),
-                7_000,
-            )
-            .unwrap();
-            runtime
-                .bind(request)
-                .unwrap()
-                .prepare()
-                .unwrap()
-                .execute(CancellationToken::new())
-                .unwrap()
-        };
-        let owner = resolve(json!({"at":"main:CommonModule.Probe"}));
-        assert!(owner.ok, "{owner:?}");
-        assert_eq!(
-            owner.data.as_ref().unwrap()["path"],
-            "CommonModules/Probe.xml"
-        );
-        assert_eq!(
-            owner.data.as_ref().unwrap()["lines"]["state"],
-            "notLineBased"
-        );
-        for (suffix, kind, from, to) in [
-            (".Method.Ping", "Method", 3, 63),
-            (".Method.Ping.Body", "Body", 3, 63),
-            (".Region.Outer", "Region", 1, 65),
-            (".Body", "Body", 1, 65),
-        ] {
-            let at = format!("main:CommonModule.Probe{suffix}");
-            let result = resolve(json!({"at":at}));
-            assert!(result.ok, "{at}: {result:?}");
-            let data = result.data.as_ref().unwrap();
-            assert_eq!(data["at"], at);
-            assert_eq!(
-                data["path"], "CommonModules/Probe/Ext/Module.bsl",
-                "{result:?}"
-            );
-            assert_eq!(data["kind"], kind, "{result:?}");
-            assert_eq!(
-                data["lines"],
-                json!({"state":"range","from":from,"to":to}),
-                "{result:?}"
-            );
-        }
-        for suffix in [".Method.Missing", ".Method.Missing.Body", ".Region.Missing"] {
-            let result = resolve(json!({"at":format!("main:CommonModule.Probe{suffix}")}));
-            assert!(!result.ok, "{result:?}");
-            assert_eq!(
-                serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
-                "not_found"
-            );
-        }
-        let module = source.join("CommonModules/Probe/Ext/Module.bsl");
-        std::fs::write(&module, "Процедура Empty()\nКонецПроцедуры\n").unwrap();
-        for suffix in [".Method.Empty", ".Method.Empty.Body"] {
-            let result = resolve(json!({"at":format!("main:CommonModule.Probe{suffix}")}));
-            assert!(result.ok, "{result:?}");
-            assert_eq!(
-                result.data.as_ref().unwrap()["lines"]["state"],
-                "notLineBased",
-                "{result:?}"
-            );
-        }
-        std::fs::write(&module, "").unwrap();
-        let empty = resolve(json!({"at":"main:CommonModule.Probe.Body"}));
-        assert!(empty.ok, "{empty:?}");
-        assert_eq!(
-            empty.data.as_ref().unwrap()["lines"]["state"],
-            "notLineBased"
-        );
-        std::fs::remove_file(&module).unwrap();
-        let missing = resolve(json!({"at":"main:CommonModule.Probe.Body"}));
-        assert!(
-            !missing.ok,
-            "absent BSL is not an existing empty file: {missing:?}"
-        );
-        assert_eq!(
-            serde_json::to_value(&missing).unwrap()["diagnostics"][0]["code"],
-            "not_found"
-        );
-        std::fs::write(&module, [0xff]).unwrap();
-        let unreadable = resolve(json!({"at":"main:CommonModule.Probe.Body"}));
-        assert!(!unreadable.ok, "{unreadable:?}");
-        assert_eq!(
-            serde_json::to_value(&unreadable).unwrap()["diagnostics"][0]["code"],
-            "provider_unavailable"
-        );
-    }
-
     fn resolve_exact_workspace() -> tempfile::TempDir {
         let workspace = role_search_workspace();
         let source = workspace.path().join("src");
@@ -4678,7 +4520,7 @@ mod tests {
             ),
         ] {
             for (suffix, kind, from, to) in [
-                (".Method.Ping", "Method", 4, 64),
+                (".Method.Ping", "Method", 3, 65),
                 (".Method.Ping.Body", "Body", 4, 64),
                 (".Body", "Body", 1, 72),
                 (".Region.A.Region.Inner", "Region", 2, 66),
@@ -4745,6 +4587,27 @@ mod tests {
                 }
             }
         }
+        // Уникальное имя вложенной области тоже не заменяет её полный адрес.
+        std::fs::write(
+            workspace
+                .path()
+                .join("src/CommonModules/Probe/Ext/Module.bsl"),
+            "#Область Outer\n#Область Uniq\n#КонецОбласти\n#КонецОбласти\n",
+        )
+        .unwrap();
+        for tool in [ToolIdentity::View, ToolIdentity::Resolve] {
+            for (suffix, ok) in [(".Region.Outer.Region.Uniq", true), (".Region.Uniq", false)] {
+                let at = format!("main:CommonModule.Probe{suffix}");
+                let result = invoke_exact_read(workspace.path(), tool, json!({"at":at}));
+                assert_eq!(result.ok, ok, "{tool:?} {at}: {result:?}");
+                if !ok {
+                    assert_eq!(
+                        serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                        "not_found"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -4752,6 +4615,11 @@ mod tests {
         use crate::application::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
         for (node, kind, path) in [
+            (
+                "CommonModule.Probe",
+                "CommonModule",
+                "CommonModules/Probe.xml",
+            ),
             (
                 "Catalog.Items.Attribute.Value",
                 "Attribute",
@@ -4819,6 +4687,129 @@ mod tests {
     }
 
     #[test]
+    fn resolve_exact_method_spans_annotations_through_its_closing_line() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        // Документация и пустая строка выше аннотаций методу не принадлежат.
+        let module = concat!(
+            "// Документация.\n\n&НаСервере\n&Перед(\"Ping\")\nПроцедура Annotated(\n",
+            "    Value) Экспорт\n    Сообщить(Value);\nКонецПроцедуры\n\n",
+            "Процедура Empty()\nКонецПроцедуры\nФункция Inline() Возврат 1; КонецФункции\n",
+            "Асинх\nПроцедура Waiting()\nКонецПроцедуры\n",
+            "Async\nProcedure Waiting2()\nEndProcedure\n",
+            "// Doc\n// Параметры:\n&НаСервере\nПроцедура Documented()\n    Сообщить(1);\nКонецПроцедуры\n",
+        );
+        for (prefix, path) in [
+            ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
+            (
+                "Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            ),
+        ] {
+            std::fs::write(workspace.path().join("src").join(path), module).unwrap();
+            for (suffix, kind, lines) in [
+                (
+                    ".Method.Annotated",
+                    "Method",
+                    json!({"state":"range","from":3,"to":8}),
+                ),
+                (
+                    ".Method.Annotated.Body",
+                    "Body",
+                    json!({"state":"range","from":7,"to":7}),
+                ),
+                (
+                    ".Method.Empty",
+                    "Method",
+                    json!({"state":"range","from":10,"to":11}),
+                ),
+                (
+                    ".Method.Empty.Body",
+                    "Body",
+                    json!({"state":"notLineBased"}),
+                ),
+                (
+                    ".Method.Inline",
+                    "Method",
+                    json!({"state":"range","from":12,"to":12}),
+                ),
+                (
+                    ".Method.Waiting",
+                    "Method",
+                    json!({"state":"range","from":13,"to":15}),
+                ),
+                (
+                    ".Method.Waiting2",
+                    "Method",
+                    json!({"state":"range","from":16,"to":18}),
+                ),
+                (
+                    ".Method.Documented",
+                    "Method",
+                    json!({"state":"range","from":21,"to":24}),
+                ),
+                (".Body", "Body", json!({"state":"range","from":1,"to":24})),
+            ] {
+                let at = format!("main:{prefix}{suffix}");
+                let result =
+                    invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+                assert!(result.ok, "{at}: {result:?}");
+                let data = result.data.as_ref().unwrap();
+                assert_eq!(data["kind"], kind, "{at}: {result:?}");
+                assert_eq!(data["path"], path, "{at}: {result:?}");
+                assert_eq!(data["lines"], lines, "{at}: {result:?}");
+            }
+            // View keeps naming the body lines of the method.
+            let view = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::View,
+                json!({"at":format!("main:{prefix}.Method.Annotated")}),
+            );
+            assert!(view.ok, "{view:?}");
+            let props = &view.data.as_ref().unwrap()["props"];
+            assert_eq!((&props["line"], &props["endLine"]), (&json!(7), &json!(7)));
+        }
+    }
+
+    #[test]
+    fn resolve_exact_module_body_numbers_lines_like_view() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let file = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        let at = json!({"at":"main:CommonModule.Probe.Body"});
+        for (source, expected) in [
+            ("", json!({"state":"notLineBased"})),
+            ("\u{feff}\u{feff}", json!({"state":"notLineBased"})),
+            ("\n", json!({"state":"range","from":1,"to":1})),
+            ("a", json!({"state":"range","from":1,"to":1})),
+            ("\u{feff}a\r\nb", json!({"state":"range","from":1,"to":2})),
+            ("a\r\n\r\nb\r\n", json!({"state":"range","from":1,"to":3})),
+        ] {
+            std::fs::write(&file, source).unwrap();
+            let view = invoke_exact_read(workspace.path(), ToolIdentity::View, at.clone());
+            assert!(view.ok, "{source:?}: {view:?}");
+            let items = view.data.as_ref().unwrap()["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let viewed = items.last().map_or(
+                json!({"state":"notLineBased"}),
+                |last| json!({"state":"range","from":1,"to":last["line"]}),
+            );
+            assert_eq!(viewed, expected, "view numbering of {source:?}");
+            let resolved = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, at.clone());
+            assert!(resolved.ok, "{source:?}: {resolved:?}");
+            assert_eq!(
+                resolved.data.unwrap()["lines"],
+                expected,
+                "resolve numbering of {source:?}"
+            );
+        }
+    }
+
+    #[test]
     fn resolve_exact_module_read_failures_are_never_successful_locations() {
         use crate::application::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
@@ -4834,19 +4825,6 @@ mod tests {
             ),
         ] {
             let file = workspace.path().join("src").join(path);
-            std::fs::write(&file, "Процедура Empty()\nКонецПроцедуры\n").unwrap();
-            for suffix in [".Method.Empty", ".Method.Empty.Body"] {
-                let result = invoke_exact_read(
-                    workspace.path(),
-                    ToolIdentity::Resolve,
-                    json!({"at":format!("main:{prefix}{suffix}")}),
-                );
-                assert!(result.ok, "{result:?}");
-                assert_eq!(
-                    result.data.unwrap()["lines"],
-                    json!({"state":"notLineBased"})
-                );
-            }
             std::fs::write(&file, "").unwrap();
             let empty = invoke_exact_read(
                 workspace.path(),

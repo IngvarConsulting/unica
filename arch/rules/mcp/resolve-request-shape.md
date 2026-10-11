@@ -2,6 +2,8 @@
 id: INV.WIRE.RESOLVE-EXACT-BRIDGE
 check:
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_bsl_nodes_across_module_roles
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_method_spans_annotations_through_its_closing_line
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_module_body_numbers_lines_like_view
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_tree_children_use_their_containing_xml
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_module_read_failures_are_never_successful_locations
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_cancelled_read_never_claims_a_location
@@ -41,14 +43,22 @@ check:
 
 Форма расположения явно называет наличие строк: `lines.state` равен
 `range` с границами `from` и `to` либо `notLineBased`. Поле не опускается,
-когда диапазона нет. Проверки формы запроса и сериализации дополнены проверками существования
-узла, его расположения и диапазона в исходниках.
+когда диапазона нет.
 
 При успешном ответе указанный предмет существует; результат сообщает его
 адрес, вид и действительное место в исходниках. Отсутствующий предмет даёт
 `not_found`. Для метода или области BSL диапазон относится именно к файлу
 модуля, а не к XML-дескриптору его владельца. У древовидного ресурса диапазон
 не выдумывается. Ошибка чтения или отмена дают отказ; успешный ответ не содержит `rev`.
+
+Диапазон метода начинается с его первой аннотации, директивы компиляции
+или `Асинх`, например `&НаСервере` или `&Перед`, а без них — со строки
+объявления.
+Он заканчивается строкой `КонецПроцедуры` или `КонецФункции` включительно,
+поэтому у пустого метода есть диапазон. `Method.<имя>.Body` охватывает
+только строки между объявлением и концом метода; у тела без строк диапазона
+нет. Область занимает строки от `#Область` до `#КонецОбласти`, `Body` модуля —
+все строки файла.
 
 При `path` проверяются запрошенный объект и необходимые владельцы. Абсолютный
 путь внутри допущенного корня выбирает самый глубокий подходящий набор
