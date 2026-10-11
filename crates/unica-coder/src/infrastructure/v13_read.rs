@@ -785,7 +785,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             target,
             local.kind,
             local.predefined_code_type.as_deref(),
-            PREDEFINED_ITEM_PAGE_LIMIT,
+            &mut || self.read_checkpoint(),
         )? {
             insert_serialized(&mut payload, "predefinedItems", &predefined)?;
         }
@@ -2736,9 +2736,6 @@ fn named_segment(address: &QualifiedAddress, kind: NodeKind) -> Option<&str> {
 #[cfg(test)]
 use crate::infrastructure::v13_read_projection::project_known_suffix;
 use crate::infrastructure::v13_read_projection::project_typed_payload;
-
-/// Страница предопределённых элементов: объявленный максимум поверхности.
-const PREDEFINED_ITEM_PAGE_LIMIT: usize = 50;
 
 #[cfg(test)]
 pub(crate) mod tests;
