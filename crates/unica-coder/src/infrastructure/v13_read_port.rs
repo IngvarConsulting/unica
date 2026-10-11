@@ -1309,27 +1309,104 @@ impl ProviderReadAuthority {
             .transpose()
     }
 
+    /// Only proves that the BSL file is present; the text is not read.
+    pub(crate) fn module_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
+        let relative = self.module_relative(target)?;
+        match self.root.open_relative_regular_nofollow(&relative) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                error.to_string(),
+            )),
+        }
+    }
+
+    /// Counts Body lines the way the Body snapshot numbers them, without
+    /// copying or decoding the module. An absent file is `None`, not zero.
+    pub(crate) fn module_line_count(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: impl FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<usize>, ViewError> {
+        const BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
+        let mut newlines = 0_usize;
+        let mut bom_prefix = 0_u64;
+        let mut in_bom_prefix = true;
+        let mut last = None;
+        let Some(len) = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
+            for byte in chunk {
+                if in_bom_prefix && *byte == BOM[(bom_prefix % 3) as usize] {
+                    bom_prefix += 1;
+                } else {
+                    in_bom_prefix = false;
+                }
+            }
+            newlines += chunk.iter().filter(|byte| **byte == b'\n').count();
+            last = chunk.last().copied().or(last);
+            Ok(())
+        })?
+        else {
+            return Ok(None);
+        };
+        // A file of leading U+FEFF only is an empty Body, as in the snapshot.
+        if len == bom_prefix {
+            return Ok(Some(0));
+        }
+        Ok(Some(newlines + usize::from(last != Some(b'\n'))))
+    }
+
     pub(crate) fn module_body_snapshot(
         &self,
         target: &MetadataAddress,
-        mut checkpoint: impl FnMut() -> Result<(), ViewError>,
+        checkpoint: impl FnMut() -> Result<(), ViewError>,
     ) -> Result<BodySnapshot, ViewError> {
-        let relative = self.module_relative(target)?;
         let mut file = tempfile::tempfile().map_err(|error| {
             ViewError::detailed(
                 RefusalDetail::BackendBroken,
                 format!("cannot create Body snapshot: {error}"),
             )
         })?;
+        let len = self
+            .visit_module_utf8_chunks(target, checkpoint, |chunk| {
+                file.write_all(chunk).map_err(|error| {
+                    ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+                })
+            })?
+            .unwrap_or(0);
+        file.flush().map_err(|error| {
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
+                format!("Body snapshot write failed: {error}"),
+            )
+        })?;
+        file.seek(SeekFrom::Start(0)).map_err(|error| {
+            ViewError::detailed(
+                RefusalDetail::BackendBroken,
+                format!("Body snapshot seek failed: {error}"),
+            )
+        })?;
+        Ok(BodySnapshot::new(file, len))
+    }
+
+    /// Streams the module only after one shared UTF-8 check, so every Body
+    /// reader sees the same text and numbers the same lines. An absent file
+    /// is `None`; the length is in bytes.
+    fn visit_module_utf8_chunks(
+        &self,
+        target: &MetadataAddress,
+        mut checkpoint: impl FnMut() -> Result<(), ViewError>,
+        mut visit: impl FnMut(&[u8]) -> Result<(), ViewError>,
+    ) -> Result<Option<u64>, ViewError> {
+        let relative = self.module_relative(target)?;
         let mut carry = Vec::<u8>::new();
-        let mut interrupted = None;
-        let mut scratch_failure = false;
+        let interrupted = std::cell::RefCell::new(None);
         let result = self.root.visit_relative_regular_chunks(
             &relative,
             || {
                 checkpoint().map_err(|error| {
-                    interrupted = Some(error);
-                    std::io::Error::other("Body capture interrupted")
+                    *interrupted.borrow_mut() = Some(error);
+                    std::io::Error::other("BSL module read interrupted")
                 })
             },
             |chunk| {
@@ -1348,24 +1425,18 @@ impl ProviderReadAuthority {
                         ))
                     }
                 }
-                file.write_all(chunk).inspect_err(|_| {
-                    scratch_failure = true;
+                visit(chunk).map_err(|error| {
+                    *interrupted.borrow_mut() = Some(error);
+                    std::io::Error::other("BSL module chunk was refused")
                 })
             },
         );
         let len = match result {
             Ok(len) => len,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
-                return Err(interrupted.unwrap_or_else(|| {
-                    ViewError::detailed(
-                        if scratch_failure {
-                            RefusalDetail::BackendBroken
-                        } else {
-                            RefusalDetail::SourceUnreadable
-                        },
-                        error.to_string(),
-                    )
+                return Err(interrupted.into_inner().unwrap_or_else(|| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 }))
             }
         };
@@ -1375,19 +1446,7 @@ impl ProviderReadAuthority {
                 "BSL module is not UTF-8",
             ));
         }
-        file.flush().map_err(|error| {
-            ViewError::detailed(
-                RefusalDetail::BackendBroken,
-                format!("Body snapshot write failed: {error}"),
-            )
-        })?;
-        file.seek(SeekFrom::Start(0)).map_err(|error| {
-            ViewError::detailed(
-                RefusalDetail::BackendBroken,
-                format!("Body snapshot seek failed: {error}"),
-            )
-        })?;
-        Ok(BodySnapshot::new(file, len))
+        Ok(Some(len))
     }
 
     #[cfg(test)]
