@@ -1391,6 +1391,385 @@ fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
 }
 
 #[test]
+fn predefined_items_beyond_first_page_answer_by_address() {
+    let fixture = predefined_page_fixture();
+    let service = fixture.view_service();
+    let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+    assert!(owner.ok, "{owner:?}");
+    assert!(owner.data.as_ref().unwrap()["branches"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"at": "main:Catalog.Items.PredefinedItem", "count": 72})));
+    for index in [1, 16, 17, 19, 21, 50, 51, 53, 54, 55, 72] {
+        let result = service.view(
+            ViewRequest::new(&format!("main:Catalog.Items.PredefinedItem.Item{index:03}")).unwrap(),
+        );
+        assert!(result.ok, "item {index}: {result:?}");
+        let data = result.data.unwrap();
+        assert_eq!(data["title"], format!("Item{index:03}"));
+        assert_eq!(
+            data["props"]["id"],
+            format!("00000000-0000-4000-8000-{index:012}")
+        );
+        assert_eq!(data["props"]["code"], format!("{index:03}"));
+        assert_eq!(data["props"]["description"], format!("Description {index}"));
+        assert_eq!(data["props"]["isFolder"], predefined_page_is_folder(index));
+        assert_eq!(
+            data["props"]["parentId"],
+            predefined_page_parent(index).map_or(json!(null), |parent| json!(format!(
+                "00000000-0000-4000-8000-{parent:012}"
+            )))
+        );
+    }
+    let missing =
+        service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem.Absent").unwrap());
+    assert_eq!(refusal_codes(&missing), ["not_found"]);
+}
+
+#[test]
+fn predefined_items_pages_preserve_complete_document_order() {
+    let fixture = predefined_page_fixture();
+    let service = fixture.view_service();
+    for limit in [1, 17, 50] {
+        let mut cursor = None;
+        let mut names = Vec::new();
+        loop {
+            let mut request = ViewRequest::new("main:Catalog.Items.PredefinedItem")
+                .unwrap()
+                .with_limit(limit)
+                .unwrap();
+            if let Some(previous) = cursor.take() {
+                request = request.with_cursor(previous);
+            }
+            let page = service.view(request);
+            assert!(page.ok, "{page:?}");
+            let data = page.data.unwrap();
+            let items = data["items"].as_array().unwrap();
+            assert!(!items.is_empty() && items.len() <= limit);
+            names.extend(
+                items
+                    .iter()
+                    .map(|item| item["at"].as_str().unwrap().to_owned()),
+            );
+            cursor = page.cursor;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(names.len() < 72, "continuation must make progress");
+        }
+        let expected = (1..=72)
+            .map(|index| format!("main:Catalog.Items.PredefinedItem.Item{index:03}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names, expected,
+            "limit {limit}: no missing or duplicate items"
+        );
+    }
+}
+
+/// Родитель элемента страничной фикстуры. Группы стоят в середине списка и
+/// вложены в два уровня, а границы страниц 17 и 50 проходят внутри их
+/// поддеревьев: обход в ширину переставил бы детей в хвост, и порядок
+/// `Item001..Item072` перестал бы совпадать с документным.
+fn predefined_page_parent(index: usize) -> Option<usize> {
+    match index {
+        17 | 18 | 21 => Some(16),
+        19 | 20 => Some(18),
+        51 | 52 | 54 => Some(50),
+        53 => Some(52),
+        _ => None,
+    }
+}
+
+fn predefined_page_is_folder(index: usize) -> bool {
+    matches!(index, 16 | 18 | 50 | 52)
+}
+
+fn push_predefined_page_item(items: &mut String, index: usize) {
+    items.push_str(&format!(
+        "<Item id=\"00000000-0000-4000-8000-{index:012}\"><Name>Item{index:03}</Name><Code>{index:03}</Code><Description>Description {index}</Description><IsFolder>{}</IsFolder>",
+        predefined_page_is_folder(index),
+    ));
+    let children = (index + 1..=72)
+        .filter(|child| predefined_page_parent(*child) == Some(index))
+        .collect::<Vec<_>>();
+    if !children.is_empty() {
+        items.push_str("<ChildItems>");
+        for child in children {
+            push_predefined_page_item(items, child);
+        }
+        items.push_str("</ChildItems>");
+    }
+    items.push_str("</Item>");
+}
+
+fn predefined_page_fixture() -> RealReaderFixture {
+    let fixture = RealReaderFixture::new();
+    let mut items = String::new();
+    for index in (1..=72).filter(|index| predefined_page_parent(*index).is_none()) {
+        push_predefined_page_item(&mut items, index);
+    }
+    write(&fixture.source.join("Catalogs/Items/Ext/Predefined.xml"), &format!(
+        "<PredefinedData xmlns=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xsi:type=\"CatalogPredefinedItems\" version=\"2.20\">{items}</PredefinedData>"
+    ));
+    fixture
+}
+
+#[test]
+fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
+    let fixture = RealReaderFixture::new();
+    let path = fixture.source.join("Catalogs/Items/Ext/Predefined.xml");
+    fs::remove_file(&path).unwrap();
+    let service = fixture.view_service();
+    let owner = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
+    assert!(owner.ok, "{owner:?}");
+    let authority = fixture.read_authority();
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let empty_data = authority
+        .read
+        .predefined_items(
+            &target,
+            crate::domain::metadata::MetadataKind::Catalog,
+            Some("String"),
+            &mut || Ok(()),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(empty_data.total, 0);
+    assert!(!empty_data.truncated);
+    let empty = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
+    assert!(empty.ok, "{empty:?}");
+    assert_eq!(empty.data.unwrap()["items"], json!([]));
+    assert!(empty.cursor.is_none());
+    let absent =
+        service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem.Absent").unwrap());
+    assert_eq!(refusal_codes(&absent), ["not_found"]);
+    let inapplicable =
+        service.view(ViewRequest::new("main:Document.Order.PredefinedItem").unwrap());
+    // Неприменимому виду отказано в самой коллекции, а не в элементе:
+    // пустой список он не получает.
+    assert!(!inapplicable.ok, "{inapplicable:?}");
+    assert_eq!(refusal_codes(&inapplicable), ["not_found"]);
+    assert_eq!(
+        inapplicable.diagnostics[0]["message"],
+        "metadata has no PredefinedItem collection"
+    );
+    assert!(inapplicable.cursor.is_none());
+
+    write(&path, "<PredefinedData><broken>");
+    let unreadable = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
+    assert!(!unreadable.ok, "{unreadable:?}");
+    assert_eq!(refusal_codes(&unreadable), ["provider_unavailable"]);
+    assert_eq!(unreadable.diagnostics[0]["detailCode"], "source_unreadable");
+    assert!(unreadable.cursor.is_none());
+}
+
+#[test]
+fn predefined_items_cursor_replays_after_source_removal() {
+    let fixture = predefined_page_fixture();
+    let service = fixture.view_service();
+    let request = || {
+        ViewRequest::new("main:Catalog.Items.PredefinedItem")
+            .unwrap()
+            .with_limit(50)
+            .unwrap()
+    };
+    let first = service.view(request());
+    assert!(first.ok, "{first:?}");
+    let cursor = first.cursor.expect("72 elements need a continuation");
+    let before = service.view(request().with_cursor(cursor.clone()));
+    assert!(before.ok, "{before:?}");
+    fs::remove_file(fixture.source.join("Catalogs/Items/Ext/Predefined.xml")).unwrap();
+    let after = service.view(request().with_cursor(cursor.clone()));
+    assert!(after.ok, "{after:?}");
+    assert_eq!(before.data, after.data);
+    assert_eq!(before.cursor, after.cursor);
+    let items = after.data.unwrap()["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 22);
+    assert_eq!(items[0]["at"], "main:Catalog.Items.PredefinedItem.Item051");
+    assert_eq!(items[21]["at"], "main:Catalog.Items.PredefinedItem.Item072");
+    let tampered = service.view(request().with_cursor(format!("{cursor}x")));
+    assert_eq!(refusal_codes(&tampered), ["invalid_cursor"]);
+    let fresh = fixture.view_service().view(request());
+    assert!(fresh.ok, "{fresh:?}");
+    assert_eq!(fresh.data.unwrap()["items"], json!([]));
+}
+
+#[test]
+fn predefined_items_refuse_file_and_snapshot_budget_without_cursor() {
+    let fixture = predefined_page_fixture();
+    let service = ViewService::new(
+        fixture.read_authority(),
+        ViewCursorStore::new(crate::application::result_store::DEFAULT_TTL, 128, 512),
+    );
+    let result = service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
+    assert_eq!(refusal_codes(&result), ["result_too_large"]);
+    assert!(result.cursor.is_none());
+
+    write(
+        &fixture.source.join("Catalogs/Items/Ext/Predefined.xml"),
+        &"x".repeat(8 * 1024 * 1024 + 1),
+    );
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
+    assert!(!result.ok, "{result:?}");
+    assert!(
+        serde_json::to_string(&result.diagnostics)
+            .unwrap()
+            .contains("8388608-byte read limit"),
+        "{result:?}"
+    );
+    assert!(result.cursor.is_none());
+}
+
+#[test]
+fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
+    use crate::domain::metadata::MetadataKind;
+    let fixture = predefined_page_fixture();
+    let authority = fixture.read_authority();
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let mut completed_checkpoints = 0;
+    let data = authority
+        .read
+        .predefined_items(&target, MetadataKind::Catalog, Some("String"), &mut || {
+            completed_checkpoints += 1;
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(data.total, 72);
+    assert!(completed_checkpoints > 2 * data.total);
+    for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
+        for stop_at in [2, 16, completed_checkpoints - 10] {
+            let mut checkpoints = 0;
+            let error = authority
+                .read
+                .predefined_items(&target, MetadataKind::Catalog, Some("String"), &mut || {
+                    checkpoints += 1;
+                    if checkpoints == stop_at {
+                        Err(ViewError::new(code, "interrupted predefined read"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .unwrap_err();
+            assert_eq!(error.code(), code, "checkpoint {stop_at}");
+            assert_eq!(checkpoints, stop_at);
+        }
+    }
+}
+
+#[test]
+fn predefined_items_other_owner_fields_survive_addressed_reads() {
+    use crate::domain::metadata::{MetadataType, MetadataTypeVariant};
+    let fixture = RealReaderFixture::new();
+    let config_path = fixture.source.join("Configuration.xml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    write(&config_path, &config.replace("</ChildObjects>",
+        "<ChartOfCharacteristicTypes>Characteristics</ChartOfCharacteristicTypes><ChartOfCalculationTypes>Calculations</ChartOfCalculationTypes></ChildObjects>"));
+    for (kind, directory, name) in [
+        (
+            "ChartOfCharacteristicTypes",
+            "ChartsOfCharacteristicTypes",
+            "Characteristics",
+        ),
+        (
+            "ChartOfCalculationTypes",
+            "ChartsOfCalculationTypes",
+            "Calculations",
+        ),
+    ] {
+        write_metadata_owner(&fixture.source, directory, kind, name, "");
+    }
+    for (directory, name, fixture_file) in [
+        ("ChartsOfAccounts", "Accounts", "ChartOfAccounts.xml"),
+        (
+            "ChartsOfCharacteristicTypes",
+            "Characteristics",
+            "ChartOfCharacteristicTypes.xml",
+        ),
+        (
+            "ChartsOfCalculationTypes",
+            "Calculations",
+            "ChartOfCalculationTypes.xml",
+        ),
+    ] {
+        write(
+            &fixture
+                .source
+                .join(format!("{directory}/{name}/Ext/Predefined.xml")),
+            &fixture_text(&format!("platform_8_3_27/predefined/{fixture_file}")),
+        );
+    }
+    let service = fixture.view_service();
+    let account = service.view(
+        ViewRequest::new("main:ChartOfAccounts.Accounts.PredefinedItem.ОСвОрганизации").unwrap(),
+    );
+    assert!(account.ok, "{account:?}");
+    let props = &account.data.as_ref().unwrap()["props"];
+    assert_eq!(props["accountType"], "Active");
+    assert_eq!(props["offBalance"], false);
+    assert_eq!(props["order"], " 01.01");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(props["accountingFlags"].as_str().unwrap())
+            .unwrap(),
+        json!({
+            "ChartOfAccounts.Хозрасчетный.AccountingFlag.Валютный": false,
+            "ChartOfAccounts.Хозрасчетный.AccountingFlag.Количественный": false,
+            "ChartOfAccounts.Хозрасчетный.AccountingFlag.УчетПоПодразделениям": true,
+            "ChartOfAccounts.Хозрасчетный.AccountingFlag.НалоговыйУчет": true,
+        })
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(props["extDimensionTypes"].as_str().unwrap())
+            .unwrap(),
+        json!([{
+            "name": "ChartOfCharacteristicTypes.ВидыСубконтоХозрасчетные.ОсновныеСредства",
+            "turnover": false,
+            "accountingFlags": {
+                "ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Суммовой": true,
+                "ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Валютный": true,
+                "ChartOfAccounts.Хозрасчетный.ExtDimensionAccountingFlag.Количественный": true,
+            },
+        }])
+    );
+    let characteristic = service.view(ViewRequest::new("main:ChartOfCharacteristicTypes.Characteristics.PredefinedItem.УдалитьБухгалтерскийУчет").unwrap());
+    assert!(characteristic.ok, "{characteristic:?}");
+    assert_eq!(
+        characteristic.data.as_ref().unwrap()["props"]["isFolder"],
+        false
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            characteristic.data.as_ref().unwrap()["props"]["type"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap(),
+        json!(MetadataType::new(vec![MetadataTypeVariant::Reference {
+            metadata_path: MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "ChartOfCharacteristicTypes.РазделыДатЗапретаИзменения"
+            )
+            .unwrap(),
+        }])
+        .unwrap())
+    );
+    let calculation = service.view(
+        ViewRequest::new("main:ChartOfCalculationTypes.Calculations.PredefinedItem.ОкладПоДням")
+            .unwrap(),
+    );
+    assert!(calculation.ok, "{calculation:?}");
+    assert_eq!(
+        calculation.data.as_ref().unwrap()["props"]["actionPeriodIsBase"],
+        false
+    );
+}
+
+#[test]
 fn predefined_items_answer_by_address_with_the_count_from_the_reader() {
     let fixture = RealReaderFixture::new();
     let service = fixture.view_service();
