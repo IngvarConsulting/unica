@@ -568,21 +568,44 @@ fn read_predefined_items_with_code_type(
     code_type: Option<PredefinedCodeType>,
     limit: usize,
 ) -> Result<MetaPredefinedItemsData, String> {
+    read_predefined_items_with_checkpoint(bytes, kind, code_type, Some(limit), &mut || Ok(()))
+}
+
+pub(crate) fn read_complete_predefined_items_for_code_type(
+    bytes: &[u8],
+    kind: MetadataKind,
+    code_type: PredefinedCodeType,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<MetaPredefinedItemsData, String> {
+    read_predefined_items_with_checkpoint(bytes, kind, Some(code_type), None, checkpoint)
+}
+
+fn read_predefined_items_with_checkpoint(
+    bytes: &[u8],
+    kind: MetadataKind,
+    code_type: Option<PredefinedCodeType>,
+    limit: Option<usize>,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<MetaPredefinedItemsData, String> {
+    checkpoint()?;
     let text = std::str::from_utf8(bytes)
         .map_err(|_| "Predefined.xml is not UTF-8".to_string())?
         .trim_start_matches('\u{feff}');
-    validate_predefined_text_with_options(kind, code_type, text, false)?;
+    validate_predefined_text_with_checkpoint(kind, code_type, text, false, checkpoint)?;
     let document = Document::parse(text).map_err(|error| format!("Predefined.xml: {error}"))?;
+    checkpoint()?;
     let mut items = Vec::new();
     for item in document
         .root_element()
         .children()
         .filter(|node| is_predefined_element(*node, "Item"))
     {
-        collect_items(text, item, kind, None, &mut items)?;
+        collect_items(text, item, kind, None, &mut items, checkpoint)?;
     }
     let total = items.len();
-    items.truncate(limit);
+    if let Some(limit) = limit {
+        items.truncate(limit);
+    }
     Ok(MetaPredefinedItemsData {
         total,
         returned: items.len(),
@@ -623,7 +646,25 @@ fn validate_predefined_text_with_options(
     text: &str,
     allow_self_closing_items: bool,
 ) -> Result<(), String> {
+    validate_predefined_text_with_checkpoint(
+        kind,
+        code_type,
+        text,
+        allow_self_closing_items,
+        &mut || Ok(()),
+    )
+}
+
+fn validate_predefined_text_with_checkpoint(
+    kind: MetadataKind,
+    code_type: Option<PredefinedCodeType>,
+    text: &str,
+    allow_self_closing_items: bool,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    checkpoint()?;
     let document = Document::parse(text).map_err(|error| format!("Predefined.xml: {error}"))?;
+    checkpoint()?;
     let root = document.root_element();
     let namespace = root.tag_name().namespace().unwrap_or_default();
     let local_name = root.tag_name().name();
@@ -643,6 +684,7 @@ fn validate_predefined_text_with_options(
         ));
     }
     for node in root.descendants().filter(|node| node.is_element()) {
+        checkpoint()?;
         let Some(parent) = node
             .parent_element()
             .filter(|parent| parent.tag_name().namespace() == Some(PREDEFINED_NS))
@@ -668,6 +710,7 @@ fn validate_predefined_text_with_options(
         .descendants()
         .filter(|node| is_predefined_element(*node, "ChildItems"))
     {
+        checkpoint()?;
         if child_items
             .parent_element()
             .is_none_or(|parent| !is_predefined_element(parent, "Item"))
@@ -679,6 +722,7 @@ fn validate_predefined_text_with_options(
         .descendants()
         .filter(|node| is_predefined_element(*node, "Item"))
     {
+        checkpoint()?;
         let Some(raw_id) = item.attribute("id") else {
             return Err("predefined Item requires id".to_string());
         };
@@ -806,7 +850,9 @@ fn collect_items(
     kind: MetadataKind,
     parent_id: Option<String>,
     output: &mut Vec<MetaPredefinedItemData>,
+    checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
+    checkpoint()?;
     let data = parse_item(source, item, kind, parent_id)?;
     let id = data.id.clone();
     output.push(data);
@@ -815,7 +861,7 @@ fn collect_items(
             .children()
             .filter(|node| is_predefined_element(*node, "Item"))
         {
-            collect_items(source, nested, kind, Some(id.clone()), output)?;
+            collect_items(source, nested, kind, Some(id.clone()), output, checkpoint)?;
         }
     }
     Ok(())

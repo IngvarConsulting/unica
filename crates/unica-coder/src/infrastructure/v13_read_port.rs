@@ -889,7 +889,7 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         kind: MetadataKind,
         code_type: Option<&str>,
-        limit: usize,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Option<MetaPredefinedItemsData>, ViewError> {
         if !crate::domain::metadata::metadata_kind_collections(kind)
             .contains(&crate::domain::metadata::MetaCollection::PredefinedItems)
@@ -902,7 +902,12 @@ impl ProviderReadAuthority {
                 .join(name)
                 .join("Ext")
                 .join("Predefined.xml");
-        let Some(bytes) = self.read_optional_relative(&relative, MAX_CONFIGURATION_BYTES)? else {
+        let Some(bytes) = self.read_optional_relative_with_checkpoint(
+            &relative,
+            Some(MAX_CONFIGURATION_BYTES),
+            checkpoint,
+        )?
+        else {
             return Ok(Some(MetaPredefinedItemsData {
                 total: 0,
                 returned: 0,
@@ -920,11 +925,20 @@ impl ProviderReadAuthority {
                 ))
             }
         };
-        crate::infrastructure::native_operations::meta::read_predefined_items_for_code_type(
-            &bytes, kind, code_type, limit,
-        )
-        .map(Some)
-        .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
+        let mut interrupted = None;
+        let result = crate::infrastructure::native_operations::meta::read_complete_predefined_items_for_code_type(
+            &bytes, kind, code_type, &mut || checkpoint().map_err(|error| {
+                let message = error.to_string();
+                interrupted = Some(error);
+                message
+            }),
+        );
+        if let Some(error) = interrupted {
+            return Err(error);
+        }
+        result
+            .map(Some)
+            .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
     }
 
     pub(crate) fn external_metadata_payload(
