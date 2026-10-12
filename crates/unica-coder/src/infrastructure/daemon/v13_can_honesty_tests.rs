@@ -897,6 +897,19 @@ fn check_written_paths(
     }
     let segments = at.segments();
     let owner = &segments[0];
+    // Модуль самой конфигурации не имеет каталога объекта: его текст лежит
+    // в `Ext/` корня набора, и запись за его пределы — ошибка.
+    if owner.kind() == NodeKind::Module {
+        for path in paths {
+            let path = path.to_string_lossy().replace('\\', "/");
+            if !(path.starts_with("Ext/") && path.ends_with(".bsl")) {
+                mismatches.push(format!(
+                    "{at}: `{op}` writes `{path}` outside the configuration module"
+                ));
+            }
+        }
+        return;
+    }
     let Some(owner_name) = owner.name() else {
         return;
     };

@@ -997,6 +997,9 @@ fn legacy_element_definition(
 /// отказывает: раньше он молча пропадал, и опечатка давала элемент без
 /// заказанного свойства (#1351).
 const ELEMENT_DEFINITION_KEYS: &[&str] = &[
+    // Различитель таблицы динамического списка: без него генератор не пишет
+    // блок свойств списка (`autoRefresh`, `showRoot`, …).
+    "_dynList",
     "allowGettingCurrentRowURL",
     "allowRootChoice",
     "autoCmdBar",
@@ -2806,6 +2809,22 @@ fn stage_support_state(
 #[cfg(test)]
 mod tests {
     use super::{parse_form_resource_plan_operation, plan_form_resource_batch};
+
+    #[test]
+    fn a_dynamic_list_table_keeps_its_discriminator() {
+        let item = json!({
+            "name": "Список",
+            "type": "Table",
+            "path": "Список",
+            "_dynList": true,
+            "autoRefresh": true,
+        });
+        let (definition, _, _) =
+            super::legacy_element_definition(item.as_object().unwrap(), 0, "ops[0].args.items[0]")
+                .expect("a dynamic-list table is a valid element definition");
+        assert_eq!(definition["_dynList"], true);
+        assert_eq!(definition["autoRefresh"], true);
+    }
     use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
     use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
     use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;
