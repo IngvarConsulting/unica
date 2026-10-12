@@ -471,6 +471,13 @@ pub(super) fn meta_edit_insert_tabular_child_object(
     let object = meta_edit_object_node(&doc)?;
     let section = meta_edit_find_tabular_section(object, section_name)
         .ok_or_else(|| format!("TabularSection '{section_name}' not found"))?;
+    // Как и у владельца, новый член без позиции встаёт после существующих:
+    // платформа выгружает реквизиты части в порядке добавления.
+    if let Some(child_objects) = meta_info_child(section, "ChildObjects") {
+        let range = child_objects.range();
+        drop(doc);
+        return meta_edit_insert_lines_into_child_objects(xml_text, range, "\t\t\t\t", lines);
+    }
     let range = section.range();
     drop(doc);
     meta_edit_insert_lines_into_node_child_objects(

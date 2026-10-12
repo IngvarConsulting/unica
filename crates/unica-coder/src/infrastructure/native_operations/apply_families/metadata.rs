@@ -16,8 +16,8 @@ use crate::infrastructure::native_operations::apply_families::request::{
 };
 use crate::infrastructure::native_operations::meta::{
     apply_typed_operations_to_image_with_seed, meta_default_text_language,
-    meta_edit_object_identity, meta_mltext_property_replacement,
-    typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
+    meta_edit_object_identity, meta_mltext_property_replacement, predefined_item_id,
+    predefined_post_image, typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
 use crate::infrastructure::workspace_actor::{MetadataApplyAuthority, ProviderRootBinding};
 use serde_json::{json, Map, Value};
@@ -29,6 +29,17 @@ enum MetadataPlanKind {
     Edit {
         target: MetadataAddress,
         operation: MetaEditOperation,
+        /// The member is named by the operation address, not by an
+        /// argument: a missing member is the operation's own node.
+        addressed: bool,
+    },
+    /// Predefined items live in `Ext/Predefined.xml` next to the owner, not
+    /// in its descriptor; `set` and `remove` name the item by address, and
+    /// the item id is read from the staged file.
+    Predefined {
+        owner: MetadataAddress,
+        kind: MetadataKind,
+        change: PredefinedChange,
     },
     Create {
         kind: MetadataKind,
@@ -73,6 +84,18 @@ enum MetadataPlanKind {
 }
 
 #[derive(Debug, Clone)]
+enum PredefinedChange {
+    Add(MetaEditOperation),
+    Set {
+        name: String,
+        values: Map<String, Value>,
+    },
+    Remove {
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct MetadataPlanOperation {
     kind: MetadataPlanKind,
 }
@@ -99,41 +122,29 @@ pub(crate) fn parse_metadata_plan_operation(
         "tabularSection.add" => {
             parse_member_add(operation, "tabularSections", object, op_index, binding)?
         }
-        "tabularSection.set" => {
-            parse_member_set(operation, "tabularSections", object, op_index, binding)?
-        }
-        "tabularSection.remove" => {
-            parse_member_remove(operation, "tabularSections", object, op_index, binding)?
-        }
+        "tabularSection.set"
+        | "tabularSection.remove"
+        | "dimension.set"
+        | "dimension.remove"
+        | "resource.set"
+        | "resource.remove"
+        | "enumValue.set"
+        | "enumValue.remove"
+        | "column.set"
+        | "column.remove"
+        | "command.set"
+        | "command.remove" => parse_addressed_member(operation, object, op_index, binding)?,
         "dimension.add" => parse_member_add(operation, "dimensions", object, op_index, binding)?,
-        "dimension.set" => parse_member_set(operation, "dimensions", object, op_index, binding)?,
-        "dimension.remove" => {
-            parse_member_remove(operation, "dimensions", object, op_index, binding)?
-        }
         "resource.add" => parse_member_add(operation, "resources", object, op_index, binding)?,
-        "resource.set" => parse_member_set(operation, "resources", object, op_index, binding)?,
-        "resource.remove" => {
-            parse_member_remove(operation, "resources", object, op_index, binding)?
-        }
         "enumValue.add" => parse_member_add(operation, "enumValues", object, op_index, binding)?,
-        "enumValue.set" => parse_member_set(operation, "enumValues", object, op_index, binding)?,
-        "enumValue.remove" => {
-            parse_member_remove(operation, "enumValues", object, op_index, binding)?
-        }
         "column.add" => parse_member_add(operation, "columns", object, op_index, binding)?,
-        "column.set" => parse_member_set(operation, "columns", object, op_index, binding)?,
-        "column.remove" => parse_member_remove(operation, "columns", object, op_index, binding)?,
         "template.add" => parse_template_add(object, op_index, binding)?,
         "template.set" => parse_template_set(object, op_index, binding)?,
         "template.remove" => parse_template_remove(object, op_index, binding)?,
         "command.add" => parse_member_add(operation, "commands", object, op_index, binding)?,
-        "command.set" => parse_member_set(operation, "commands", object, op_index, binding)?,
-        "command.remove" => parse_member_remove(operation, "commands", object, op_index, binding)?,
-        "predefinedItem.add" => parse_predefined(operation, "add", object, op_index, binding)?,
-        "predefinedItem.set" => parse_predefined(operation, "update", object, op_index, binding)?,
-        "predefinedItem.remove" => {
-            parse_predefined(operation, "remove", object, op_index, binding)?
-        }
+        "predefinedItem.add" => parse_predefined_add(object, op_index, binding)?,
+        "predefinedItem.set" => parse_predefined_set(object, op_index, binding)?,
+        "predefinedItem.remove" => parse_predefined_remove(object, op_index, binding)?,
         "relation.add" => parse_relation(operation, "add", object, op_index, binding)?,
         "relation.replace" => parse_relation(operation, "replace", object, op_index, binding)?,
         "relation.remove" => parse_relation(operation, "remove", object, op_index, binding)?,
@@ -262,53 +273,14 @@ fn parse_template_add(
     })
 }
 
-fn template_name_from(
+/// `template.set`/`template.remove` name the template by its address
+/// `Owner.Name.Template.T`; the owner alone no longer selects a template.
+fn template_target(
     target: &QualifiedAddress,
-    values: Option<&Map<String, Value>>,
     op_index: usize,
 ) -> Result<(MetadataAddress, String), ApplyPlanError> {
-    // `Owner.Name.Template.T` names the template in the address; `values.name`
-    // is the other accepted spelling.
-    match target.segments() {
-        [owner, template] if template.kind() == NodeKind::Template => {
-            let owner_address = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!(
-                    "{}.{}",
-                    owner.kind().as_str(),
-                    owner.name().unwrap_or_default()
-                ),
-            )
-            .map_err(|error| {
-                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
-                    .at_path(format!("ops[{op_index}].args.at"))
-            })?;
-            let name = template
-                .name()
-                .ok_or_else(|| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "the template must be named")
-                        .at_path(format!("ops[{op_index}].args.at"))
-                })?
-                .to_string();
-            Ok((owner_address, name))
-        }
-        _ => {
-            let (owner, _) = metadata_owner(target, op_index)?;
-            let name = values
-                .and_then(|values| values.get("name"))
-                .and_then(Value::as_str)
-                .filter(|name| !name.is_empty())
-                .ok_or_else(|| {
-                    ApplyPlanError::new(
-                        ApplyPlanErrorKind::BadValue,
-                        "name the template in the address (`Owner.Name.Template.T`) or in `values.name`",
-                    )
-                    .at_path(format!("ops[{op_index}].args.values.name"))
-                })?
-                .to_string();
-            Ok((owner, name))
-        }
-    }
+    let (owner, _, name) = metadata_member_target(target, NodeKind::Template, op_index)?;
+    Ok((owner, name))
 }
 
 fn parse_template_set(
@@ -318,19 +290,42 @@ fn parse_template_set(
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
     reject_unknown_args("template.set", args, &["at", "values"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
+    let (owner, name) = template_target(&target, op_index)?;
     let values = required_object(args, "values", op_index)?.clone();
-    let (owner, name) = template_name_from(&target, Some(&values), op_index)?;
     if let Some(field) = values
         .keys()
-        .find(|field| !["name", "synonym", "comment", "templateType"].contains(&field.as_str()))
+        .find(|field| !["synonym", "comment", "templateType"].contains(&field.as_str()))
     {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
             format!(
-                "template.set values accept `synonym`, `comment` and `templateType`, not `{field}`"
+                "template.set values accept `synonym`, `comment` and `templateType`, not `{field}`; the template is named by its address"
             ),
         )
         .at_path(format!("ops[{op_index}].args.values.{field}")));
+    }
+    if values.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "template.set values must change at least one property",
+        )
+        .at_path(format!("ops[{op_index}].args.values")));
+    }
+    for (field, value) in &values {
+        let location = format!("ops[{op_index}].args.values.{field}");
+        let Some(text) = value.as_str() else {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                format!("`{field}` must be a string"),
+            )
+            .at_path(location));
+        };
+        if field == "templateType" {
+            crate::domain::metadata::MetaTemplateKind::parse(text).map_err(|diagnostic| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
+                    .at_path(location.clone())
+            })?;
+        }
     }
     Ok(MetadataPlanKind::TemplateSet {
         owner,
@@ -344,10 +339,9 @@ fn parse_template_remove(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("template.remove", args, &["at", "values"], op_index)?;
+    reject_unknown_args("template.remove", args, &["at"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
-    let values = args.get("values").and_then(Value::as_object);
-    let (owner, name) = template_name_from(&target, values, op_index)?;
+    let (owner, name) = template_target(&target, op_index)?;
     Ok(MetadataPlanKind::TemplateRemove { owner, name })
 }
 
@@ -622,7 +616,11 @@ fn parse_legacy_edit(
     // Keep an explicit owner-kind proof next to the reused parser: this also
     // guards future parser refactors from accepting a different target kind.
     let _ = kind;
-    Ok(MetadataPlanKind::Edit { target, operation })
+    Ok(MetadataPlanKind::Edit {
+        target,
+        operation,
+        addressed: false,
+    })
 }
 
 fn parse_props_set(
@@ -667,18 +665,37 @@ fn parse_props_set(
     )
 }
 
+/// `attribute.add` on the owner adds header attributes; on
+/// `Owner.Name.TabularSection.T` it adds attributes of that tabular section.
 fn parse_attribute_add(
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args("attribute.add", args, &["at", "items", "scope"], op_index)?;
+    reject_unknown_args("attribute.add", args, &["at", "items"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
-    let (owner, kind) = metadata_owner(&target, op_index)?;
+    let (owner, kind, section) = match target.segments() {
+        [_] => {
+            let (owner, kind) = metadata_owner(&target, op_index)?;
+            (owner, kind, None)
+        }
+        [_, section] if section.kind() == NodeKind::TabularSection => {
+            let (owner, kind, name) =
+                metadata_member_target(&target, NodeKind::TabularSection, op_index)?;
+            (owner, kind, Some(name))
+        }
+        _ => {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "attribute.add target must be a metadata object or its `TabularSection.<Name>`",
+            )
+            .at_path(format!("ops[{op_index}].args.at")))
+        }
+    };
     let items = required_array(args, "items", op_index)?.to_vec();
     let mut legacy = json!({"op": "add", "collection": "attributes", "elements": items});
-    if let Some(scope) = args.get("scope") {
-        legacy["scope"] = scope.clone();
+    if let Some(section) = section {
+        legacy["scope"] = json!({"tabularSection": section});
     }
     parse_legacy_edit(
         binding.source_set_name(),
@@ -718,7 +735,7 @@ fn parse_attribute_set(
     if let Some(section) = scope {
         legacy["scope"] = json!({"tabularSection": section});
     }
-    parse_legacy_edit(
+    Ok(addressed_edit(parse_legacy_edit(
         binding.source_set_name(),
         owner,
         kind,
@@ -731,7 +748,7 @@ fn parse_attribute_set(
             format!("ops[{op_index}].args.values.{field}")
         },
         op_index,
-    )
+    )?))
 }
 
 fn parse_attribute_remove(
@@ -746,20 +763,18 @@ fn parse_attribute_remove(
     if let Some(section) = scope {
         legacy["scope"] = json!({"tabularSection": section});
     }
-    parse_legacy_edit(
+    Ok(addressed_edit(parse_legacy_edit(
         binding.source_set_name(),
         owner,
         kind,
         legacy,
         |field| format!("ops[{op_index}].args.{field}"),
         op_index,
-    )
+    )?))
 }
 
 /// One member-collection add: `at` names the owner, `items` carry the new
-/// elements exactly as the typed metadata contract defines them. Attributes
-/// additionally accept `scope` for a tabular section; other collections have
-/// no nested scope in the platform model.
+/// elements exactly as the typed metadata contract defines them.
 fn parse_member_add(
     operation: &str,
     collection: &str,
@@ -786,20 +801,61 @@ fn parse_member_add(
     )
 }
 
-/// One member-collection update: `values` carries the member `name` plus the
-/// changed fields of the typed update contract.
-fn parse_member_set(
+/// The node kind and typed collection of an addressed member operation.
+fn addressed_member(operation: &str) -> (NodeKind, &'static str) {
+    match operation.split_once('.').map(|(family, _)| family) {
+        Some("tabularSection") => (NodeKind::TabularSection, "tabularSections"),
+        Some("dimension") => (NodeKind::Dimension, "dimensions"),
+        Some("resource") => (NodeKind::Resource, "resources"),
+        Some("enumValue") => (NodeKind::EnumValue, "enumValues"),
+        Some("column") => (NodeKind::Column, "columns"),
+        Some("command") => (NodeKind::Command, "commands"),
+        _ => unreachable!("only addressed member operations reach this parser"),
+    }
+}
+
+/// `<member>.set` and `<member>.remove` act on `Owner.Name.<Kind>.<Member>`:
+/// the address names the member, `set` carries only the changed fields in
+/// `values` (a rename is `newName`), and `remove` carries no arguments.
+fn parse_addressed_member(
     operation: &str,
-    collection: &str,
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(operation, args, &["at", "values"], op_index)?;
+    let (member_kind, collection) = addressed_member(operation);
+    let remove = operation.ends_with(".remove");
+    let allowed: &[&str] = if remove { &["at"] } else { &["at", "values"] };
+    reject_unknown_args(operation, args, allowed, op_index)?;
     let target = qualified_target(args, op_index, binding)?;
-    let (owner, kind) = metadata_owner(&target, op_index)?;
-    let values = required_object(args, "values", op_index)?.clone();
-    parse_legacy_edit(
+    let (owner, kind, name) = metadata_member_target(&target, member_kind, op_index)?;
+    if remove {
+        return Ok(addressed_edit(parse_legacy_edit(
+            binding.source_set_name(),
+            owner,
+            kind,
+            json!({"op": "remove", "collection": collection, "names": [name]}),
+            |field| format!("ops[{op_index}].args.{field}"),
+            op_index,
+        )?));
+    }
+    let mut values = required_object(args, "values", op_index)?.clone();
+    if values.contains_key("name") {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("`{operation}` names the member by its address; rename it with `newName`"),
+        )
+        .at_path(format!("ops[{op_index}].args.values.name")));
+    }
+    if values.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("`{operation}` values must change at least one field"),
+        )
+        .at_path(format!("ops[{op_index}].args.values")));
+    }
+    values.insert("name".to_string(), Value::String(name));
+    Ok(addressed_edit(parse_legacy_edit(
         binding.source_set_name(),
         owner,
         kind,
@@ -811,97 +867,201 @@ fn parse_member_set(
             )
         },
         op_index,
-    )
+    )?))
 }
 
-/// One member-collection removal: `values.name` names the member to remove.
-fn parse_member_remove(
-    operation: &str,
-    collection: &str,
+/// Marks a typed edit whose member is named by the operation address.
+fn addressed_edit(kind: MetadataPlanKind) -> MetadataPlanKind {
+    match kind {
+        MetadataPlanKind::Edit {
+            target, operation, ..
+        } => MetadataPlanKind::Edit {
+            target,
+            operation,
+            addressed: true,
+        },
+        other => other,
+    }
+}
+
+/// `Owner.Name.<Kind>.<Member>`: the owner, its kind and the member name.
+fn metadata_member_target(
+    target: &QualifiedAddress,
+    member_kind: NodeKind,
+    op_index: usize,
+) -> Result<(MetadataAddress, MetadataKind, String), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let [owner, member] = target.segments() else {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "operation target must be `Owner.Name.{}.<Name>`",
+                member_kind.as_str()
+            ),
+        )
+        .at_path(at_path));
+    };
+    if member.kind() != member_kind {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "operation target must end in a `{}` leaf",
+                member_kind.as_str()
+            ),
+        )
+        .at_path(at_path));
+    }
+    let name = member.name().ok_or_else(|| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("the `{}` leaf must be named", member_kind.as_str()),
+        )
+        .at_path(at_path.clone())
+    })?;
+    let owner_target = QualifiedAddress {
+        source_set: target.source_set().to_string(),
+        segments: vec![owner.clone()],
+    };
+    let (owner, kind) = metadata_owner(&owner_target, op_index)?;
+    Ok((owner, kind, name.to_string()))
+}
+
+/// The typed operation inside a parsed edit.
+fn edit_operation(kind: MetadataPlanKind) -> MetaEditOperation {
+    match kind {
+        MetadataPlanKind::Edit { operation, .. } => operation,
+        _ => unreachable!("the typed edit parser returns an edit"),
+    }
+}
+
+/// `predefinedItem.add` on the owner: new items carry their `id` and `name`.
+fn parse_predefined_add(
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
-    reject_unknown_args(operation, args, &["at", "values"], op_index)?;
+    reject_unknown_args("predefinedItem.add", args, &["at", "items"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
     let (owner, kind) = metadata_owner(&target, op_index)?;
-    let values = required_object(args, "values", op_index)?;
-    let name = values.get("name").and_then(Value::as_str).ok_or_else(|| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            format!("`{operation}` expects `values` with the member `name`"),
-        )
-        .at_path(format!("ops[{op_index}].args.values.name"))
-    })?;
-    if values.len() != 1 {
+    let items = required_array(args, "items", op_index)?.to_vec();
+    let operation = edit_operation(parse_legacy_edit(
+        binding.source_set_name(),
+        owner.clone(),
+        kind,
+        json!({"op": "add", "collection": "predefinedItems", "elements": items}),
+        |field| {
+            format!(
+                "ops[{op_index}].args.{}",
+                field.replacen("elements", "items", 1)
+            )
+        },
+        op_index,
+    )?);
+    Ok(MetadataPlanKind::Predefined {
+        owner,
+        kind,
+        change: PredefinedChange::Add(operation),
+    })
+}
+
+/// `predefinedItem.set` on `Owner.Name.PredefinedItem.<Name>`: `values`
+/// carry the changed fields; a rename is `newName`. The id is not an input.
+fn parse_predefined_set(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    reject_unknown_args("predefinedItem.set", args, &["at", "values"], op_index)?;
+    let target = qualified_target(args, op_index, binding)?;
+    let (owner, kind, name) = metadata_member_target(&target, NodeKind::PredefinedItem, op_index)?;
+    let values = required_object(args, "values", op_index)?.clone();
+    for (field, message) in [
+        (
+            "id",
+            "the predefined item is named by its address, not by `id`",
+        ),
+        (
+            "name",
+            "the predefined item is named by its address; rename it with `newName`",
+        ),
+    ] {
+        if values.contains_key(field) {
+            return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                .at_path(format!("ops[{op_index}].args.values.{field}")));
+        }
+    }
+    if values.is_empty() {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            format!("`{operation}` removal accepts only the member `name`"),
+            "`predefinedItem.set` values must change at least one field",
         )
         .at_path(format!("ops[{op_index}].args.values")));
     }
-    parse_legacy_edit(
+    // The typed contract is checked now, with a placeholder id: argument
+    // errors do not wait for the staged file that resolves the real one.
+    predefined_update(
         binding.source_set_name(),
+        &owner,
+        kind,
+        PREDEFINED_PLACEHOLDER_ID,
+        &values,
+        op_index,
+    )?;
+    Ok(MetadataPlanKind::Predefined {
         owner,
         kind,
-        json!({"op": "remove", "collection": collection, "names": [name]}),
-        |field| format!("ops[{op_index}].args.{field}"),
-        op_index,
-    )
+        change: PredefinedChange::Set { name, values },
+    })
 }
 
-/// Predefined items ride their own typed element schema: add takes `items`,
-/// update takes `values`, and removal takes `values.id`.
-fn parse_predefined(
-    operation: &str,
-    mode: &str,
+fn parse_predefined_remove(
     args: &Map<String, Value>,
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanKind, ApplyPlanError> {
+    reject_unknown_args("predefinedItem.remove", args, &["at"], op_index)?;
     let target = qualified_target(args, op_index, binding)?;
-    let (owner, kind) = metadata_owner(&target, op_index)?;
-    let legacy = match mode {
-        "add" => {
-            reject_unknown_args(operation, args, &["at", "items"], op_index)?;
-            let items = required_array(args, "items", op_index)?.to_vec();
-            json!({"op": "add", "collection": "predefinedItems", "elements": items})
-        }
-        "update" => {
-            reject_unknown_args(operation, args, &["at", "values"], op_index)?;
-            let values = required_object(args, "values", op_index)?.clone();
-            json!({"op": "update", "collection": "predefinedItems", "elements": [values]})
-        }
-        _ => {
-            reject_unknown_args(operation, args, &["at", "values"], op_index)?;
-            let values = required_object(args, "values", op_index)?;
-            let id = values.get("id").and_then(Value::as_str).ok_or_else(|| {
-                ApplyPlanError::new(
-                    ApplyPlanErrorKind::BadValue,
-                    format!("`{operation}` expects `values` with the predefined item `id`"),
-                )
-                .at_path(format!("ops[{op_index}].args.values.id"))
-            })?;
-            json!({"op": "remove", "collection": "predefinedItems", "ids": [id]})
-        }
-    };
-    parse_legacy_edit(
-        binding.source_set_name(),
+    let (owner, kind, name) = metadata_member_target(&target, NodeKind::PredefinedItem, op_index)?;
+    Ok(MetadataPlanKind::Predefined {
         owner,
         kind,
-        legacy,
+        change: PredefinedChange::Remove { name },
+    })
+}
+
+const PREDEFINED_PLACEHOLDER_ID: &str = "00000000-0000-4000-8000-000000000000";
+
+/// The typed update of one predefined item: `values` with `newName` mapped to
+/// the item's `name` field, the item selected by `id`.
+fn predefined_update(
+    source_set: &str,
+    owner: &MetadataAddress,
+    kind: MetadataKind,
+    id: &str,
+    values: &Map<String, Value>,
+    op_index: usize,
+) -> Result<MetaEditOperation, ApplyPlanError> {
+    let mut element = values.clone();
+    if let Some(new_name) = element.remove("newName") {
+        element.insert("name".to_string(), new_name);
+    }
+    element.insert("id".to_string(), Value::String(id.to_string()));
+    Ok(edit_operation(parse_legacy_edit(
+        source_set,
+        owner.clone(),
+        kind,
+        json!({"op": "update", "collection": "predefinedItems", "elements": [element]}),
         |field| {
-            // `add` carries `items[i]`; `set` carries one object in `values`;
-            // `remove` names the item through `values.id`.
-            let rewritten = match mode {
-                "add" => field.replacen("elements", "items", 1),
-                "update" => field.replacen("elements[0]", "values", 1),
-                _ => field.replacen("ids[0]", "values.id", 1),
+            let field = field.replacen("elements[0]", "values", 1);
+            let field = if field == "values.name" {
+                "values.newName".to_string()
+            } else {
+                field
             };
-            format!("ops[{op_index}].args.{rewritten}")
+            format!("ops[{op_index}].args.{field}")
         },
         op_index,
-    )
+    )?))
 }
 
 /// One relation edit: `values` carries the closed `relation` name and its
@@ -958,11 +1118,28 @@ pub(crate) fn plan_metadata_batch(
     let mut provisional = Vec::new();
     for operation in operations {
         let op_index = operation.index();
-        let (target, edit) = match &operation.operation().kind {
+        let (target, edit, addressed) = match &operation.operation().kind {
             MetadataPlanKind::Edit {
                 target,
                 operation: edit,
-            } => (target, edit),
+                addressed,
+            } => (target, edit, *addressed),
+            MetadataPlanKind::Predefined {
+                owner,
+                kind,
+                change,
+            } => {
+                stage_predefined(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    *kind,
+                    change,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
             MetadataPlanKind::Create { kind, name } => {
                 stage_object_create(
                     &mut staged,
@@ -1147,10 +1324,15 @@ pub(crate) fn plan_metadata_batch(
                 | MetaDiagnosticCode::ProviderUnavailable
                 | MetaDiagnosticCode::RollbackFailed => ApplyPlanErrorKind::ProviderUnavailable,
             };
-            let path = diagnostic.field.map_or_else(
-                || format!("ops[{op_index}].args"),
-                |field| format!("ops[{op_index}].args.{field}"),
-            );
+            // A member named by the address that is not there is the
+            // operation's own node: the refusal points at `at`.
+            let path = match diagnostic.field {
+                _ if addressed && kind == ApplyPlanErrorKind::NotFound => {
+                    format!("ops[{op_index}].args.at")
+                }
+                None => format!("ops[{op_index}].args"),
+                Some(field) => format!("ops[{op_index}].args.{field}"),
+            };
             ApplyPlanError::new(kind, diagnostic.message).at_path(path)
         })?;
         let mut postimage = {
@@ -2404,6 +2586,118 @@ fn stage_template_remove(
     Ok(())
 }
 
+/// Stage one predefined-item change in the owner's `Ext/Predefined.xml`.
+///
+/// The file is read from the staged state, so an item added earlier in the
+/// batch is visible to a later `set` or `remove` of the same batch. `set` and
+/// `remove` find the item by the name in their address; the platform keeps
+/// predefined names unique within the owner, nested items included.
+fn stage_predefined(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    kind: MetadataKind,
+    change: &PredefinedChange,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let (owner_relative, _, owner_source) =
+        owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    let relative = owner_relative.with_extension("").join("Ext/Predefined.xml");
+    let original = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    let item_id = |name: &str| -> Result<String, ApplyPlanError> {
+        let found = match &original {
+            Some(bytes) => predefined_item_id(bytes, kind, name).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?,
+            None => None,
+        };
+        found.ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                format!("`{}` has no predefined item `{name}`", owner.as_str()),
+            )
+            .at_path(at_path.clone())
+        })
+    };
+    let operation = match change {
+        PredefinedChange::Add(operation) => operation.clone(),
+        PredefinedChange::Set { name, values } => predefined_update(
+            authority.source_set_name(),
+            owner,
+            kind,
+            &item_id(name)?,
+            values,
+            op_index,
+        )?,
+        PredefinedChange::Remove { name } => edit_operation(parse_legacy_edit(
+            authority.source_set_name(),
+            owner.clone(),
+            kind,
+            json!({"op": "remove", "collection": "predefinedItems", "ids": [item_id(name)?]}),
+            |field| format!("ops[{op_index}].args.{field}"),
+            op_index,
+        )?),
+    };
+    let post_image =
+        predefined_post_image(kind, owner, &owner_source, original.as_deref(), &operation)
+            .map_err(|failure| {
+                let error = meta_failure_to_plan_error(failure, op_index);
+                // The typed writer names fields of its own request (`elements[0]`,
+                // `ids[0]`); the caller wrote `items`, `values` or the address.
+                let path = error
+                    .path()
+                    .map(|path| match change {
+                        PredefinedChange::Add(_) => {
+                            path.replacen("args.values.elements[", "args.items[", 1)
+                        }
+                        PredefinedChange::Set { .. } => path
+                            .replacen("args.values.elements[0].name", "args.values.newName", 1)
+                            .replacen("args.values.elements[0].id", "args.at", 1)
+                            .replacen("args.values.elements[0]", "args.values", 1),
+                        PredefinedChange::Remove { .. } => {
+                            path.replacen("args.values.ids[0]", "args.at", 1)
+                        }
+                    })
+                    .unwrap_or_else(|| format!("ops[{op_index}].args"));
+                error.at_path(path)
+            })?;
+    let changed = match (&original, post_image) {
+        (None, None) => false,
+        (None, Some(post)) => {
+            staged
+                .create(&relative, post)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            true
+        }
+        (Some(pre), Some(post)) if *pre != post => {
+            staged
+                .replace(&relative, pre, post)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            true
+        }
+        (Some(_), Some(_)) => false,
+        (Some(pre), None) => {
+            staged
+                .remove(&relative, pre)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+            true
+        }
+    };
+    if changed {
+        provisional.push(ProvisionalApplyEffect::single(
+            relative,
+            DomainEvent::new(DomainEventKind::MetadataChanged, owner.as_str().to_string()),
+            op_index,
+        ));
+    }
+    Ok(())
+}
+
 /// Removal planners list payload files and scan references on the physical
 /// source root, so they only see the truth when nothing was staged before
 /// them. A batch that edited files first must run the removal in its own
@@ -3098,8 +3392,404 @@ mod tests {
         }
     }
 
+    /// Табличная часть адресуется (#1352): реквизит, добавленный на адресе
+    /// новой табличной части в том же пакете, попадает внутрь неё, а не в
+    /// шапку; соседние реквизиты и сгенерированные типы части остаются.
+    /// Переименование члена — `newName` на его адресе.
     #[test]
-    fn member_collection_removal_takes_the_member_name_from_values() {
+    fn a_tabular_section_takes_attributes_at_its_own_address_in_one_batch() {
+        let fixture = MetadataFixture::new();
+        let staged = plan_all(
+            &fixture,
+            &[
+                (
+                    "attribute.add",
+                    json!({"at": "main:Document.Order", "items": [{"name": "Total"}]}),
+                ),
+                (
+                    "tabularSection.add",
+                    json!({"at": "main:Document.Order", "items": [{"name": "Lines", "attributes": [{"name": "Qty"}]}]}),
+                ),
+                (
+                    "attribute.add",
+                    json!({"at": "main:Document.Order.TabularSection.Lines", "items": [{"name": "Price"}]}),
+                ),
+                (
+                    "tabularSection.set",
+                    json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "Строки"}}),
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let texts = staged_texts(&staged);
+        let order = &texts[Path::new("Documents/Order.xml")];
+        let section_start = order.find("<TabularSection").expect("the section is added");
+        let section_end = order.find("</TabularSection>").expect("the section closes");
+        let section = &order[section_start..section_end];
+        for attribute in ["<Name>Qty</Name>", "<Name>Price</Name>"] {
+            assert!(
+                section.contains(attribute),
+                "{attribute} in the section: {order}"
+            );
+        }
+        // Без позиции новый реквизит встаёт после существующих, как в шапке.
+        assert!(
+            section.find("<Name>Qty</Name>") < section.find("<Name>Price</Name>"),
+            "{section}"
+        );
+        let header = format!("{}{}", &order[..section_start], &order[section_end..]);
+        assert!(header.contains("<Name>Total</Name>"), "{order}");
+        assert!(
+            !header.contains("<Name>Price</Name>"),
+            "the section attribute is not a header attribute: {order}"
+        );
+        // Сгенерированные типы новой части по одному и не размножены
+        // последующими правками.
+        for generated in [
+            "DocumentTabularSection.Order.Lines",
+            "DocumentTabularSectionRow.Order.Lines",
+        ] {
+            assert_eq!(
+                order.matches(&format!("name=\"{generated}\"")).count(),
+                1,
+                "{generated}: {order}"
+            );
+        }
+        assert!(section.contains("Строки"), "{section}");
+    }
+
+    /// Член называется адресом: `values.name` и адрес владельца — ошибки
+    /// вызова с точным путём; удаление не принимает аргументов.
+    #[test]
+    fn addressed_member_operations_refuse_a_name_argument_and_the_owner_address() {
+        let fixture = MetadataFixture::new();
+        for (operation, args, path) in [
+            (
+                "tabularSection.set",
+                json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"name": "Lines", "synonym": "x"}}),
+                "ops[0].args.values.name",
+            ),
+            (
+                "tabularSection.set",
+                json!({"at": "main:Document.Order", "values": {"synonym": "x"}}),
+                "ops[0].args.at",
+            ),
+            (
+                "tabularSection.set",
+                json!({"at": "main:Document.Order.TabularSection.Lines", "values": {}}),
+                "ops[0].args.values",
+            ),
+            (
+                "tabularSection.remove",
+                json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"name": "Lines"}}),
+                "ops[0].args.values",
+            ),
+            (
+                "dimension.set",
+                json!({"at": "main:Document.Order.TabularSection.Lines", "values": {"synonym": "x"}}),
+                "ops[0].args.at",
+            ),
+            (
+                "command.remove",
+                json!({"at": "main:Document.Order.Command"}),
+                "ops[0].args.at",
+            ),
+            (
+                "template.set",
+                json!({"at": "main:Document.Order", "values": {"name": "Print", "synonym": "x"}}),
+                "ops[0].args.at",
+            ),
+            (
+                "template.set",
+                json!({"at": "main:Document.Order.Template.Print", "values": {"name": "Print"}}),
+                "ops[0].args.values.name",
+            ),
+            (
+                "template.remove",
+                json!({"at": "main:Document.Order.Template.Print", "values": {"name": "Print"}}),
+                "ops[0].args.values",
+            ),
+            (
+                "attribute.add",
+                json!({"at": "main:Document.Order", "scope": {"tabularSection": "Lines"}, "items": [{"name": "Price"}]}),
+                "ops[0].args.scope",
+            ),
+            (
+                "attribute.add",
+                json!({"at": "main:Document.Order.TabularSection.Lines.Attribute.Qty", "items": [{"name": "Price"}]}),
+                "ops[0].args.at",
+            ),
+            (
+                "predefinedItem.set",
+                json!({"at": "main:Document.Order.PredefinedItem.Main", "values": {"id": "a1b2c3d4-1111-4111-8111-111111111111", "description": "x"}}),
+                "ops[0].args.values.id",
+            ),
+            (
+                "predefinedItem.set",
+                json!({"at": "main:Document.Order.PredefinedItem.Main", "values": {"name": "Other"}}),
+                "ops[0].args.values.name",
+            ),
+            (
+                "predefinedItem.remove",
+                json!({"at": "main:Document.Order", "values": {"id": "a1b2c3d4-1111-4111-8111-111111111111"}}),
+                "ops[0].args.values",
+            ),
+        ] {
+            let error = parse_metadata_plan_operation(operation, &args, 0, &fixture.binding)
+                .expect_err(operation);
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::BadValue,
+                "{operation} {args}"
+            );
+            assert_eq!(error.path(), Some(path), "{operation} {args}: {error:?}");
+        }
+    }
+
+    /// Изменение отсутствующего члена — «не найден» по адресу операции:
+    /// `next` отказа ведёт к владельцу, где член создают.
+    #[test]
+    fn a_missing_addressed_member_is_not_found_at_the_operation_address() {
+        let fixture = MetadataFixture::new();
+        for (operation, args) in [
+            (
+                "tabularSection.set",
+                json!({"at": "main:Document.Order.TabularSection.Absent", "values": {"synonym": "x"}}),
+            ),
+            (
+                "tabularSection.remove",
+                json!({"at": "main:Document.Order.TabularSection.Absent"}),
+            ),
+            (
+                "attribute.set",
+                json!({"at": "main:Document.Order.Attribute.Absent", "values": {"synonym": "x"}}),
+            ),
+        ] {
+            let error = plan_all(&fixture, &[(operation, args)]).expect_err(operation);
+            assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound, "{operation}");
+            assert_eq!(error.path(), Some("ops[0].args.at"), "{operation}");
+        }
+    }
+
+    /// Опубликованный контракт операции члена и разбор планировщиком
+    /// согласны: структурно неверный вызов отвергают оба, верный принимают
+    /// оба. Схема — не второй владелец правил: она выводится из того же
+    /// реестра полей коллекции, который проверяет писатель.
+    #[test]
+    fn member_operation_contracts_and_the_planner_agree_on_structure() {
+        use crate::domain::apply::OperationRegistry;
+        use crate::domain::metadata::{metadata_collection_spec, MetaCollection};
+        let fixture = MetadataFixture::new();
+        let string_type =
+            json!({"variants": [{"kind": "string", "length": 10, "allowedLength": "variable"}]});
+        let id = "a1b2c3d4-1111-4111-8111-111111111111";
+        let registry = OperationRegistry::closed();
+        let mut checked = 0;
+        for descriptor in registry.descriptors() {
+            let op = descriptor.name();
+            let Some(contract) = descriptor.argument_contract() else {
+                continue;
+            };
+            let (family, verb) = op.split_once('.').unwrap();
+            let owner = match family {
+                "dimension" | "resource" => "main:InformationRegister.Prices",
+                "enumValue" => "main:Enum.Kinds",
+                "column" => "main:DocumentJournal.All",
+                "predefinedItem" => "main:Catalog.Items",
+                "attribute" | "tabularSection" | "command" | "template" => "main:Document.Order",
+                _ => continue,
+            };
+            if op == "template.add" {
+                continue;
+            }
+            let leaf = match family {
+                "attribute" => "Attribute",
+                "tabularSection" => "TabularSection",
+                "dimension" => "Dimension",
+                "resource" => "Resource",
+                "enumValue" => "EnumValue",
+                "column" => "Column",
+                "command" => "Command",
+                "template" => "Template",
+                _ => "PredefinedItem",
+            };
+            let collection = match family {
+                "attribute" => Some(MetaCollection::Attributes),
+                "tabularSection" => Some(MetaCollection::TabularSections),
+                "dimension" => Some(MetaCollection::Dimensions),
+                "resource" => Some(MetaCollection::Resources),
+                "enumValue" => Some(MetaCollection::EnumValues),
+                "column" => Some(MetaCollection::Columns),
+                "command" => Some(MetaCollection::Commands),
+                _ => None,
+            };
+            let spec = collection.map(metadata_collection_spec);
+            let typed = spec.is_some_and(|spec| spec.allows_type);
+            let mut targets = vec![if verb == "add" {
+                owner.to_string()
+            } else {
+                format!("{owner}.{leaf}.Member")
+            }];
+            if op == "attribute.add" {
+                targets.push(format!("{owner}.TabularSection.Lines"));
+            }
+            let mut samples = vec![(contract.example_args.clone(), true)];
+            match (family, verb) {
+                ("predefinedItem", "add") => samples.extend([
+                    (json!({"items": [{"id": id, "name": "Main"}]}), true),
+                    (json!({"items": [{"name": "Main"}]}), false),
+                    (json!({"items": [{"id": "not-a-uuid", "name": "Main"}]}), false),
+                    (json!({"items": [{"id": id, "name": "Main", "unknown": 1}]}), false),
+                    (json!({"items": []}), false),
+                    (json!({}), false),
+                ]),
+                ("predefinedItem", "set") => samples.extend([
+                    (json!({"values": {"description": "x", "isFolder": false}}), true),
+                    (json!({"values": {"newName": "Other"}}), true),
+                    (json!({"values": {"id": id}}), false),
+                    (json!({"values": {"name": "Other"}}), false),
+                    (json!({"values": {"isFolder": "no"}}), false),
+                    (json!({"values": {}}), false),
+                    (json!({}), false),
+                ]),
+                ("template", "set") => samples.extend([
+                    (json!({"values": {"comment": "x"}}), true),
+                    (json!({"values": {"name": "Print"}}), false),
+                    (json!({"values": {}}), false),
+                    (json!({"values": {"templateType": "Picture"}}), false),
+                    (json!({"values": {"synonym": 1}}), false),
+                ]),
+                (_, "add") => samples.extend([
+                    (json!({"items": [{"name": "Member", "comment": "x"}]}), true),
+                    (json!({"items": [{"name": "Member", "type": string_type}]}), typed),
+                    (
+                        json!({"items": [{"name": "Member", "indexing": "Index"}]}),
+                        // Индексируются только типизированные поля.
+                        matches!(family, "attribute" | "dimension" | "resource" | "column"),
+                    ),
+                    (
+                        json!({"items": [{"name": "Member", "required": true}]}),
+                        spec.is_some_and(|spec| spec.allows_required),
+                    ),
+                    (
+                        json!({"items": [{"name": "Member", "templateType": "SpreadsheetDocument"}]}),
+                        false,
+                    ),
+                    (json!({"items": [{"name": "1Member"}]}), false),
+                    (json!({"items": [{"comment": "x"}]}), false),
+                    (json!({"items": [{"name": "Member", "unknown": 1}]}), false),
+                    (json!({"items": [{"name": "Member", "synonym": 1}]}), false),
+                    (json!({"items": []}), false),
+                    (json!({"items": {}}), false),
+                    (json!({"values": {}}), false),
+                    (json!({}), false),
+                ]),
+                (_, "set") => samples.extend([
+                    (json!({"values": {"newName": "Other"}}), true),
+                    (json!({"values": {"comment": "x", "synonym": "y"}}), true),
+                    (json!({"values": {"type": string_type}}), typed),
+                    (
+                        json!({"values": {"required": true}}),
+                        spec.is_some_and(|spec| spec.allows_required),
+                    ),
+                    (json!({"values": {"name": "Member"}}), false),
+                    (json!({"values": {"newName": "1Other"}}), false),
+                    (json!({"values": {"synonym": 1}}), false),
+                    (json!({"values": {}}), false),
+                    (json!({"values": "x"}), false),
+                    (json!({}), false),
+                ]),
+                (_, "remove") => samples.extend([
+                    (json!({}), true),
+                    (json!({"values": {"name": "Member"}}), false),
+                    (json!({"items": []}), false),
+                ]),
+                _ => {}
+            }
+            let validator = jsonschema::validator_for(&contract.schema)
+                .unwrap_or_else(|error| panic!("{op}: {error}"));
+            for target in &targets {
+                for (args, expected) in &samples {
+                    let mut args = args.clone();
+                    args["at"] = json!(target);
+                    let schema = validator.is_valid(&args);
+                    let planner =
+                        parse_metadata_plan_operation(op, &args, 0, &fixture.binding).map(|_| ());
+                    assert_eq!(
+                        (schema, planner.is_ok()),
+                        (*expected, *expected),
+                        "{op} at {target} with {args}: schema={schema}, planner={planner:?}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        // Члены и предопределённые элементы: 7 коллекций × 3 операции, ещё
+        // одна цель у `attribute.add`, макет и предопределённый элемент.
+        assert_eq!(checked, 7 * 3 + 1 + 2 + 3);
+    }
+
+    /// Предопределённые элементы пишутся в `Ext/Predefined.xml` владельца:
+    /// добавление создаёт файл, изменение и удаление находят элемент по
+    /// имени из адреса, в том числе добавленный ранее в том же пакете.
+    #[test]
+    fn predefined_items_are_staged_in_the_owner_predefined_file_by_name() {
+        const ITEMS_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+	<Catalog uuid="99999999-9999-4999-8999-999999999999">
+		<Properties><Name>Items</Name><CodeLength>9</CodeLength><CodeType>String</CodeType></Properties>
+		<ChildObjects/>
+	</Catalog>
+</MetaDataObject>
+"#;
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", RU_CONFIGURATION_XML),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", ORDER_XML),
+            ("Catalogs/Items.xml", ITEMS_XML),
+        ]);
+        let staged = plan_all(
+            &fixture,
+            &[
+                (
+                    "predefinedItem.add",
+                    json!({"at": "main:Catalog.Items", "items": [
+                        {"id": "a1b2c3d4-1111-4111-8111-111111111111", "name": "Main"},
+                        {"id": "a1b2c3d4-2222-4222-8222-222222222222", "name": "Spare"}
+                    ]}),
+                ),
+                (
+                    "predefinedItem.set",
+                    json!({"at": "main:Catalog.Items.PredefinedItem.Main", "values": {"description": "Основной", "newName": "Primary"}}),
+                ),
+                (
+                    "predefinedItem.remove",
+                    json!({"at": "main:Catalog.Items.PredefinedItem.Spare"}),
+                ),
+            ],
+        )
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let texts = staged_texts(&staged);
+        let predefined = &texts[Path::new("Catalogs/Items/Ext/Predefined.xml")];
+        assert!(predefined.contains("<Name>Primary</Name>"), "{predefined}");
+        assert!(
+            predefined.contains("<Description>Основной</Description>"),
+            "{predefined}"
+        );
+        assert!(!predefined.contains("Spare"), "{predefined}");
+        let missing = plan_all(
+            &fixture,
+            &[(
+                "predefinedItem.remove",
+                json!({"at": "main:Catalog.Items.PredefinedItem.Absent"}),
+            )],
+        )
+        .expect_err("an absent item is not found");
+        assert_eq!(missing.kind(), ApplyPlanErrorKind::NotFound);
+        assert_eq!(missing.path(), Some("ops[0].args.at"));
+    }
+
+    #[test]
+    fn member_collection_removal_takes_the_member_from_its_address() {
         let fixture = MetadataFixture::new();
         let admission = fixture.admission();
         let staged = admission.staged_state().unwrap();
@@ -3113,7 +3803,7 @@ mod tests {
         );
         let remove = fixture.parse(
             "tabularSection.remove",
-            json!({"at": "main:Document.Order", "values": {"name": "Строки"}}),
+            json!({"at": "main:Document.Order.TabularSection.Строки"}),
             1,
         );
         let (staged, effects) = plan_metadata_batch(staged, authority, &[add, remove]).unwrap();
@@ -3328,7 +4018,7 @@ mod tests {
                 ),
                 (
                     "attribute.add",
-                    json!({"at": "main:Document.Order", "scope": {"tabularSection": "Lines"}, "items": [{"name": "Price"}]}),
+                    json!({"at": "main:Document.Order.TabularSection.Lines", "items": [{"name": "Price"}]}),
                 ),
                 (
                     "command.add",
@@ -3594,7 +4284,7 @@ mod tests {
                 ),
                 (
                     "enumValue.set",
-                    json!({"at": "main:Enum.Kinds", "values": {"name": "Retail", "synonym": "Розничная"}}),
+                    json!({"at": "main:Enum.Kinds.EnumValue.Retail", "values": {"synonym": "Розничная"}}),
                 ),
                 (
                     "props.set",

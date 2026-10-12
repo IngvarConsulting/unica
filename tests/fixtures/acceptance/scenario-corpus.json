@@ -1284,18 +1284,17 @@
   },
   {
    "area": "Свойства объектов",
-   "task": "Изменить синоним табличной части (текущий ответ поверхности)",
+   "task": "Изменить синоним табличной части по её адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
+      "at": "main:Catalog.Валюты.TabularSection.Представления",
       "ops": [
        {
         "op": "tabularSection.set",
         "args": {
          "values": {
-          "name": "Представления",
           "synonym": "Мультиязычные представления"
          }
         }
@@ -1849,19 +1848,16 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Добавить реквизит в существующую табличную часть документа через scope (превью)",
+   "task": "Добавить реквизит в существующую табличную часть документа по адресу части (превью)",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных",
       "ops": [
        {
         "op": "attribute.add",
         "args": {
-         "scope": {
-          "tabularSection": "КатегорииДанных"
-         },
          "items": [
           {
            "name": "Основание",
@@ -1920,18 +1916,17 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Изменить свойства табличной части (текущий ответ поверхности)",
+   "task": "Изменить свойства табличной части по её адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
+      "at": "main:Catalog.Валюты.TabularSection.Представления",
       "ops": [
        {
         "op": "tabularSection.set",
         "args": {
          "values": {
-          "name": "Представления",
           "synonym": "Языковые представления"
          }
         }
@@ -1947,20 +1942,15 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Удалить табличную часть (текущий ответ поверхности)",
+   "task": "Удалить табличную часть по её адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
+      "at": "main:Catalog.Валюты.TabularSection.Представления",
       "ops": [
        {
-        "op": "tabularSection.remove",
-        "args": {
-         "values": {
-          "name": "Представления"
-         }
-        }
+        "op": "tabularSection.remove"
        }
       ]
      },
@@ -2013,18 +2003,17 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Изменить измерение регистра (текущий ответ поверхности)",
+   "task": "Изменить измерение регистра по его адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.КодСубъектаРФ",
       "ops": [
        {
         "op": "dimension.set",
         "args": {
          "values": {
-          "name": "КодСубъектаРФ",
           "synonym": "Код субъекта"
          }
         }
@@ -2040,20 +2029,15 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Удалить измерение регистра (текущий ответ поверхности)",
+   "task": "Удалить измерение регистра по его адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.РодительскийИдентификатор",
       "ops": [
        {
-        "op": "dimension.remove",
-        "args": {
-         "values": {
-          "name": "РодительскийИдентификатор"
-         }
-        }
+        "op": "dimension.remove"
        }
       ]
      },
@@ -2104,18 +2088,17 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Изменить измерение регистра (в фикстуре нет ресурсов — правим измерение)",
+   "task": "Изменить измерение регистра по его адресу (в фикстуре нет ресурсов — правим измерение)",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор",
       "ops": [
        {
         "op": "dimension.set",
         "args": {
          "values": {
-          "name": "Идентификатор",
           "synonym": "Идентификатор узла"
          }
         }
@@ -2131,20 +2114,15 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Удалить измерение регистра (в фикстуре нет ресурсов — удаляем измерение)",
+   "task": "Удалить измерение регистра по его адресу (в фикстуре нет ресурсов — удаляем измерение)",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.РодительскийИдентификатор",
       "ops": [
        {
-        "op": "dimension.remove",
-        "args": {
-         "values": {
-          "name": "РодительскийИдентификатор"
-         }
-        }
+        "op": "dimension.remove"
        }
       ]
      },
@@ -2188,18 +2166,17 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Изменить синоним значения перечисления (текущий ответ поверхности)",
+   "task": "Изменить синоним значения перечисления по его адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Enum.ВажностьПроблемыУчета",
+      "at": "main:Enum.ВажностьПроблемыУчета.EnumValue.Ошибка",
       "ops": [
        {
         "op": "enumValue.set",
         "args": {
          "values": {
-          "name": "Ошибка",
           "synonym": "Ошибка учёта"
          }
         }
@@ -2215,20 +2192,15 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Удалить значение перечисления (текущий ответ поверхности)",
+   "task": "Удалить значение перечисления по его адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Enum.ВажностьПроблемыУчета",
+      "at": "main:Enum.ВажностьПроблемыУчета.EnumValue.ПолезныйСовет",
       "ops": [
        {
-        "op": "enumValue.remove",
-        "args": {
-         "values": {
-          "name": "ПолезныйСовет"
-         }
-        }
+        "op": "enumValue.remove"
        }
       ]
      },
@@ -2269,18 +2241,17 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Изменить колонку журнала",
+   "task": "Изменить колонку журнала по её адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:DocumentJournal.ДокументыОрганизации",
+      "at": "main:DocumentJournal.ДокументыОрганизации.Column.Организация",
       "ops": [
        {
         "op": "column.set",
         "args": {
          "values": {
-          "name": "Организация",
           "synonym": "Организация документа"
          }
         }
@@ -2296,20 +2267,15 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Удалить колонку журнала",
+   "task": "Удалить колонку журнала по её адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:DocumentJournal.ДокументыОрганизации",
+      "at": "main:DocumentJournal.ДокументыОрганизации.Column.Организация",
       "ops": [
        {
-        "op": "column.remove",
-        "args": {
-         "values": {
-          "name": "Организация"
-         }
-        }
+        "op": "column.remove"
        }
       ]
      },
@@ -2351,7 +2317,7 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Добавить предопределённый элемент и уточнить его описание одним пакетом (превью)",
+   "task": "Добавить предопределённый элемент и уточнить его описание по адресу элемента одним пакетом (превью)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2372,8 +2338,8 @@
        {
         "op": "predefinedItem.set",
         "args": {
+         "at": "main:Catalog.Валюты.PredefinedItem.Рубль",
          "values": {
-          "id": "a1b2c3d4-1111-4111-8111-111111111111",
           "description": "Российский рубль"
          }
         }
@@ -2382,6 +2348,75 @@
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+       "select": ".//{*}Item/{*}Name",
+       "eq": [
+        "Рубль"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+       "select": ".//{*}Item/{*}Description",
+       "eq": [
+        "Российский рубль"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.PredefinedItem.Рубль"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/id",
+       "eq": "a1b2c3d4-1111-4111-8111-111111111111"
+      },
+      {
+       "pointer": "/data/props/description",
+       "eq": "Российский рубль"
+      }
      ]
     }
    ],
@@ -2389,7 +2424,7 @@
   },
   {
    "area": "Реквизиты и состав",
-   "task": "Добавить и удалить предопределённый элемент одним пакетом (обратимость превью)",
+   "task": "Добавить и удалить предопределённый элемент одним пакетом: удаление по адресу элемента",
    "wire": [
     {
      "tool": "unica.apply",
@@ -2410,15 +2445,35 @@
        {
         "op": "predefinedItem.remove",
         "args": {
-         "values": {
-          "id": "a1b2c3d4-2222-4222-8222-222222222222"
-         }
+         "at": "main:Catalog.Валюты.PredefinedItem.Тестовый"
         }
        }
       ]
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+       "eq": false
+      }
      ]
     }
    ],
@@ -2559,7 +2614,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `attribute.add` does not apply to Enum `main:Enum.ВажностьПроблемыУчета`; it addresses `Kind.Name` of a kind with attributes",
+     "refusal": "bad_value: apply operation `attribute.add` does not apply to Enum `main:Enum.ВажностьПроблемыУчета`; it addresses `Kind.Name` of a kind with attributes or `Kind.Name.Tabul",
      "assertions": [
       {
        "pointer": "/next/0/args/at",
@@ -5379,18 +5434,17 @@
   },
   {
    "area": "Макеты",
-   "task": "Поменять синоним макета",
+   "task": "Поменять синоним макета по его адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов",
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
       "ops": [
        {
         "op": "template.set",
         "args": {
          "values": {
-          "name": "ОсновнаяСхемаКомпоновкиДанных",
           "synonym": "Основная схема"
          }
         }
@@ -5406,20 +5460,15 @@
   },
   {
    "area": "Макеты",
-   "task": "Удалить устаревший макет",
+   "task": "Удалить устаревший макет по его адресу",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов",
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
       "ops": [
        {
-        "op": "template.remove",
-        "args": {
-         "values": {
-          "name": "ОсновнаяСхемаКомпоновкиДанных"
-         }
-        }
+        "op": "template.remove"
        }
       ]
      },
@@ -32835,6 +32884,459 @@
        "kind": "sha256",
        "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
        "eq": "$capture.before"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S394",
+   "name": "retired-scope-recovers-at-the-tabular-section",
+   "issue": 1352,
+   "area": "Реквизиты и состав",
+   "task": "Вызов attribute.add со снятым scope.tabularSection отказывает без записи, next ведёт к can табличной части с контрактом операции, исправленный вызов на адресе части публикует реквизит внутри части, а не в шапке",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "scope": {
+          "tabularSection": "КатегорииДанных"
+         },
+         "items": [
+          {
+           "name": "Основание",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 100,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `attribute.add` names its subject by address, not by `scope.tabularSection`; call it at `main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Категор",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.scope.tabularSection"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных"
+      },
+      {
+       "pointer": "/next/0/args/filter/can/op",
+       "eq": "attribute.add"
+      }
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных",
+      "filter": {
+       "sections": [
+        "can"
+       ],
+       "can": {
+        "op": "attribute.add"
+       }
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can/0/op",
+       "eq": "attribute.add"
+      },
+      {
+       "pointer": "/data/can/0/implemented",
+       "eq": true
+      },
+      {
+       "pointer": "/data/can/0/contract/argsSchema/required",
+       "eq": [
+        "items"
+       ]
+      },
+      {
+       "pointer": "/data/can/0/contract/argsSchema/properties/scope",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Основание",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 100,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+       "select": ".//{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+       "eq": [
+        "Субъект",
+        "ИмяОбъекта",
+        "Категория",
+        "Основание",
+        "Свойство",
+        "Значение",
+        "ТекстоваяСтрока",
+        "ИмяОбъекта",
+        "КоличествоОбъектов"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+       "select": "./{*}Document/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+       "eq": [
+        "Организация",
+        "НаименованиеОрганизации",
+        "ЮридическийАдресОрганизации",
+        "ОтветственныйЗаОбработкуПерсональныхДанных",
+        "ФИООтветственногоЗаОбработкуПДн",
+        "НаименованиеИнформационнойСистемы",
+        "ДатаУничтожения",
+        "СпособУничтожения",
+        "ПричинаУничтожения",
+        "Ответственный",
+        "Комментарий",
+        "Субъект",
+        "ФИОСубъекта"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S395",
+   "name": "retired-member-selectors-route-to-the-member",
+   "issue": 1352,
+   "area": "Реквизиты и состав",
+   "task": "Член метаданных, названный аргументом на владельце, получает отказ с адресом члена в next; предопределённый элемент, названный идентификатором, — с коллекцией, где видно его имя",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия",
+      "ops": [
+       {
+        "op": "dimension.set",
+        "args": {
+         "values": {
+          "name": "Идентификатор",
+          "synonym": "Идентификатор узла"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `dimension.set` names its subject by address, not by `values.name`; call it at `main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор`",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор"
+      },
+      {
+       "pointer": "/next/0/args/filter/can/op",
+       "eq": "dimension.set"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "predefinedItem.remove",
+        "args": {
+         "values": {
+          "id": "a1b2c3d4-1111-4111-8111-111111111111"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `predefinedItem.remove` names its subject by address, not by `values.id`; call it at `main:Catalog.Валюты.PredefinedItem.<Name>`, reading the name in `main:Cata",
+     "assertions": [
+      {
+       "pointer": "/next/0/tool",
+       "eq": "unica.view"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.PredefinedItem"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "dimension.set",
+        "args": "values",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "dimension.remove",
+        "args": "at",
+        "implemented": true
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S396",
+   "name": "new-tabular-section-takes-attributes-at-its-address",
+   "issue": 1352,
+   "area": "Реквизиты и состав",
+   "task": "Одним пакетом создать табличную часть и добавить в неё реквизит по адресу новой части; публикация кладёт реквизит в часть",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+      "ops": [
+       {
+        "op": "tabularSection.add",
+        "args": {
+         "items": [
+          {
+           "name": "Основания",
+           "attributes": [
+            {
+             "name": "Документ",
+             "type": {
+              "variants": [
+               {
+                "kind": "string",
+                "length": 50,
+                "allowedLength": "variable"
+               }
+              ]
+             }
+            }
+           ]
+          }
+         ]
+        }
+       },
+       {
+        "op": "attribute.add",
+        "args": {
+         "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Основания",
+         "items": [
+          {
+           "name": "Дата",
+           "type": {
+            "variants": [
+             {
+              "kind": "date",
+              "fractions": "date"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+       "select": ".//{*}TabularSection/{*}Properties/{*}Name",
+       "eq": [
+        "КатегорииДанных",
+        "ДополнительныеРеквизиты",
+        "ОбъектыСУничтожаемымиДанными",
+        "Основания"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+       "select": "./{*}Document/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+       "eq": [
+        "Организация",
+        "НаименованиеОрганизации",
+        "ЮридическийАдресОрганизации",
+        "ОтветственныйЗаОбработкуПерсональныхДанных",
+        "ФИООтветственногоЗаОбработкуПДн",
+        "НаименованиеИнформационнойСистемы",
+        "ДатаУничтожения",
+        "СпособУничтожения",
+        "ПричинаУничтожения",
+        "Ответственный",
+        "Комментарий",
+        "Субъект",
+        "ФИОСубъекта"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+       "select": ".//{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+       "eq": [
+        "Субъект",
+        "ИмяОбъекта",
+        "Категория",
+        "Свойство",
+        "Значение",
+        "ТекстоваяСтрока",
+        "ИмяОбъекта",
+        "КоличествоОбъектов",
+        "Документ",
+        "Дата"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Основания.Attribute"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/at",
+       "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Основания.Attribute.Документ"
+      },
+      {
+       "pointer": "/data/items/1/at",
+       "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Основания.Attribute.Дата"
+      },
+      {
+       "pointer": "/data/items/2",
+       "absent": true
       }
      ]
     }

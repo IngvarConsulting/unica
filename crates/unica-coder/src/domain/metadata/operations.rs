@@ -583,6 +583,9 @@ pub(crate) struct MetaCollectionSpec {
     pub(crate) allows_fill_value: bool,
     pub(crate) allows_nested_attributes: bool,
     pub(crate) allows_position: bool,
+    /// `Indexing` is a property of typed fields only: attributes, register
+    /// dimensions and resources, journal columns.
+    pub(crate) allows_indexing: bool,
 }
 
 const COLLECTION_SPECS: &[MetaCollectionSpec] = &[
@@ -627,6 +630,7 @@ const fn collection_spec(
         allows_fill_value,
         allows_nested_attributes,
         allows_position,
+        allows_indexing: allows_type,
     }
 }
 
@@ -787,6 +791,8 @@ impl MetaElementDefinition {
             input.fill_value.is_some(),
             input.attributes.is_some(),
             input.position.is_some(),
+            input.indexing.is_some(),
+            input.template_type.is_some(),
         )?;
         let attributes_field = format!("{field}.attributes");
         let attributes = input
@@ -858,6 +864,8 @@ impl MetaElementUpdate {
             input.fill_value.is_some(),
             false,
             input.position.is_some(),
+            input.indexing.is_some(),
+            false,
         )?;
         Ok(Self {
             name: input.name,
@@ -873,6 +881,7 @@ impl MetaElementUpdate {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_element_fields(
     spec: &MetaCollectionSpec,
     field: &str,
@@ -881,8 +890,16 @@ fn validate_element_fields(
     has_fill_value: bool,
     has_nested_attributes: bool,
     has_position: bool,
+    has_indexing: bool,
+    has_template_type: bool,
 ) -> Result<(), MetaDiagnostic> {
     for (present, allowed, suffix) in [
+        (has_indexing, spec.allows_indexing, "indexing"),
+        (
+            has_template_type,
+            spec.collection == MetaCollection::Templates,
+            "templateType",
+        ),
         (has_type, spec.allows_type, "type"),
         (has_required, spec.allows_required, "required"),
         (has_fill_value, spec.allows_fill_value, "fillValue"),

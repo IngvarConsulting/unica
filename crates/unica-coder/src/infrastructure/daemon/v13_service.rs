@@ -3797,9 +3797,31 @@ pub(super) fn preflight_apply_operations(
         if let Some(redirect) =
             registry.retired_argument_redirect(operation.name(), &site, operation.args())
         {
+            let location = Some(format!("ops[{index}].args.{}", redirect.location));
+            if redirect.listing {
+                // Значение называло подузел не именем: адрес из него не
+                // строится, и `next` ведёт к коллекции, где имя видно.
+                let mut refusal = error_result(
+                    location,
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; call it at `{}.<Name>`, reading the name in `{}`",
+                        operation.name(),
+                        redirect.location,
+                        redirect.at,
+                        redirect.at
+                    ),
+                );
+                refusal.next.push(json!({
+                    "tool": "unica.view",
+                    "args": {"at": redirect.at.to_string()},
+                    "reason": format!("имя узла для операции `{}`", operation.name()),
+                }));
+                return Err(Box::new(refusal));
+            }
             return Err(Box::new(with_operation_dictionary(
                 error_result(
-                    Some(format!("ops[{index}].args.{}", redirect.location)),
+                    location,
                     RefusalCode::BadValue,
                     format!(
                         "`{}` names its subject by address, not by `{}`; call it at `{}`",

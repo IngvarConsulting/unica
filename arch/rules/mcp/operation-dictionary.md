@@ -17,6 +17,12 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::fixture_coverage_reaches_every_route_class
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::a_misplaced_operation_routes_next_to_the_node_where_it_applies
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::without_an_executable_ancestor_the_refusal_names_the_address_shape
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_the_predefined_workspace
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_member_arguments_route_next_to_the_member_address
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::a_retired_scope_call_recovers_through_next_to_a_published_tabular_attribute
+  - crates/unica-coder/src/domain/apply.rs::member_operations_apply_at_the_member_address_not_at_the_owner
+  - crates/unica-coder/src/domain/apply.rs::every_retired_argument_entry_builds_a_routable_member_address
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs::member_operation_contracts_and_the_planner_agree_on_structure
 gap: https://github.com/IngvarConsulting/unica/issues/1358
 ---
 
@@ -42,11 +48,22 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 читается, иначе к корню набора. `diff` не принимает вычисляемые секции
 `can` и `limits`.
 
-До переноса операций на адреса подузлов (пакеты П1–П6 зонта #1358)
-обещание «не пишет в другой узел» выполнено не для всех операций:
+Члены объекта метаданных адресуются сами: табличная часть, измерение,
+ресурс, значение перечисления, графа журнала, команда, макет
+и предопределённый элемент изменяются и удаляются по своему адресу,
+а реквизит табличной части добавляется по адресу части. Аргумент, которым
+такой вызов прежде называл член (`scope.tabularSection`, `values.name`,
+`values.id`), получает отказ `bad_value` до вердикта «не тот узел»; `next`
+ведёт к `can` члена, а для предопределённого элемента, названного
+идентификатором, — к его коллекции, где видно имя. Подробный контракт
+операции члена (`filter.can.op`) и разбор планировщиком одинаково принимают
+и отвергают структуру аргументов.
+
+До переноса остальных операций на адреса подузлов (пакеты П2–П6 зонта
+#1358) обещание «не пишет в другой узел» выполнено не для всех операций:
 те, что ещё называют подузел аргументом (записи таблицы снятых аргументов
-в реестре, например `values.name` у `tabularSection.set` или `scope`
-у `attribute.add`), пишут в подузел, названный аргументом, а не адресом.
+в реестре, например `values.element` у `event.bind`), пишут в подузел,
+названный аргументом, а не адресом.
 
 Проверки проходят настоящий вызов `view` для объекта метаданных и
 отдельно проверяют проекции корня, модуля, неизвестного вида и операции
