@@ -30,7 +30,7 @@ description: "Производительность БД и запросов 1С.
 
 1. Name the slow scenario first: user action, API call, report, background job, exchange step, or posting.
 2. Extract exact query/DCS text with `unica.search` or `unica.view` on the schema node; inspect large candidate modules with `unica.view` on the module node (its `Method` branch lists the methods) before reading full bodies.
-3. Find callers with `unica.search` by the method name when the performance issue depends on execution path, query-in-loop risk, or impact of moving logic; a call graph is not on the v0.13 surface.
+3. Find callers with `unica.view` at `<method>.Caller` when the performance issue depends on execution path, query-in-loop risk, or impact of moving logic; `unica.search` by the method name adds literal mentions.
 4. Inspect `unica.view` on the object node for both the local object structure and related modules, roles, subscriptions, functional options, or predefined items that can change the performance path.
 5. Gather evidence: row counts, generated SQL, query plan, managed locks, lock order, lock/deadlock participants, long transaction boundaries, temp storage, TEMPDB or WAL pressure, and table/index names.
 6. Separate causes: inefficient platform query, missing or harmful index, broad virtual table read, query-in-loop, lock contention, DBMS maintenance, or data growth.

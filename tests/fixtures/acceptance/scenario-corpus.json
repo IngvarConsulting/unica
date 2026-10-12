@@ -32021,6 +32021,173 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S389",
+   "name": "call-graph-is-a-branch-not-a-section",
+   "issue": 1373,
+   "area": "Код BSL",
+   "task": "Узел метода называет ветви графа вызовов без счёта, а секции callGraph у view нет",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст.Caller"
+       }
+      },
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст.Callee"
+       }
+      },
+      {
+       "pointer": "/data/props/callGraph",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст",
+      "filter": {
+       "sections": [
+        "callGraph"
+       ]
+      }
+     },
+     "expect": [
+      "unsupported"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "unsupported_filter"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "unsupported view section `callGraph`"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S390",
+   "name": "call-graph-branch-delivers-the-missing-analyzer",
+   "issue": 1373,
+   "area": "Код BSL",
+   "task": "Ветвь графа вызовов заказывает отсутствующий анализатор этим же вызовом, а провал поставки даёт типизированный отказ «нет движка»",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-delivery-failure",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+       }
+      },
+      {
+       "pointer": "/data/delivery",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/at",
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "provider_absent"
+      },
+      {
+       "pointer": "/data/delivery",
+       "eq": {
+        "artifact": "bsl-analyzer",
+        "status": "failed",
+        "failureClass": "configuration"
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример.Callee"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/at",
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример.Callee"
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "provider_absent"
+      },
+      {
+       "pointer": "/data/delivery",
+       "eq": {
+        "artifact": "bsl-analyzer",
+        "status": "failed",
+        "failureClass": "configuration"
+       }
+      }
+     ]
+    }
+   ]
   }
  ]
 }
