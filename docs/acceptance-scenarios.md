@@ -487,7 +487,7 @@
 | S325 | Проверка формы принимает прежнюю трёхпараметровую сигнатуру обработчика выбора и предупреждает об обработчике с сигнатурой другого события (#791) | `source` | `apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`check` валидаторы `form`<br>`apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`check` валидаторы `form` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S388 | В конфигурации с единственным языком en заголовки и подсказки новых элементов формы и заголовки СКД пишутся на en; ru не появляется | `source` | `apply` `form.add` `formAttribute.add` `element.add` `formCommand.add`<br>`apply`<br>`apply` `field.add` `field.set` `parameter.add` `variant.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 | S393 | element.add на адресе элемента формы отказывает без записи, next ведёт к can формы, а исправленный вызов на форме с into строит предпросмотр | `source` | `view`<br>`apply` `element.add`<br>`view`<br>`apply` `element.add` | `ok`<br>`refused`<br>`ok`<br>`ok` |
-| S399 | Проверка формы принимает обработчик выбора с полной сигнатурой события, `Знач` и необязательным лишним параметром | `source` | `apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`check` валидаторы `form` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S399 | Проверка формы принимает обработчик выбора таблицы с полной сигнатурой события, `Знач` и необязательным лишним параметром | `source` | `apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`check` валидаторы `form` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Код BSL
 
