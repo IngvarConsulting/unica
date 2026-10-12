@@ -14,9 +14,13 @@ FIXTURE_VERSION = "0.0.0-test-fixture"
 PRIVATE_MARKERS = ("private-severity-token-1064", "/private/fault-source-1064")
 
 
-def stage_fault_producer(plugin: Path) -> dict:
+def analyzer_lock_and_target() -> tuple[dict, str]:
     lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())
-    target = host_target(lock, platform.system(), platform.machine())
+    return lock, host_target(lock, platform.system(), platform.machine())
+
+
+def stage_fault_producer(plugin: Path) -> dict:
+    lock, target = analyzer_lock_and_target()
     source = REPO / "tests/fixtures/analyzer/jsonl-fault-producer.rs"
     binary = plugin / "bin" / target / ("bsl-analyzer.exe" if os.name == "nt" else "bsl-analyzer")
     binary.parent.mkdir(parents=True)
@@ -36,6 +40,20 @@ def stage_fault_producer(plugin: Path) -> dict:
     return manifest
 
 
+def analyzer_binary(plugin: Path) -> Path:
+    return plugin / "bin" / analyzer_lock_and_target()[1] / ("bsl-analyzer.exe" if os.name == "nt" else "bsl-analyzer")
+
+
+def place_engine(plugin: Path, present: bool) -> None:
+    """The missing-engine case removes the producer; every other case restores it."""
+    binary = analyzer_binary(plugin)
+    aside = binary.with_name(binary.name + ".absent")
+    if present and aside.exists():
+        aside.rename(binary)
+    elif not present and binary.exists():
+        binary.rename(aside)
+
+
 def write_fault_case(plugin: Path, case: str) -> None:
     if case not in FAULT_CASES:
         raise ValueError(f"unknown controlled JSONL case {case!r}")
@@ -47,6 +65,7 @@ def fault_driver(plugin: Path, records: list):
         if scenario.get("driver") != "analyzer-jsonl-fault":
             raise ValueError("fault profile requires its closed driver")
         write_fault_case(plugin, scenario["evaluation"])
+        place_engine(plugin, scenario["evaluation"] != "missing-engine")
         if not hasattr(server, "_fault_original_call"):
             server._fault_original_call = server.call
 

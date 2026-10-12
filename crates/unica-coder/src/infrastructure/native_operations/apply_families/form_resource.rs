@@ -470,19 +470,17 @@ fn creation_name(
             format!("`{name}` is not a valid 1C identifier"),
         ));
     }
-    match target.segments() {
-        [root] if root.kind() == NodeKind::Configuration => {}
-        [only] if only.kind() == kind && only.name() == Some(name.as_str()) => {}
-        _ => {
-            return Err(bad(
-                op_index,
-                "at",
-                format!(
-                    "creation targets the configuration root (or `{}.{name}` itself)",
-                    kind.as_str()
-                ),
-            ))
-        }
+    // Узел создаёт операция родителя: `at` всегда называет существующий
+    // узел, а имя нового — аргумент.
+    if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
+        return Err(bad(
+            op_index,
+            "at",
+            format!(
+                "`{}` creation targets the configuration root; name the new object in `values.name`",
+                kind.as_str()
+            ),
+        ));
     }
     Ok(name)
 }
@@ -493,7 +491,7 @@ pub(crate) fn parse_form_resource_plan_operation(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanOperation, ApplyPlanError> {
-    validate_platform_xml_binding(binding, op_index)?;
+    validate_platform_xml_binding(binding, operation, op_index)?;
     let object = args.as_object().ok_or_else(|| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
@@ -686,6 +684,15 @@ fn parse_support_operation(
     let target = qualified_target(args, op_index, binding)?;
     match operation {
         "supportCapability.set" => {
+            // Возможность изменения — свойство всей конфигурации; вызов на
+            // объекте писал бы не в тот узел.
+            if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    "supportCapability.set targets the configuration root",
+                ));
+            }
             let values = required_values(args, op_index, &["enabled", "rule"])?;
             let enabled =
                 match (values.get("enabled"), values.get("rule")) {
@@ -962,13 +969,119 @@ fn legacy_element_definition(
             "name" | "type" | "orientation" => {}
             "after" => after = value.as_str().map(str::to_string),
             "into" => into = value.as_str().map(str::to_string),
-            _ => {
+            known
+                if ELEMENT_DEFINITION_KEYS.contains(&known)
+                    || crate::infrastructure::native_operations::form::FORM_BINDING_PATH_PROPERTIES
+                        .iter()
+                        .any(|(json_key, _)| *json_key == known) =>
+            {
                 definition.insert(key.clone(), value.clone());
+            }
+            unknown => {
+                return Err(bad(
+                    op_index,
+                    &format!("{location}.{unknown}"),
+                    format!("unknown form element property `{unknown}`"),
+                ))
             }
         }
     }
     Ok((Value::Object(definition), into, after))
 }
+
+/// Свойства элемента, которые читают генераторы элементов формы
+/// (`form::emit_form_*`), и внутренние различители вида. Пути привязки
+/// (`path`, `headerDataPath`, …) берутся из таблицы генератора
+/// `FORM_BINDING_PATH_PROPERTIES`: её проверка даёт предметный отказ, например
+/// для `headerDataPath` у обычной группы. Неизвестный ключ
+/// отказывает: раньше он молча пропадал, и опечатка давала элемент без
+/// заказанного свойства (#1351).
+const ELEMENT_DEFINITION_KEYS: &[&str] = &[
+    // Различитель таблицы динамического списка: без него генератор не пишет
+    // блок свойств списка (`autoRefresh`, `showRoot`, …).
+    "_dynList",
+    "allowGettingCurrentRowURL",
+    "allowRootChoice",
+    "autoCmdBar",
+    "autoCommandBar",
+    "autoInsertNewRow",
+    "autoMaxHeight",
+    "autoMaxWidth",
+    "autoRefresh",
+    "autoRefreshPeriod",
+    "autofill",
+    "backColor",
+    "behavior",
+    "button",
+    "check",
+    "checkBoxType",
+    "children",
+    "choiceButton",
+    "choiceFoldersAndItems",
+    "clearButton",
+    "cmdBar",
+    "collapsed",
+    "columns",
+    "command",
+    "commandBar",
+    "commandBarLocation",
+    "commandName",
+    "commandSource",
+    "currentRowUse",
+    "defaultButton",
+    "disabled",
+    "dropListButton",
+    "elements",
+    "enableDrag",
+    "enabled",
+    "font",
+    "formatted",
+    "group",
+    "handlers",
+    "headerHorizontalAlign",
+    "height",
+    "hidden",
+    "horizontalAlign",
+    "horizontalStretch",
+    "html",
+    "hyperlink",
+    "initialTreeView",
+    "input",
+    "inputHint",
+    "label",
+    "labelField",
+    "locationInCommandBar",
+    "markIncomplete",
+    "multiLine",
+    "on",
+    "page",
+    "pages",
+    "pagesRepresentation",
+    "passwordMode",
+    "picture",
+    "readOnly",
+    "representation",
+    "restoreCurrentRow",
+    "showInHeader",
+    "showLeftMargin",
+    "showRoot",
+    "showTitle",
+    "skipOnInput",
+    "spinButton",
+    "stdCommand",
+    "table",
+    "tableAutofill",
+    "text",
+    "title",
+    "titleLocation",
+    "tooltip",
+    "tooltipRepresentation",
+    "updateOnDataChange",
+    "userVisible",
+    "verticalStretch",
+    "visible",
+    "width",
+];
 
 // Nested children still use the internal element description. Refuse a typed
 // HTML child before its `name` could make that description default to InputField.
@@ -1063,6 +1176,29 @@ fn parse_form_operation(
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let address = qualified_target(args, op_index, binding)?;
     let target = form_target(&address, op_index)?;
+    // Узел, на котором исполняется операция, — ровно её `at`. Операции,
+    // которые не читают элемент или форму из адреса, отказывают, а не пишут
+    // молча в форму или во владельца (#1351).
+    match operation {
+        "element.remove" | "event.bind" => {}
+        "form.add" | "form.set" if target.form.is_some() => {
+            return Err(bad(
+                op_index,
+                "at",
+                format!("{operation} targets the form owner `Owner.Name`, not a form"),
+            ));
+        }
+        _ if target.item.is_some() => {
+            return Err(bad(
+                op_index,
+                "at",
+                format!(
+                    "{operation} targets the form `Owner.Name.Form.F`, not its element; name a parent element in `items[].into`"
+                ),
+            ));
+        }
+        _ => {}
+    }
     let items_path = format!("ops[{op_index}].args.items");
     let form_of = |target: &FormTarget| -> Result<String, ApplyPlanError> {
         target.form.clone().ok_or_else(|| {
@@ -1225,6 +1361,16 @@ fn parse_form_operation(
         "element.remove" => {
             let form = form_of(&target)?;
             let names = match &target.item {
+                // Элемент назван адресом: список в аргументах называл бы
+                // другие узлы, и молча его не отбрасываем.
+                Some(_) if args.contains_key("items") || args.contains_key("values") => {
+                    let key = if args.contains_key("items") { "items" } else { "values" };
+                    return Err(bad(
+                        op_index,
+                        key,
+                        "element.remove at an element address removes that element; drop `items`/`values` or call it at the form",
+                    ));
+                }
                 Some(item) => vec![item.clone()],
                 None => listed_names(args, "name", op_index).map_err(|_| {
                     bad(
@@ -1307,6 +1453,15 @@ fn parse_form_operation(
             entry.insert("handler".to_string(), Value::String(handler.to_string()));
             if let Some(call_type) = values.get("callType").and_then(Value::as_str) {
                 entry.insert("callType".to_string(), Value::String(call_type.to_string()));
+            }
+            // Элемент, названный адресом, не переназначается аргументом:
+            // иначе событие легло бы на другой узел.
+            if target.item.is_some() && values.contains_key("element") {
+                return Err(bad(
+                    op_index,
+                    "values.element",
+                    "event.bind at an element address binds that element; drop `values.element` or call it at the form",
+                ));
             }
             let element = values
                 .get("element")
@@ -2654,6 +2809,22 @@ fn stage_support_state(
 #[cfg(test)]
 mod tests {
     use super::{parse_form_resource_plan_operation, plan_form_resource_batch};
+
+    #[test]
+    fn a_dynamic_list_table_keeps_its_discriminator() {
+        let item = json!({
+            "name": "Список",
+            "type": "Table",
+            "path": "Список",
+            "_dynList": true,
+            "autoRefresh": true,
+        });
+        let (definition, _, _) =
+            super::legacy_element_definition(item.as_object().unwrap(), 0, "ops[0].args.items[0]")
+                .expect("a dynamic-list table is a valid element definition");
+        assert_eq!(definition["_dynList"], true);
+        assert_eq!(definition["autoRefresh"], true);
+    }
     use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
     use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
     use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;

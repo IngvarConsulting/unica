@@ -1,9 +1,6 @@
 use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
-/// Движок, который поставляет граф вызовов: возможность `CallGraph` объявлена
-/// только у анализатора BSL.
-const CALL_GRAPH_ENGINE: &str = "bsl-analyzer";
 /// Provider APIs accept a top-N request, but no offset. Keep their existing
 /// public bound as the fetch window and page the returned evidence separately.
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
@@ -26,7 +23,9 @@ use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSo
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::OperationRegistry;
+use crate::domain::apply::{
+    OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, UNWRITABLE_SOURCE_MESSAGE,
+};
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -39,7 +38,8 @@ use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::native_operations::apply::{
-    ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
+    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingErrorKind,
+    PlannedApplyEffects, StagedChangeKind, StagedFileState,
 };
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
@@ -251,40 +251,18 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        for (index, operation) in request.ops().iter().enumerate() {
-            let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
-                return with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].op")),
-                        RefusalCode::UnsupportedOperation,
-                        format!(
-                            "apply operation `{}` is not in the canonical registry",
-                            operation.name()
-                        ),
-                    ),
-                    &operation.at().to_string(),
-                );
-            };
-            let target_kind = operation
-                .at()
-                .segments()
-                .last()
-                .expect("a parsed logical address has a terminal segment")
-                .kind();
-            if !descriptor.applies_to_operation_target(operation.at()) {
-                return with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].at")),
-                        RefusalCode::BadValue,
-                        format!(
-                            "apply operation `{}` does not apply to {}",
-                            operation.name(),
-                            target_kind.as_str()
-                        ),
-                    ),
-                    &operation.at().to_string(),
-                );
-            }
+        let traits = SourceSetTraits::of_source(
+            binding.source_kind(),
+            binding.source_format(),
+            binding.source_profile(),
+        );
+        let template_format = |template: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_template_format(
+                &admission, &binding, template,
+            )
+        };
+        if let Err(refusal) = preflight_apply_operations(&request, traits, &template_format) {
+            return *refusal;
         }
         admission.bind_request(&request);
         let operations = request
@@ -311,11 +289,13 @@ impl CanonicalV13ReadService {
                 )
             }
             Err(error) => {
-                return error_result(
-                    error.path().map(str::to_string),
-                    apply_plan_error_code(error.kind()),
-                    error.to_string(),
-                )
+                let refusal = apply_plan_error_result(&error);
+                let node_exists = |at: &QualifiedAddress| {
+                    crate::infrastructure::native_operations::apply_families::staged_node_existence(
+                        &admission, &binding, at,
+                    )
+                };
+                return with_missing_target_parent(refusal, &request, &error, &node_exists);
             }
             Ok(planned) => planned,
         };
@@ -344,14 +324,9 @@ impl CanonicalV13ReadService {
         let prepared = match admission.prepare_with_effects(staged, effects) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return error_result(
+                return apply_staging_refusal(
                     Some("ops".to_string()),
-                    match error.kind() {
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
-                        _ => RefusalCode::ProviderUnavailable,
-                    },
+                    error.kind(),
                     error.to_string(),
                 )
             }
@@ -568,38 +543,21 @@ impl CanonicalV13ReadService {
             // машине, она поставляет этим же вызовом, как `check` и `search`:
             // пока поставка идёт, ответ просит повтор, провал поставки — её
             // типизированный отказ, а не граф «недоступен».
-            let plugin_root = crate::infrastructure::plugin_runtime::find_plugin_root(
-                &invocation.workspace_context().cwd,
-            );
             // Тестовый поставщик графа заменяет анализатор: заказывать его
             // поставку тогда незачем, и тест не зависит от окружения.
+            #[cfg(not(test))]
+            let order_delivery = true;
             #[cfg(test)]
-            let plugin_root = plugin_root.filter(|_| {
+            let order_delivery =
                 crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
-                    .with(|slot| slot.borrow().is_none())
-            });
-            if let Some(plugin_root) = plugin_root {
-                let progress =
-                    crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
-                let state = crate::infrastructure::engine_delivery::deliver_if_missing(
-                    invocation.delivery_work(),
-                    &plugin_root,
-                    CALL_GRAPH_ENGINE,
+                    .with(|slot| slot.borrow().is_none());
+            if order_delivery {
+                if let Some(mut result) = deliver_missing_engine(
+                    invocation,
+                    BSL_ANALYZER_ENGINE,
                     cancellation,
-                    &progress,
-                );
-                if cancellation.is_cancelled() {
-                    return error_result(
-                        Some(at.to_string()),
-                        RefusalCode::Cancelled,
-                        "call graph branch cancelled",
-                    );
-                }
-                if let Some(mut result) =
-                    crate::infrastructure::engine_delivery::canonical_delivery_result(
-                        state, &progress,
-                    )
-                {
+                    "call graph branch cancelled",
+                ) {
                     result.at = Some(at.to_string());
                     return result;
                 }
@@ -693,6 +651,7 @@ impl CanonicalV13ReadService {
             .get("filter")
             .and_then(Value::as_object)
             .and_then(|filter| filter.get("sections"));
+        let can_context = SourceSetTraits::read(source.source_kind(), authority.platform_profile());
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
         let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
             let mut data = data.clone();
@@ -720,7 +679,7 @@ impl CanonicalV13ReadService {
                 declare_method_branches(node);
             }
             if let Some(sections) = sections {
-                project_view_operation(&data, sections, can_operation.as_deref())
+                project_view_operation(&data, sections, can_operation.as_deref(), can_context)
                     .map_err(|error| ViewError::new(error.code(), error.to_string()))
             } else {
                 Ok(data)
@@ -1539,28 +1498,10 @@ impl CanonicalV13ReadService {
         #[cfg(test)]
         let engine = engine.filter(|_| self.search_providers.is_none());
         if let Some(engine) = engine {
-            if let Some(plugin_root) =
-                crate::infrastructure::plugin_runtime::find_plugin_root(&context.cwd)
+            if let Some(result) =
+                deliver_missing_engine(invocation, engine, cancellation, "role search cancelled")
             {
-                let progress =
-                    crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
-                let state = crate::infrastructure::engine_delivery::deliver_if_missing(
-                    invocation.delivery_work(),
-                    &plugin_root,
-                    engine,
-                    cancellation,
-                    &progress,
-                );
-                if cancellation.is_cancelled() {
-                    return error_result(None, RefusalCode::Cancelled, "role search cancelled");
-                }
-                if let Some(result) =
-                    crate::infrastructure::engine_delivery::canonical_delivery_result(
-                        state, &progress,
-                    )
-                {
-                    return result;
-                }
+                return result;
             }
         }
         let request = SearchRequest {
@@ -2343,10 +2284,44 @@ impl CanonicalV13ReadService {
     }
 }
 
+/// The bundled engine behind BSL diagnostics and symbol search.
+const BSL_ANALYZER_ENGINE: &str = "bsl-analyzer";
+
+/// Delivers an engine the call needs before it starts its provider. `None`
+/// means the engine is in place or this installation has nothing to deliver;
+/// otherwise the answer is the delivery's typed state — still working,
+/// failed with its class — or the caller's cancellation.
+fn deliver_missing_engine(
+    invocation: &ActorBoundExecution,
+    engine: &str,
+    cancellation: &CancellationToken,
+    cancelled_message: &'static str,
+) -> Option<DomainResult> {
+    let plugin_root = crate::infrastructure::plugin_runtime::find_plugin_root(
+        &invocation.workspace_context().cwd,
+    )?;
+    let progress = crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
+    let state = crate::infrastructure::engine_delivery::deliver_if_missing(
+        invocation.delivery_work(),
+        &plugin_root,
+        engine,
+        cancellation,
+        &progress,
+    );
+    if cancellation.is_cancelled() {
+        return Some(error_result(
+            None,
+            RefusalCode::Cancelled,
+            cancelled_message,
+        ));
+    }
+    crate::infrastructure::engine_delivery::canonical_delivery_result(state, &progress)
+}
+
 fn selected_role_engine(role: ProviderRole) -> Option<&'static str> {
     match role {
         ProviderRole::Lexical => None,
-        ProviderRole::Symbol => Some("bsl-analyzer"),
+        ProviderRole::Symbol => Some(BSL_ANALYZER_ENGINE),
         ProviderRole::Semantic => Some("rlm-bsl-mcp"),
     }
 }
@@ -3035,16 +3010,46 @@ fn name_search_interruption(
     None
 }
 
-fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
-    match kind {
+fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
+    let at = error.path().map(str::to_string);
+    let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
         ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
         ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,
         ApplyPlanErrorKind::InvalidSource => RefusalCode::InvalidSource,
-        ApplyPlanErrorKind::Staging(_) => RefusalCode::ProviderUnavailable,
+        ApplyPlanErrorKind::Staging(kind) => {
+            return apply_staging_refusal(at, kind, error.to_string())
+        }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
-    }
+    };
+    error_result(at, code, error.to_string())
+}
+
+/// Отказ подготовки staged-исходников называет нарушенное предусловие.
+///
+/// Прежде любой вид сводился к `provider_unavailable` с исходом `needsHuman`,
+/// и агент ждал поставщика там, где надо было создать файл, убрать ссылку
+/// из исходников или подготовить новый предпросмотр (#955, #1332). Поставщик
+/// здесь — файловая система набора: ошибка её чтения остаётся
+/// `provider_unavailable`, но с уточнением `source_unreadable`.
+fn apply_staging_refusal(
+    at: Option<String>,
+    kind: ApplyStagingErrorKind,
+    message: String,
+) -> DomainResult {
+    let code = match kind {
+        ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
+        ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
+        ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
+        ApplyStagingErrorKind::ContainmentIdentity => RefusalCode::ContainmentDenied,
+        ApplyStagingErrorKind::AbsentChainOccupied => RefusalCode::InvalidSource,
+        ApplyStagingErrorKind::Invariant => RefusalCode::InvalidState,
+        ApplyStagingErrorKind::UnsupportedProvider => {
+            return error_result_detailed(at, RefusalDetail::SourceUnreadable, message)
+        }
+    };
+    error_result(at, code, message)
 }
 
 fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
@@ -3073,7 +3078,12 @@ fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> RefusalCode 
         ApplyPublicationErrorKind::Cancelled => RefusalCode::Cancelled,
         ApplyPublicationErrorKind::Deadline => RefusalCode::DeadlineExceeded,
         ApplyPublicationErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::ProviderUnavailable,
+        // Publication re-proves the containment the plan established. A
+        // failure means the sources changed physically after the plan (a
+        // swapped directory, a link or alias that appeared, an occupied
+        // chain); a new preview names the precise cause. The static causes
+        // themselves are refused at planning by `apply_staging_refusal`.
+        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::StaleRevision,
         ApplyPublicationErrorKind::ProviderPostvalidation => RefusalCode::PostconditionFailed,
         ApplyPublicationErrorKind::SourceSelectionChanged => RefusalCode::SourceSelectionChanged,
         ApplyPublicationErrorKind::RollbackIncomplete => RefusalCode::RollbackIncomplete,
@@ -3096,9 +3106,9 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 ///
 /// Провайдеры собраны в продуктовом реестре давно, но канонический провод до
 /// них не доходил: `check` отвечал «читается» и молчал о находках, ради
-/// которых его и зовут. Порты здесь строятся свои — путь диагностик стола
-/// доставок не трогает, бинарь анализатора берётся из поставляемых
-/// инструментов, — и потому общий стол сервера не нужен.
+/// которых его и зовут. Порты здесь строятся свои, а недоставленный
+/// анализатор доставляется через стол доставок демона до запуска анализа,
+/// как у поиска с ролью.
 fn run_bsl_diagnostics(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     address: &QualifiedAddress,
@@ -3149,6 +3159,25 @@ fn run_bsl_diagnostics(
             )))
         }
     };
+    // Анализатор, которого ещё нет на машине, доставляется этим же вызовом,
+    // как у поиска с ролью: незавершённая поставка отвечает `working`
+    // с повтором, неудачная — своим классом и действием (#1338).
+    let deliver = true;
+    #[cfg(test)]
+    let deliver = deliver
+        && crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+            .with(|slot| slot.borrow().is_none());
+    if deliver {
+        if let Some(mut result) = deliver_missing_engine(
+            invocation,
+            BSL_ANALYZER_ENGINE,
+            cancellation,
+            "BSL analysis cancelled while waiting for engine delivery",
+        ) {
+            result.at = Some(address.to_string());
+            return Err(Box::new(result));
+        }
+    }
     let metadata_path = mapping.target().metadata_path.clone();
     let request = DiagnosticRequest {
         action: DiagnosticAction::Analyze,
@@ -3188,14 +3217,23 @@ fn run_bsl_diagnostics(
             // «проверено и чисто» — худшее направление ошибки для инструмента
             // проверки.
             if !bsl_result_proves_full_verdict(&result) {
-                // Прогон начался и не завершился — это не отсутствие
-                // поставщика: уточнения у такого случая нет, и код отвечает
-                // своим умолчанием. Причину, которую поставщик назвал
-                // (сломанная базовая линия), сообщение передаёт дальше.
+                // Движок не доставлен, не прошёл проверку поставки или не
+                // запустился — поставщика нет, и уточнение это называет.
+                // Прогон, который начался и не завершился, отвечает
+                // умолчанием кода. В обоих случаях сообщение называет
+                // причину и действие восстановления (#1338).
+                let message = bsl_incomplete_message(&result);
+                if bsl_provider_absent(&result) {
+                    return Err(Box::new(error_result_detailed(
+                        Some(address.to_string()),
+                        RefusalDetail::ProviderAbsent,
+                        message,
+                    )));
+                }
                 return Err(Box::new(error_result(
                     Some(address.to_string()),
                     RefusalCode::ProviderUnavailable,
-                    bsl_incomplete_message(&result),
+                    message,
                 )));
             }
             let findings: Vec<Value> = result
@@ -3267,53 +3305,83 @@ impl From<(bool, Vec<Value>)> for CheckStepVerdict {
 
 const BSL_INCOMPLETE_MESSAGE: &str = "BSL analysis did not complete, so the module is unproven";
 
-/// Named incomplete causes retain their own sanitization boundary; JSONL
-/// failures cross only through the existing closed stream-error formatter.
+/// Names why the analysis is incomplete and what restores it (#1338).
+///
+/// Named baseline causes and canonical JSONL failures keep their own
+/// sanitization boundary. Every other provider or resource failure is named
+/// by its closed code through the coordinator's fixed public wording, never
+/// by the provider's text; an incompleteness nobody named still says so and
+/// what to do.
 fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult) -> String {
-    let mut reasons: Vec<String> = result
+    use crate::application::diagnostics::public_diagnostic_error_message;
+    let mut reasons: Vec<String> = Vec::new();
+    let mut push = |reason: String| {
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+    };
+    for suppression in result
         .providers
         .iter()
         .flat_map(|section| section.suppressions.iter())
-        .filter_map(|suppression| {
-            let reason = suppression.reason()?;
-            Some(match &reason.detail {
+    {
+        if let Some(reason) = suppression.reason() {
+            push(match &reason.detail {
                 Some(detail) => format!("diagnostics baseline {}: {detail}", reason.code),
                 None => format!("diagnostics baseline {}", reason.code),
-            })
-        })
-        .collect();
+            });
+        }
+    }
     for section in &result.providers {
         if let Some(error) = &section.error {
-            if error.code == "diagnostics_invalid" {
-                if let Some(message) =
+            // Two closed formatters may name the cause in their own words:
+            // a JSONL failure, and an absent engine with the next step its
+            // install mode chooses. Anything else is named by its code.
+            let canonical = match error.code.as_str() {
+                "diagnostics_invalid" => {
                     crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message)
-                {
-                    if !reasons.contains(&message) {
-                        reasons.push(message);
-                    }
                 }
-            }
+                crate::domain::engine::BUNDLED_TOOL_MISSING => {
+                    crate::application::diagnostics::canonical_missing_engine_reason(&error.message)
+                }
+                _ => None,
+            };
+            push(canonical.unwrap_or_else(|| {
+                format!(
+                    "{}: {}",
+                    section.id,
+                    public_diagnostic_error_message(&error.code)
+                )
+            }));
         }
     }
     for item in &result.items {
         if let crate::domain::diagnostics::DiagnosticItem::ResourceFailure { error, .. } = item {
-            if matches!(
-                error.code.as_str(),
-                "analysis_out_of_scope"
-                    | "analysis_filter_unproven"
-                    | "analysis_scope_unproven"
-                    | "analysis_config_unproven"
-            ) && !reasons.contains(&error.message)
-            {
-                reasons.push(error.message.clone());
-            }
+            push(public_diagnostic_error_message(&error.code).to_string());
         }
     }
     if reasons.is_empty() {
-        BSL_INCOMPLETE_MESSAGE.to_string()
+        format!("{BSL_INCOMPLETE_MESSAGE}: {BSL_UNNAMED_INCOMPLETENESS}")
     } else {
         format!("{BSL_INCOMPLETE_MESSAGE}: {}", reasons.join("; "))
     }
+}
+
+const BSL_UNNAMED_INCOMPLETENESS: &str = "the analyzer did not name a cause. Repeat the call; if the problem persists, report this reason.";
+
+/// The engine is not on this machine, failed its install checks or could not
+/// be started: the provider is absent rather than broken mid-run.
+fn bsl_provider_absent(result: &crate::domain::diagnostics::DiagnosticResult) -> bool {
+    result.providers.iter().any(|section| {
+        section.error.as_ref().is_some_and(|error| {
+            matches!(
+                error.code.as_str(),
+                crate::domain::engine::BUNDLED_TOOL_MISSING
+                    | "provider_install_invalid"
+                    | "provider_start_failed"
+            )
+        })
+    })
 }
 
 /// Подавление по настройке пользователя называется фактом рядом с
@@ -3657,6 +3725,209 @@ fn unreadable_target_format_refusal(
     ))
 }
 
+/// Предварительная проверка `apply`: каждая операция есть в реестре, набор
+/// исходников её семейство пишет, а сама она исполнима на своём узле.
+///
+/// Сначала читается таблица снятых аргументов: вызов, который называет
+/// подузел аргументом, получает `bad_value` с адресом подузла в `next` — а не
+/// вердикт «не тот узел» с тупиком к `can` того же узла. Затем проверяется
+/// применимость к месту; `next` неприменимой операции ведёт к `can`
+/// ближайшего узла, где она исполнима. Если такого узла нет, `next` ведёт к
+/// `can` того же узла, когда тот читается, иначе к корню набора, а текст
+/// называет форму нужного адреса. `template_format` читает формат макета-
+/// предка: `next` не уводит на макет другого формата.
+pub(super) fn preflight_apply_operations(
+    request: &crate::domain::apply::ApplyRequest,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+) -> Result<(), Box<DomainResult>> {
+    let registry = OperationRegistry::closed();
+    for (index, operation) in request.ops().iter().enumerate() {
+        let Some(descriptor) = registry.lookup(operation.name()) else {
+            return Err(Box::new(with_node_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].op")),
+                    RefusalCode::UnsupportedOperation,
+                    format!(
+                        "apply operation `{}` is not in the canonical registry",
+                        operation.name()
+                    ),
+                ),
+                &operation.at().to_string(),
+            )));
+        };
+        // Набор, который семейство не пишет, — свойство набора, а не «не тот
+        // узел»: тот же отказ даёт разбор планировщиком.
+        if !source.writes(descriptor.family()) {
+            return Err(Box::new(DomainResult::canonical_rejection_detailed(
+                Some(format!("ops[{index}].op")),
+                RefusalDetail::WrongSourceKind,
+                UNWRITABLE_SOURCE_MESSAGE,
+            )));
+        }
+        let target_kind = operation
+            .at()
+            .segments()
+            .last()
+            .expect("a parsed logical address has a terminal segment")
+            .kind();
+        let Some(site) = OperationSite::new(operation.at(), source) else {
+            return Err(Box::new(error_result(
+                Some(format!("ops[{index}].at")),
+                RefusalCode::NotFound,
+                format!(
+                    "logical address `{}` is not available in the platform profile",
+                    operation.at()
+                ),
+            )));
+        };
+        if let Some(redirect) =
+            registry.retired_argument_redirect(operation.name(), &site, operation.args())
+        {
+            return Err(Box::new(with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].args.{}", redirect.location)),
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; call it at `{}`",
+                        operation.name(),
+                        redirect.location,
+                        redirect.at
+                    ),
+                ),
+                &redirect.at.to_string(),
+                descriptor,
+            )));
+        }
+        if descriptor.applies_at(&site) {
+            continue;
+        }
+        let refused = format!(
+            "apply operation `{}` does not apply to {} `{}`",
+            operation.name(),
+            target_kind.as_str(),
+            operation.at()
+        );
+        let refusal = match descriptor.nearest_applicable_ancestor(&site, template_format) {
+            Some(target) => with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    format!("{refused}; it applies at `{target}`"),
+                ),
+                &target.to_string(),
+                descriptor,
+            ),
+            None => {
+                let message = format!("{refused}; it addresses {}", descriptor.address_shape());
+                let refusal = error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    message,
+                );
+                // Узел, который читается, показывает свой словарь; адрес,
+                // которого нет ни в одном дереве, ведёт к корню набора.
+                let readable = crate::infrastructure::logical_tree::route_logical_address(
+                    operation.at(),
+                    source.profile(),
+                )
+                .is_ok();
+                if readable {
+                    with_node_dictionary(refusal, &operation.at().to_string())
+                } else {
+                    with_node_dictionary(
+                        refusal,
+                        &format!("{}:Configuration", operation.at().source_set()),
+                    )
+                }
+            }
+        };
+        return Err(Box::new(refusal));
+    }
+    Ok(())
+}
+
+/// `next` к словарю узла, где операция исполнима. Подробный контракт
+/// операции запрашивается только там, где он вычисляется: иначе `view`
+/// ответил бы на сам переход отказом.
+fn with_operation_dictionary(
+    mut result: DomainResult,
+    at: &str,
+    descriptor: crate::domain::apply::OperationDescriptor,
+) -> DomainResult {
+    let mut filter = json!({"sections": ["can"]});
+    if descriptor.argument_contract().is_some() {
+        filter["can"] = json!({"op": descriptor.name()});
+    }
+    result.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": at, "filter": filter},
+        "reason": format!("где исполнима операция `{}`", descriptor.name()),
+    }));
+    result
+}
+
+/// Отказ планировщика «узел не найден» по адресу операции: узел создаёт
+/// операция родителя, поэтому `next` ведёт к словарю родителя, а не к адресу,
+/// который `view` тоже не найдёт. `node_exists` отличает отсутствующий узел
+/// от существующего, у которого нет присоединённого ресурса (`Rights.xml`
+/// роли, `Form.xml` формы): во втором случае создавать нечего, и `next` не
+/// добавляется.
+pub(super) fn with_missing_target_parent(
+    mut result: DomainResult,
+    request: &crate::domain::apply::ApplyRequest,
+    error: &crate::infrastructure::native_operations::apply::ApplyPlanError,
+    node_exists: &dyn Fn(&QualifiedAddress) -> Option<bool>,
+) -> DomainResult {
+    if error.kind() != ApplyPlanErrorKind::NotFound {
+        return result;
+    }
+    let Some((index, tail)) = error.path().and_then(|path| {
+        let rest = path.strip_prefix("ops[")?;
+        let (index, tail) = rest.split_once(']')?;
+        Some((index.parse::<usize>().ok()?, tail))
+    }) else {
+        return result;
+    };
+    let Some(operation) = request.ops().get(index) else {
+        return result;
+    };
+    // Отказ касается самого узла операции, когда он назван путём `at` или
+    // когда операция не несёт ничего, кроме адреса (`attribute.remove`):
+    // тогда «не найден» — это её узел, а не что-то из аргументов.
+    let address_only = OperationRegistry::closed()
+        .lookup(operation.name())
+        .is_some_and(|descriptor| descriptor.skeleton_key() == "at");
+    if !(matches!(tail, ".at" | ".args.at") || address_only) {
+        return result;
+    }
+    if node_exists(operation.at()) != Some(false) {
+        return result;
+    }
+    let segments = operation.at().segments();
+    let parent = if segments.len() > 1 {
+        QualifiedAddress {
+            source_set: operation.at().source_set().to_string(),
+            segments: segments[..segments.len() - 1].to_vec(),
+        }
+    } else {
+        match QualifiedAddress::parse(&format!("{}:Configuration", operation.at().source_set())) {
+            Ok(root)
+                if segments.first().map(|first| first.kind()) != Some(NodeKind::Configuration) =>
+            {
+                root
+            }
+            _ => return result,
+        }
+    };
+    result.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": parent.to_string(), "filter": {"sections": ["can"]}},
+        "reason": "узел создаёт операция родителя",
+    }));
+    result
+}
+
 /// Отказ по операции называет маршрут к словарю узла, а не перечисляет
 /// операции в тексте: перечень уже публикуется секцией `can`, и агенту нужен
 /// путь к нему, а не копия внутри сообщения. Без этого пробелы словаря
@@ -3884,6 +4155,95 @@ mod tests {
             assert_eq!(result.diagnostics[0]["code"], code);
             assert_eq!(result.diagnostics[0]["outcome"], outcome);
         }
+    }
+
+    /// #955, #1332: a staging failure names the violated precondition and
+    /// what to do next. Only a source the filesystem cannot read stays
+    /// `provider_unavailable`, refined to `source_unreadable`.
+    #[test]
+    fn staging_refusals_keep_their_kind_instead_of_an_absent_provider() {
+        use crate::infrastructure::native_operations::apply::{
+            ApplyPlanError, ApplyStagingError, ApplyStagingErrorKind,
+        };
+        for (kind, code, outcome, detail) in [
+            (
+                ApplyStagingErrorKind::Cancelled,
+                "cancelled",
+                "deadEnd",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Deadline,
+                "deadline_exceeded",
+                "retry",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ConcurrentRevision,
+                "stale_revision",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "containment_denied",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::AbsentChainOccupied,
+                "invalid_source",
+                "fixSource",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Invariant,
+                "invalid_state",
+                "needsHuman",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::UnsupportedProvider,
+                "provider_unavailable",
+                "fixSource",
+                Some("source_unreadable"),
+            ),
+        ] {
+            let error = ApplyPlanError::staging(
+                ApplyStagingError::new(kind, "staged replace preimage changed: Documents/A.xml"),
+                "ops[1].args.values.name",
+            );
+            let planned = super::apply_plan_error_result(&error);
+            let prepared =
+                super::apply_staging_refusal(Some("ops".to_string()), kind, "prepared".to_string());
+            for result in [&planned, &prepared] {
+                assert!(!result.ok, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["code"], code, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["outcome"], outcome, "{kind:?}");
+                assert_eq!(
+                    result.diagnostics[0]
+                        .get("detailCode")
+                        .and_then(|v| v.as_str()),
+                    detail,
+                    "{kind:?}"
+                );
+            }
+            assert_eq!(planned.at.as_deref(), Some("ops[1].args.values.name"));
+            let message = planned.diagnostics[0]["message"].as_str().unwrap();
+            assert!(
+                message.contains("staged replace preimage changed: Documents/A.xml"),
+                "{kind:?}: the cause was lost: {message}"
+            );
+            assert!(!message.contains("evidence is unavailable"), "{message}");
+        }
+        // Publication re-proves the plan's containment; a failure there is a
+        // physical change after the plan, answered like a stale plan.
+        assert_eq!(
+            super::apply_publication_error_code(
+                super::ApplyPublicationErrorKind::ContainmentIdentity
+            ),
+            crate::domain::refusal::RefusalCode::StaleRevision
+        );
     }
 
     fn provider_search_test_binding(role: ProviderRole, limit: usize) -> SearchCursorBinding {
@@ -4262,12 +4622,16 @@ mod tests {
              diagnostics baseline invalid_schema: baseline schema 7 is newer"
         );
 
-        // Без названной причины отказ остаётся прежним.
+        // Без названной причины отказ всё равно говорит, что делать.
         let mut unnamed = result(false, None);
         unnamed.providers[0].suppressions.clear();
         assert_eq!(
             super::bsl_incomplete_message(&unnamed),
-            super::BSL_INCOMPLETE_MESSAGE
+            format!(
+                "{}: {}",
+                super::BSL_INCOMPLETE_MESSAGE,
+                super::BSL_UNNAMED_INCOMPLETENESS
+            )
         );
     }
 
@@ -4326,6 +4690,8 @@ mod tests {
                 format!("{}: {safe}", super::BSL_INCOMPLETE_MESSAGE)
             );
         }
+        // A message that is not the closed formatter's whole output is never
+        // published; the closed code still names the cause in fixed words.
         let safe = StreamErrorKind::InvalidEvent.message(2);
         for (code, message) in [
             ("provider_failed", safe.clone()),
@@ -4336,10 +4702,145 @@ mod tests {
             ),
             ("diagnostics_invalid", safe.replace("line 2:", "line 02:")),
         ] {
+            let published = super::bsl_incomplete_message(&result(code, message));
             assert_eq!(
-                super::bsl_incomplete_message(&result(code, message)),
-                super::BSL_INCOMPLETE_MESSAGE
+                published,
+                format!(
+                    "{}: bsl-analyzer: {}",
+                    super::BSL_INCOMPLETE_MESSAGE,
+                    crate::application::diagnostics::public_diagnostic_error_message(code)
+                )
             );
+            assert!(!published.contains("line 2"), "{published}");
+            assert!(!published.contains("private"), "{published}");
+        }
+    }
+
+    /// A provider that did not run names which engine, what happened to it
+    /// and what restores it; the provider's own text is never the reason
+    /// (#1338).
+    #[test]
+    fn bsl_check_names_why_the_engine_gave_no_result_and_how_to_recover() {
+        use crate::domain::diagnostics::{
+            DiagnosticAction, DiagnosticError, DiagnosticProviderSection, DiagnosticProviderStatus,
+            DiagnosticResult, DiagnosticResultState, DiagnosticSelection,
+        };
+        let failed = |code: &str| DiagnosticResult {
+            ok: false,
+            action: DiagnosticAction::Analyze,
+            selection: DiagnosticSelection {
+                source_set: "erf".to_string(),
+                metadata_path: None,
+                target_kind: None,
+                providers: vec!["bsl-analyzer"],
+                filter: None,
+                limit: None,
+            },
+            state: DiagnosticResultState::Failed,
+            complete: false,
+            providers: vec![DiagnosticProviderSection {
+                id: "bsl-analyzer",
+                status: DiagnosticProviderStatus::Unavailable,
+                complete: false,
+                version: None,
+                capabilities: None,
+                readiness: None,
+                items_total: Some(0),
+                items_returned: Some(0),
+                resource_failures: Some(0),
+                truncated: Some(false),
+                suppressions: Vec::new(),
+                error: Some(DiagnosticError {
+                    code: code.to_string(),
+                    message: "private-token /private/engine stderr".to_string(),
+                    retryable: false,
+                }),
+            }],
+            items_total: Some(0),
+            items_returned: Some(0),
+            truncated: Some(false),
+            items: Vec::new(),
+        };
+        for (code, cause, recovery, absent) in [
+            (
+                "bundled_tool_missing",
+                "could not locate its plugin installation",
+                "Reinstall the Unica plugin",
+                true,
+            ),
+            (
+                "provider_install_invalid",
+                "failed verification",
+                "Reinstall the Unica plugin",
+                true,
+            ),
+            (
+                "provider_start_failed",
+                "could not be started",
+                "then repeat the call",
+                true,
+            ),
+            (
+                "provider_timeout",
+                "exceeded its time limit",
+                "raise the configured diagnostics time limit",
+                false,
+            ),
+            (
+                "provider_exited",
+                "exited with an error",
+                "Repeat the call",
+                false,
+            ),
+            (
+                "provider_unavailable",
+                "unclassified reason",
+                "Repeat the call",
+                false,
+            ),
+        ] {
+            let result = failed(code);
+            assert!(!super::bsl_result_proves_full_verdict(&result));
+            let message = super::bsl_incomplete_message(&result);
+            assert!(
+                message.starts_with(&format!(
+                    "{}: bsl-analyzer: ",
+                    super::BSL_INCOMPLETE_MESSAGE
+                )),
+                "{code}: {message}"
+            );
+            assert!(message.contains(cause), "{code}: {message}");
+            assert!(message.contains(recovery), "{code}: {message}");
+            assert!(!message.contains("private"), "{code}: {message}");
+            assert_eq!(super::bsl_provider_absent(&result), absent, "{code}");
+        }
+
+        // An absent engine described by its install mode keeps that next
+        // step; the expected path never reaches the answer.
+        for mode in [
+            crate::domain::engine::InstallMode::Source,
+            crate::domain::engine::InstallMode::Marketplace,
+        ] {
+            let missing = crate::domain::engine::MissingEngine::new(
+                "bsl-analyzer",
+                "win-x64",
+                "C:/private/engine/bsl-analyzer.exe",
+                None,
+                mode,
+            );
+            let mut result = failed("bundled_tool_missing");
+            result.providers[0].error.as_mut().unwrap().message =
+                crate::application::diagnostics::missing_engine_public_reason(&missing);
+            let message = super::bsl_incomplete_message(&result);
+            assert_eq!(
+                message,
+                format!(
+                    "{}: bsl-analyzer is not installed on this machine for win-x64; {}",
+                    super::BSL_INCOMPLETE_MESSAGE,
+                    missing.next_step
+                )
+            );
+            assert!(!message.contains("private"), "{message}");
         }
     }
 
@@ -6116,8 +6617,15 @@ mod tests {
             serde_json::to_vec(&result).unwrap().len()
                 <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
-        result.data =
-            Some(super::project_view_operation(&data, &json!(["items", "can"]), None).unwrap());
+        result.data = Some(
+            super::project_view_operation(
+                &data,
+                &json!(["items", "can"]),
+                None,
+                super::super::v13_read_modes::configuration_context(),
+            )
+            .unwrap(),
+        );
         assert!(
             serde_json::to_vec(&result).unwrap().len()
                 > crate::application::v13::view::PREFERRED_PAGE_BYTES

@@ -184,7 +184,7 @@ pub(crate) fn parse_dcs_mxl_plan_operation(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<DcsMxlPlanOperation, ApplyPlanError> {
-    validate_platform_xml_binding(binding, op_index)?;
+    validate_platform_xml_binding(binding, operation, op_index)?;
     let object = args.as_object().ok_or_else(|| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
@@ -582,6 +582,7 @@ pub(crate) fn plan_dcs_mxl_batch(
     let mut provisional = Vec::new();
     for operation in operations {
         let op_index = operation.index();
+        require_template_format(&mut staged, &authority, operation.operation(), op_index)?;
         let edit = match &operation.operation().kind {
             DcsMxlPlanKind::Dcs(edit) => edit,
             DcsMxlPlanKind::Mxl(edit) => {
@@ -657,6 +658,72 @@ pub(crate) fn plan_dcs_mxl_batch(
         ));
     }
     Ok((staged, provisional))
+}
+
+/// The template format filter of the canonical path, read from the staged
+/// template descriptor: a DCS operation applies to a data composition schema
+/// and `mxl.set` to a spreadsheet only. The filter is the registry's
+/// (`OperationDescriptor::admits_template_format`), the one `can` uses; reading
+/// the staged state keeps it right for a template added earlier in the same
+/// request.
+fn require_template_format(
+    staged: &mut ApplyStagedState,
+    authority: &DcsMxlApplyAuthority<'_>,
+    operation: &DcsMxlPlanOperation,
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
+    let template = match &operation.kind {
+        DcsMxlPlanKind::Dcs(edit) => &edit.template,
+        DcsMxlPlanKind::Mxl(edit) => &edit.template,
+        DcsMxlPlanKind::Unsupported => return Ok(()),
+    };
+    let Some(descriptor) =
+        crate::domain::apply::OperationRegistry::closed().lookup(&operation.operation)
+    else {
+        return Ok(());
+    };
+    let at_path = format!("ops[{op_index}].args.at");
+    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+        template,
+        authority.source_kind(),
+    )
+    .map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
+    })?;
+    let Some(bytes) = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+    else {
+        // Без описания формат не установлен; тело макета проверяет свой
+        // корень само и отвечает «не найден» или «не тот документ».
+        return Ok(());
+    };
+    let format =
+        template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw));
+    if descriptor.admits_template_format(format) {
+        return Ok(());
+    }
+    Err(ApplyPlanError::new(
+        ApplyPlanErrorKind::BadValue,
+        format!(
+            "operation `{}` does not apply to the template `{}` of format `{}`",
+            operation.operation,
+            template.as_str(),
+            format.map_or("unknown", crate::domain::apply::TemplateFormat::as_str)
+        ),
+    )
+    .at_path(at_path))
+}
+
+/// `TemplateType` of a template descriptor.
+pub(super) fn template_type_of(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
+    let document = roxmltree::Document::parse(text).ok()?;
+    document
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "TemplateType")
+        .and_then(|node| node.text())
+        .map(|text| text.trim().to_string())
 }
 
 /// Applies one DCS edit to `xml_text`. The default language of the source

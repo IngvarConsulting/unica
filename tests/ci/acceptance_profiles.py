@@ -12,7 +12,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
-FAULT_CASES = {"empty", "invalid-event", "unknown-severity"}
+FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "exit-failure", "missing-engine"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 # A call graph branch orders the missing analyzer in the same call; the
 # delivery-failure driver stages a package that names it without a binary.

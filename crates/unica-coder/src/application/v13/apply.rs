@@ -1,6 +1,5 @@
-use crate::domain::address::NodeKind;
 use crate::domain::apply::{
-    ApplyRequest, ApplyValidationError, OperationFamily, OperationRegistry,
+    ApplyRequest, ApplyValidationError, OperationFamily, OperationRegistry, OperationSite,
 };
 use crate::domain::node_view::OperationRef;
 use serde_json::{Map, Value};
@@ -18,8 +17,8 @@ pub(crate) fn dispatch_family(operation: &str) -> Option<OperationFamily> {
         .map(|descriptor| descriptor.family())
 }
 
-pub(crate) fn copyable_can(kind: NodeKind) -> Vec<OperationRef> {
-    OperationRegistry::closed().copyable_skeletons(kind)
+pub(crate) fn copyable_can(site: &OperationSite<'_>) -> Vec<OperationRef> {
+    OperationRegistry::closed().copyable_skeletons(site)
 }
 
 #[cfg(test)]
@@ -27,7 +26,6 @@ mod tests {
     use super::{copyable_can, dispatch_family, parse_request};
     use crate::application::tool_contracts::SurfaceRelease;
     use crate::application::v13::tool_catalog::catalog_for;
-    use crate::domain::address::NodeKind;
     use crate::domain::apply::OperationFamily;
     use serde_json::{json, Value};
 
@@ -117,13 +115,25 @@ mod tests {
         );
         assert_eq!(dispatch_family("module.create"), None);
         assert_eq!(
-            serde_json::to_value(copyable_can(NodeKind::Event))
+            serde_json::to_value(copyable_can(
+                &crate::domain::apply::OperationSite::new(
+                    &crate::domain::address::QualifiedAddress::parse(
+                        "main:Catalog.Items.Module.Object.Event.OnWrite"
+                    )
+                    .unwrap(),
+                    crate::domain::apply::SourceSetTraits::read(
+                        crate::domain::project_sources::SourceSetKind::Configuration,
+                        crate::domain::platform_profile::PlatformProfile::v8_3_27()
+                    )
+                )
                 .unwrap()
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|value| value["op"] == "event.implement")
-                .cloned(),
+            ))
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|value| value["op"] == "event.implement")
+            .cloned(),
             Some(json!({"op": "event.implement", "args": {"at": ""}}))
         );
     }

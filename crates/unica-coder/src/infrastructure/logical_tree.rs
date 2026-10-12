@@ -1,4 +1,5 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::logical_route::classify_route;
 use crate::domain::platform_profile::{ModuleCapability, PlatformProfile};
 use crate::domain::source_target::MetadataAddress;
 use crate::domain::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
@@ -10,24 +11,12 @@ use crate::infrastructure::native_operations::meta::{
     accepts_logical_metadata_address, logical_metadata_reader_target,
 };
 use crate::infrastructure::native_operations::mxl::typed_mxl_reader_target;
-use serde::Deserialize;
 use std::fmt;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) enum LogicalReader {
-    Configuration,
-    Metadata,
-    Form,
-    Role,
-    Subsystem,
-    Interface,
-    Dcs,
-    Mxl,
-    Xdto,
-    Module,
-}
+/// Читатель маршрута — это класс маршрута из `domain`: классификатор один,
+/// маршрутизатор лишь проверяет форму адреса и находит цель читателя.
+pub(crate) use crate::domain::logical_route::RouteClass as LogicalReader;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LogicalTreeRoute {
@@ -73,126 +62,74 @@ pub(crate) fn route_logical_address(
     address: &QualifiedAddress,
     profile: PlatformProfile,
 ) -> Result<LogicalTreeRoute, LogicalTreeError> {
-    if let Some(module) = profile.module_prefix_capability(address) {
-        let _internal_layout = module.source_layout();
-        return Ok(route(address, LogicalReader::Module, None, Some(module)));
-    }
-
-    if !profile.module_children(address).is_empty() {
-        return Ok(route(address, LogicalReader::Module, None, None));
-    }
-
+    let class = classify_route(address, profile).ok_or_else(|| not_found(address))?;
     let segments = address.segments();
-    if segments
-        .iter()
-        .any(|segment| segment.kind() == NodeKind::Module)
-    {
-        return Err(not_found(address));
-    }
-    if matches!(segments, [root] if root.kind() == NodeKind::Configuration && root.name().is_none())
-    {
-        return Ok(route(address, LogicalReader::Configuration, None, None));
-    }
-    if matches!(segments, [branch] if branch.kind().is_metadata_kind() && branch.name().is_none()) {
-        return Ok(route(address, LogicalReader::Metadata, None, None));
-    }
-    if segments
-        .first()
-        .is_some_and(|segment| segment.kind() == NodeKind::Role)
-    {
-        let target = typed_role_reader_target(address).ok_or_else(|| not_found(address))?;
-        return Ok(route(address, LogicalReader::Role, Some(target), None));
-    }
-    if segments
-        .first()
-        .is_some_and(|segment| segment.kind() == NodeKind::Subsystem)
-    {
-        let target = typed_reader_metadata_target(address, &["Subsystem"])
-            .ok_or_else(|| not_found(address))?;
-        let nested_subsystems = segments[1..]
-            .iter()
-            .map_while(|segment| {
-                (segment.kind() == NodeKind::Subsystem)
-                    .then(|| segment.name())
-                    .flatten()
-                    .map(str::to_string)
-            })
-            .collect::<Vec<_>>();
-        if nested_subsystems.len() >= SUBSYSTEM_ADDRESS_MAX_DEPTH {
-            return Err(not_found(address));
+    match class {
+        LogicalReader::Module => {
+            let module = profile.module_prefix_capability(address);
+            if let Some(module) = module {
+                let _internal_layout = module.source_layout();
+            }
+            Ok(route(address, LogicalReader::Module, None, module))
         }
-        let reader = if segments
-            .iter()
-            .any(|segment| segment.kind() == NodeKind::Interface)
-        {
-            LogicalReader::Interface
-        } else {
-            LogicalReader::Subsystem
-        };
-        let mut route = route(address, reader, Some(target), None);
-        route.nested_subsystems = nested_subsystems;
-        return Ok(route);
+        LogicalReader::Configuration => Ok(route(address, class, None, None)),
+        LogicalReader::Role => {
+            let target = typed_role_reader_target(address).ok_or_else(|| not_found(address))?;
+            Ok(route(address, class, Some(target), None))
+        }
+        LogicalReader::Subsystem | LogicalReader::Interface => {
+            let target = typed_reader_metadata_target(address, &["Subsystem"])
+                .ok_or_else(|| not_found(address))?;
+            let nested_subsystems = segments[1..]
+                .iter()
+                .map_while(|segment| {
+                    (segment.kind() == NodeKind::Subsystem)
+                        .then(|| segment.name())
+                        .flatten()
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>();
+            if nested_subsystems.len() >= SUBSYSTEM_ADDRESS_MAX_DEPTH {
+                return Err(not_found(address));
+            }
+            let mut route = route(address, class, Some(target), None);
+            route.nested_subsystems = nested_subsystems;
+            Ok(route)
+        }
+        LogicalReader::Form => {
+            let target = typed_form_reader_target(address).ok_or_else(|| not_found(address))?;
+            Ok(route(address, class, Some(target), None))
+        }
+        LogicalReader::Dcs => {
+            let target = typed_dcs_reader_target(address).ok_or_else(|| not_found(address))?;
+            Ok(route(address, class, Some(target), None))
+        }
+        LogicalReader::Mxl => {
+            let target = typed_mxl_reader_target(address).ok_or_else(|| not_found(address))?;
+            Ok(route(address, class, Some(target), None))
+        }
+        LogicalReader::Xdto => {
+            let target = typed_reader_metadata_target(address, &["XDTOPackage"])
+                .ok_or_else(|| not_found(address))?;
+            Ok(route(address, class, Some(target), None))
+        }
+        LogicalReader::Metadata => {
+            if matches!(segments, [branch] if branch.kind().is_metadata_kind() && branch.name().is_none())
+                || matches!(segments, [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some())
+            {
+                return Ok(route(address, class, None, None));
+            }
+            if accepts_logical_metadata_address(address) {
+                return Ok(route(
+                    address,
+                    class,
+                    logical_metadata_reader_target(address),
+                    None,
+                ));
+            }
+            Err(not_found(address))
+        }
     }
-    if segments
-        .first()
-        .is_some_and(|segment| segment.kind() == NodeKind::CommonForm && segment.name().is_some())
-        || segments
-            .iter()
-            .any(|segment| segment.kind() == NodeKind::Form && segment.name().is_some())
-    {
-        let target = typed_form_reader_target(address).ok_or_else(|| not_found(address))?;
-        return Ok(route(address, LogicalReader::Form, Some(target), None));
-    }
-    if segments.iter().any(|segment| {
-        matches!(
-            segment.kind(),
-            NodeKind::DataSet
-                | NodeKind::Field
-                | NodeKind::Query
-                | NodeKind::Calculation
-                | NodeKind::Setting
-        )
-    }) || (segments
-        .iter()
-        .any(|segment| segment.kind() == NodeKind::Template && segment.name().is_some())
-        && !segments
-            .iter()
-            .any(|segment| segment.kind() == NodeKind::Area)
-        && segments
-            .iter()
-            .any(|segment| matches!(segment.kind(), NodeKind::Item | NodeKind::Parameter)))
-    {
-        let target = typed_dcs_reader_target(address).ok_or_else(|| not_found(address))?;
-        return Ok(route(address, LogicalReader::Dcs, Some(target), None));
-    }
-    if segments
-        .iter()
-        .any(|segment| segment.kind() == NodeKind::Area)
-    {
-        let target = typed_mxl_reader_target(address).ok_or_else(|| not_found(address))?;
-        return Ok(route(address, LogicalReader::Mxl, Some(target), None));
-    }
-    if segments
-        .first()
-        .is_some_and(|segment| segment.kind() == NodeKind::XdtoPackage)
-    {
-        let target = typed_reader_metadata_target(address, &["XDTOPackage"])
-            .ok_or_else(|| not_found(address))?;
-        return Ok(route(address, LogicalReader::Xdto, Some(target), None));
-    }
-    if matches!(segments, [owner] if owner.kind() == NodeKind::WebSocketClient && owner.name().is_some())
-    {
-        return Ok(route(address, LogicalReader::Metadata, None, None));
-    }
-    if accepts_logical_metadata_address(address) {
-        return Ok(route(
-            address,
-            LogicalReader::Metadata,
-            logical_metadata_reader_target(address),
-            None,
-        ));
-    }
-    Err(not_found(address))
 }
 
 fn route(

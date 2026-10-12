@@ -9,6 +9,8 @@ pub(crate) mod state_collection;
 pub(crate) mod terminal_codec_v5;
 mod v13_artifact_build;
 mod v13_call_graph;
+#[cfg(test)]
+mod v13_can_honesty_tests;
 mod v13_client_run;
 mod v13_documentation;
 mod v13_extensions;
@@ -697,9 +699,11 @@ mod tests {
         if replace_root {
             assert_eq!(terminal.status(), InvocationStatus::Failed);
             assert!(terminal.completed_result().is_none());
+            // The replaced root is a changed workspace: the Task keeps that
+            // closed cause instead of a bare "invocation failed" (#1338).
             assert_eq!(
                 terminal.failure_reason(),
-                Some(V5SafeFailureReason::InvocationFailed)
+                Some(V5SafeFailureReason::WorkspaceChanged)
             );
             assert!(!serde_json::to_string(&terminal).unwrap().contains(staged));
         } else {

@@ -524,20 +524,20 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 390)
+        self.assertEqual(len(scenarios), 395)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 922,
-            "a wire step went missing: the corpus freezes 922 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 941,
+            "a wire step went missing: the corpus freezes 941 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 391)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 396)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
         delivery = {s["id"] for s in select_profile(self.corpus, "delivery")["scenarios"]}
         agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
         fault = {s["id"] for s in select_profile(self.corpus, "fault-injection")["scenarios"]}
-        self.assertEqual(fault, {"S344", "S345", "S346", "S390"})
+        self.assertEqual(fault, {"S344", "S345", "S346", "S389", "S390", "S395"})
         self.assertFalse(fault & (source | delivery | agent))
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
@@ -650,10 +650,10 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         ]
         # Every documented gap names a reproduced surface defect in its text.
         # The rendered registry lists them; the ceiling from the fixture README
-        # (four) is a ratchet against silent growth, not a target.
+        # (three) is a ratchet against silent growth, not a target.
         self.assertLessEqual(
             len(gap_steps),
-            4,
+            3,
             "documented gaps grew: either fix the surface or re-approve the corpus",
         )
 
@@ -977,7 +977,7 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
             records = []
             run_corpus(self, fault_cases(self.corpus, "analyzer-jsonl-fault"), plugin,
                        scenario_driver=fault_driver(plugin, records))
-            self.assertEqual(sum(record["tool"] == "unica.check" for record in records), 3)
+            self.assertEqual(sum(record["tool"] == "unica.check" for record in records), 5)
 
     def test_call_graph_branch_names_a_failed_analyzer_delivery(self):
         from tests.ci.acceptance_faults import stage_missing_analyzer, delivery_failure_driver
@@ -986,7 +986,7 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
             manifest = stage_missing_analyzer(plugin)
             self.assertFalse(manifest["testFixture"]["publishedArtifact"])
             cases = fault_cases(self.corpus, "analyzer-delivery-failure")
-            self.assertEqual([scenario["id"] for scenario in cases["scenarios"]], ["S390"])
+            self.assertEqual([scenario["id"] for scenario in cases["scenarios"]], ["S395"])
             run_corpus(self, cases, plugin, scenario_driver=delivery_failure_driver(plugin))
 
 
