@@ -917,9 +917,13 @@ fn plan_code_postimage(
         .at_path(&text_path));
     }
     if let CodePlanOperation::Replace(args) = operation {
-        reject_redeclared_methods(&args.text, &post.methods).map_err(|message| {
-            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&text_path)
-        })?;
+        if replaces_whole_method(selector.as_ref(), &args.at) {
+            reject_redeclared_methods(&args.text, &indexed.methods, &post.methods).map_err(
+                |message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&text_path)
+                },
+            )?;
+        }
     }
     let repeat = match operation {
         CodePlanOperation::Replace(args) if args.selector.is_none() => {
@@ -1317,8 +1321,16 @@ fn finish_patch(
             Some(data),
         );
     }
-    if matches!(plan.site, PatchSite::Replacement(_)) {
-        if let Err(error) = reject_redeclared_methods(&plan.content, &analysis.methods) {
+    if matches!(plan.site, PatchSite::Replacement(_))
+        && matches!(plan.selector, Some(Selector::Method(_)))
+    {
+        let pre = std::str::from_utf8(&plan.before)
+            .map_err(|_| "original BSL module is not UTF-8".to_string())
+            .and_then(analyze_module);
+        let checked = pre.and_then(|pre| {
+            reject_redeclared_methods(&plan.content, &pre.methods, &analysis.methods)
+        });
+        if let Err(error) = checked {
             return CodePatchExecution::failure(error, Some(data));
         }
     }
@@ -1906,7 +1918,11 @@ fn replacement_is_present(
 }
 
 /// Offset at which the addressed method starts inside its own replacement,
-/// located by the same rule that finds it in the module.
+/// located by the same rule that finds it in the module. The method must sit
+/// on whole lines of the replacement, so the text around it is whole lines
+/// too; an inline tail after `КонецПроцедуры` would otherwise read as a fixed
+/// point while each repeat appended it again. The equality with the module
+/// then puts the same line breaks there.
 fn replacement_lead(
     replacement: &[u8],
     relocate: impl Fn(&SourceTextSnapshot, &[Method]) -> Option<ReplacementSite>,
@@ -1916,7 +1932,11 @@ fn replacement_lead(
     if !analysis.diagnostics.is_empty() {
         return None;
     }
-    relocate(&snapshot, &analysis.methods).map(|site| site.start)
+    let site = relocate(&snapshot, &analysis.methods)?;
+    let raw = snapshot.raw();
+    let starts_line = site.start == 0 || raw.get(..site.start)?.ends_with(b"\n");
+    let ends_line = raw.get(..site.end)?.ends_with(b"\n");
+    (starts_line && ends_line).then_some(site.start)
 }
 
 /// Finds the whole method a staged replacement addresses, by a method
@@ -1938,6 +1958,15 @@ fn relocate_replaced_method(
     }
 }
 
+/// Whether a staged replacement targets a whole method, the only target that
+/// can carry methods besides itself.
+fn replaces_whole_method(selector: Option<&Selector>, at: &QualifiedAddress) -> bool {
+    match selector {
+        Some(selector) => matches!(selector, Selector::Method(_)),
+        None => matches!(code_projection(at), Some((_, CodeProjection::Method(_)))),
+    }
+}
+
 fn relocate_selected_method(
     snapshot: &SourceTextSnapshot,
     methods: &[Method],
@@ -1949,21 +1978,33 @@ fn relocate_selected_method(
     }
 }
 
-/// A replacement may declare methods besides the one it addresses, but never
-/// one the module already defines elsewhere: the result would carry two
-/// methods with one name, which the platform rejects and no repeat can undo.
-fn reject_redeclared_methods(replacement: &str, post: &[Method]) -> Result<(), String> {
+/// A whole-method replacement may declare methods besides the one it
+/// addresses, but never one the rest of the module already defines: the
+/// result would carry two methods with one name, which no repeat can undo.
+///
+/// Same-named methods in `#Если … #Иначе` branches are legitimate and the
+/// parser does not tell them apart from duplicates, so twins already in the
+/// module or wholly inside the replacement stay allowed; only a name whose
+/// count grows while the rest of the module also declares it is refused.
+fn reject_redeclared_methods(
+    replacement: &str,
+    pre: &[Method],
+    post: &[Method],
+) -> Result<(), String> {
     let Ok(declared) = analyze_module(replacement) else {
         return Ok(());
     };
-    for method in &declared.methods {
-        let folded = method.name.to_lowercase();
-        if post
+    let count = |methods: &[Method], folded: &str| {
+        methods
             .iter()
             .filter(|candidate| candidate.name.to_lowercase() == folded)
             .count()
-            > 1
-        {
+    };
+    for method in &declared.methods {
+        let folded = method.name.to_lowercase();
+        let in_text = count(&declared.methods, &folded);
+        let after = count(post, &folded);
+        if after > in_text && after > count(pre, &folded) {
             return Err(format!(
                 "replacement declares method `{}` that the module already defines elsewhere",
                 method.name
@@ -4523,6 +4564,88 @@ pub(super) mod tests {
                 .unwrap()
                 .unwrap(),
             b"Procedure Base()\nEndProcedure\n"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn conditional_compilation_twins_are_not_redeclarations() {
+        // `#Если … #Иначе` branches legitimately declare one name twice; the
+        // parser cannot tell them from duplicates, so neither a module body
+        // nor an extracted helper with such twins is refused.
+        let twins = "#Если Сервер Тогда\nProcedure Helper()\nEndProcedure\n#Иначе\nProcedure Helper()\nEndProcedure\n#КонецЕсли";
+        let body_fixture = staged_code_fixture("twins-body", b"Procedure Base()\nEndProcedure\n");
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Body", "text":twins}),
+            0,
+            &body_fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&body_fixture, false);
+        let (mut state, _) = plan_admitted_code(&admission, &body_fixture.binding, &[operation])
+            .expect("a module body with #Если twins is written");
+        assert_eq!(
+            state
+                .read(Path::new("CommonModules/Sample/Ext/Module.bsl"))
+                .unwrap()
+                .unwrap(),
+            format!("{twins}\n").as_bytes()
+        );
+        body_fixture.cleanup();
+
+        let before = "Procedure Base()\nEndProcedure\n";
+        let text = format!("Procedure Base()\n    Helper();\nEndProcedure\n\n{twins}");
+        let fixture = staged_code_fixture("twins-helper", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Method.Base", "text":text}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let (mut state, effects) = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            std::slice::from_ref(&operation),
+        )
+        .expect("a helper in both #Если branches is written");
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        assert_eq!(
+            state.read(relative).unwrap().unwrap(),
+            format!("{text}\n").as_bytes()
+        );
+        fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        let repeated = staged_code_admission(&fixture, true);
+        let (state, _) = plan_admitted_code(&repeated, &fixture.binding, &[operation]).unwrap();
+        assert!(state.planned_changes().is_empty());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn inline_tail_after_the_method_is_not_a_fixed_point() {
+        // The method ends mid-line, so the text after it is not whole lines:
+        // the repeat would append the tail again and must be refused.
+        let before = "Procedure Base()\nEndProcedure // к\n";
+        let fixture = staged_code_fixture("inline-tail", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Method.Base", "text":"Procedure Base()\n    Value = 1;\nEndProcedure // к"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+            .expect_err("a doubled inline tail must not pass as a repeat no-op");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::Postcondition);
+        assert_eq!(
+            fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+            before.as_bytes()
         );
         fixture.cleanup();
     }
