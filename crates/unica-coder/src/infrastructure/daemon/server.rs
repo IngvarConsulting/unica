@@ -10277,6 +10277,15 @@ struct ActorLogicalReadLease {"#,
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
         let cancellation = CancellationToken::new();
         let provider = Arc::new(CountingCallGraph(AtomicUsize::new(0)));
+        // Сбрасывает подмену на любом выходе из теста, в том числе при панике.
+        struct ResetOverride;
+        impl Drop for ResetOverride {
+            fn drop(&mut self) {
+                crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+                    .with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let _reset_override = ResetOverride;
         crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
             .with(|slot| *slot.borrow_mut() = Some(vec![provider.clone()]));
         let view = |arguments: serde_json::Value| {
@@ -10359,8 +10368,6 @@ struct ActorLogicalReadLease {"#,
             0,
             "a ready empty branch proves the absence of calls"
         );
-        crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
-            .with(|slot| *slot.borrow_mut() = None);
         assert_eq!(
             provider.0.load(Ordering::SeqCst),
             4,
