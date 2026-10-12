@@ -697,9 +697,11 @@ mod tests {
         if replace_root {
             assert_eq!(terminal.status(), InvocationStatus::Failed);
             assert!(terminal.completed_result().is_none());
+            // The replaced root is a changed workspace: the Task keeps that
+            // closed cause instead of a bare "invocation failed" (#1338).
             assert_eq!(
                 terminal.failure_reason(),
-                Some(V5SafeFailureReason::InvocationFailed)
+                Some(V5SafeFailureReason::WorkspaceChanged)
             );
             assert!(!serde_json::to_string(&terminal).unwrap().contains(staged));
         } else {

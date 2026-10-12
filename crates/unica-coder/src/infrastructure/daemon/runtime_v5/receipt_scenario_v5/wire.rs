@@ -313,6 +313,7 @@ pub(super) enum ScenarioFailureProbeReason {
     TaskCapacity,
     WorkspaceCapacity,
     WorkspaceRegistryFailed,
+    WorkspaceChanged,
 }
 
 #[derive(Clone, Copy, Deserialize)]

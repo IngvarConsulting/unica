@@ -911,6 +911,22 @@ impl V5ActorBoundCanonicalInvocation {
     }
 }
 
+/// Only a binding that left this workspace actor is a changed workspace; an
+/// invariant failure at the execution boundary stays internal (#1338). The
+/// boundary's text never leaves the daemon.
+fn boundary_failure(error: invocation_service::ExecutionBoundaryError) -> InvocationFailure {
+    match error {
+        invocation_service::ExecutionBoundaryError::BindingChanged(_) => InvocationFailure::new(
+            crate::domain::invocation::WORKSPACE_CHANGED_FAILURE,
+            "workspace actor binding changed during execution",
+        ),
+        invocation_service::ExecutionBoundaryError::Internal(_) => InvocationFailure::new(
+            "execution_boundary_failed",
+            "actor-bound execution boundary failed",
+        ),
+    }
+}
+
 impl V5PreparedCanonicalInvocation {
     pub(super) const fn execution_class(&self) -> &ExecutionClass {
         const INFOBASE_EXPORT_CLASS: ExecutionClass =
@@ -941,19 +957,13 @@ impl V5PreparedCanonicalInvocation {
                 service,
                 ..
             } => {
-                let execution = invocation.begin_execution(&cancellation).map_err(|_| {
-                    InvocationFailure::new(
-                        "workspace_changed",
-                        "workspace actor capability changed before execution",
-                    )
-                })?;
+                let execution = invocation
+                    .begin_execution(&cancellation)
+                    .map_err(boundary_failure)?;
                 let outcome = service.execute(&execution, cancellation.clone());
-                execution.publish(outcome, &cancellation).map_err(|_| {
-                    InvocationFailure::new(
-                        "workspace_changed",
-                        "workspace actor capability changed before publication",
-                    )
-                })?
+                execution
+                    .publish(outcome, &cancellation)
+                    .map_err(boundary_failure)?
             }
             Self::Extensions {
                 extensions,
@@ -10125,6 +10135,128 @@ struct ActorLogicalReadLease {"#,
             [None],
             "the apply preview admission received an operation deadline"
         );
+    }
+
+    /// #1338: only a binding that left the workspace actor is a changed
+    /// workspace the caller may repeat; an invariant failure at the
+    /// execution boundary stays an internal failure, and neither carries the
+    /// boundary's text.
+    #[test]
+    fn execution_boundary_names_a_changed_workspace_only_for_a_lost_binding() {
+        use super::invocation_service::ExecutionBoundaryError;
+        use crate::application::invocation_store_v5::V5SafeFailureReason;
+        for (error, reason) in [
+            (
+                ExecutionBoundaryError::binding_changed(
+                    "provider root binding belongs to another workspace actor".to_string(),
+                ),
+                V5SafeFailureReason::WorkspaceChanged,
+            ),
+            (
+                ExecutionBoundaryError::from(
+                    "unpublished Apply result requires real actor apply publication",
+                ),
+                V5SafeFailureReason::InvocationFailed,
+            ),
+            (
+                ExecutionBoundaryError::from("parent read leases are poisoned"),
+                V5SafeFailureReason::InvocationFailed,
+            ),
+        ] {
+            let failure = super::boundary_failure(error);
+            assert_eq!(V5SafeFailureReason::of_execution_failure(&failure), reason);
+            assert!(!failure.message.contains("Apply"), "{failure:?}");
+            assert!(!failure.message.contains("poisoned"), "{failure:?}");
+        }
+    }
+
+    /// #1338: an addressed module `check` whose analyzer gave no result
+    /// names the engine, what happened to it and how to recover, through the
+    /// daemon's real admission and invocation service. An absent engine is
+    /// `provider_absent`; the engine's own text never reaches the answer.
+    #[test]
+    fn module_check_names_why_the_analyzer_gave_no_result() {
+        use crate::infrastructure::internal_adapters::AnalyzerRunFailureKind;
+        let workspace =
+            scheduled_handler_workspace("CONFIGURATION", "Procedure Run() Export\nEndProcedure\n");
+        let runtime = bootstrap_runtime();
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let cancellation = CancellationToken::new();
+        for (kind, detail, cause) in [
+            (
+                AnalyzerRunFailureKind::EngineMissing,
+                Some("provider_absent"),
+                "bsl-analyzer is not installed on this machine for darwin-arm64; build it from third-party/tools.lock.json",
+            ),
+            (
+                AnalyzerRunFailureKind::StartFailed,
+                Some("provider_absent"),
+                "analysis engine could not be started",
+            ),
+            (
+                AnalyzerRunFailureKind::TimedOut,
+                None,
+                "analysis exceeded its time limit",
+            ),
+            (
+                AnalyzerRunFailureKind::Exited,
+                None,
+                "analysis engine exited with an error before producing a result. Repeat the call",
+            ),
+        ] {
+            let request = InvocationRequest::new(
+                ToolIdentity::Check,
+                serde_json::json!({"at": "main:CommonModule.Handlers.Body"}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let check = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
+                *slot.borrow_mut() =
+                    Some(crate::infrastructure::diagnostics::analyze_timeout_probe::failing_provider(kind))
+            });
+            let checked = service.execute(&check, cancellation.clone()).unwrap();
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = None);
+            assert!(!checked.ok, "{kind:?}: {checked:?}");
+            assert_eq!(checked.diagnostics.len(), 1, "{kind:?}: {checked:?}");
+            let diagnostic = &checked.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable", "{kind:?}");
+            assert_eq!(
+                diagnostic.get("detailCode").and_then(serde_json::Value::as_str),
+                detail,
+                "{kind:?}: {diagnostic}"
+            );
+            let message = diagnostic["message"].as_str().unwrap();
+            assert!(
+                message.starts_with(
+                    "BSL analysis did not complete, so the module is unproven: bsl-analyzer"
+                ),
+                "{kind:?}: {message}"
+            );
+            assert!(message.contains(cause), "{kind:?}: {message}");
+            assert!(!checked_text_leaks(&checked), "{kind:?}: {checked:?}");
+        }
+    }
+
+    fn checked_text_leaks(result: &crate::domain::invocation::DomainResult) -> bool {
+        let text = serde_json::to_string(result).unwrap();
+        text.contains("private-token") || text.contains("/private/engine")
     }
 
     struct ManualInvocationClock(Mutex<Instant>);

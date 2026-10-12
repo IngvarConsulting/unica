@@ -3151,6 +3151,7 @@ fn fixture_failure_reason(reason: ScenarioFailureProbeReason) -> V5SafeFailureRe
         ScenarioFailureProbeReason::WorkspaceRegistryFailed => {
             V5SafeFailureReason::WorkspaceRegistryFailed
         }
+        ScenarioFailureProbeReason::WorkspaceChanged => V5SafeFailureReason::WorkspaceChanged,
     }
 }
 
@@ -3763,7 +3764,10 @@ fn compatibility_task_projections(
 
 fn failure_projection(reason: V5SafeFailureReason) -> (&'static str, &'static str) {
     match reason {
-        V5SafeFailureReason::InvocationFailed => ("invocation_failed", "daemon invocation failed"),
+        V5SafeFailureReason::InvocationFailed => (
+            "invocation_failed",
+            "daemon invocation stopped without a result. Repeat the call; if the problem persists, report this reason.",
+        ),
         V5SafeFailureReason::ResultTooLarge => (
             "result_too_large",
             "daemon invocation result exceeded the canonical byte limit",
@@ -3791,6 +3795,10 @@ fn failure_projection(reason: V5SafeFailureReason) -> (&'static str, &'static st
         V5SafeFailureReason::WorkspaceRegistryFailed => (
             "workspace_registry_failed",
             "workspace registry is unavailable",
+        ),
+        V5SafeFailureReason::WorkspaceChanged => (
+            "workspace_changed",
+            "the workspace changed while the call ran, so its result was not published. Repeat the call.",
         ),
     }
 }
@@ -4016,6 +4024,7 @@ fn failure_reason_introduced_in_v5(reason: ScenarioFailureProbeReason) -> bool {
             | ScenarioFailureProbeReason::TaskCapacity
             | ScenarioFailureProbeReason::WorkspaceCapacity
             | ScenarioFailureProbeReason::WorkspaceRegistryFailed
+            | ScenarioFailureProbeReason::WorkspaceChanged
     )
 }
 

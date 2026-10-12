@@ -32021,6 +32021,146 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S389",
+   "name": "diagnostics-engine-exit-failure",
+   "issue": 1338,
+   "area": "Код BSL",
+   "task": "Движок анализа завершился ошибкой: отказ называет причину и действие без stderr движка",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-jsonl-fault",
+   "evaluation": "exit-failure",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.Пример"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "da18d3716215544b1e445b278655aa80ab824ae1c3c14e45bdd582fc11a941a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример.xml",
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "204a6fb52d776b9bfad625cb1960346b45aec1caaba9bada50a16fcfaae057f2"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "BSL analysis did not complete, so the module is unproven: bsl-analyzer: analysis engine exited with an error before producing a result. Repeat the call; if the problem persists, report this reason."
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "absent": true
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S390",
+   "name": "diagnostics-engine-missing",
+   "issue": 1338,
+   "area": "Код BSL",
+   "task": "Движка анализа нет на машине: check сам запускает доставку и при её отказе называет класс сбоя и действие, а не голое unproven",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-jsonl-fault",
+   "evaluation": "missing-engine",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.Пример"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "da18d3716215544b1e445b278655aa80ab824ae1c3c14e45bdd582fc11a941a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример.xml",
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "204a6fb52d776b9bfad625cb1960346b45aec1caaba9bada50a16fcfaae057f2"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "provider_absent"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "delivery of bsl-analyzer failed (configuration); check the runtime manifest and plugin installation"
+      },
+      {
+       "pointer": "/data/delivery/artifact",
+       "eq": "bsl-analyzer"
+      },
+      {
+       "pointer": "/data/delivery/status",
+       "eq": "failed"
+      },
+      {
+       "pointer": "/data/delivery/failureClass",
+       "eq": "configuration"
+      }
+     ]
+    }
+   ]
   }
  ]
 }

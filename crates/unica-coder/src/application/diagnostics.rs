@@ -741,23 +741,18 @@ fn sanitize_provider_outcome(outcome: &mut DiagnosticProviderOutcome, context: &
     }
 }
 
-fn sanitize_public_diagnostic_error(error: &mut DiagnosticError) {
-    if error.code == "diagnostics_invalid" {
-        if let Some(message) =
-            crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message)
-        {
-            error.message = message;
-            return;
-        }
-    }
-    error.message = match error.code.as_str() {
+/// The public wording of a provider error code: fixed per code, never the
+/// provider's own text. `check` names the cause of an incomplete analysis with
+/// the same wording, so one table owns it.
+pub(crate) fn public_diagnostic_error_message(code: &str) -> &'static str {
+    match code {
         "analysis_out_of_scope" => "selected resource is outside the analyzer's configured analysis scope",
         "analysis_filter_unproven" => "CLI author filtering is configured; this analyzer does not report which findings it hid",
         "analysis_scope_unproven" => "CLI diff filtering is configured; this analyzer does not prove coverage of the selected resources",
         "analysis_config_unproven" => "the analyzer's effective filtering configuration could not be established",
         "source_analysis_failed" => "diagnostic provider could not analyze the selected resource",
         "source_decode_failed" => "source is not valid in the detected encoding",
-        "provider_not_ready" => "diagnostic provider is not ready",
+        "provider_not_ready" => "diagnostic provider is not ready. Repeat the call later.",
         "target_not_supported" => "diagnostic provider does not support the selected target",
         "action_not_supported" => "diagnostic provider does not support the selected action",
         "location_outside_source_set" => "provider resource is outside the selected sourceSet",
@@ -768,17 +763,92 @@ fn sanitize_public_diagnostic_error(error: &mut DiagnosticError) {
             "provider observation does not name a resolvable logical address"
         }
         "diagnostics_unavailable" => "diagnostics are not configured for this workspace",
-        "provider_contract_invalid" => "diagnostic provider returned an invalid result",
-        "provider_timeout" => "diagnostic provider deadline exceeded",
-        "provider_panicked" => "diagnostic provider terminated unexpectedly",
-        "provider_start_failed" | "provider_unavailable" => "diagnostic provider is unavailable",
-        "diagnostics_invalid" => "diagnostic provider returned an invalid diagnostics stream",
+        "provider_contract_invalid" | "provider_reply_invalid" => {
+            "diagnostic provider returned a reply Unica cannot read. Check compatibility between Unica and its bundled analyzer; reinstall the Unica plugin if the problem persists."
+        }
+        "provider_timeout" => {
+            "analysis exceeded its time limit. Narrow the request or raise the configured diagnostics time limit, then repeat the call."
+        }
+        "provider_panicked" | "provider_ended_without_result" => {
+            "diagnostic provider terminated unexpectedly. Repeat the call; if the problem persists, report this reason."
+        }
+        "bundled_tool_missing" => {
+            "analysis engine is not installed and Unica could not locate its plugin installation. Reinstall the Unica plugin."
+        }
+        "provider_install_invalid" => {
+            "installed analysis engine failed verification (checksum, manifest or platform target). Reinstall the Unica plugin."
+        }
+        "provider_start_failed" => {
+            "analysis engine could not be started. Check that security software and file permissions allow Unica's bundled engines to run, then repeat the call."
+        }
+        "provider_exited" => {
+            "analysis engine exited with an error before producing a result. Repeat the call; if the problem persists, report this reason."
+        }
+        "provider_unavailable" => {
+            "diagnostic provider did not produce a result for an unclassified reason. Repeat the call; if the problem persists, report this reason."
+        }
+        "diagnostics_invalid" => {
+            "diagnostic provider returned an invalid diagnostics stream. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason."
+        }
         "diagnostics_incomplete" => "diagnostic provider returned an incomplete diagnostics stream",
         "diagnostics_pending" => "diagnostic provider has not completed diagnostics",
         "cancelled" => "diagnostic provider request was cancelled",
-        _ => "diagnostic provider reported an error",
+        _ => "diagnostic provider reported an error. Repeat the call; if the problem persists, report this reason.",
     }
-    .to_string();
+}
+
+const MISSING_ENGINE_REASON_MIDDLE: &str = " is not installed on this machine for ";
+
+/// The public reason of an absent engine: tool, target and the next step its
+/// install mode chooses. The expected path stays out: it names the user's
+/// directories (#1338).
+pub(crate) fn missing_engine_public_reason(
+    missing: &crate::domain::engine::MissingEngine,
+) -> String {
+    format!(
+        "{}{MISSING_ENGINE_REASON_MIDDLE}{}; {}",
+        missing.tool, missing.target, missing.next_step
+    )
+}
+
+/// Accepts a `bundled_tool_missing` message only when it is exactly what
+/// [`missing_engine_public_reason`] builds for a plain tool and target name in
+/// one of the install modes; anything else is not published.
+pub(crate) fn canonical_missing_engine_reason(message: &str) -> Option<String> {
+    use crate::domain::engine::{InstallMode, MissingEngine};
+    let plain = |value: &str| {
+        !value.is_empty()
+            && value
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    };
+    let (tool, rest) = message.split_once(MISSING_ENGINE_REASON_MIDDLE)?;
+    let (target, _) = rest.split_once("; ")?;
+    if !plain(tool) || !plain(target) {
+        return None;
+    }
+    [InstallMode::Source, InstallMode::Marketplace]
+        .into_iter()
+        .map(|mode| missing_engine_public_reason(&MissingEngine::new(tool, target, "", None, mode)))
+        .find(|reason| reason == message)
+}
+
+fn sanitize_public_diagnostic_error(error: &mut DiagnosticError) {
+    if error.code == "diagnostics_invalid" {
+        if let Some(message) =
+            crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message)
+        {
+            error.message = message;
+            return;
+        }
+    }
+    if error.code == crate::domain::engine::BUNDLED_TOOL_MISSING {
+        if let Some(message) = canonical_missing_engine_reason(&error.message) {
+            error.message = message;
+            return;
+        }
+    }
+    error.message = public_diagnostic_error_message(&error.code).to_string();
     if error.code.is_empty()
         || !error
             .code
@@ -3130,6 +3200,38 @@ mod tests {
         );
     }
 
+    /// An absent engine keeps its install mode's next step only in the exact
+    /// shape Unica builds; an appended path or foreign text is not published.
+    #[test]
+    fn absent_engine_reason_is_published_only_in_its_canonical_shape() {
+        use crate::application::diagnostics::{
+            canonical_missing_engine_reason, missing_engine_public_reason,
+        };
+        use crate::domain::engine::{InstallMode, MissingEngine};
+        for mode in [InstallMode::Source, InstallMode::Marketplace] {
+            let reason = missing_engine_public_reason(&MissingEngine::new(
+                "bsl-analyzer",
+                "linux-x64",
+                "/private/home/engine",
+                None,
+                mode,
+            ));
+            assert!(!reason.contains("/private"));
+            assert_eq!(
+                canonical_missing_engine_reason(&reason).as_deref(),
+                Some(reason.as_str())
+            );
+            for forged in [
+                format!("{reason} /private/home/engine"),
+                reason.replace("linux-x64", "linux x64"),
+                reason.replace("bsl-analyzer", "/private/bsl-analyzer"),
+                format!("secret {reason}"),
+            ] {
+                assert_eq!(canonical_missing_engine_reason(&forged), None, "{forged}");
+            }
+        }
+    }
+
     #[test]
     fn diagnostics_public_result_rejects_noncanonical_stream_error_messages() {
         let canonical = "line 2: unknown diagnostic severity. Check compatibility between Unica and its bundled analyzer; if the problem persists, report this reason and line number.";
@@ -3159,8 +3261,9 @@ mod tests {
             let serialized = serde_json::to_value(result).unwrap();
             assert_eq!(
                 serialized["providers"][0]["error"]["message"],
-                "diagnostic provider returned an invalid diagnostics stream"
+                crate::application::diagnostics::public_diagnostic_error_message("diagnostics_invalid")
             );
+            assert!(!serialized.to_string().contains("secret"));
         }
     }
 
