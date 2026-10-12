@@ -92,6 +92,17 @@ impl ProcessRunner for Runner014ProcessRunner {
             SystemProcessRunner.run_pending_handoff(projected)
         })
     }
+
+    /// As [`Self::run_staged`]: a projection refusal is not a failed launch.
+    fn run_pending_handoff_staged(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
+        with_projected_config(command, |projected| {
+            Ok(SystemProcessRunner.run_pending_handoff_staged(projected))
+        })
+        .map_err(ProcessStreamFailure::Run)?
+    }
 }
 
 fn run_projected(

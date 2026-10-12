@@ -230,6 +230,57 @@ pub(crate) fn start_failure(
     }
 }
 
+/// Причина незапуска движка для ответа: текст ОС без служебного префикса,
+/// без пути к самому движку и после общей редакции секретов. Другие пути,
+/// если ОС их назвала, редакция не обещает убрать.
+pub(crate) fn launch_failure_cause(error: &str, tool_name: &str, program: &Path) -> String {
+    let error = error.strip_prefix("process_failed: ").unwrap_or(error);
+    crate::infrastructure::redaction::redactor(
+        &error.replace(&program.display().to_string(), tool_name),
+    )
+}
+
+/// Проверенный движок, процесс которого ОС не создаёт: отказ на шаге `start`
+/// с причиной ОС.
+///
+/// Поставщики поиска и графа запускают движок в службе рабочего
+/// пространства, и до этого маршрута доходит только текст их ошибки. Тип
+/// незапуска здесь получается тем же путём, что у раннера: движок
+/// запускается напрямую, и решает [`ManagedSpawnFailure::Launch`], а не
+/// текст. Запущенный процесс сразу завершается. Неготовое окружение или
+/// неудачное подключение процесса к дереву — не незапуск движка (#549).
+///
+/// [`ManagedSpawnFailure::Launch`]: crate::infrastructure::platform::ManagedSpawnFailure::Launch
+pub(crate) fn launch_probe_failure(
+    plugin_root: &Path,
+    tool_name: &str,
+) -> Option<(MissingEngine, String)> {
+    use crate::infrastructure::platform::{ManagedChild, ManagedCommand, ManagedSpawnFailure};
+    let program = installed_engine_path(plugin_root, tool_name)?;
+    let probe = ManagedChild::spawn_staged(ManagedCommand {
+        program: program.clone(),
+        args: vec!["--version".into()],
+        cwd: plugin_root.to_path_buf(),
+        env: Vec::new(),
+        env_remove: Vec::new(),
+        capture_limits: Some((4096, 4096)),
+        timeout: Some(std::time::Duration::from_secs(1)),
+        cancellation: crate::domain::cancellation::CancellationToken::new(),
+    });
+    let message = match probe {
+        Ok(mut child) => {
+            let _ = child.terminate();
+            return None;
+        }
+        Err(ManagedSpawnFailure::Launch(message)) => message,
+        Err(ManagedSpawnFailure::Prepare(_) | ManagedSpawnFailure::Attach(_)) => return None,
+    };
+    Some((
+        start_failure(Some(plugin_root), tool_name, &program),
+        launch_failure_cause(&message, tool_name, &program),
+    ))
+}
+
 /// Доставка движка не удалась, и файла на месте нет.
 pub(crate) fn delivery_failure(plugin_root: &Path, tool_name: &str) -> MissingEngine {
     let target = current_target_id()
@@ -435,6 +486,33 @@ fn missing_engine_for(
     ))
 }
 
+/// Режим установки: исходный checkout собирает движки сам, опубликованная
+/// поставка их доставляет.
+///
+/// Манифест называет режим сам. Если его нет или он не читается, режим не
+/// выводится из этого: опубликованная поставка с испорченным манифестом не
+/// должна получать совет собрать движок из исходников. Исходным checkout
+/// считается только дерево, где рядом с плагином лежит сборщик движков.
+fn install_mode_of(plugin_root: &Path) -> InstallMode {
+    match read_manifest(plugin_root) {
+        Some(manifest) if manifest.source_manifest => InstallMode::Source,
+        Some(_) => InstallMode::Marketplace,
+        None if source_checkout_builder(plugin_root).is_file() => InstallMode::Source,
+        None => InstallMode::Marketplace,
+    }
+}
+
+/// Сборщик движков исходного checkout: `<repo>/scripts/ci/build-unica-tools.py`
+/// для плагина в `<repo>/plugins/unica`.
+fn source_checkout_builder(plugin_root: &Path) -> PathBuf {
+    plugin_root
+        .join("..")
+        .join("..")
+        .join("scripts")
+        .join("ci")
+        .join("build-unica-tools.py")
+}
+
 /// Описание движка, которого нет на шаге `stage`. Путь, если не назван, —
 /// тот, где движок оказался бы, если бы приехал.
 fn describe_missing(
@@ -444,10 +522,7 @@ fn describe_missing(
     stage: EngineStage,
     path: Option<PathBuf>,
 ) -> MissingEngine {
-    let install_mode = match read_manifest(plugin_root) {
-        Some(manifest) if !manifest.source_manifest => InstallMode::Marketplace,
-        _ => InstallMode::Source,
-    };
+    let install_mode = install_mode_of(plugin_root);
     let path = path
         .or_else(|| expected_engine_path(plugin_root, tool_name, target_id))
         .unwrap_or_else(|| plugin_root.join("bin").join(target_id).join(tool_name));
@@ -1668,18 +1743,39 @@ mod missing_binary_refusal_tests {
                 .unwrap_err(),
         );
         assert_eq!(engine.stage, EngineStage::Manifest);
-        assert_eq!(engine.install_mode, InstallMode::Source);
+        // Без манифеста режим не выводится в исходный checkout: совет
+        // собрать движок получает только дерево со сборщиком рядом.
+        assert_eq!(engine.install_mode, InstallMode::Marketplace);
 
         let unreadable = tests::temp_plugin_root("stage-unreadable-manifest");
         fs::write(unreadable.join("third-party/manifest.json"), "{not json").unwrap();
-        assert_eq!(
-            missing(
-                resolve_bundled_tool_for_target(&unreadable, "bsl-analyzer", target, true)
-                    .unwrap_err()
-            )
-            .stage,
-            EngineStage::Manifest
+        let engine = missing(
+            resolve_bundled_tool_for_target(&unreadable, "bsl-analyzer", target, true).unwrap_err(),
         );
+        assert_eq!(engine.stage, EngineStage::Manifest);
+        assert_eq!(engine.install_mode, InstallMode::Marketplace);
+        assert!(engine.next_step.contains("reinstall"), "{engine:?}");
+        assert!(
+            !engine.next_step.contains("build-unica-tools"),
+            "{engine:?}"
+        );
+
+        let checkout = tests::temp_plugin_root("stage-unreadable-in-checkout");
+        let checkout_plugin = checkout.join("plugins").join("unica");
+        fs::create_dir_all(checkout_plugin.join("third-party")).unwrap();
+        fs::write(
+            checkout_plugin.join("third-party/manifest.json"),
+            "{not json",
+        )
+        .unwrap();
+        fs::create_dir_all(checkout.join("scripts/ci")).unwrap();
+        fs::write(checkout.join("scripts/ci/build-unica-tools.py"), "").unwrap();
+        let engine = missing(
+            resolve_bundled_tool_for_target(&checkout_plugin, "bsl-analyzer", target, true)
+                .unwrap_err(),
+        );
+        assert_eq!(engine.install_mode, InstallMode::Source);
+        assert!(engine.next_step.contains("build-unica-tools"), "{engine:?}");
 
         let unnamed = tests::temp_plugin_root("stage-unnamed");
         tests::write_manifest_with_bsl_analyzer(&unnamed);

@@ -14,7 +14,8 @@ use crate::infrastructure::diagnostics_jsonl::{
 use crate::infrastructure::platform::filesystem::path_lock_identity;
 use crate::infrastructure::platform::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
-    PendingProcessHandoff, StreamControl, STREAM_LINE_TOO_LONG_ERROR,
+    ManagedSpawnFailure, PendingProcessHandoff, PendingRunFailure, StreamControl,
+    STREAM_LINE_TOO_LONG_ERROR,
 };
 use crate::infrastructure::plugin_runtime::{find_plugin_root, value_to_cli_string};
 use crate::infrastructure::redaction::{is_secret_key, redactor};
@@ -87,6 +88,32 @@ impl ProcessStreamFailure {
             Self::Spawn(message) | Self::Run(message) => message,
         }
     }
+
+    /// Only a launch the operating system refused is `Spawn`: a process tree
+    /// or working directory that was not ready never tried the program, and
+    /// a process that existed but could not be attached did start. Neither
+    /// may be reported as an unstartable program.
+    pub(crate) fn from_spawn(failure: ManagedSpawnFailure) -> Self {
+        match failure {
+            ManagedSpawnFailure::Launch(message) => Self::Spawn(message),
+            ManagedSpawnFailure::Prepare(message) | ManagedSpawnFailure::Attach(message) => {
+                Self::Run(message)
+            }
+        }
+    }
+}
+
+fn managed_command(command: &ProcessCommand) -> ManagedCommand {
+    ManagedCommand {
+        program: command.program.clone(),
+        args: command.args.iter().map(Into::into).collect(),
+        cwd: command.cwd.clone(),
+        env: command.env.clone(),
+        env_remove: command.env_remove.clone(),
+        capture_limits: command.capture_limits,
+        timeout: command.timeout,
+        cancellation: command.cancellation.clone(),
+    }
 }
 
 pub trait ProcessRunner {
@@ -116,6 +143,17 @@ pub trait ProcessRunner {
         _command: &ProcessCommand,
     ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
         Err("process_failed: process runner does not support ownership handoff".to_string())
+    }
+
+    /// [`ProcessRunner::run_pending_handoff`] that keeps whether the launcher
+    /// was ever started. A runner that cannot tell reports a failure after
+    /// start.
+    fn run_pending_handoff_staged(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
+        self.run_pending_handoff(command)
+            .map_err(ProcessStreamFailure::Run)
     }
 
     fn run_with_input(
@@ -2277,17 +2315,8 @@ fn names_not_ready(text: &str) -> bool {
 
 impl ProcessRunner for SystemProcessRunner {
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
-        let mut child = ManagedChild::spawn(ManagedCommand {
-            program: command.program.clone(),
-            args: command.args.iter().map(Into::into).collect(),
-            cwd: command.cwd.clone(),
-            env: command.env.clone(),
-            env_remove: command.env_remove.clone(),
-            capture_limits: command.capture_limits,
-            timeout: command.timeout,
-            cancellation: command.cancellation.clone(),
-        })
-        .map_err(ProcessStreamFailure::Spawn)?;
+        let mut child = ManagedChild::spawn_staged(managed_command(command))
+            .map_err(ProcessStreamFailure::from_spawn)?;
         let output = child.wait_for_output().map_err(ProcessStreamFailure::Run)?;
         Ok(map_managed_process_output(output))
     }
@@ -2310,16 +2339,19 @@ impl ProcessRunner for SystemProcessRunner {
         &self,
         command: &ProcessCommand,
     ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
-        let (output, handoff) = ManagedChild::run_pending_handoff(ManagedCommand {
-            program: command.program.clone(),
-            args: command.args.iter().map(Into::into).collect(),
-            cwd: command.cwd.clone(),
-            env: command.env.clone(),
-            env_remove: command.env_remove.clone(),
-            capture_limits: command.capture_limits,
-            timeout: command.timeout,
-            cancellation: command.cancellation.clone(),
-        })?;
+        self.run_pending_handoff_staged(command)
+            .map_err(|failure| failure.message().to_string())
+    }
+
+    fn run_pending_handoff_staged(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
+        let (output, handoff) = ManagedChild::run_pending_handoff_staged(managed_command(command))
+            .map_err(|failure| match failure {
+                PendingRunFailure::Spawn(failure) => ProcessStreamFailure::from_spawn(failure),
+                PendingRunFailure::Run(message) => ProcessStreamFailure::Run(message),
+            })?;
         Ok((map_managed_process_output(output), handoff))
     }
 
@@ -2364,17 +2396,8 @@ impl ProcessRunner for SystemProcessRunner {
         max_line_bytes: usize,
         on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
     ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
-        let mut child = ManagedChild::spawn(ManagedCommand {
-            program: command.program.clone(),
-            args: command.args.iter().map(Into::into).collect(),
-            cwd: command.cwd.clone(),
-            env: command.env.clone(),
-            env_remove: command.env_remove.clone(),
-            capture_limits: command.capture_limits,
-            timeout: command.timeout,
-            cancellation: command.cancellation.clone(),
-        })
-        .map_err(ProcessStreamFailure::Spawn)?;
+        let mut child = ManagedChild::spawn_staged(managed_command(command))
+            .map_err(ProcessStreamFailure::from_spawn)?;
         let output = child
             .wait_for_line_output(max_line_bytes, on_line)
             .map_err(ProcessStreamFailure::Run)?;
@@ -6199,6 +6222,42 @@ analyze_timeout_seconds = 900
         assert!(
             matches!(failure, ProcessStreamFailure::Spawn(_)),
             "{failure:?}"
+        );
+    }
+
+    /// Ревью #549: рабочий каталог, которого нет, — не незапуск программы.
+    /// Оба пути запуска раннера отвечают на него сбоем после старта, а не
+    /// `Spawn`, которым маршрут назвал бы отказ «нет движка».
+    #[test]
+    fn a_missing_working_directory_is_not_a_failed_launch() {
+        let command = ProcessCommand {
+            program: std::env::current_exe().unwrap(),
+            args: Vec::new(),
+            cwd: std::env::temp_dir().join("unica-549-no-such-directory"),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        };
+        let staged = SYSTEM_PROCESS_RUNNER
+            .run_staged(&command)
+            .expect_err("a missing working directory cannot run");
+        assert!(matches!(staged, ProcessStreamFailure::Run(_)), "{staged:?}");
+        let streaming = SYSTEM_PROCESS_RUNNER
+            .run_streaming_staged(&command, 1024, &mut |_, _| StreamControl::Continue)
+            .expect_err("a missing working directory cannot run");
+        assert!(
+            matches!(streaming, ProcessStreamFailure::Run(_)),
+            "{streaming:?}"
+        );
+        let handoff = match SYSTEM_PROCESS_RUNNER.run_pending_handoff_staged(&command) {
+            Ok(_) => panic!("a missing working directory cannot run"),
+            Err(failure) => failure,
+        };
+        assert!(
+            matches!(handoff, ProcessStreamFailure::Run(_)),
+            "{handoff:?}"
         );
     }
 

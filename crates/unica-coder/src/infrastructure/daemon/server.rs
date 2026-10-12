@@ -3069,6 +3069,14 @@ pub(crate) mod actor_capacity_tests {
                     Err(error) => panic!("{error:?}"),
                 }
             };
+            // `view` спрашивает граф сводкой метода. Когда сводку сменит ветвь
+            // графа, меняется только этот адрес и аргументы маршрута:
+            // `format!("{VIEW_METHOD}.Caller")` без фильтра.
+            const VIEW_METHOD: &str = "main:CommonModule.Пример.Method.ОбработатьПример";
+            let view_arguments = serde_json::json!({
+                "at": VIEW_METHOD,
+                "filter": {"sections": ["callGraph"]}
+            });
             let routes = [
                 (
                     "run",
@@ -3088,26 +3096,69 @@ pub(crate) mod actor_capacity_tests {
                     ToolIdentity::Check,
                     serde_json::json!({"at":"main:CommonModule.Пример"}),
                 ),
-                (
-                    "view",
-                    "bsl-analyzer",
-                    ToolIdentity::View,
-                    serde_json::json!({
-                        "at":"main:CommonModule.Пример.Method.ОбработатьПример",
-                        "filter":{"sections":["callGraph"]}
-                    }),
-                ),
+                ("view", "bsl-analyzer", ToolIdentity::View, view_arguments),
             ];
-            for (stage, tamper) in [("delivery", false), ("checksum", true)] {
-                if tamper {
-                    std::fs::create_dir_all(plugin.join(format!("bin/{target}"))).unwrap();
-                    for tool in ["v8-runner", "bsl-analyzer"] {
-                        std::fs::write(
-                            plugin.join(format!("bin/{target}/{tool}{exe}")),
-                            b"not the published engine",
-                        )
-                        .unwrap();
+            let binary = |tool: &str| plugin.join(format!("bin/{target}/{tool}{exe}"));
+            let flat = |sha: &dyn Fn(&str) -> String| {
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "tools": (["v8-runner", "bsl-analyzer"].map(|tool| serde_json::json!({
+                        "name": tool,
+                        "version": if tool == "v8-runner" { RUNNER_VERSION } else { "0.2.86" },
+                        "binaryPath": format!("bin/{target}/{tool}{exe}"),
+                        "sha256": sha(tool),
+                    }))),
+                })
+            };
+            let write_manifest = |manifest: serde_json::Value| {
+                std::fs::write(
+                    plugin.join("third-party/manifest.json"),
+                    manifest.to_string(),
+                )
+                .unwrap();
+            };
+            // Файл, который ОС не может запустить: без права исполнения на
+            // Unix (иначе ОС отдала бы его оболочке как сценарий) и не образ
+            // программы на Windows.
+            let unstartable = b"not the published engine";
+            let unstartable_sha = {
+                use sha2::Digest;
+                format!("{:x}", sha2::Sha256::digest(unstartable))
+            };
+            for stage in ["manifest", "target", "delivery", "checksum", "start"] {
+                match stage {
+                    "manifest" => write_manifest(serde_json::json!({
+                        "schemaVersion": 2,
+                        "tools": [],
+                    })),
+                    "target" => write_manifest(serde_json::json!({
+                        "schemaVersion": 2,
+                        "tools": (["v8-runner", "bsl-analyzer"].map(|tool| serde_json::json!({
+                            "name": tool,
+                            "version": "0.0.1",
+                            "binaries": {"plan9-mips": {
+                                "binaryPath": format!("bin/plan9-mips/{tool}"),
+                                "sha256": "0".repeat(64),
+                            }},
+                        }))),
+                    })),
+                    "delivery" => write_manifest(flat(&|_| "0".repeat(64))),
+                    "checksum" => {
+                        std::fs::create_dir_all(plugin.join(format!("bin/{target}"))).unwrap();
+                        for tool in ["v8-runner", "bsl-analyzer"] {
+                            std::fs::write(binary(tool), unstartable).unwrap();
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                std::fs::set_permissions(
+                                    binary(tool),
+                                    std::fs::Permissions::from_mode(0o644),
+                                )
+                                .unwrap();
+                            }
+                        }
                     }
+                    _ => write_manifest(flat(&|_| unstartable_sha.clone())),
                 }
                 for (route, tool, identity, arguments) in &routes {
                     let result = call(*identity, arguments.clone());
@@ -3118,19 +3169,32 @@ pub(crate) mod actor_capacity_tests {
                     assert_eq!(diagnostic["code"], "provider_unavailable", "{case}");
                     assert_eq!(diagnostic["detailCode"], "provider_absent", "{case}");
                     assert_eq!(diagnostic["outcome"], "needsHuman", "{case}");
-                    let expected_path = plugin.join(format!("bin/{target}/{tool}{exe}"));
-                    assert_eq!(
-                        result.data,
-                        Some(serde_json::json!({
-                            "tool": tool,
-                            "path": expected_path.display().to_string(),
-                            "target": target,
-                            "pinnedVersion": if *tool == "v8-runner" { RUNNER_VERSION } else { "0.2.86" },
-                            "stage": stage,
-                            "retryable": false,
-                        })),
-                        "{case}"
+                    let message = diagnostic["message"].as_str().unwrap();
+                    assert!(
+                        message.starts_with(&format!(
+                            "bundled_tool_missing: {tool} is not available for "
+                        )),
+                        "одна формулировка на всех маршрутах: {case}"
                     );
+                    let data = result.data.as_ref().expect("поля движка в data");
+                    assert_eq!(data["tool"], *tool, "{case}");
+                    assert_eq!(data["target"], target, "{case}");
+                    assert_eq!(data["stage"], stage, "{case}");
+                    assert_eq!(data["retryable"], false, "{case}");
+                    if matches!(stage, "delivery" | "checksum" | "start") {
+                        assert_eq!(
+                            *data,
+                            serde_json::json!({
+                                "tool": tool,
+                                "path": binary(tool).display().to_string(),
+                                "target": target,
+                                "pinnedVersion": if *tool == "v8-runner" { RUNNER_VERSION } else { "0.2.86" },
+                                "stage": stage,
+                                "retryable": false,
+                            }),
+                            "{case}"
+                        );
+                    }
                 }
             }
             return;

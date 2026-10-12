@@ -1134,7 +1134,8 @@ pub(super) fn missing_runner_rejection(at: Option<String>, absence: RunnerAbsenc
 /// только то, что тип называет запуском: процесс раннера не возник. Раннер к
 /// этому месту уже прошёл полную проверку поставки, поэтому это шаг `start`.
 /// Сбой после старта движок не теряет и отвечает своим кодом.
-/// Исходная причина в обоих случаях остаётся в тексте отказа, без путей и секретов.
+/// Исходная причина в обоих случаях остаётся в тексте отказа: путь к раннеру
+/// из неё убран, секреты закрыты общей редакцией.
 pub(super) fn runner_start_rejection(
     at: Option<String>,
     failure: &ProcessStreamFailure,
@@ -1167,10 +1168,10 @@ pub(super) fn runner_start_rejection(
     }
 }
 
-/// Причина сбоя раннера для ответа: без пути к движку и без секретов.
+/// Причина сбоя раннера для ответа: без пути к самому раннеру и после общей
+/// редакции секретов.
 fn runner_failure_cause(error: &str, program: &Path) -> String {
-    let error = error.strip_prefix("process_failed: ").unwrap_or(error);
-    redactor(&error.replace(&program.display().to_string(), RUNNER_TOOL))
+    crate::infrastructure::bundled_tools::launch_failure_cause(error, RUNNER_TOOL, program)
 }
 
 /// Отказ по коду раннера: с уточнением, когда словарь его знает, иначе по коду.
@@ -1797,6 +1798,36 @@ mod tests {
             assert!(
                 text.len() > message.len() + "; v8-runner said: ".len(),
                 "шаг исправления назван: {text}"
+            );
+        }
+
+        // Маршруты передают текст раннера после общей редакции секретов:
+        // маркеры слоя должны её пережить, иначе пароль или ключ в тексте
+        // увёл бы отказ в чужой слой.
+        for (message, layer) in [
+            (
+                "agent at 127.0.0.1:56018 rejected the credentials of user 'Админ' (password=secret-1333)",
+                RunnerLayer::InfobaseUser,
+            ),
+            (
+                "agent at 127.0.0.1:56018 is unreachable: token=secret-1333 Connection refused",
+                RunnerLayer::AgentEndpoint,
+            ),
+            (
+                "SSH handshake with the agent at 127.0.0.1:56018 failed: Pwd=secret-1333",
+                RunnerLayer::AgentEndpoint,
+            ),
+            (
+                "agent at 127.0.0.1:56018 presented SHA256:a as its host key, but SHA256:b was expected; password=secret-1333",
+                RunnerLayer::AgentEndpoint,
+            ),
+        ] {
+            let redacted = redactor(message);
+            assert!(!redacted.contains("secret-1333"), "{redacted}");
+            assert_eq!(
+                map_runner_detail("environment_unavailable", &redacted),
+                Some(layer),
+                "{redacted}"
             );
         }
 

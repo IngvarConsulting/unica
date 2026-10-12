@@ -828,7 +828,7 @@ impl CanonicalV13ReadService {
             Box::new(error_result(Some(method_at.to_string()), code, message))
         })?;
         if summary.state() == crate::domain::code_intelligence::CallGraphState::Unavailable {
-            if let Some(refusal) = engine_absence_refusal(
+            if let Some(refusal) = engine_failure_refusal(
                 &workspace.cwd,
                 CALL_GRAPH_ENGINE,
                 Some(method_at.to_string()),
@@ -1624,7 +1624,7 @@ impl CanonicalV13ReadService {
             Ok(execution) => execution,
             Err(error) => {
                 if let Some(refusal) = engine.and_then(|engine| {
-                    engine_absence_refusal(&context.cwd, engine, None, cancellation)
+                    engine_failure_refusal(&context.cwd, engine, None, cancellation)
                 }) {
                     return refusal;
                 }
@@ -1653,7 +1653,7 @@ impl CanonicalV13ReadService {
         // поставки (контрольная сумма), отказ называет движок, а не сбой поиска.
         if !execution.ok {
             if let Some(refusal) = engine
-                .and_then(|engine| engine_absence_refusal(&context.cwd, engine, None, cancellation))
+                .and_then(|engine| engine_failure_refusal(&context.cwd, engine, None, cancellation))
             {
                 return refusal;
             }
@@ -2438,6 +2438,28 @@ fn engine_absence_refusal(
         }
     };
     Some(missing.refusal(at))
+}
+
+/// Отказ «нет поставляемого движка» после неудачного прогона поставщика,
+/// который запускает движок в службе рабочего пространства: шаг поставки
+/// называет резолвер, а проверенный движок, процесс которого ОС не создаёт,
+/// — шаг `start`. Иначе это не отсутствие движка (#549).
+fn engine_failure_refusal(
+    cwd: &std::path::Path,
+    engine: &str,
+    at: Option<String>,
+    cancellation: &CancellationToken,
+) -> Option<DomainResult> {
+    if let Some(refusal) = engine_absence_refusal(cwd, engine, at.clone(), cancellation) {
+        return Some(refusal);
+    }
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    let plugin_root = crate::infrastructure::plugin_runtime::find_plugin_root(cwd)?;
+    let (missing, cause) =
+        crate::infrastructure::bundled_tools::launch_probe_failure(&plugin_root, engine)?;
+    Some(missing.refusal_with_cause(at, &cause))
 }
 
 /// Движок диагностик BSL и поиска символов.

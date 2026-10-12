@@ -684,9 +684,8 @@ fn invoke_runner(
     };
     let execution = if owns_client {
         runner
-            .run_pending_handoff(&command)
+            .run_pending_handoff_staged(&command)
             .map(|(output, handoff)| (output, Some(handoff)))
-            .map_err(ProcessStreamFailure::Run)
     } else {
         runner.run_staged(&command).map(|output| (output, None))
     };
@@ -699,7 +698,10 @@ fn invoke_runner(
         } else if super::runner_014::config_refusal(error.message()).is_some() {
             // Проектный файл отклонён до запуска раннера: клиента ещё нет.
             runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
-        } else if owns_client {
+        } else if owns_client && matches!(error, ProcessStreamFailure::Run(_)) {
+            // Владеемый запуск, который начался, мог оставить клиента:
+            // его причина не публикуется, а исход — сбой поставщика. Раннер,
+            // который не возник, — тот же отказ «нет движка», что у всех (#549).
             reject(
                 RefusalCode::ProviderFailed,
                 "v8-runner could not complete the owned launch",
@@ -1348,6 +1350,69 @@ fn main() {
             paths.len(),
             "waited applies reused a private directory"
         );
+    }
+
+    /// Ревью #549: владеемый запуск, раннер которого не возник, — тот же отказ
+    /// «нет движка» на шаге `start`, что у остальных операций; владеемый
+    /// запуск, который начался и не завершился, остаётся сбоем поставщика без
+    /// полей движка.
+    #[test]
+    fn owned_launch_that_never_started_is_a_missing_engine() {
+        let root = workspace();
+        let prepared = prepared(root.path(), json!({"clientMode": "thin"}), false);
+        assert!(
+            prepared.arguments.wait_timeout_ms.is_none(),
+            "launch is owned"
+        );
+        let missing = tool(root.path());
+
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &crate::infrastructure::internal_adapters::SystemProcessRunner,
+            CancellationToken::new(),
+            &missing,
+        );
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+        assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
+        let data = result.data.as_ref().expect("поля движка в data");
+        assert_eq!(data["tool"], "v8-runner");
+        assert_eq!(data["stage"], "start");
+        assert_eq!(data["path"], json!(missing.program.display().to_string()));
+        let message = result.diagnostics[0]["message"].as_str().unwrap();
+        assert!(message.contains("; cause: "), "{message}");
+        assert!(
+            !message.contains(&root.path().display().to_string()),
+            "{message}"
+        );
+
+        struct FailsAfterStart;
+        impl ProcessRunner for FailsAfterStart {
+            fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                unreachable!("an owned launch hands its process tree over")
+            }
+            fn run_pending_handoff(
+                &self,
+                _command: &ProcessCommand,
+            ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
+                Err("process_failed: launcher output ended early".to_string())
+            }
+        }
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &FailsAfterStart,
+            CancellationToken::new(),
+            &missing,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "provider_failed",
+            "{result:?}"
+        );
+        assert!(
+            result.diagnostics[0].get("detailCode").is_none(),
+            "{result:?}"
+        );
+        assert!(result.data.is_none(), "{result:?}");
     }
 
     #[test]
