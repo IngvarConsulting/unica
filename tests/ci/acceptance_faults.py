@@ -43,7 +43,7 @@ def stage_fault_producer(plugin: Path) -> dict:
 def place_checksum(plugin: Path, case: str, original: bytes) -> None:
     """The checksum case publishes a manifest whose digest the producer does not match.
 
-    The scenario (S397) relies on the analysis adapter verifying the digest
+    The scenario (S398) relies on the analysis adapter verifying the digest
     before it starts the producer: `check` itself does not hash the engine
     before the run, it names the `checksum` stage after the adapter refused.
     """

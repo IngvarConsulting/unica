@@ -368,7 +368,7 @@ fn project_module_with_specs(
         &lines,
         request.at,
         request.capability,
-        &base_contexts,
+        base_contexts.as_deref(),
         &compilation,
         request.handles,
         request.declarative_bindings,
@@ -451,7 +451,7 @@ fn project_module_events(
             let compatible = method_matches_event(
                 method.method_kind,
                 &method.signature,
-                &method.compile.contexts,
+                method.compile.contexts.as_deref(),
                 method.compile.directive.as_deref(),
                 capability,
                 spec,
@@ -492,7 +492,7 @@ fn method_projections(
     lines: &LineIndex,
     at: &QualifiedAddress,
     capability: ModuleCapability,
-    base_contexts: &[String],
+    base_contexts: Option<&[String]>,
     compilation: &[CompilationProjection],
     handles: &[FormEventBindingInput],
     declarative_bindings: &[DeclarativeBinding<'_>],
@@ -565,10 +565,13 @@ fn method_projections(
             .find(|annotation| annotation.syntax().kind() == SyntaxKind::ANNOTATION)
             .and_then(|annotation| extension_projection(annotation, source, extension_targets));
         let guard = accumulated_guard(header_line, compilation);
-        let mut contexts = directive_contexts(directive.as_deref(), base_contexts);
-        if let Some(guard) = guard.as_deref() {
-            contexts.retain(|context| evaluate_guard(guard, context));
-        }
+        let contexts = base_contexts.map(|base| {
+            let mut contexts = directive_contexts(directive.as_deref(), base);
+            if let Some(guard) = guard.as_deref() {
+                contexts.retain(|context| evaluate_guard(guard, context));
+            }
+            contexts
+        });
         let node_from = lines.line_of(u32::from(node.text_range().start()));
         let node_to = lines.line_of(u32::from(node.text_range().end()).saturating_sub(1));
         let closing_line = node
@@ -901,6 +904,7 @@ fn compilation_projection(
     common: Option<&CommonModuleProperties>,
 ) -> Vec<CompilationProjection> {
     let base = base_contexts(capability, common);
+    let base = base.as_deref();
     let mut ranges = Vec::<CompilationProjection>::new();
     let mut nodes = root
         .descendants()
@@ -912,7 +916,7 @@ fn compilation_projection(
         if let Some(condition) = node.condition() {
             let guard = normalize_guard(condition.syntax());
             if let Some((from_line, to_line)) = node_range(node.then_body_nodes(), lines) {
-                push_compilation_range(&mut ranges, from_line, to_line, &guard, &base);
+                push_compilation_range(&mut ranges, from_line, to_line, &guard, base);
             }
             prior.push(guard);
         }
@@ -921,7 +925,7 @@ fn compilation_projection(
                 let condition = normalize_guard(condition.syntax());
                 let local = format!("Not ({}) And {condition}", prior.join(" Or "));
                 if let Some((from_line, to_line)) = node_range(clause.body_nodes(), lines) {
-                    push_compilation_range(&mut ranges, from_line, to_line, &local, &base);
+                    push_compilation_range(&mut ranges, from_line, to_line, &local, base);
                 }
                 prior.push(condition);
             }
@@ -929,7 +933,7 @@ fn compilation_projection(
         if let Some(clause) = node.else_clause() {
             let local = format!("Not ({})", prior.join(" Or "));
             if let Some((from_line, to_line)) = node_range(clause.body_nodes(), lines) {
-                push_compilation_range(&mut ranges, from_line, to_line, &local, &base);
+                push_compilation_range(&mut ranges, from_line, to_line, &local, base);
             }
         }
     }
@@ -945,11 +949,7 @@ fn compilation_projection(
             .collect::<Vec<_>>();
         if !ancestors.is_empty() {
             range.guard = format!("{} And {}", ancestors.join(" And "), range.guard);
-            range.contexts = base
-                .iter()
-                .filter(|context| evaluate_guard(&range.guard, context))
-                .cloned()
-                .collect();
+            range.contexts = guarded_contexts(base, &range.guard);
         }
     }
     ranges
@@ -960,18 +960,23 @@ fn push_compilation_range(
     from_line: usize,
     to_line: usize,
     guard: &str,
-    base: &[String],
+    base: Option<&[String]>,
 ) {
     ranges.push(CompilationProjection {
         from_line,
         to_line,
         guard: guard.to_string(),
-        contexts: base
-            .iter()
+        contexts: guarded_contexts(base, guard),
+    });
+}
+
+fn guarded_contexts(base: Option<&[String]>, guard: &str) -> Option<Vec<String>> {
+    base.map(|base| {
+        base.iter()
             .filter(|context| evaluate_guard(guard, context))
             .cloned()
-            .collect(),
-    });
+            .collect()
+    })
 }
 
 fn node_range(
@@ -1124,20 +1129,27 @@ fn context_matches_symbol(context: &str, symbol: &str) -> bool {
     }
 }
 
+/// `None` — контексты неизвестны: у заимствованного общего модуля
+/// не записан хотя бы один флаг среды, а значение родителя здесь не читается.
 fn base_contexts(
     capability: ModuleCapability,
     common: Option<&CommonModuleProperties>,
-) -> Vec<String> {
+) -> Option<Vec<String>> {
     let raw: Vec<&str> = match capability.role() {
         ModuleRole::Common => {
             let Some(common) = common else {
-                return PLATFORM_CONTEXTS
-                    .iter()
-                    .map(|value| (*value).to_string())
-                    .collect();
+                return Some(
+                    PLATFORM_CONTEXTS
+                        .iter()
+                        .map(|value| (*value).to_string())
+                        .collect(),
+                );
             };
+            if !common.execution_environment_known() {
+                return None;
+            }
             let mut contexts = Vec::new();
-            if common.client_managed_application {
+            if common.client_managed_application == Some(true) {
                 contexts.extend([
                     "thinClient",
                     "webClient",
@@ -1146,16 +1158,16 @@ fn base_contexts(
                     "mobileAppClient",
                 ]);
             }
-            if common.client_ordinary_application {
+            if common.client_ordinary_application == Some(true) {
                 contexts.push("thickClientOrdinary");
             }
-            if common.server {
+            if common.server == Some(true) {
                 contexts.extend(["server", "mobileAppServer", "mobileStandaloneServer"]);
             }
-            if common.external_connection {
+            if common.external_connection == Some(true) {
                 contexts.push("externalConnection");
             }
-            return contexts.into_iter().map(str::to_string).collect();
+            return Some(contexts.into_iter().map(str::to_string).collect());
         }
         ModuleRole::Form => PLATFORM_CONTEXTS.to_vec(),
         ModuleRole::Command => vec![
@@ -1192,7 +1204,7 @@ fn base_contexts(
         | ModuleRole::Bot
         | ModuleRole::WebSocketClient => vec!["server"],
     };
-    raw.into_iter().map(str::to_string).collect()
+    Some(raw.into_iter().map(str::to_string).collect())
 }
 
 fn directive_contexts(directive: Option<&str>, base: &[String]) -> Vec<String> {
@@ -1247,11 +1259,17 @@ fn event_handler_name_matches(name: &str, spec: &PlatformEventSpec) -> bool {
 fn method_matches_event(
     method_kind: MethodKind,
     signature: &str,
-    contexts: &[String],
+    contexts: Option<&[String]>,
     directive: Option<&str>,
     capability: ModuleCapability,
     spec: &PlatformEventSpec,
 ) -> bool {
+    // Контексты неизвестны только у заимствованного общего модуля, а у него
+    // нет событий платформы: ветка не исполняется и лишь не выдаёт
+    // совместимость без доказательства.
+    let Some(contexts) = contexts else {
+        return false;
+    };
     let kind = match method_kind {
         MethodKind::Procedure => "procedure",
         MethodKind::Function => "function",
@@ -1810,14 +1828,14 @@ mod tests {
         let common_module =
             (capability.role() == crate::domain::platform_profile::ModuleRole::Common).then(|| {
                 crate::domain::module_projection::CommonModuleProperties {
-                    global: false,
-                    client_managed_application: true,
-                    server: true,
-                    external_connection: true,
-                    client_ordinary_application: false,
-                    server_call: false,
+                    global: Some(false),
+                    client_managed_application: Some(true),
+                    server: Some(true),
+                    external_connection: Some(true),
+                    client_ordinary_application: Some(false),
+                    server_call: Some(false),
                     privileged: Some(false),
-                    return_values_reuse: "DuringRequest".to_string(),
+                    return_values_reuse: Some("DuringRequest".to_string()),
                 }
             });
         project_module(ModuleProjectionRequest {
@@ -3016,7 +3034,12 @@ mod tests {
         assert!(method.export);
         assert_eq!(method.compile.directive.as_deref(), Some("&НаКлиенте"));
         assert_eq!(method.compile.guard.as_deref(), Some("Client"));
-        assert!(method.compile.contexts.contains(&"thinClient".to_string()));
+        assert!(method
+            .compile
+            .contexts
+            .as_ref()
+            .unwrap()
+            .contains(&"thinClient".to_string()));
         assert_eq!(method.handles.len(), 2);
         assert_eq!(method.handles[1].call_type.as_deref(), Some("After"));
         assert!(method.extension.is_none());

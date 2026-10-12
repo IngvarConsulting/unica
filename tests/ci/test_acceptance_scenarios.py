@@ -524,20 +524,20 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 397)
+        self.assertEqual(len(scenarios), 398)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 953,
-            "a wire step went missing: the corpus freezes 953 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 966,
+            "a wire step went missing: the corpus freezes 966 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 398)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 399)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
         delivery = {s["id"] for s in select_profile(self.corpus, "delivery")["scenarios"]}
         agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
         fault = {s["id"] for s in select_profile(self.corpus, "fault-injection")["scenarios"]}
-        self.assertEqual(fault, {"S344", "S345", "S346", "S389", "S390", "S396", "S397"})
+        self.assertEqual(fault, {"S344", "S345", "S346", "S389", "S390", "S396", "S398"})
         self.assertFalse(fault & (source | delivery | agent))
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
@@ -550,7 +550,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], "tests/fixtures/acceptance/workspace-predefined", FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing", "tests/fixtures/acceptance/workspace-docs-8.3.26", "tests/fixtures/acceptance/workspace-docs-8.3.27", "tests/fixtures/acceptance/workspace-resolve", "tests/fixtures/acceptance/workspace-english"},
+                {self.corpus["workspace"], "tests/fixtures/acceptance/workspace-predefined", FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing", "tests/fixtures/acceptance/workspace-docs-8.3.26", "tests/fixtures/acceptance/workspace-docs-8.3.27", "tests/fixtures/acceptance/workspace-resolve", "tests/fixtures/acceptance/workspace-english", "tests/fixtures/acceptance/workspace-borrowed"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -650,10 +650,10 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         ]
         # Every documented gap names a reproduced surface defect in its text.
         # The rendered registry lists them; the ceiling from the fixture README
-        # (three) is a ratchet against silent growth, not a target.
+        # (two) is a ratchet against silent growth, not a target.
         self.assertLessEqual(
             len(gap_steps),
-            3,
+            2,
             "documented gaps grew: either fix the surface or re-approve the corpus",
         )
 

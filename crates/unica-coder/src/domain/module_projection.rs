@@ -39,15 +39,30 @@ impl BranchKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Свойства общего модуля из его дескриптора. `None` — свойство не
+/// записано: так платформа выгружает заимствованный модуль расширения,
+/// не перенося в него значения родителя. У обычного модуля читатель
+/// требует все свойства.
 pub(crate) struct CommonModuleProperties {
-    pub(crate) global: bool,
-    pub(crate) client_managed_application: bool,
-    pub(crate) server: bool,
-    pub(crate) external_connection: bool,
-    pub(crate) client_ordinary_application: bool,
-    pub(crate) server_call: bool,
+    pub(crate) global: Option<bool>,
+    pub(crate) client_managed_application: Option<bool>,
+    pub(crate) server: Option<bool>,
+    pub(crate) external_connection: Option<bool>,
+    pub(crate) client_ordinary_application: Option<bool>,
+    pub(crate) server_call: Option<bool>,
     pub(crate) privileged: Option<bool>,
-    pub(crate) return_values_reuse: String,
+    pub(crate) return_values_reuse: Option<String>,
+}
+
+impl CommonModuleProperties {
+    /// Известны ли все четыре флага среды, из которых складываются
+    /// контексты компиляции. Без любого из них контексты неизвестны.
+    pub(crate) fn execution_environment_known(&self) -> bool {
+        self.client_managed_application.is_some()
+            && self.client_ordinary_application.is_some()
+            && self.server.is_some()
+            && self.external_connection.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -126,7 +141,9 @@ pub(crate) struct CompilationFacts {
     pub(crate) directive: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) guard: Option<String>,
-    pub(crate) contexts: Vec<String>,
+    /// `None` — контексты неизвестны: заимствованный общий модуль не
+    /// записал флаги среды. Сериализуется явным `null`.
+    pub(crate) contexts: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) form_context: Option<bool>,
     pub(crate) conditional_body: bool,
@@ -324,7 +341,8 @@ pub(crate) struct CompilationProjection {
     pub(crate) from_line: usize,
     pub(crate) to_line: usize,
     pub(crate) guard: String,
-    pub(crate) contexts: Vec<String>,
+    /// `None` — контексты модуля неизвестны, как у `CompilationFacts`.
+    pub(crate) contexts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -526,10 +544,13 @@ impl ModuleProjectionSet {
                     "context `{context}` is not part of platform profile 8.3.27"
                 )));
             }
+            // Публичный фильтр контекста отказывает раньше, в `view`, если
+            // контексты модуля неизвестны; здесь неизвестное не совпадает.
             if !method
                 .compile
                 .contexts
                 .iter()
+                .flatten()
                 .any(|candidate| candidate == context)
             {
                 return Ok(BodyPage {
@@ -556,9 +577,13 @@ impl ModuleProjectionSet {
                     .filter(|range| line.line >= range.from_line && line.line <= range.to_line)
                     .collect::<Vec<_>>();
                 covering.is_empty()
-                    || covering
-                        .iter()
-                        .all(|range| range.contexts.iter().any(|candidate| candidate == context))
+                    || covering.iter().all(|range| {
+                        range
+                            .contexts
+                            .iter()
+                            .flatten()
+                            .any(|candidate| candidate == context)
+                    })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -753,7 +778,7 @@ mod tests {
             compile: CompilationFacts {
                 directive: Some("&НаСервере".to_string()),
                 guard: Some("Server".to_string()),
-                contexts: vec!["server".to_string()],
+                contexts: Some(vec!["server".to_string()]),
                 form_context: None,
                 conditional_body: true,
             },
@@ -808,7 +833,7 @@ mod tests {
             from_line: 7,
             to_line: 7,
             guard: "Server".to_string(),
-            contexts: vec!["server".to_string()],
+            contexts: Some(vec!["server".to_string()]),
         };
         let body = [
             BodyLine {
@@ -947,14 +972,14 @@ mod tests {
     #[test]
     fn common_module_flags_serialize_exactly_once_and_never_become_contexts() {
         let props = ModuleProperties::common(CommonModuleProperties {
-            global: false,
-            client_managed_application: true,
-            server: true,
-            external_connection: true,
-            client_ordinary_application: false,
-            server_call: false,
+            global: Some(false),
+            client_managed_application: Some(true),
+            server: Some(true),
+            external_connection: Some(true),
+            client_ordinary_application: Some(false),
+            server_call: Some(false),
             privileged: Some(false),
-            return_values_reuse: "DuringRequest".to_string(),
+            return_values_reuse: Some("DuringRequest".to_string()),
         });
         let mut common_identity = identity(props);
         common_identity.at = QualifiedAddress::parse("main:CommonModule.ЗаказыСервер").unwrap();
@@ -1025,7 +1050,7 @@ mod tests {
             compile: CompilationFacts {
                 directive: None,
                 guard: None,
-                contexts: vec!["server".to_string()],
+                contexts: Some(vec!["server".to_string()]),
                 form_context: None,
                 conditional_body: false,
             },

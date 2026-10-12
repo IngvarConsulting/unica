@@ -185,6 +185,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         "`tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную "
         "`tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. "
         "СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; "
+        "заимствованный общий модуль без свойств из выгрузки платформы — на `workspace-borrowed/`; "
         "агентные сценарии выбираются большим набором `tests/agent_evaluation/`. "
         "Источник истины — JSON корпуса; этот документ — его "
         "рендер для людей, и проверка на расхождение входит в тот же тест."
