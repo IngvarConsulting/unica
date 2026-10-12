@@ -31,6 +31,17 @@ pub(super) const MAX_JOINABLE_LEADERS: usize = 256;
 /// новый вызов исполняется сам, как до присоединения.
 pub(super) const MAX_JOINED_HOLDERS: usize = 1024;
 
+/// Сколько после начала ведущего чтения к нему можно присоединиться.
+///
+/// Присоединение нужно для повтора после потерянного ответа на submit.
+/// Ошибка доходит до агента не позже окна передачи в задание (7 с) с полем
+/// сериализации (125 мс) и окна восстановления frontend (750 мс), то есть
+/// примерно через 8 с после начала. Тридцать секунд — около четырёх таких
+/// окон: агенту хватает времени прочитать ошибку и повторить вызов, а
+/// результат обхода, начатого раньше, не выдаётся за свежий надолго. Вне окна
+/// одинаковое чтение начинает свой обход.
+pub(super) const JOIN_WINDOW: Duration = Duration::from_secs(30);
+
 /// Сколько квитанций без задания демон помнит по их `taskId`. Это вызовы,
 /// чей прямой ответ ещё не подтверждён: идущие и потерявшие ответ.
 pub(super) const MAX_RECEIPT_HANDLES: usize = 4096;
@@ -83,6 +94,8 @@ pub(super) struct JoinCandidate {
     /// Срок передачи ведущего вызова в задание. Когда он истёк, ведущий
     /// вызов как раз переходит в задание, и короткое ожидание окупается.
     pub(super) leader_deadline: InvocationResponseDeadline,
+    /// Когда ведущее чтение началось по часам файловой системы.
+    pub(super) started_wall: std::time::SystemTime,
 }
 
 /// Вид присоединившегося вызова.
@@ -107,7 +120,21 @@ struct Leader {
     task_id: TaskId,
     in_flight: bool,
     deadline: InvocationResponseDeadline,
+    /// Начало ведущего чтения по часам его срока.
+    started_at: std::time::Instant,
+    /// То же начало по часам файловой системы: исходники, изменённые позже,
+    /// ведущее чтение могло не увидеть.
+    started_wall: std::time::SystemTime,
     order: u64,
+}
+
+impl Leader {
+    fn within_join_window(&self) -> bool {
+        self.deadline
+            .now()
+            .saturating_duration_since(self.started_at)
+            < JOIN_WINDOW
+    }
 }
 
 #[derive(Default)]
@@ -127,6 +154,9 @@ struct JoinState {
     aliases: HashMap<TaskId, JoinAlias>,
     /// Отправки `apply` и `run`, которые ещё могут менять состояние.
     mutations: HashSet<TaskId>,
+    /// Растёт с каждой отправкой `apply` или `run`: чтение, проверившее
+    /// мутации раньше, не становится ведущим после неё.
+    mutation_epoch: u64,
 }
 
 impl JoinState {
@@ -148,13 +178,30 @@ impl JoinRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Эпоха мутаций, которую чтение запоминает до проверки живых мутаций.
+    pub(super) fn mutation_epoch(&self) -> u64 {
+        self.lock().mutation_epoch
+    }
+
     /// Чтение получило новую квитанцию: к нему могут присоединиться, пока
     /// оно не завершится и пока не пришла отправка `apply` или `run`.
-    pub(super) fn register_leader(&self, key: &ReceiptKey, deadline: InvocationResponseDeadline) {
+    ///
+    /// `observed_epoch` — эпоха до проверки живых мутаций. Если с тех пор
+    /// пришла мутация или учёт ещё помнит незавершённую, чтение могло
+    /// прочитать состояние до неё и ведущим не становится.
+    pub(super) fn register_leader(
+        &self,
+        key: &ReceiptKey,
+        deadline: InvocationResponseDeadline,
+        observed_epoch: u64,
+    ) -> bool {
         if !tool_is_joinable(key.tool()) {
-            return;
+            return false;
         }
         let mut state = self.lock();
+        if state.mutation_epoch != observed_epoch || !state.mutations.is_empty() {
+            return false;
+        }
         let order = state.next_order;
         state.next_order = state.next_order.wrapping_add(1);
         state.joinable.insert(
@@ -162,6 +209,8 @@ impl JoinRegistry {
             Leader {
                 task_id: key.reserved_task_id(),
                 in_flight: true,
+                started_at: deadline.now(),
+                started_wall: std::time::SystemTime::now(),
                 deadline,
                 order,
             },
@@ -176,6 +225,7 @@ impl JoinRegistry {
                 state.joinable.remove(&oldest);
             }
         }
+        true
     }
 
     /// Обработчик submit ведущего вызова ответил: задание создано или вызов
@@ -194,7 +244,9 @@ impl JoinRegistry {
     /// Отправка, меняющая состояние, закрывает присоединение ко всем ранее
     /// начатым чтениям: следующее чтение должно увидеть её результат.
     pub(super) fn close_joins(&self) {
-        self.lock().joinable.clear();
+        let mut state = self.lock();
+        state.joinable.clear();
+        state.mutation_epoch = state.mutation_epoch.wrapping_add(1);
     }
 
     /// Мутация получила квитанцию: пока она не завершилась, чтения не
@@ -202,6 +254,7 @@ impl JoinRegistry {
     pub(super) fn track_mutation(&self, task_id: TaskId) {
         let mut state = self.lock();
         state.joinable.clear();
+        state.mutation_epoch = state.mutation_epoch.wrapping_add(1);
         state.mutations.insert(task_id);
     }
 
@@ -214,14 +267,23 @@ impl JoinRegistry {
     }
 
     pub(super) fn candidate(&self, identity: &RequestIdentity) -> Option<JoinCandidate> {
-        self.lock()
+        let mut state = self.lock();
+        if state
             .joinable
             .get(identity)
-            .map(|leader| JoinCandidate {
-                task_id: leader.task_id,
-                in_flight: leader.in_flight,
-                leader_deadline: leader.deadline.clone(),
-            })
+            .is_some_and(|leader| !leader.within_join_window())
+        {
+            // Past its window the leader's walk is too old to pass for this
+            // call's own: the call starts its own.
+            state.joinable.remove(identity);
+            return None;
+        }
+        state.joinable.get(identity).map(|leader| JoinCandidate {
+            task_id: leader.task_id,
+            in_flight: leader.in_flight,
+            leader_deadline: leader.deadline.clone(),
+            started_wall: leader.started_wall,
+        })
     }
 
     /// Ведущий вызов закончился или пропал: к нему больше не присоединяются.
@@ -268,10 +330,9 @@ impl JoinRegistry {
             || state.aliases.len() >= MAX_JOINED_HOLDERS
             || state.aliases.contains_key(&holder.task_id)
             || state.shared.contains_key(&holder.task_id)
-            || !state
-                .joinable
-                .get(identity)
-                .is_some_and(|candidate| candidate.task_id == leader)
+            || !state.joinable.get(identity).is_some_and(|candidate| {
+                candidate.task_id == leader && candidate.within_join_window()
+            })
             || state
                 .shared
                 .get(&leader)
@@ -414,6 +475,86 @@ impl ReceiptHandles {
     }
 }
 
+/// Сколько времени демон помнит преграду для кадра потерянного submit.
+///
+/// Кадр приходит только по соединению, которое его несло, и исполняется
+/// только этим процессом демона: после перезапуска демона ему не прийти.
+/// Обработчик соединения читает кадр сразу после рукопожатия, а резерв
+/// квитанции ограничен бюджетом вызова (до 7 с). Десять минут с запасом
+/// перекрывают это время даже под нагрузкой.
+pub(super) const SUBMIT_FENCE_RETENTION: Duration = Duration::from_secs(600);
+/// Сколько преград демон держит одновременно. Сверх этого преграда не
+/// ставится, и frontend честно отвечает, что вызов ещё может идти.
+pub(super) const MAX_SUBMIT_FENCES: usize = 4096;
+const SUBMIT_FENCE_STRIPES: usize = 64;
+
+/// Преграды для кадров потерянного submit, которые демон ещё не прочитал.
+///
+/// Только память: кадр не переживает процесс, который должен его прочитать,
+/// поэтому и преграда не переживает его. Резерв квитанции и постановка
+/// преграды для одного ключа идут под одним замком из набора, поэтому кадр
+/// либо уже зарезервирован и преграду не получит, либо встретит её и не
+/// запустится.
+pub(super) struct SubmitFences {
+    stripes: Vec<Mutex<()>>,
+    fenced: Mutex<HashMap<ReceiptKeyDigest, std::time::Instant>>,
+}
+
+impl Default for SubmitFences {
+    fn default() -> Self {
+        Self {
+            stripes: (0..SUBMIT_FENCE_STRIPES).map(|_| Mutex::new(())).collect(),
+            fenced: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl SubmitFences {
+    /// Замок ключа: под ним резерв квитанции и постановка преграды.
+    pub(super) fn stripe(&self, digest: &ReceiptKeyDigest) -> MutexGuard<'_, ()> {
+        let index = digest.as_str().bytes().take(4).fold(0usize, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(byte.into())
+        }) % self.stripes.len();
+        self.stripes[index]
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn table(&self) -> MutexGuard<'_, HashMap<ReceiptKeyDigest, std::time::Instant>> {
+        self.fenced
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(super) fn is_fenced(&self, digest: &ReceiptKeyDigest) -> bool {
+        let now = std::time::Instant::now();
+        let mut table = self.table();
+        match table.get(digest) {
+            Some(expires_at) if *expires_at > now => true,
+            Some(_) => {
+                table.remove(digest);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Поставить преграду; `false`, если места нет даже после уборки
+    /// истёкших.
+    pub(super) fn fence(&self, digest: ReceiptKeyDigest) -> bool {
+        let now = std::time::Instant::now();
+        let mut table = self.table();
+        if table.len() >= MAX_SUBMIT_FENCES {
+            table.retain(|_, expires_at| *expires_at > now);
+        }
+        if table.len() >= MAX_SUBMIT_FENCES && !table.contains_key(&digest) {
+            return false;
+        }
+        table.insert(digest, now + SUBMIT_FENCE_RETENTION);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,6 +585,28 @@ mod tests {
     }
 
     #[test]
+    fn a_fence_stays_bounded_and_ends_after_its_retention() {
+        let fences = SubmitFences::default();
+        let digest =
+            |index: usize| -> ReceiptKeyDigest { format!("{index:064x}").parse().unwrap() };
+        for index in 0..MAX_SUBMIT_FENCES {
+            assert!(fences.fence(digest(index)));
+        }
+        assert!(fences.is_fenced(&digest(0)));
+        assert!(
+            !fences.fence(digest(MAX_SUBMIT_FENCES)),
+            "a full table refuses"
+        );
+        // An expired fence is forgotten and frees its place.
+        fences.table().insert(
+            digest(0),
+            std::time::Instant::now() - Duration::from_secs(1),
+        );
+        assert!(!fences.is_fenced(&digest(0)));
+        assert!(fences.fence(digest(MAX_SUBMIT_FENCES)));
+    }
+
+    #[test]
     fn only_tools_that_change_nothing_are_joinable() {
         for tool in V5ToolIdentity::ALL {
             let mutating = matches!(tool, V5ToolIdentity::Apply | V5ToolIdentity::Run);
@@ -456,7 +619,7 @@ mod tests {
         let registry = JoinRegistry::default();
         for tool in [V5ToolIdentity::Apply, V5ToolIdentity::Run] {
             let leader = key(tool, "same");
-            registry.register_leader(&leader, deadline());
+            assert!(!registry.register_leader(&leader, deadline(), registry.mutation_epoch()));
             assert!(registry.candidate(&leader.request_identity()).is_none());
         }
     }
@@ -465,7 +628,7 @@ mod tests {
     fn only_the_exact_request_identity_finds_its_leader() {
         let registry = JoinRegistry::default();
         let leader = key(V5ToolIdentity::Search, "same");
-        registry.register_leader(&leader, deadline());
+        assert!(registry.register_leader(&leader, deadline(), registry.mutation_epoch()));
 
         let same = key(V5ToolIdentity::Search, "same");
         let other_arguments = key(V5ToolIdentity::Search, "other");
@@ -486,7 +649,7 @@ mod tests {
     fn a_mutation_closes_joins_to_reads_started_before_it() {
         let registry = JoinRegistry::default();
         let leader = key(V5ToolIdentity::Search, "same");
-        registry.register_leader(&leader, deadline());
+        assert!(registry.register_leader(&leader, deadline(), registry.mutation_epoch()));
         registry.close_joins();
         let joiner = key(V5ToolIdentity::Search, "same");
         assert!(registry.candidate(&joiner.request_identity()).is_none());
@@ -499,13 +662,71 @@ mod tests {
             .is_none());
     }
 
+    struct ManualClock(Mutex<std::time::Instant>);
+
+    impl crate::application::ports::Clock for ManualClock {
+        fn now(&self) -> std::time::Instant {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    #[test]
+    fn an_identical_read_joins_only_within_the_window_after_the_leader_started() {
+        let clock = Arc::new(ManualClock(Mutex::new(std::time::Instant::now())));
+        let registry = JoinRegistry::default();
+        let leader = key(V5ToolIdentity::Search, "same");
+        let identity = leader.request_identity();
+        assert!(registry.register_leader(
+            &leader,
+            InvocationResponseDeadline::capture(clock.clone()),
+            registry.mutation_epoch()
+        ));
+
+        *clock.0.lock().unwrap() += JOIN_WINDOW - Duration::from_millis(1);
+        let inside = key(V5ToolIdentity::Search, "same");
+        assert!(registry.candidate(&identity).is_some());
+        assert!(registry
+            .attach(&identity, leader.reserved_task_id(), &inside)
+            .is_some());
+
+        *clock.0.lock().unwrap() += Duration::from_millis(1);
+        let outside = key(V5ToolIdentity::Search, "same");
+        assert!(registry
+            .attach(&identity, leader.reserved_task_id(), &outside)
+            .is_none());
+        assert!(registry.candidate(&identity).is_none());
+        // The holder that joined in time keeps its view of the shared work.
+        assert!(registry.alias(inside.reserved_task_id()).is_some());
+    }
+
+    #[test]
+    fn a_read_checked_before_a_mutation_never_leads_after_it() {
+        let registry = JoinRegistry::default();
+        let read = key(V5ToolIdentity::Search, "same");
+        // The read sees no live mutation, then a mutation arrives before it
+        // registers: it may have read the state before that mutation.
+        let observed = registry.mutation_epoch();
+        let mutation = key(V5ToolIdentity::Apply, "edit");
+        registry.track_mutation(mutation.reserved_task_id());
+        registry.mutation_finished(mutation.reserved_task_id());
+        assert!(!registry.register_leader(&read, deadline(), observed));
+        assert!(registry.candidate(&read.request_identity()).is_none());
+        // While a mutation is still tracked no read leads at all.
+        registry.track_mutation(mutation.reserved_task_id());
+        let during = key(V5ToolIdentity::Search, "same");
+        assert!(!registry.register_leader(&during, deadline(), registry.mutation_epoch()));
+        registry.mutation_finished(mutation.reserved_task_id());
+        let after = key(V5ToolIdentity::Search, "same");
+        assert!(registry.register_leader(&after, deadline(), registry.mutation_epoch()));
+    }
+
     #[test]
     fn shared_work_is_cancelled_only_when_every_holder_cancelled() {
         let registry = JoinRegistry::default();
         let leader = key(V5ToolIdentity::Search, "same");
         let identity = leader.request_identity();
         let leader_task = leader.reserved_task_id();
-        registry.register_leader(&leader, deadline());
+        assert!(registry.register_leader(&leader, deadline(), registry.mutation_epoch()));
         let first = key(V5ToolIdentity::Search, "same");
         let second = key(V5ToolIdentity::Search, "same");
         registry.attach(&identity, leader_task, &first).unwrap();
@@ -546,7 +767,7 @@ mod tests {
         let registry = JoinRegistry::default();
         let leader = key(V5ToolIdentity::Check, "same");
         let identity = leader.request_identity();
-        registry.register_leader(&leader, deadline());
+        assert!(registry.register_leader(&leader, deadline(), registry.mutation_epoch()));
         assert_eq!(
             registry.cancel_holder(leader.reserved_task_id(), 5),
             HolderCancel::CancelShared(leader.reserved_task_id())
@@ -562,7 +783,7 @@ mod tests {
         let registry = JoinRegistry::default();
         let leader = key(V5ToolIdentity::Docs, "same");
         let identity = leader.request_identity();
-        registry.register_leader(&leader, deadline());
+        assert!(registry.register_leader(&leader, deadline(), registry.mutation_epoch()));
         let joiner = key(V5ToolIdentity::Docs, "same");
         registry
             .attach(&identity, leader.reserved_task_id(), &joiner)
@@ -577,9 +798,13 @@ mod tests {
     fn the_joinable_index_and_the_holders_stay_bounded() {
         let registry = JoinRegistry::default();
         let first = key(V5ToolIdentity::View, "first");
-        registry.register_leader(&first, deadline());
+        registry.register_leader(&first, deadline(), registry.mutation_epoch());
         for index in 0..MAX_JOINABLE_LEADERS {
-            registry.register_leader(&key(V5ToolIdentity::View, &index.to_string()), deadline());
+            registry.register_leader(
+                &key(V5ToolIdentity::View, &index.to_string()),
+                deadline(),
+                registry.mutation_epoch(),
+            );
         }
         assert!(
             registry.candidate(&first.request_identity()).is_none(),
@@ -588,7 +813,7 @@ mod tests {
 
         let leader = key(V5ToolIdentity::View, "shared");
         let identity = leader.request_identity();
-        registry.register_leader(&leader, deadline());
+        assert!(registry.register_leader(&leader, deadline(), registry.mutation_epoch()));
         for _ in 0..MAX_JOINED_HOLDERS {
             let joiner = key(V5ToolIdentity::View, "shared");
             registry

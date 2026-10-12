@@ -59,12 +59,17 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod hooks;
+mod join_freshness;
+#[cfg(test)]
+pub(crate) use join_freshness::TIMESTAMP_MARGIN as JOIN_TIMESTAMP_MARGIN;
 mod joining;
 pub(crate) use hooks::{
     NoHooks, V5AdmissionRejection, V5PausePoint, V5ReceiptRuntimeEventKind, V5RetirementStep,
     V5RuntimeHooks, V5Stage, V5StoreFaultPoint,
 };
-use joining::{tool_is_joinable, HolderCancel, JoinHolder, JoinRegistry, ReceiptHandles};
+use joining::{
+    tool_is_joinable, HolderCancel, JoinHolder, JoinRegistry, ReceiptHandles, SubmitFences,
+};
 #[cfg(feature = "receipt-ledger-test-support")]
 mod receipt_scenario_v5;
 #[cfg(feature = "receipt-ledger-test-support")]
@@ -118,6 +123,9 @@ pub(crate) struct V5ReceiptRuntime {
     /// a lost-submit refusal names must answer while the call is still
     /// inline or after it ended directly (#1376); memory only.
     receipt_handles: ReceiptHandles,
+    /// Lost-submit frames this process must never run (#1376); memory only,
+    /// like the frames themselves.
+    submit_fences: SubmitFences,
 }
 
 #[derive(Default)]
@@ -2526,6 +2534,7 @@ impl V5ReceiptRuntime {
             hooks,
             joins: JoinRegistry::default(),
             receipt_handles: ReceiptHandles::default(),
+            submit_fences: SubmitFences::default(),
         };
         if !config.skips_v5_startup_reconciliation() {
             let bound_handoffs =
@@ -3111,19 +3120,34 @@ impl V5ReceiptRuntime {
         let (key, response_budget_ms) = strict.into_parts();
         let cutoff = OriginalCutoffDescriptor::new(epoch_ms, response_budget_ms)
             .map_err(|_| ReceiptLedgerError::TimestampOverflow)?;
-        if let Some(reply) = self.join_identical_read(&key, &response_deadline, deadline)? {
+        // A frame whose sender already gave up on it and fenced its key never
+        // runs; nobody reads the answer to it.
+        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+        if self.submit_fences.is_fenced(&digest) {
+            return Err(ReceiptLedgerError::ReceiptNotFound);
+        }
+        if let Some(reply) =
+            self.join_identical_read(&key, &invocation, &response_deadline, deadline)?
+        {
             return Ok(reply);
         }
         let task_id = key.reserved_task_id();
+        // Captured before the live-mutation check: a mutation submitted after
+        // it keeps this read from leading (`register_leader`).
+        let mutation_epoch = self.joins.mutation_epoch();
+        let stripe = self.submit_fences.stripe(&digest);
+        if self.submit_fences.is_fenced(&digest) {
+            return Err(ReceiptLedgerError::ReceiptNotFound);
+        }
         let outcome = self.receipt_ledger.reserve(key.clone(), cutoff, deadline)?;
-        if matches!(&outcome, ReserveOutcome::Created(_)) {
+        drop(stripe);
+        let created = matches!(&outcome, ReserveOutcome::Created(_));
+        if created {
             self.hooks
                 .event(V5ReceiptRuntimeEventKind::ReceiptReserved, epoch_ms);
             self.receipt_handles.insert(&key);
             if !tool_is_joinable(key.tool()) {
                 self.joins.track_mutation(task_id);
-            } else if !self.mutation_live(deadline) {
-                self.joins.register_leader(&key, response_deadline.clone());
             }
         }
         let decision = decide_cancel_reserved_submit(outcome).map_err(|_| {
@@ -3131,6 +3155,12 @@ impl V5ReceiptRuntime {
         })?;
         match decision {
             CancelReservedSubmitDecision::ExecuteReserved(reservation) => {
+                // Only an attempt that really runs can lead: a frame that
+                // arrives cancelled ends at once and never settles as one.
+                if created && tool_is_joinable(key.tool()) && !self.mutation_live(deadline) {
+                    self.joins
+                        .register_leader(&key, response_deadline.clone(), mutation_epoch);
+                }
                 let reply = self.execute_reserved_invocation(
                     reservation,
                     invocation,
@@ -5464,6 +5494,35 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// Fence the exact key of a submission whose answer was lost before the
+    /// daemon reserved it: under the key's lock either the receipt is
+    /// already there and is answered like its recovery, or the frame, if it
+    /// still arrives, meets the fence and never runs.
+    fn fence_invocation(
+        &self,
+        key: ReceiptKey,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        self.validate_receipt_key(&key)?;
+        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+        let _stripe = self.submit_fences.stripe(&digest);
+        match self.recover_invocation(key.clone(), epoch_ms, deadline) {
+            Err(ReceiptLedgerError::ReceiptNotFound) if self.submit_fences.fence(digest) => {
+                Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::ReceiptPending {
+                        receipt_key: key,
+                        phase: V5InvocationPhase::CancelReserved,
+                        accepted_epoch_ms: epoch_ms,
+                        original_budget_ms: 0,
+                        cancel_requested: true,
+                    },
+                }))
+            }
+            other => other,
+        }
+    }
+
     fn recover_invocation(
         &self,
         key: ReceiptKey,
@@ -5809,7 +5868,18 @@ impl V5ReceiptRuntime {
         match self.joins.cancel_holder(task_id, self.epoch_ms()) {
             HolderCancel::Released => self.resolve_task(task_id, deadline),
             HolderCancel::CancelShared(shared) if shared == task_id => {
-                self.cancel_stored_task(task_id, deadline)
+                match self.cancel_stored_task(task_id, deadline) {
+                    // Not a Task yet, or ended directly: the id a lost-submit
+                    // refusal named cancels its exact receipt instead.
+                    Err(ReceiptLedgerError::ReceiptNotFound) => {
+                        let Some(key) = self.receipt_handles.get(task_id) else {
+                            return Err(ReceiptLedgerError::ReceiptNotFound);
+                        };
+                        self.cancel_invocation(key, self.epoch_ms(), deadline)?;
+                        self.resolve_task(task_id, deadline)
+                    }
+                    other => other,
+                }
             }
             HolderCancel::CancelShared(shared) => {
                 self.cancel_stored_task(shared, deadline)?;
@@ -5946,6 +6016,7 @@ impl V5ReceiptRuntime {
     fn join_identical_read(
         &self,
         key: &ReceiptKey,
+        invocation: &V5InvocationRequest,
         response_deadline: &crate::application::invocation::InvocationResponseDeadline,
         deadline: Instant,
     ) -> Result<Option<V5RuntimeReply>, ReceiptLedgerError> {
@@ -5984,6 +6055,16 @@ impl V5ReceiptRuntime {
                         self.resolve_stored_task(key.reserved_task_id(), deadline),
                         Err(ReceiptLedgerError::ReceiptNotFound)
                     ) {
+                        return Ok(None);
+                    }
+                    // A join never answers with a walk older than the sources
+                    // at this call: any change since the leader started, by
+                    // Unica or by an external edit, makes the call run itself.
+                    if !join_freshness::sources_unchanged_since(
+                        invocation.workspace_hint(),
+                        candidate.started_wall,
+                    ) {
+                        self.joins.forget_leader(&identity, candidate.task_id);
                         return Ok(None);
                     }
                     if self.joins.holders_full() {
@@ -6541,7 +6622,9 @@ fn joined_task_snapshot(
                 updated_at_epoch_ms: shared.updated_at_epoch_ms().max(released),
                 ttl_ms: shared.ttl_ms(),
                 poll_interval_ms: shared.poll_interval_ms(),
-                version: shared.version(),
+                // The holder's own cancellation is a newer state than any
+                // shared state it saw before.
+                version: shared.version().saturating_add(1),
                 cancel_requested: true,
                 terminal_epoch_ms: released,
             },
@@ -7137,6 +7220,25 @@ fn handle_probe_connection(
                         if runtime.hooks.cancel_response_disconnect() {
                             return Ok(());
                         }
+                        write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
+                    }
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
+            }
+            V5ClientRequestKind::FenceInvocationReceipt => {
+                let V5ClientRequest::FenceInvocationReceipt { receipt_key } =
+                    decoded.into_request()
+                else {
+                    unreachable!("request kind and decoded fence variant diverged");
+                };
+                let epoch_ms = runtime.epoch_ms();
+                match runtime.fence_invocation(receipt_key, epoch_ms, deadlines.operation) {
+                    Ok(reply) => {
                         write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
                     }
                     Err(error) => write_runtime_ledger_error_before(

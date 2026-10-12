@@ -51,12 +51,15 @@ publishes raw stdout. The Task state is the authority for the outcome; a
 
 If any call fails with `data.code: submit_response_lost`, the daemon may
 already run it: wait for the `taskId` the error names (its `next`, also
-repeated in the message) instead of calling again. `task_not_found` for that
-id means the daemon no longer knows the call, for example after a restart:
-inspect the actual state before repeating `apply` or `run`. `submit_not_delivered` means the
-call never reached the daemon and will not run; repeat it as is. An identical
-read repeated while the first one still runs joins that work under its own
-`taskId`; `apply` and `run` never do, so never repeat them blindly.
+repeated in the message) instead of calling again; a client with native
+Tasks receives that Task directly. `task_not_found` for that id means the
+daemon no longer knows the call, for example after a restart: inspect the
+actual state before repeating `apply` or `run`. `submit_not_delivered` means
+the call never reached the daemon and will not run; repeat it as is. A
+refused connection (`task_backend_failed` with `needsHuman`) will not pass on
+a repeat. An identical read repeated shortly after the first one joins that
+work under its own `taskId` only while no source changed since it began;
+`apply` and `run` never do, so never repeat them blindly.
 
 ### If a mutating runner remains `working`
 
