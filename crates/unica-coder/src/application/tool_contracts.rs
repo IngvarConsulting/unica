@@ -4610,11 +4610,11 @@ pub(crate) mod tests {
             ),
             (
                 "unica.meta.add",
-                entry("metadata:Add", "30433:7cc169059da1ce8b"),
+                entry("metadata:Add", "30540:271ad9cd1a66af00"),
             ),
             (
                 "unica.meta.edit",
-                entry("metadata:Edit", "31053:327a81849557d2d8"),
+                entry("metadata:Edit", "31160:556747418adad47f"),
             ),
             (
                 "unica.mxl.compile",

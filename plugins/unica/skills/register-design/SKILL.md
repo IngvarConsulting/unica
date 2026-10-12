@@ -31,8 +31,8 @@ description: "Проектирование регистров 1С. Исполь�
 
 Four decisions, in this order, and each one narrows the next:
 
-- **Which class**: information register for state keyed by dimensions, accumulation register with `RegisterType = Balances` for what comes in and goes out, `RegisterType = Turnovers` when balance is meaningless, accounting register for double entry, calculation register for accruals with an action period.
-- **What is a key**: a dimension is a key, a resource is an aggregatable value, an attribute is neither. For a `Balances` register a dimension must be meaningful for both receipt and expense.
+- **Which class**: information register for state keyed by dimensions, accumulation register with `RegisterType = Balance` for what comes in and goes out, `RegisterType = Turnovers` when balance is meaningless, accounting register for double entry, calculation register for accruals with an action period.
+- **What is a key**: a dimension is a key, a resource is an aggregatable value, an attribute is neither. For a `Balance` register a dimension must be meaningful for both receipt and expense. The type also fixes the movement fields: only a `Balance` register has the standard `ВидДвижения` (`RecordType`, `Приход`/`Расход`); a `Turnovers` register has none, so posting code that sets `ВидДвижения` on its records fails.
 - **How it is read**: `Остатки` gets the platform's cheapest plan only without totals separation, without a date parameter, and with every virtual table dimension used in the outer query (std733).
 - **How it is written**: one set per batch, not one write per row (std792).
 
@@ -41,12 +41,12 @@ Totals separation is the decision that pulls both ways: std664 wants it for writ
 ## Workflow
 
 1. State the accounting subject and the questions the register must answer. One subject, one register.
-2. Pick the class, then split every field into dimension, resource, or attribute before creating anything. Check the receipt/expense rule for every candidate dimension of a `Balances` register.
+2. Pick the class, then split every field into dimension, resource, or attribute before creating anything. Check the receipt/expense rule for every candidate dimension of a `Balance` register.
 3. Inspect neighbours with `unica.view` on the object node — an existing register with the same subject is a reason to extend rather than add — and locate the read paths with `unica.search`, `unica.view` on the module node (its `Method` branch lists the methods), and `unica.view` on the schema node.
 4. Decide periodicity and `WriteMode` for an information register, and whether every std708 condition holds before enabling `EnableTotalsSliceLast` or `EnableTotalsSliceFirst`.
 5. Decide `EnableTotalsSplitting` against the read paths found in step 3, not in the abstract.
 6. Set `DenyIncompleteValues` on dimensions that must always carry a value, and decide `Master` deliberately: it makes record lifetime follow the master value.
-7. Create with `unica.apply` and refine with `unica.apply`, one verifiable step at a time.
+7. Create with `unica.apply` and refine with `unica.apply`, one verifiable step at a time. `object.create` writes an accumulation register as `Balance`; a turnover register sets `RegisterType` to `Turnovers` with `props.set`, in the same request or later.
 8. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), report runtime behavior as unverified, and re-check the read paths that step 5 traded against.
 
 ## Design rules
@@ -60,7 +60,7 @@ Totals separation is the decision that pulls both ways: std664 wants it for writ
 
 ## Review checklist
 
-- Every dimension of a `Balances` register is meaningful on both receipt and expense.
+- Every dimension of a `Balance` register is meaningful on both receipt and expense.
 - Resources hold only aggregatable values; accompanying data sits in attributes.
 - `DenyIncompleteValues` is set on dimensions that cannot be empty.
 - `EnableTotalsSplitting` matches a named decision about write concurrency versus balance read speed.
@@ -72,7 +72,7 @@ Totals separation is the decision that pulls both ways: std664 wants it for writ
 
 ## Stop rules
 
-- Do not add a dimension to a `Balances` register that is meaningful on only one record direction.
+- Do not add a dimension to a `Balance` register that is meaningful on only one record direction.
 - Do not enable totals separation without naming the read path it costs, or disable it without naming the write contention it restores.
 - Do not change dimensions, resources, periodicity, or `WriteMode` without a stated migration for the data already stored.
 - Do not claim a register read got faster without a before/after measurement on comparable volume.

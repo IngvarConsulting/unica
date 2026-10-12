@@ -19331,9 +19331,10 @@
   },
   {
    "id": "S354",
+   "name": "report-include-help-in-contents",
    "issue": 896,
-   "area": "Известные пробелы",
-   "task": "Включить справку отчёта: props.set IncludeHelpInContents пока отказывает (#896)",
+   "area": "Свойства объектов",
+   "task": "Включить справку отчёта в оглавление через props.set IncludeHelpInContents; у перечисления свойства нет — отказ",
    "wire": [
     {
      "tool": "unica.apply",
@@ -19351,23 +19352,16 @@
       ]
      },
      "expect": [
-      "gap"
+      "ok"
      ],
-     "gap": "#896: IncludeHelpInContents отчёта отсутствует в типизированном props.set",
      "assertions": [
       {
-       "pointer": "/ok",
-       "eq": false
+       "pointer": "/data/mode",
+       "eq": "preview"
       },
       {
-       "pointer": "/diagnostics",
-       "eq": [
-        {
-         "code": "bad_value",
-         "outcome": "fixCall",
-         "message": "unknown metadata property `IncludeHelpInContents`; supported properties for Report: Synonym, Comment, UseStandardCommands"
-        }
-       ]
+       "pointer": "/data/executable",
+       "eq": true
       }
      ],
      "fileAssertions": [
@@ -19381,16 +19375,101 @@
        "path": "src/Configuration.xml",
        "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
       }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
      ],
-     "refusal": "bad_value: unknown metadata property `IncludeHelpInContents`; supported properties for Report: Synonym, Comment, UseStandardCommands"
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов.xml",
+       "eq": "8ec11319632a21155b9827e4bc9842062722e9c0dec658ba830e7bc408a3a6c4"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "41c7a0b8161a1e7661471f225cc24faf46d85761df32ff022b171b525b063989"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/IncludeHelpInContents",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.ВажностьПроблемыУчета",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "IncludeHelpInContents": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: property `IncludeHelpInContents` is not supported for Enum",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "bad_value",
+         "outcome": "fixCall",
+         "message": "property `IncludeHelpInContents` is not supported for Enum"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Enums/ВажностьПроблемыУчета.xml",
+       "eq": "447910907ea597f23a78dc42e81b5b6716b6565f696565656eb6ea1f05d08a03"
+      }
+     ]
     }
    ]
   },
   {
    "id": "S355",
+   "name": "accumulation-register-turnovers",
    "issue": 852,
-   "area": "Известные пробелы",
-   "task": "Создать регистр, затем сменить RegisterType на Turnovers: props.set пока отказывает (#852)",
+   "area": "Свойства объектов",
+   "task": "Создать регистр накопления, затем сделать его оборотным через props.set RegisterType=Turnovers",
    "wire": [
     {
      "tool": "unica.apply",
@@ -19491,24 +19570,16 @@
       ]
      },
      "expect": [
-      "gap"
+      "ok"
      ],
-     "gap": "#852: props.set не принимает RegisterType=Turnovers после успешного создания регистра",
-     "refusal": "bad_value: unknown metadata property `RegisterType`; supported properties for AccumulationRegister: Synonym, Comment, EnableTotalsSplitting, UseStandardCommands",
      "assertions": [
       {
-       "pointer": "/ok",
-       "eq": false
+       "pointer": "/data/mode",
+       "eq": "preview"
       },
       {
-       "pointer": "/diagnostics",
-       "eq": [
-        {
-         "code": "bad_value",
-         "outcome": "fixCall",
-         "message": "unknown metadata property `RegisterType`; supported properties for AccumulationRegister: Synonym, Comment, EnableTotalsSplitting, UseStandardCommands"
-        }
-       ]
+       "pointer": "/data/executable",
+       "eq": true
       }
      ],
      "fileAssertions": [
@@ -19521,6 +19592,56 @@
        "kind": "sha256",
        "path": "src/Configuration.xml",
        "eq": "$capture.configBytes"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+       "select": ".//{*}AccumulationRegister/{*}Properties/{*}RegisterType",
+       "eq": [
+        "Turnovers"
+       ]
+      },
+      {
+       "kind": "sha256",
+       "path": "src/AccumulationRegisters/CorpusTurnovers.xml",
+       "notEq": "$capture.registerBytes"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "$capture.configBytes"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:AccumulationRegister.CorpusTurnovers"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/RegisterType",
+       "eq": "Turnovers"
       }
      ]
     }

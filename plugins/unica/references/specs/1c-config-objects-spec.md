@@ -1097,12 +1097,13 @@ XML-элемент: `<AccumulationRegister>`.
 **Специфичные свойства:**
 
 ```xml
-<RegisterType>Balances</RegisterType>       <!-- Balances (остатки) | Turnovers (обороты) -->
+<RegisterType>Balance</RegisterType>        <!-- Balance (остатки) | Turnovers (обороты) -->
 <EnableTotalsSplitting>true</EnableTotalsSplitting>
 ```
 
-- `Balances` — хранит остатки (приход/расход → итоговое сальдо)
+- `Balance` — хранит остатки (приход/расход → итоговое сальдо)
 - `Turnovers` — хранит только обороты (без остатков)
+- Вид регистра задаёт поля движения: у `Balance` есть стандартный реквизит `ВидДвижения` (`RecordType`: `Receipt`/`Expense`, в коде `ВидДвиженияНакопления.Приход`/`Расход`), у `Turnovers` его нет — движение оборотного регистра не указывает вид, а обращение к `ВидДвижения` падает при проведении.
 
 **Дочерние объекты:** `<Dimension>`, `<Resource>`, `<Attribute>`.
 
@@ -1910,6 +1911,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 | Posting | - | + | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
 | RegisterRecords | - | + | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
 | RegisterType | - | - | - | - | - | + | - | - | - | - | - | - | - | - | - | - | - |
+| IncludeHelpInContents | + | + | - | - | + | + | + | + | + | + | + | + | + | + | + | + | + |
 | Periodicity | - | - | - | - | + | - | - | + | - | - | - | - | - | - | - | - | - |
 | WriteMode | - | - | - | - | + | - | - | - | - | - | - | - | - | - | - | - | - |
 | ChartOfAccounts | - | - | - | - | - | - | + | - | - | - | - | - | - | - | - | - | - |

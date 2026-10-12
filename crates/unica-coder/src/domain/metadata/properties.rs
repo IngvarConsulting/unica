@@ -71,6 +71,8 @@ pub(crate) enum MetaPropertyKey {
     Hierarchical,
     Autonumbering,
     UseStandardCommands,
+    IncludeHelpInContents,
+    RegisterType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,6 +282,33 @@ const STANDARD_COMMAND_KINDS: &[MetadataKind] = &[
     MetadataKind::Report,
     MetadataKind::DataProcessor,
 ];
+/// Kinds whose 8.3.27 descriptor carries a root `IncludeHelpInContents`.
+///
+/// Source: the Sendbox vendor configuration dumped by Designer 8.3.27
+/// (format 2.20) and the v8-runner designer fixture
+/// `tests/fixtures/designer/configuration` (format 2.20). The vendor dump
+/// has no AccountingRegister, CalculationRegister, ChartOfAccounts or
+/// ChartOfCalculationTypes; the v8-runner fixture confirms those four. Every
+/// object of the listed kinds in both dumps has the element; no object of the
+/// other typed kinds has it (Constant, Enum, CommonModule, ScheduledJob,
+/// EventSubscription, HTTPService, WebService, DefinedType).
+const INCLUDE_HELP_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::InformationRegister,
+    MetadataKind::AccumulationRegister,
+    MetadataKind::AccountingRegister,
+    MetadataKind::CalculationRegister,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+    MetadataKind::ExchangePlan,
+    MetadataKind::DocumentJournal,
+    MetadataKind::Report,
+    MetadataKind::DataProcessor,
+];
 
 const CHOICE_MODE_VALUES: &[&str] = &["BothWays", "FromForm", "QuickChoice"];
 const CODE_ALLOWED_LENGTH_VALUES: &[&str] = &["Variable", "Fixed"];
@@ -304,6 +333,9 @@ const POSTING_VALUES: &[&str] = &["Allow", "Deny"];
 const REGISTER_RECORDS_DELETION_VALUES: &[&str] =
     &["AutoDelete", "AutoDeleteOnUnpost", "AutoDeleteOff"];
 const REGISTER_RECORDS_WRITING_VALUES: &[&str] = &["WriteModified", "WriteSelected", "WriteAll"];
+/// Platform enumeration `AccumulationRegisterType`: `Balance` (остатки) or
+/// `Turnovers` (обороты). There is no `Balances` member.
+const REGISTER_TYPE_VALUES: &[&str] = &["Balance", "Turnovers"];
 const RETURN_VALUES_REUSE_VALUES: &[&str] = &["DontUse", "DuringRequest", "DuringSession"];
 const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
@@ -713,6 +745,19 @@ pub(crate) const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyValueKind::Boolean,
         STANDARD_COMMAND_KINDS,
     ),
+    property(
+        "IncludeHelpInContents",
+        MetaPropertyKey::IncludeHelpInContents,
+        MetaPropertyValueKind::Boolean,
+        INCLUDE_HELP_KINDS,
+    ),
+    enum_property(
+        "RegisterType",
+        "RegisterType",
+        MetaPropertyKey::RegisterType,
+        ACCUMULATION_REGISTER_KINDS,
+        REGISTER_TYPE_VALUES,
+    ),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -934,6 +979,84 @@ mod tests {
                 MetadataKind::Report,
                 MetadataKind::DataProcessor,
             ],
+        );
+    }
+
+    #[test]
+    fn include_help_in_contents_follows_the_8_3_27_dump_kind_matrix() {
+        assert_property_kind_matrix(
+            "IncludeHelpInContents",
+            MetaPropertyValue::Boolean(true),
+            &[
+                MetadataKind::Catalog,
+                MetadataKind::Document,
+                MetadataKind::InformationRegister,
+                MetadataKind::AccumulationRegister,
+                MetadataKind::AccountingRegister,
+                MetadataKind::CalculationRegister,
+                MetadataKind::ChartOfAccounts,
+                MetadataKind::ChartOfCharacteristicTypes,
+                MetadataKind::ChartOfCalculationTypes,
+                MetadataKind::BusinessProcess,
+                MetadataKind::Task,
+                MetadataKind::ExchangePlan,
+                MetadataKind::DocumentJournal,
+                MetadataKind::Report,
+                MetadataKind::DataProcessor,
+            ],
+        );
+
+        let diagnostic = MetaPropertyChanges::convert(
+            MetadataKind::Enum,
+            vec![MetaPropertyInput::new(
+                "IncludeHelpInContents",
+                MetaPropertyValue::Boolean(true),
+            )],
+        )
+        .expect_err("an enum descriptor has no help-contents flag");
+        assert_eq!(diagnostic.code, MetaDiagnosticCode::UnsupportedKind);
+        assert_eq!(
+            diagnostic.message,
+            "property `IncludeHelpInContents` is not supported for Enum"
+        );
+        assert_eq!(
+            diagnostic.field.as_deref(),
+            Some("values.IncludeHelpInContents")
+        );
+    }
+
+    #[test]
+    fn register_type_accepts_only_the_platform_enumeration() {
+        for accepted in ["Balance", "Turnovers"] {
+            let changes = MetaPropertyChanges::convert(
+                MetadataKind::AccumulationRegister,
+                vec![MetaPropertyInput::new(
+                    "RegisterType",
+                    MetaPropertyValue::String(accepted.to_string()),
+                )],
+            )
+            .unwrap();
+            assert_eq!(
+                changes.entries(),
+                &[(
+                    MetaPropertyKey::RegisterType,
+                    MetaPropertyValue::String(accepted.to_string()),
+                )]
+            );
+        }
+        // `Balances` is the documentation typo from #852, not a platform value.
+        let diagnostic = MetaPropertyChanges::convert(
+            MetadataKind::AccumulationRegister,
+            vec![MetaPropertyInput::new(
+                "RegisterType",
+                MetaPropertyValue::String("Balances".to_string()),
+            )],
+        )
+        .expect_err("Balances is not an AccumulationRegisterType member");
+        assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(
+            diagnostic.message,
+            "property `RegisterType` value `Balances` is invalid; expected one of: Balance, Turnovers"
         );
     }
 
@@ -1270,6 +1393,11 @@ mod tests {
                 "WriteMode",
                 MetaPropertyValue::String("RecorderSubordinate".into()),
                 &[InformationRegister],
+            ),
+            (
+                "RegisterType",
+                MetaPropertyValue::String("Turnovers".into()),
+                &[AccumulationRegister],
             ),
         ];
 

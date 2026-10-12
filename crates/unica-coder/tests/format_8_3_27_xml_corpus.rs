@@ -2144,7 +2144,7 @@ fn meta_definition(kind: &str) -> Option<Value> {
             "dimensions": ["Item:String(50)|master,index"], "resources": ["Price:Number(15,2)"]
         }),
         "AccumulationRegister" => json!({
-            "type": "AccumulationRegister", "name": "CorpusAccumulationRegister", "registerType": "Balances",
+            "type": "AccumulationRegister", "name": "CorpusAccumulationRegister", "registerType": "Balance",
             "dimensions": ["Warehouse:String(50)|index"], "resources": ["Quantity:Number(15,3)"]
         }),
         "AccountingRegister" => json!({
