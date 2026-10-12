@@ -798,11 +798,7 @@ thread_local! {
 }
 
 fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &mut Vec<String>) {
-    let viewed = invoke(
-        checked.workspace,
-        ToolIdentity::View,
-        json!({"at": at, "filter": {"sections": ["can"]}}),
-    );
+    let viewed = invoke(checked.workspace, ToolIdentity::View, json!({"at": at}));
     assert!(viewed.ok, "{at}: {viewed:?}");
     let data = viewed.data.unwrap();
     let can = data["can"]
@@ -1017,17 +1013,14 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
         assert_eq!(value["diagnostics"][0]["outcome"], "fixCall", "{value}");
         let next = &refusal.next[0];
         assert_eq!(next["tool"], "unica.view", "{value}");
-        assert_eq!(next["args"]["at"], target, "{value}");
-        assert_eq!(
-            next["args"]["filter"]["sections"],
-            json!(["can"]),
-            "{value}"
-        );
-        assert_eq!(
-            next["args"]["filter"].get("can").is_some(),
-            contract,
-            "{value}"
-        );
+        // Контракт операции читается её адресом там, где он вычисляется,
+        // иначе — словарь самого узла.
+        let expected = if contract {
+            format!("{target}.Can.{op}")
+        } else {
+            target.to_string()
+        };
+        assert_eq!(next["args"], json!({"at": expected}), "{value}");
     }
 }
 
@@ -1122,12 +1115,8 @@ fn a_missing_member_answers_not_found_with_the_owner_dictionary_next() {
     assert_eq!(value["diagnostics"][0]["code"], "not_found", "{value}");
     assert!(!result.next.is_empty(), "{value}");
     assert_eq!(
-        result.next[0]["args"]["at"], "main:Catalog.Валюты",
-        "{value}"
-    );
-    assert_eq!(
-        result.next[0]["args"]["filter"],
-        json!({"sections": ["can"]}),
+        result.next[0]["args"],
+        json!({"at": "main:Catalog.Валюты"}),
         "{value}"
     );
 }
@@ -1213,17 +1202,16 @@ fn a_retired_scope_call_recovers_through_next_to_a_published_tabular_attribute()
     assert_eq!(value["at"], "ops[0].args.scope.tabularSection", "{value}");
     let next = refused.next[0].clone();
     assert_eq!(next["tool"], "unica.view", "{value}");
-    assert_eq!(next["args"]["at"], json!(section), "{value}");
     assert_eq!(
-        next["args"]["filter"],
-        json!({"sections": ["can"], "can": {"op": "attribute.add"}}),
+        next["args"],
+        json!({"at": format!("{section}.Can.attribute.add")}),
         "{value}"
     );
 
     let viewed = invoke(&workspace, ToolIdentity::View, next["args"].clone());
     let viewed_value = serde_json::to_value(&viewed).unwrap();
     assert!(viewed.ok, "{viewed_value}");
-    let entry = &viewed_value["data"]["can"][0];
+    let entry = &viewed_value["data"]["props"];
     assert_eq!(entry["op"], "attribute.add", "{viewed_value}");
     assert_eq!(entry["implemented"], true, "{viewed_value}");
     let contract = &entry["contract"];
@@ -1323,14 +1311,13 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
 #[test]
 fn retired_member_arguments_route_next_to_the_member_address() {
     let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
-    for (at, op, args, location, next_at, filter, branch) in [
+    for (at, op, args, location, next_at, branch) in [
         (
             "cf:Catalog.Items",
             "tabularSection.set",
             json!({"values": {"name": "Rows", "synonym": "x"}}),
             "ops[0].args.values.name",
-            "cf:Catalog.Items.TabularSection.Rows",
-            json!({"sections": ["can"], "can": {"op": "tabularSection.set"}}),
+            "cf:Catalog.Items.TabularSection.Rows.Can.tabularSection.set",
             Some("cf:Catalog.Items.TabularSection"),
         ),
         (
@@ -1338,8 +1325,7 @@ fn retired_member_arguments_route_next_to_the_member_address() {
             "template.remove",
             json!({"values": {"name": "Print"}}),
             "ops[0].args.values.name",
-            "cf:Report.Sales.Template.Print",
-            json!({"sections": ["can"], "can": {"op": "template.remove"}}),
+            "cf:Report.Sales.Template.Print.Can.template.remove",
             Some("cf:Report.Sales.Template"),
         ),
         (
@@ -1348,7 +1334,6 @@ fn retired_member_arguments_route_next_to_the_member_address() {
             json!({"values": {"id": "a1b2c3d4-1111-4111-8111-111111111111", "description": "x"}}),
             "ops[0].args.values.id",
             "cf:Catalog.Items.PredefinedItem",
-            json!({"sections": ["items"]}),
             None,
         ),
     ] {
@@ -1360,8 +1345,7 @@ fn retired_member_arguments_route_next_to_the_member_address() {
         assert_eq!(value["diagnostics"][0]["outcome"], "fixCall", "{value}");
         assert_eq!(value["at"], location, "{value}");
         assert_eq!(refusal.next[0]["tool"], "unica.view", "{value}");
-        assert_eq!(refusal.next[0]["args"]["at"], next_at, "{value}");
-        assert_eq!(refusal.next[0]["args"]["filter"], filter, "{value}");
+        assert_eq!(refusal.next[0]["args"], json!({"at": next_at}), "{value}");
         // Адрес из значения может не существовать: вторым шагом — ветвь
         // владельца, где видны имена членов этого вида.
         match branch {

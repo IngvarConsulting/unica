@@ -16,83 +16,8 @@ const CURSOR_SIZE_PLACEHOLDER: &str = "vc1.00000000000000000000000000000000";
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ViewFilter(Map<String, Value>);
-
-impl Default for ViewFilter {
-    fn default() -> Self {
-        Self(Map::new())
-    }
-}
-
-impl ViewFilter {
-    pub(crate) fn new(values: Map<String, Value>) -> Self {
-        Self(values)
-    }
-
-    pub(crate) fn get(&self, name: &str) -> Option<&Value> {
-        self.0.get(name)
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
-        self.0.iter()
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub(crate) fn can_operation(&self) -> Result<Option<&str>, ViewError> {
-        let Some(value) = self.get("can") else {
-            return Ok(None);
-        };
-        let object = value.as_object().ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::BadValue,
-                "view filter.can must be an object with op",
-            )
-        })?;
-        if object.len() != 1 || !object.contains_key("op") {
-            return Err(ViewError::new(
-                RefusalCode::BadValue,
-                "view filter.can accepts only op",
-            ));
-        }
-        let op = object["op"]
-            .as_str()
-            .filter(|op| !op.trim().is_empty())
-            .ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::BadValue,
-                    "view filter.can.op must be non-empty text",
-                )
-            })?;
-        if !self
-            .get("sections")
-            .and_then(Value::as_array)
-            .is_some_and(|sections| {
-                sections
-                    .iter()
-                    .any(|section| section.as_str() == Some("can"))
-            })
-        {
-            return Err(ViewError::new(
-                RefusalCode::BadValue,
-                "view filter.can requires sections:[\"can\"]",
-            ));
-        }
-        Ok(Some(op))
-    }
-
-    fn normalized(&self) -> String {
-        serde_json::to_string(&canonical_value(Value::Object(self.0.clone())))
-            .expect("a JSON filter always serializes")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ViewRequest {
     at: QualifiedAddress,
-    filter: ViewFilter,
     limit: usize,
     cursor: Option<String>,
 }
@@ -103,7 +28,6 @@ impl ViewRequest {
             .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
         Ok(Self {
             at,
-            filter: ViewFilter::default(),
             limit: DEFAULT_LIMIT,
             cursor: None,
         })
@@ -113,21 +37,12 @@ impl ViewRequest {
         self.at.to_string()
     }
 
-    pub(crate) const fn filter(&self) -> &ViewFilter {
-        &self.filter
-    }
-
     pub(crate) const fn limit(&self) -> usize {
         self.limit
     }
 
     pub(crate) fn cursor(&self) -> Option<&str> {
         self.cursor.as_deref()
-    }
-
-    pub(crate) fn with_filter(mut self, filter: Map<String, Value>) -> Self {
-        self.filter = ViewFilter::new(filter);
-        self
     }
 
     pub(crate) fn with_limit(mut self, limit: usize) -> Result<Self, ViewError> {
@@ -159,7 +74,6 @@ impl ViewRequest {
                 .map(|segment| segment.kind().as_str())
                 .unwrap_or("Configuration")
                 .to_string(),
-            normalized_filter: self.filter.normalized(),
             source_set_identity: snapshot.source_set_identity.clone(),
             snapshot_id: snapshot.revision.clone(),
             page_limit: self.limit,
@@ -203,16 +117,14 @@ pub(crate) trait ViewReadAuthority: Send + Sync {
     fn read_exact(
         &self,
         at: &QualifiedAddress,
-        filter: &ViewFilter,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError>;
 
-    /// A large, unfiltered BSL Body can bypass parser-wide materialization.
+    /// A large BSL Body can bypass parser-wide materialization.
     /// Other readers retain the ordinary projection path.
     fn read_body_disk(
         &self,
         _at: &QualifiedAddress,
-        _filter: &ViewFilter,
         _admitted: &ViewSourceSnapshot,
     ) -> Result<Option<BodySnapshot>, ViewError> {
         Ok(None)
@@ -416,10 +328,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         }
 
         if supplied.is_none() {
-            if let Some(body) =
-                self.authority
-                    .read_body_disk(&canonical_at, &request.filter, &snapshot)?
-            {
+            if let Some(body) = self.authority.read_body_disk(&canonical_at, &snapshot)? {
                 let current = self.authority.snapshot(source_at)?;
                 if current != snapshot {
                     return Err(ViewError::new(
@@ -504,9 +413,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
                 )
             })?
         } else {
-            let view = self
-                .authority
-                .read_exact(&canonical_at, &request.filter, &snapshot)?;
+            let view = self.authority.read_exact(&canonical_at, &snapshot)?;
             let serialized = serde_json::to_value(view).map_err(|error| {
                 ViewError::new(RefusalCode::ProviderUnavailable, error.to_string())
             })?;
@@ -841,28 +748,9 @@ fn error_result(at: Option<String>, error: ViewError) -> DomainResult {
     result
 }
 
-fn canonical_value(value: Value) -> Value {
-    match value {
-        Value::Object(values) => {
-            let mut ordered = values.into_iter().collect::<Vec<_>>();
-            ordered.sort_by(|left, right| left.0.cmp(&right.0));
-            Value::Object(
-                ordered
-                    .into_iter()
-                    .map(|(key, value)| (key, canonical_value(value)))
-                    .collect(),
-            )
-        }
-        Value::Array(values) => Value::Array(values.into_iter().map(canonical_value).collect()),
-        other => other,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        ViewError, ViewFilter, ViewReadAuthority, ViewRequest, ViewService, ViewSourceSnapshot,
-    };
+    use super::{ViewError, ViewReadAuthority, ViewRequest, ViewService, ViewSourceSnapshot};
     use crate::application::result_store::ViewCursorStore;
     use crate::application::v13::body_snapshot::BodySnapshot;
     use crate::domain::address::QualifiedAddress;
@@ -962,7 +850,6 @@ mod tests {
         fn read_exact(
             &self,
             at: &QualifiedAddress,
-            _filter: &ViewFilter,
             _admitted: &ViewSourceSnapshot,
         ) -> Result<NodeViewData, ViewError> {
             self.views.get(&at.to_string()).cloned().ok_or_else(|| {
@@ -976,7 +863,6 @@ mod tests {
         fn read_body_disk(
             &self,
             _at: &QualifiedAddress,
-            _filter: &ViewFilter,
             _admitted: &ViewSourceSnapshot,
         ) -> Result<Option<BodySnapshot>, ViewError> {
             let Some(bytes) = self.disk_body.as_ref() else {
@@ -990,10 +876,9 @@ mod tests {
     }
 
     #[test]
-    fn view_request_is_selected_only_by_address_and_normalized_filter() {
+    fn view_request_is_selected_only_by_address_and_page_limit() {
         let request = ViewRequest::new("main:Document.Заказ.Module.Object.Method").unwrap();
         assert_eq!(request.at(), "main:Document.Заказ.Module.Object.Method");
-        assert_eq!(request.filter(), &ViewFilter::default());
         assert_eq!(request.limit(), 20);
         assert_eq!(
             ViewRequest::new("main:Document.Заказ.Module.Object.Method")
@@ -1004,47 +889,6 @@ mod tests {
                 .as_str(),
             "bad_value",
         );
-    }
-
-    #[test]
-    fn detailed_can_filter_is_explicit_strict_and_bound_to_cursor_identity() {
-        use crate::domain::refusal::RefusalCode;
-        let valid = json!({"sections":["can"],"can":{"op":"query.set"}});
-        let filter = ViewFilter::new(valid.as_object().unwrap().clone());
-        assert_eq!(filter.can_operation().unwrap(), Some("query.set"));
-        for invalid in [
-            json!({"can":null}),
-            json!({"sections":["can"],"can":[]}),
-            json!({"sections":["can"],"can":{}}),
-            json!({"sections":["can"],"can":{"op":1}}),
-            json!({"sections":["can"],"can":{"op":" "}}),
-            json!({"sections":["can"],"can":{"op":"query.set","extra":true}}),
-            json!({"can":{"op":"query.set"}}),
-            json!({"sections":["props"],"can":{"op":"query.set"}}),
-        ] {
-            assert_eq!(
-                ViewFilter::new(invalid.as_object().unwrap().clone())
-                    .can_operation()
-                    .unwrap_err()
-                    .code(),
-                RefusalCode::BadValue,
-                "{invalid}"
-            );
-        }
-        let changed = ViewFilter::new(
-            json!({"can":{"op":"query.patch"},"sections":["can"]})
-                .as_object()
-                .unwrap()
-                .clone(),
-        );
-        assert_ne!(filter.normalized(), changed.normalized());
-        let reordered = ViewFilter::new(
-            json!({"can":{"op":"query.set"},"sections":["can"]})
-                .as_object()
-                .unwrap()
-                .clone(),
-        );
-        assert_eq!(filter.normalized(), reordered.normalized());
     }
 
     #[test]
@@ -1697,7 +1541,6 @@ mod tests {
             fn read_exact(
                 &self,
                 _at: &QualifiedAddress,
-                _filter: &ViewFilter,
                 _admitted: &ViewSourceSnapshot,
             ) -> Result<NodeViewData, ViewError> {
                 unreachable!("чтение не начинается, пока снимок не взят")

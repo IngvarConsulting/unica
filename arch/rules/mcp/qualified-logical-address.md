@@ -9,6 +9,7 @@ check:
   - crates/unica-coder/src/domain/address.rs::nameless_kinds_do_not_consume_the_next_segment_as_a_name
   - crates/unica-coder/src/domain/address.rs::a_named_kind_still_takes_the_segment_that_follows_it
   - crates/unica-coder/src/domain/address.rs::neither_a_configuration_prefix_nor_an_invented_interface_name_is_accepted
+  - crates/unica-coder/src/domain/address.rs::a_can_segment_takes_the_rest_of_the_address_as_the_operation_name
 ---
 
 # Логический адрес называет набор исходников и путь по видам объектов
@@ -23,7 +24,18 @@ check:
 `main:Catalog.Валюты.Attribute`. У `Configuration` и `Interface` имени
 не бывает: следующий сегмент разбирается как вид. Выдуманное имя
 отклоняется с объяснением этой причины. `Configuration` разрешён только
-как самостоятельный корень `main:Configuration`.
+как самостоятельный корень `main:Configuration` и перед вопросом к его
+словарю `main:Configuration.Can.<op>`.
+
+Сегмент `Can` спрашивает операцию словаря узла и всегда последний: его имя —
+весь остаток адреса вместе с точками (`main:Catalog.Валюты.Can.query.set`),
+потому что имя операции само содержит точку. Узел вопроса — адрес до `Can`.
+После ветви без имени (`...Attribute`, `...Body`) `Can`, за которым идёт
+не вид, а имя операции, — тот же вопрос, а не имя ветви; `Can`, за которым
+идёт вид, остаётся прикладным именем. `main:Can.<op>` канонически пишется
+`main:Configuration.Can.<op>`. Такой адрес называет операцию, а не узел
+исходников: его читает только `unica.view`, другие инструменты отклоняют
+его по [правилу словаря операций](operation-dictionary.md).
 
 Разрешение входного адреса в контексте проекта может подставить пропущенный
 набор, только если доступен ровно один. Результат всё равно содержит набор;

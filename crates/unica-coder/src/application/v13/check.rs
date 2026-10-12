@@ -551,7 +551,6 @@ mod tests {
         ViewCursorBinding {
             canonical_at: at.to_string(),
             projection: "check".to_string(),
-            normalized_filter: String::new(),
             source_set_identity: "workspace:main".to_string(),
             snapshot_id: revision.to_string(),
             page_limit: limit,

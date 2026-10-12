@@ -205,7 +205,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
     def test_canonical_subject_schemas_have_only_logical_inputs(self) -> None:
         tools = {tool["name"]: tool for tool in self.tools}
         expected_properties = {
-            "unica.view": {"at", "filter", "limit", "cursor"},
+            "unica.view": {"at", "limit", "cursor"},
             "unica.apply": {"at", "ops", "executionToken"},
             # Единственный инструмент, которому путь на входе разрешён:
             # аварийный мост затем и заведён, чтобы путь не просачивался
@@ -217,7 +217,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor"},
             "unica.check": {"at", "limit", "cursor"},
             # Продолжения сравнения нет (#1218): курсор не публикуется.
-            "unica.diff": {"left", "right", "filter", "limit"},
+            "unica.diff": {"left", "right", "limit"},
             "unica.run": {"op", "args", "dryRun", "infobase"},
             "unica.docs": {"query", "source", "limit", "cursor"},
         }
