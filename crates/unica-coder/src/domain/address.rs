@@ -108,6 +108,10 @@ pub(crate) enum NodeKind {
     /// Предопределённый элемент объекта: носит имя и идентификатор, поэтому
     /// адресуется — в отличие от характеристики, названной парой источников.
     PredefinedItem,
+    /// Операция словаря узла: `<узел>.Can.<op>`. Сегмент терминальный, и
+    /// его имя — весь остаток адреса, потому что имя операции само содержит
+    /// точку (`query.set`). Узел, чей словарь спрашивают, — адрес до `Can`.
+    Can,
 }
 
 const LEGACY_METADATA_KINDS: &[NodeKind] = &[
@@ -216,6 +220,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Caller, &["Вызывающий"]),
     spelling(NodeKind::Callee, &["Вызываемый"]),
     spelling(NodeKind::PredefinedItem, &["ПредопределённыйЭлемент"]),
+    spelling(NodeKind::Can, &[]),
 ];
 
 const fn spelling(kind: NodeKind, aliases: &'static [&'static str]) -> V13KindSpelling {
@@ -353,6 +358,7 @@ impl NodeKind {
             Self::Caller => "Caller",
             Self::Callee => "Callee",
             Self::PredefinedItem => "PredefinedItem",
+            Self::Can => "Can",
         }
     }
 
@@ -439,10 +445,35 @@ impl QualifiedAddress {
         while index < parts.len() {
             let kind = NodeKind::parse(parts[index])?;
             index += 1;
+            // Имя операции содержит точку, поэтому `Can` забирает весь
+            // остаток адреса и всегда последний.
+            if kind == NodeKind::Can {
+                let operation = parts[index..].join(".");
+                index = parts.len();
+                if !operation.is_empty() && !xml_ncname_is_valid(&operation) {
+                    return Err(AddressError::new(
+                        AddressErrorCode::InvalidName,
+                        format!("invalid operation name `{operation}`"),
+                    ));
+                }
+                segments.push(AddressSegment {
+                    kind,
+                    name: (!operation.is_empty()).then_some(operation),
+                });
+                continue;
+            }
             // Пары вслепую здесь не годятся: безымянный вид забрал бы
             // следующий сегмент себе под имя, и объявленная ветвь перестала бы
             // разрешаться. Имя берётся только у вида, который его носит.
-            let name = if kind.takes_name() {
+            // Ветвь без имени (`Attribute`, `Body`) тоже спрашивает свой
+            // словарь: `Can`, за которым идёт не вид, а имя операции, —
+            // это вопрос к ветви, а не её имя. Справочник с именем `Can`
+            // (`Catalog.Can`, `Catalog.Can.Attribute`) так и остаётся именем.
+            let asks_dictionary = parts.get(index) == Some(&NodeKind::Can.as_str())
+                && parts
+                    .get(index + 1)
+                    .is_some_and(|next| NodeKind::parse(next).is_err());
+            let name = if kind.takes_name() && !asks_dictionary {
                 let taken = parts.get(index).copied();
                 if taken.is_some() {
                     index += 1;
@@ -478,10 +509,28 @@ impl QualifiedAddress {
             });
         }
 
-        let sole_configuration_root = matches!(
-            segments.as_slice(),
-            [root] if root.kind == NodeKind::Configuration && root.name.is_none()
-        );
+        // `main:Can.<op>` — тот же вопрос к корню; канонически он пишется
+        // `main:Configuration.Can.<op>`, как псевдоним вида — английским именем.
+        if matches!(segments.as_slice(), [can] if can.kind == NodeKind::Can) {
+            segments.insert(
+                0,
+                AddressSegment {
+                    kind: NodeKind::Configuration,
+                    name: None,
+                },
+            );
+        }
+        // Словарь корня спрашивают адресом `Configuration.Can.<op>`: корень
+        // остаётся единственным, `Can` — не его потомок, а вопрос к нему.
+        let sole_configuration_root = match segments.as_slice() {
+            [root] => root.kind == NodeKind::Configuration && root.name.is_none(),
+            [root, can] => {
+                root.kind == NodeKind::Configuration
+                    && root.name.is_none()
+                    && can.kind == NodeKind::Can
+            }
+            _ => false,
+        };
         if !sole_configuration_root
             && segments
                 .iter()
@@ -509,6 +558,22 @@ impl QualifiedAddress {
 
     pub(crate) fn logical_path(&self) -> String {
         render_segments(&self.segments)
+    }
+
+    /// Вопрос к словарю операций: узел, чей словарь спрашивают, и имя
+    /// операции (`None` у голого `<узел>.Can`). `None` — адрес не про словарь.
+    pub(crate) fn operation_query(&self) -> Option<(Self, Option<&str>)> {
+        let (last, owner) = self.segments.split_last()?;
+        if last.kind != NodeKind::Can {
+            return None;
+        }
+        Some((
+            Self {
+                source_set: self.source_set.clone(),
+                segments: owner.to_vec(),
+            },
+            last.name(),
+        ))
     }
 }
 
@@ -661,6 +726,111 @@ mod tests {
                 .map(|segment| (segment.kind().as_str(), segment.name())),
             Some(("Attribute", None)),
             "терминальный вид без имени — это адрес ветки, и он остаётся допустимым"
+        );
+    }
+
+    /// `<узел>.Can.<op>` спрашивает контракт одной операции. Имя операции
+    /// само содержит точку, поэтому `Can` забирает весь остаток адреса, а
+    /// узел, чей словарь спрашивают, — всё, что до него.
+    #[test]
+    fn a_can_segment_takes_the_rest_of_the_address_as_the_operation_name() {
+        let at = QualifiedAddress::parse("main:Catalog.Валюты.Can.query.set").unwrap();
+        assert_eq!(at.to_string(), "main:Catalog.Валюты.Can.query.set");
+        let last = at.segments().last().unwrap();
+        assert_eq!(
+            (last.kind(), last.name()),
+            (NodeKind::Can, Some("query.set"))
+        );
+        let (owner, op) = at
+            .operation_query()
+            .expect("a Can address asks the dictionary");
+        assert_eq!(owner.to_string(), "main:Catalog.Валюты");
+        assert_eq!(op, Some("query.set"));
+
+        let deep = QualifiedAddress::parse(
+            "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.field.add",
+        )
+        .unwrap();
+        let (owner, op) = deep.operation_query().unwrap();
+        assert_eq!(
+            owner.to_string(),
+            "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
+        );
+        assert_eq!(op, Some("field.add"));
+
+        // Корень остаётся единственным: `Can` — вопрос к нему, а не потомок.
+        for root in [
+            "main:Configuration.Can.object.create",
+            "main:Can.object.create",
+        ] {
+            let parsed =
+                QualifiedAddress::parse(root).unwrap_or_else(|error| panic!("{root}: {error}"));
+            let (owner, op) = parsed.operation_query().unwrap();
+            assert_eq!(owner.to_string(), "main:Configuration", "{root}");
+            assert_eq!(op, Some("object.create"), "{root}");
+        }
+        assert_eq!(
+            QualifiedAddress::parse("main:Configuration.Catalog.Валюты")
+                .unwrap_err()
+                .code(),
+            AddressErrorCode::ConfigurationRootOnly
+        );
+
+        assert_eq!(
+            QualifiedAddress::parse("main:Can.object.create")
+                .unwrap()
+                .to_string(),
+            "main:Configuration.Can.object.create",
+            "one question has one canonical spelling"
+        );
+
+        // Ветвь без имени тоже спрашивает словарь: `Can` с именем операции
+        // за ним — не имя ветви.
+        for (at, owner, op) in [
+            (
+                "main:Catalog.Валюты.Module.Object.Body.Can.code.insert",
+                "main:Catalog.Валюты.Module.Object.Body",
+                "code.insert",
+            ),
+            (
+                "main:Catalog.Валюты.Attribute.Can.attribute.add",
+                "main:Catalog.Валюты.Attribute",
+                "attribute.add",
+            ),
+        ] {
+            let parsed =
+                QualifiedAddress::parse(at).unwrap_or_else(|error| panic!("{at}: {error}"));
+            let (parsed_owner, parsed_op) = parsed.operation_query().expect(at);
+            assert_eq!(parsed_owner.to_string(), owner);
+            assert_eq!(parsed_op, Some(op));
+        }
+        // А имя `Can`, за которым идёт вид, остаётся именем.
+        let attribute = QualifiedAddress::parse("main:Catalog.Can.Attribute.Код").unwrap();
+        assert!(attribute.operation_query().is_none());
+        assert_eq!(attribute.segments()[0].name(), Some("Can"));
+
+        let bare = QualifiedAddress::parse("main:Catalog.Валюты.Can").unwrap();
+        assert_eq!(bare.operation_query().unwrap().1, None);
+
+        // На месте имени `Can` остаётся именем: справочник с таким именем.
+        let named = QualifiedAddress::parse("main:Catalog.Can").unwrap();
+        assert!(named.operation_query().is_none());
+        assert!(QualifiedAddress::parse("main:Catalog.Валюты")
+            .unwrap()
+            .operation_query()
+            .is_none());
+
+        assert_eq!(
+            QualifiedAddress::parse("main:Catalog.Валюты.Can.1query")
+                .unwrap_err()
+                .code(),
+            AddressErrorCode::InvalidName
+        );
+        assert_eq!(
+            QualifiedAddress::parse("main:Catalog.Валюты.Can.query..set")
+                .unwrap_err()
+                .code(),
+            AddressErrorCode::EmptySegment
         );
     }
 

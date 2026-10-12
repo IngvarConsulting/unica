@@ -291,20 +291,33 @@
   },
   {
    "area": "Навигация и чтение",
-   "task": "Прочитать только свойства справочника без веток",
+   "task": "Прочитать свойства справочника: ответ узла несёт свойства, ветви и словарь операций",
    "wire": [
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "sections": [
-        "props"
-       ]
-      }
+      "at": "main:Catalog.Валюты"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Catalog"
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "props.set",
+        "args": "values",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -312,20 +325,21 @@
   },
   {
    "area": "Навигация и чтение",
-   "task": "Прочитать только ветки состава справочника",
+   "task": "Прочитать ветку реквизитов справочника страницей по её адресу",
    "wire": [
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "sections": [
-        "branches"
-       ]
-      }
+      "at": "main:Catalog.Валюты.Attribute"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/kind",
+       "eq": "Attribute"
+      }
      ]
     }
    ],
@@ -441,15 +455,28 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Configuration",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Configuration"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "object.create",
+        "args": "values",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "subsystem.create",
+        "args": "values",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -462,15 +489,28 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Catalog.Валюты"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "attribute.add",
+        "args": "items",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "props.set",
+        "args": "values",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -483,15 +523,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Enum.ВажностьПроблемыУчета",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Enum.ВажностьПроблемыУчета"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "enumValue.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -504,15 +549,28 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:InformationRegister.АдминистративнаяИерархия",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:InformationRegister.АдминистративнаяИерархия"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "dimension.add",
+        "args": "items",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "resource.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -554,18 +612,13 @@
   },
   {
    "area": "Навигация и чтение",
-   "task": "Сравнить только свойства двух перечислений",
+   "task": "Сравнить два перечисления целиком",
    "wire": [
     {
      "tool": "unica.diff",
      "args": {
       "left": "main:Enum.LanguageAware",
-      "right": "main:Enum.ВажностьПроблемыУчета",
-      "filter": {
-       "sections": [
-        "props"
-       ]
-      }
+      "right": "main:Enum.ВажностьПроблемыУчета"
      },
      "expect": [
       "ok"
@@ -576,21 +629,22 @@
   },
   {
    "area": "Навигация и чтение",
-   "task": "Сравнить синонимы двух перечислений точечно по указателю",
+   "task": "Сравнить два значения перечисления точечно: сравнение сужается адресами значений",
    "wire": [
     {
      "tool": "unica.diff",
      "args": {
-      "left": "main:Enum.LanguageAware",
-      "right": "main:Enum.ВажностьПроблемыУчета",
-      "filter": {
-       "paths": [
-        "/props/synonym"
-       ]
-      }
+      "left": "main:Enum.ВажностьПроблемыУчета.EnumValue.Ошибка",
+      "right": "main:Enum.ВажностьПроблемыУчета.EnumValue.Предупреждение"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/equal",
+       "eq": false
+      }
      ]
     }
    ],
@@ -1204,15 +1258,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Catalog.Валюты"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "props.set",
+        "args": "values",
+        "implemented": true
+       }
+      }
      ]
     },
     {
@@ -1818,15 +1877,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "attribute.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
      ]
     },
     {
@@ -2532,15 +2596,28 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.TabularSection.Представления",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Catalog.Валюты.TabularSection.Представления"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "attribute.add",
+        "args": "items",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "tabularSection.set",
+        "args": "values",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -2553,15 +2630,28 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Attribute.Наценка",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Catalog.Валюты.Attribute.Наценка"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "attribute.set",
+        "args": "values",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "attribute.remove",
+        "args": "at",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -2574,15 +2664,24 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Enum.ВажностьПроблемыУчета",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Enum.ВажностьПроблемыУчета"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "enumValue.add",
+        "args": "items",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "notEq": []
+      }
      ]
     },
     {
@@ -2910,15 +3009,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Catalog.Валюты"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "attribute.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -3471,15 +3575,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Configuration",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Configuration"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "object.create",
+        "args": "values",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -4016,15 +4125,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Enum.ВажностьПроблемыУчета",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Enum.ВажностьПроблемыУчета"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "form.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
      ]
     },
     {
@@ -4249,15 +4363,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Language.Русский",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Language.Русский"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "supportRule.set",
+        "args": "values",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -4592,15 +4711,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:CommonModule.GoogleПереводчик"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "code.insert",
+        "args": "text",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -4892,15 +5016,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Role.SalesReader",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Role.SalesReader"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "right.set",
+        "args": "values",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -5389,15 +5518,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "dataSet.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -5796,15 +5930,20 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Subsystem.Администрирование",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Subsystem.Администрирование"
      },
      "expect": [
       "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "content.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
      ]
     }
    ],
@@ -6548,12 +6687,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты",
-      "filter": {
-       "sections": [
-        "props"
-       ]
-      }
+      "at": "main:Catalog.Валюты"
      },
      "expect": [
       "ok"
@@ -9216,34 +9350,26 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "field.add"
-       }
-      }
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.field.add"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/can/0/op",
+       "pointer": "/data/props/op",
        "eq": "field.add"
       },
       {
-       "pointer": "/data/can/0/implemented",
+       "pointer": "/data/props/implemented",
        "eq": true
       },
       {
-       "pointer": "/data/can/0/contract/argsSchema/additionalProperties",
+       "pointer": "/data/props/contract/argsSchema/additionalProperties",
        "eq": false
       },
       {
-       "pointer": "/data/can/0/contract/help/path",
+       "pointer": "/data/props/contract/help/path",
        "eq": "references/use-cases/reports-printing.md"
       }
      ]
@@ -9327,34 +9453,26 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "query.set"
-       }
-      }
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/can/0/op",
+       "pointer": "/data/props/op",
        "eq": "query.set"
       },
       {
-       "pointer": "/data/can/0/implemented",
+       "pointer": "/data/props/implemented",
        "eq": true
       },
       {
-       "pointer": "/data/can/0/contract/argsSchema/additionalProperties",
+       "pointer": "/data/props/contract/argsSchema/additionalProperties",
        "eq": false
       },
       {
-       "pointer": "/data/can/0/contract/help/path",
+       "pointer": "/data/props/contract/help/path",
        "eq": "references/use-cases/reports-printing.md"
       }
      ]
@@ -9435,34 +9553,26 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "structure.patch"
-       }
-      }
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Can.structure.patch"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/can/0/op",
+       "pointer": "/data/props/op",
        "eq": "structure.patch"
       },
       {
-       "pointer": "/data/can/0/implemented",
+       "pointer": "/data/props/implemented",
        "eq": true
       },
       {
-       "pointer": "/data/can/0/contract/argsSchema/additionalProperties",
+       "pointer": "/data/props/contract/argsSchema/additionalProperties",
        "eq": false
       },
       {
-       "pointer": "/data/can/0/contract/help/path",
+       "pointer": "/data/props/contract/help/path",
        "eq": "references/use-cases/reports-printing.md"
       }
      ]
@@ -9670,7 +9780,7 @@
    "name": "dcs-contract-refusals-preserve-source",
    "issue": 1310,
    "area": "СКД",
-   "task": "Ошибочные цели, типы, can-фильтры, имена групп и число замен дают точный отказ без изменения XML, включая частично подходящую структуру",
+   "task": "Ошибочные цели, типы, адреса операций словаря, имена групп и число замен дают точный отказ без изменения XML, включая частично подходящую структуру",
    "workspace": "tests/fixtures/acceptance/workspace-dcs",
    "wire": [
     {
@@ -9691,15 +9801,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "query.unknown"
-       }
-      }
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.unknown"
      },
      "expect": [
       "refused"
@@ -9722,21 +9824,17 @@
          "message": "unknown operation `query.unknown`; inspect the node can dictionary"
         }
        ]
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
       }
      ]
     },
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "enumValue.add"
-       }
-      }
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.enumValue.add"
      },
      "expect": [
       "refused"
@@ -9759,19 +9857,17 @@
          "message": "operation `enumValue.add` does not apply to DataSet"
         }
        ]
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
       }
      ]
     },
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": null
-      }
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can"
      },
      "expect": [
       "refused"
@@ -9783,7 +9879,7 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "bad_value: view filter.can must be an object with op",
+     "refusal": "bad_value: Can names one operation: `<node>.Can.<op>`; the node answer lists its operations in can",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -9791,9 +9887,13 @@
         {
          "code": "bad_value",
          "outcome": "fixCall",
-         "message": "view filter.can must be an object with op"
+         "message": "Can names one operation: `<node>.Can.<op>`; the node answer lists its operations in can"
         }
        ]
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
       }
      ]
     },
@@ -9802,6 +9902,9 @@
      "args": {
       "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
       "filter": {
+       "sections": [
+        "can"
+       ],
        "can": {
         "op": "query.set"
        }
@@ -9817,7 +9920,7 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "bad_value: view filter.can requires sections:[\"can\"]",
+     "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -9825,24 +9928,24 @@
         {
          "code": "bad_value",
          "outcome": "fixCall",
-         "message": "view filter.can requires sections:[\"can\"]"
+         "message": "canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `<node>.Can.<op>`, and page collections with limit"
         }
        ]
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
       }
      ]
     },
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "dataSet.add"
-       }
-      }
+      "at": "cf:Report.F05Report.Template.F05Schema.Can.dataSet.add"
      },
      "expect": [
       "ok"
@@ -9856,11 +9959,11 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/can/0/op",
+       "pointer": "/data/props/op",
        "eq": "dataSet.add"
       },
       {
-       "pointer": "/data/can/0/implemented",
+       "pointer": "/data/props/implemented",
        "eq": true
       }
      ]
@@ -9897,13 +10000,8 @@
     {
      "tool": "unica.diff",
      "args": {
-      "left": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-      "right": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-      "filter": {
-       "can": {
-        "op": "query.set"
-       }
-      }
+      "left": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set",
+      "right": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"
      },
      "expect": [
       "unsupported"
@@ -9915,15 +10013,15 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "unsupported_filter",
+     "refusal": "target_kind_unsupported",
      "assertions": [
       {
        "pointer": "/diagnostics",
        "eq": [
         {
-         "code": "unsupported_filter",
+         "code": "target_kind_unsupported",
          "outcome": "fixCall",
-         "message": "diff filter supports only `paths` or `sections`"
+         "message": "diff compares source-backed nodes; an operation contract at `.Can.<op>` is computed from the registry, read it with view"
         }
        ]
       }
@@ -10978,22 +11076,14 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F06Report",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "template.add"
-       }
-      }
+      "at": "cf:Report.F06Report.Can.template.add"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/can/0/contract/argsSchema/properties/items/items/properties/templateType/default",
+       "pointer": "/data/props/contract/argsSchema/properties/items/items/properties/templateType/default",
        "eq": "SpreadsheetDocument"
       }
      ]
@@ -11060,22 +11150,14 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F06Report.Template.Reported",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "mxl.set"
-       }
-      }
+      "at": "cf:Report.F06Report.Template.Reported.Can.mxl.set"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/can/0/contract/argsSchema/properties/values/required",
+       "pointer": "/data/props/contract/argsSchema/properties/values/required",
        "eq": [
         "area",
         "cells"
@@ -12384,7 +12466,7 @@
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "cf:Report.F06Report.Template.F06Template"
+       "eq": "cf:Report.F06Report.Template.F06Template.Can.mxl.set"
       }
      ]
     }
@@ -32898,12 +32980,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная"
      },
      "expect": [
       "ok"
@@ -32964,12 +33041,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
      },
      "expect": [
       "ok"
@@ -33311,7 +33383,7 @@
    "name": "call-graph-is-a-branch-not-a-section",
    "issue": 1373,
    "area": "Код BSL",
-   "task": "Узел метода называет ветви графа вызовов без счёта, а секции callGraph у view нет",
+   "task": "Узел метода называет ветви графа вызовов без счёта, а фильтра секций у view нет",
    "wire": [
     {
      "tool": "unica.view",
@@ -33351,7 +33423,7 @@
       }
      },
      "expect": [
-      "unsupported"
+      "refused"
      ],
      "assertions": [
       {
@@ -33360,13 +33432,18 @@
       },
       {
        "pointer": "/diagnostics/0/code",
-       "eq": "unsupported_filter"
+       "eq": "bad_value"
       },
       {
        "pointer": "/diagnostics/0/message",
-       "eq": "unsupported view section `callGraph`"
+       "eq": "canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `<node>.Can.<op>`, and page collections with limit"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
       }
-     ]
+     ],
+     "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `"
     }
    ]
   },
@@ -33502,7 +33579,7 @@
    "name": "borrowed-common-module-without-properties",
    "issue": 1304,
    "area": "Расширения конфигурации",
-   "task": "Прочитать заимствованный общий модуль, который платформа выгрузила без свойств: незаписанные свойства и контексты — null, методы доступны, фильтр по контексту отказывает типизированно, вставка кода не трогает описание",
+   "task": "Прочитать заимствованный общий модуль, который платформа выгрузила без свойств: незаписанные свойства и контексты — null, методы доступны с неизвестными контекстами, вставка кода не трогает описание",
    "workspace": "tests/fixtures/acceptance/workspace-borrowed",
    "wire": [
     {
@@ -33568,18 +33645,15 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "ext:CommonModule.КешЗначений.Method",
-      "filter": {
-       "context": "server"
-      }
+      "at": "ext:CommonModule.КешЗначений.Method"
      },
      "expect": [
-      "unsupported"
+      "ok"
      ],
      "assertions": [
       {
-       "pointer": "/diagnostics/0/code",
-       "eq": "unsupported_filter"
+       "pointer": "/data/items/0/props/compile/contexts",
+       "eq": null
       }
      ]
     },
@@ -33838,11 +33912,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных"
-      },
-      {
-       "pointer": "/next/0/args/filter/can/op",
-       "eq": "attribute.add"
+       "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных.Can.attribute.add"
       }
      ],
      "captures": {
@@ -33855,36 +33925,28 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных",
-      "filter": {
-       "sections": [
-        "can"
-       ],
-       "can": {
-        "op": "attribute.add"
-       }
-      }
+      "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных.Can.attribute.add"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/can/0/op",
+       "pointer": "/data/props/op",
        "eq": "attribute.add"
       },
       {
-       "pointer": "/data/can/0/implemented",
+       "pointer": "/data/props/implemented",
        "eq": true
       },
       {
-       "pointer": "/data/can/0/contract/argsSchema/required",
+       "pointer": "/data/props/contract/argsSchema/required",
        "eq": [
         "items"
        ]
       },
       {
-       "pointer": "/data/can/0/contract/argsSchema/properties/scope",
+       "pointer": "/data/props/contract/argsSchema/properties/scope",
        "absent": true
       }
      ]
@@ -34021,11 +34083,7 @@
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор"
-      },
-      {
-       "pointer": "/next/0/args/filter/can/op",
-       "eq": "dimension.set"
+       "eq": "main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор.Can.dimension.set"
       },
       {
        "pointer": "/next/1/args/at",
@@ -34060,24 +34118,13 @@
       {
        "pointer": "/next/0/args/at",
        "eq": "main:Catalog.Валюты.PredefinedItem"
-      },
-      {
-       "pointer": "/next/0/args/filter/sections",
-       "eq": [
-        "items"
-       ]
       }
      ]
     },
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор",
-      "filter": {
-       "sections": [
-        "can"
-       ]
-      }
+      "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор"
      },
      "expect": [
       "ok"
@@ -34289,6 +34336,185 @@
       {
        "pointer": "/data/items/2",
        "absent": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S402",
+   "name": "operation-contract-by-can-address",
+   "issue": 1374,
+   "area": "Навигация и чтение",
+   "task": "Словарь операций приходит в каждом ответе узла, контракт одной операции читается адресом <узел>.Can.<op>, а diff сравнивает данные узлов без словаря",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "attribute.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Can.attribute.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "main:Catalog.Валюты.Can.attribute.add"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Can"
+      },
+      {
+       "pointer": "/data/props/op",
+       "eq": "attribute.add"
+      },
+      {
+       "pointer": "/data/props/implemented",
+       "eq": true
+      },
+      {
+       "pointer": "/data/props/contract/argsSchema/required",
+       "eq": [
+        "items"
+       ]
+      },
+      {
+       "pointer": "/data/can",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Enum.LanguageAware",
+      "right": "main:Enum.ВажностьПроблемыУчета"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/equal",
+       "eq": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S403",
+   "name": "retired-view-filter-routes-to-addresses",
+   "issue": 1374,
+   "area": "Навигация и чтение",
+   "task": "Вызов view или diff с прежним filter получает отказ неизвестного аргумента и next к адресу, который его заменил; Can без операции и неприменимая операция отказывают с next к словарю узла",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "filter": {
+       "sections": [
+        "can"
+       ],
+       "can": {
+        "op": "attribute.add"
+       }
+      }
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Can.attribute.add"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Catalog.Валюты"
+      }
+     ]
+    },
+    {
+     "tool": "unica.diff",
+     "args": {
+      "left": "main:Enum.LanguageAware",
+      "right": "main:Enum.ВажностьПроблемыУчета",
+      "filter": {
+       "paths": [
+        "/props/synonym"
+       ]
+      }
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.diff narrows a comparison by address; compare the member nodes themselves",
+     "assertions": [
+      {
+       "pointer": "/next/0/tool",
+       "eq": "unica.diff"
+      },
+      {
+       "pointer": "/next/0/args",
+       "eq": {
+        "left": "main:Enum.LanguageAware",
+        "right": "main:Enum.ВажностьПроблемыУчета"
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Can.enumValue.add"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: operation `enumValue.add` does not apply to Catalog",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Can"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: Can names one operation: `<node>.Can.<op>`; the node answer lists its operations in can",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты"
       }
      ]
     }

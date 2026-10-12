@@ -24,17 +24,16 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 
 - Read schemas and layouts through `unica.view`, change them through
   `unica.apply`, and validate the template through `unica.check`.
-  Read the target's `can` section to discover its operations. For a DCS operation, `mxl.set` or `template.add`, explicitly request its argument contract:
+  Every node answer lists its operations in `can`. For a DCS operation, `mxl.set` or `template.add`, read its argument contract at the operation's own address `<node>.Can.<op>`:
 
   ```json
-  {"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-   "filter":{"sections":["can"],"can":{"op":"query.set"}}}
+  {"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"}
   ```
 
   This is a `unica.view` argument example over the acceptance fixture;
   choose actual source-set, template and dataset names from your workspace.
   `implemented:false` means a registered operation has no implementation.
-  An unknown operation is refused. Use the returned `contract.argsSchema`,
+  An unknown operation is refused. Use the returned `props.contract.argsSchema`,
   target, effects and example arguments; this reference does not duplicate
   the operation catalogue.
 - Add or remove metadata templates using the owning node's `can` dictionary.
@@ -181,8 +180,8 @@ Read actual names instead of inferring them from visible
 labels. A tabular document's `ПолучитьОбласть` can combine a row and a
 column area by their names; this does not make column areas editable.
 
-For exact arguments, request `filter.can.op: "mxl.set"` at the Template or
-`template.add` at its owner. Creation must be executed before the new
+For exact arguments, read `<Template>.Can.mxl.set` at the Template or
+`<owner>.Can.template.add` at its owner. Creation must be executed before the new
 Template is addressed. An addressed parameter or text-template cell becomes
 ordinary text when written. Unaddressed neighbors should be verified after
 publication. Width can grow but the operation does not shrink it.

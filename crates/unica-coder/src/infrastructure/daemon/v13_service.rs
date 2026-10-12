@@ -10,7 +10,7 @@ use super::v13_call_graph::{
     declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
-use super::v13_read_modes::{filter_diff_data, project_view_operation, search_scope_prefix};
+use super::v13_read_modes::{attach_can, operation_node, search_scope_prefix, source_backed};
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::{
@@ -413,22 +413,46 @@ impl CanonicalV13ReadService {
                 "view requires string argument `at`",
             );
         };
-        let mut request = match ViewRequest::new(at) {
-            Ok(request) => request,
-            Err(error) => return view_error_result(Some(at.to_string()), error),
+        // `<узел>.Can.<op>` спрашивает контракт одной операции словаря узла:
+        // читается сам узел, а ответ — его операция.
+        let mut operation = None;
+        let read_at = match QualifiedAddress::parse(at) {
+            Ok(address) => match address.operation_query() {
+                Some((owner, Some(op))) => {
+                    if let Some(paging) = ["cursor", "limit"]
+                        .into_iter()
+                        .find(|name| arguments.contains_key(*name))
+                    {
+                        return error_result(
+                            Some(at.to_string()),
+                            RefusalCode::BadValue,
+                            format!(
+                                "an operation contract is one node and has no pages; omit {paging}"
+                            ),
+                        );
+                    }
+                    operation = Some(op.to_string());
+                    owner.to_string()
+                }
+                Some((owner, None)) => {
+                    let mut refusal = error_result(
+                        Some(at.to_string()),
+                        RefusalCode::BadValue,
+                        "Can names one operation: `<node>.Can.<op>`; the node answer lists its operations in can",
+                    );
+                    refusal.next.push(json!({
+                        "tool": "unica.view",
+                        "args": {"at": owner.to_string()},
+                        "reason": "операции узла перечислены в его can",
+                    }));
+                    return refusal;
+                }
+                None => at.to_string(),
+            },
+            Err(_) => at.to_string(),
         };
-        if let Some(filter) = arguments.get("filter") {
-            let Some(filter) = filter.as_object() else {
-                return error_result(
-                    Some(at.to_string()),
-                    RefusalCode::BadValue,
-                    "view filter must be an object",
-                );
-            };
-            request = request.with_filter(filter.clone());
-        }
-        let can_operation = match request.filter().can_operation() {
-            Ok(operation) => operation.map(str::to_string),
+        let mut request = match ViewRequest::new(&read_at) {
+            Ok(request) => request,
             Err(error) => return view_error_result(Some(at.to_string()), error),
         };
         if let Some(limit) = arguments.get("limit") {
@@ -454,7 +478,7 @@ impl CanonicalV13ReadService {
             };
             request = request.with_cursor(cursor.to_string());
         }
-        let address = match QualifiedAddress::parse(at) {
+        let address = match QualifiedAddress::parse(&read_at) {
             Ok(address) => address,
             Err(error) => {
                 return error_result(
@@ -505,11 +529,11 @@ impl CanonicalV13ReadService {
                     "call graph branch has no owning method",
                 );
             };
-            if !request.filter().is_empty() {
+            if operation.is_some() {
                 return error_result(
                     Some(at.to_string()),
-                    RefusalCode::BadValue,
-                    "call graph branch does not accept a filter",
+                    RefusalCode::UnsupportedSection,
+                    "a call graph branch has no operation dictionary",
                 );
             }
             // Ветвь метода, у которого графа нет (метод HTTP-сервиса, модуль
@@ -665,10 +689,6 @@ impl CanonicalV13ReadService {
                 Err(refusal) => *refusal,
             };
         }
-        let sections = arguments
-            .get("filter")
-            .and_then(Value::as_object)
-            .and_then(|filter| filter.get("sections"));
         let can_context = SourceSetTraits::read(source.source_kind(), authority.platform_profile());
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
         let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
@@ -696,14 +716,44 @@ impl CanonicalV13ReadService {
             if let Some(node) = data.as_object_mut() {
                 declare_method_branches(node);
             }
-            if let Some(sections) = sections {
-                project_view_operation(&data, sections, can_operation.as_deref(), can_context)
-                    .map_err(|error| ViewError::new(error.code(), error.to_string()))
-            } else {
-                Ok(data)
+            match operation.as_deref() {
+                Some(op) => {
+                    let owner_at = data
+                        .get("at")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    operation_node(&data, op, &owner_at, can_context).map_err(|error| {
+                        let mut refused = ViewError::new(error.code(), error.to_string());
+                        refused.set_next(json!({
+                            "tool": "unica.view",
+                            "args": {"at": owner_at},
+                            "reason": "операции, применимые к этому узлу",
+                        }));
+                        refused
+                    })
+                }
+                None => {
+                    attach_can(&mut data, can_context);
+                    Ok(data)
+                }
             }
         };
-        let result = service.view_projected(request, &enrich_and_project);
+        let mut result = service.view_projected(request, &enrich_and_project);
+        // Ответ операции адресован ею самой, а не узлом, который читался.
+        if let Some(op) = operation.as_deref() {
+            let owner = result.at.clone();
+            match (result.ok, owner) {
+                (true, Some(owner)) => {
+                    let can_at = format!("{owner}.Can.{op}");
+                    if let Some(data) = result.data.as_mut().and_then(Value::as_object_mut) {
+                        data.insert("at".to_string(), Value::String(can_at.clone()));
+                    }
+                    result.at = Some(can_at);
+                }
+                _ => result.at = Some(at.to_string()),
+            }
+        }
         enforce_view_result_limit(result, at)
     }
 
@@ -1914,7 +1964,6 @@ impl CanonicalV13ReadService {
                 let binding = ViewCursorBinding {
                     canonical_at: at.to_string(),
                     projection: "check".into(),
-                    normalized_filter: String::new(),
                     source_set_identity: format!(
                         "{}:{}",
                         invocation.workspace_identity_hash().as_str(),
@@ -1949,7 +1998,6 @@ impl CanonicalV13ReadService {
             let binding = ViewCursorBinding {
                 canonical_at: at.to_string(),
                 projection: "check".to_string(),
-                normalized_filter: String::new(),
                 source_set_identity: format!(
                     "{}:{}",
                     invocation.workspace_identity_hash().as_str(),
@@ -2007,7 +2055,6 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let arguments = invocation.arguments();
-        let filter = arguments.get("filter");
         let Some(left) = arguments.get("left").and_then(Value::as_str) else {
             return error_result(
                 None,
@@ -2022,6 +2069,19 @@ impl CanonicalV13ReadService {
                 "diff requires string argument `right`",
             );
         };
+        // Контракт операции вычисляется из реестра, а не читается из
+        // исходников: сравнение его никогда не увидело бы изменения.
+        if let Some(computed) = [left, right].into_iter().find(|side| {
+            QualifiedAddress::parse(side)
+                .ok()
+                .is_some_and(|address| address.operation_query().is_some())
+        }) {
+            return error_result(
+                Some(computed.to_string()),
+                RefusalCode::TargetKindUnsupported,
+                "diff compares source-backed nodes; an operation contract at `.Can.<op>` is computed from the registry, read it with view",
+            );
+        }
         let limit = match arguments.get("limit") {
             Some(value) => match bounded_usize(value).filter(|limit| *limit <= 1_000) {
                 Some(limit) => limit,
@@ -2061,16 +2121,8 @@ impl CanonicalV13ReadService {
             .as_ref()
             .expect("successful view has data")
             .clone();
-        if let Some(filter) = filter {
-            left_data = match filter_diff_data(&left_data, filter) {
-                Ok(data) => data,
-                Err(error) => return error_result(None, error.code(), error.to_string()),
-            };
-            right_data = match filter_diff_data(&right_data, filter) {
-                Ok(data) => data,
-                Err(error) => return error_result(None, error.code(), error.to_string()),
-            };
-        }
+        source_backed(&mut left_data);
+        source_backed(&mut right_data);
         if left_data.get("kind") != right_data.get("kind") {
             return error_result(
                 None,
@@ -3964,7 +4016,7 @@ pub(super) fn preflight_apply_operations(
                 );
                 refusal.next.push(json!({
                     "tool": "unica.view",
-                    "args": {"at": redirect.at.to_string(), "filter": {"sections": ["items"]}},
+                    "args": {"at": redirect.at.to_string()},
                     "reason": format!(
                         "имена узлов для операции `{}`: элемент коллекции несёт свой `id` в `props`",
                         operation.name()
@@ -4054,20 +4106,21 @@ pub(super) fn preflight_apply_operations(
 }
 
 /// `next` к словарю узла, где операция исполнима. Подробный контракт
-/// операции запрашивается только там, где он вычисляется: иначе `view`
-/// ответил бы на сам переход отказом.
+/// операции (`<узел>.Can.<op>`) запрашивается только там, где он
+/// вычисляется: иначе `view` ответил бы на сам переход отказом.
 fn with_operation_dictionary(
     mut result: DomainResult,
     at: &str,
     descriptor: crate::domain::apply::OperationDescriptor,
 ) -> DomainResult {
-    let mut filter = json!({"sections": ["can"]});
-    if descriptor.argument_contract().is_some() {
-        filter["can"] = json!({"op": descriptor.name()});
-    }
+    let at = if descriptor.argument_contract().is_some() {
+        format!("{at}.Can.{}", descriptor.name())
+    } else {
+        at.to_string()
+    };
     result.next.push(json!({
         "tool": "unica.view",
-        "args": {"at": at, "filter": filter},
+        "args": {"at": at},
         "reason": format!("где исполнима операция `{}`", descriptor.name()),
     }));
     result
@@ -4128,20 +4181,20 @@ pub(super) fn with_missing_target_parent(
     };
     result.next.push(json!({
         "tool": "unica.view",
-        "args": {"at": parent.to_string(), "filter": {"sections": ["can"]}},
+        "args": {"at": parent.to_string()},
         "reason": "узел создаёт операция родителя",
     }));
     result
 }
 
 /// Отказ по операции называет маршрут к словарю узла, а не перечисляет
-/// операции в тексте: перечень уже публикуется секцией `can`, и агенту нужен
+/// операции в тексте: перечень уже публикуется в `can` ответа узла, и агенту нужен
 /// путь к нему, а не копия внутри сообщения. Без этого пробелы словаря
 /// `apply` не всплывают — агент повторяет вслепую.
 fn with_node_dictionary(mut result: DomainResult, at: &str) -> DomainResult {
     result.next.push(serde_json::json!({
         "tool": "unica.view",
-        "args": {"at": at, "filter": {"sections": ["can"]}},
+        "args": {"at": at},
         "reason": "какие операции применимы к этому узлу",
     }));
     result
@@ -6823,15 +6876,12 @@ mod tests {
             serde_json::to_vec(&result).unwrap().len()
                 <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
-        result.data = Some(
-            super::project_view_operation(
-                &data,
-                &json!(["items", "can"]),
-                None,
-                super::super::v13_read_modes::configuration_context(),
-            )
-            .unwrap(),
+        let mut enriched = data;
+        super::attach_can(
+            &mut enriched,
+            super::super::v13_read_modes::configuration_context(),
         );
+        result.data = Some(enriched);
         assert!(
             serde_json::to_vec(&result).unwrap().len()
                 > crate::application::v13::view::PREFERRED_PAGE_BYTES

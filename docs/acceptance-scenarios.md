@@ -4,19 +4,19 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **401 сценариев** реальных задач разработчика конфигурации и **980 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованный общий модуль без свойств из выгрузки платформы — на `workspace-borrowed/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **403 сценариев** реальных задач разработчика конфигурации и **987 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованный общий модуль без свойств из выгрузки платформы — на `workspace-borrowed/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 385 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 387 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 815 |
-| `refused` | умышленный типизированный отказ | 111 |
+| `ok` | результат | 819 |
+| `refused` | умышленный типизированный отказ | 116 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 26 |
 | `provider` | провайдер недоступен | 17 |
-| `unsupported` | закрытый список | 5 |
+| `unsupported` | закрытый список | 3 |
 | `ok` / `provider` | любой из: результат; провайдер недоступен | 2 |
 | `ok` / `provider` / `task` / `unsupported` | любой из: результат; провайдер недоступен; длинная задача; закрытый список | 2 |
 | `gap` | задокументированный пробел | 1 |
@@ -276,16 +276,16 @@
 | Инструмент | Сценариев |
 | --- | ---: |
 | `unica.apply` | 223 |
-| `unica.view` | 116 |
+| `unica.view` | 118 |
 | `unica.check` | 69 |
 | `unica.search` | 34 |
 | `unica.docs` | 26 |
-| `unica.diff` | 15 |
+| `unica.diff` | 17 |
 | `unica.resolve` | 6 |
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (52) · Свойства объектов (29) · Реквизиты и состав (49) · Создание и удаление объектов (23) · Формы (28) · Код BSL (44) · Роли и права (15) · СКД (41) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (19) · Поддержка поставщика (16) · Расширения конфигурации (9) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1)
+Области: Навигация и чтение (54) · Свойства объектов (29) · Реквизиты и состав (49) · Создание и удаление объектов (23) · Формы (28) · Код BSL (44) · Роли и права (15) · СКД (41) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (19) · Поддержка поставщика (16) · Расширения конфигурации (9) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1)
 
 ### Навигация и чтение
 
@@ -308,8 +308,8 @@
 | S015 | Посмотреть модули справочника Валюты | `source` | `view` | `ok` |
 | S016 | Посмотреть табличные части документа | `source` | `view` | `ok` |
 | S017 | Перечислить макеты отчёта Анализ версий объектов | `source` | `view` | `ok` |
-| S018 | Прочитать только свойства справочника без веток | `source` | `view` | `ok` |
-| S019 | Прочитать только ветки состава справочника | `source` | `view` | `ok` |
+| S018 | Прочитать свойства справочника: ответ узла несёт свойства, ветви и словарь операций | `source` | `view` | `ok` |
+| S019 | Прочитать ветку реквизитов справочника страницей по её адресу | `source` | `view` | `ok` |
 | S020 | Пролистать реквизиты справочника страницей в три элемента | `source` | `view` | `ok` |
 | S021 | Найти документ по подстроке имени «Уничтожении» | `source` | `search` | `ok` |
 | S022 | Найти регистры сведений по виду | `source` | `search` | `ok` |
@@ -322,8 +322,8 @@
 | S029 | Узнать словарь операций регистра сведений | `source` | `view` | `ok` |
 | S030 | Убедиться, что объект не изменился после рефакторинга (diff с самим собой) | `source` | `diff` | `ok` |
 | S031 | Сравнить два перечисления одного вида между собой | `source` | `diff` | `ok` |
-| S032 | Сравнить только свойства двух перечислений | `source` | `diff` | `ok` |
-| S033 | Сравнить синонимы двух перечислений точечно по указателю | `source` | `diff` | `ok` |
+| S032 | Сравнить два перечисления целиком | `source` | `diff` | `ok` |
+| S033 | Сравнить два значения перечисления точечно: сравнение сужается адресами значений | `source` | `diff` | `ok` |
 | S034 | Сравнить два реквизита одного справочника | `source` | `diff` | `ok` |
 | S035 | Проверить читаемость узла справочника перед работой | `source` | `check` валидаторы `meta` | `ok` |
 | S036 | Узнать вердикт по рабочему пространству: готовность, проверки, диагностики | `source` | `check`<br>`check` (как форма клиента) | `ok`<br>`ok` |
@@ -343,6 +343,8 @@
 | S384 | Разрешить методы, тела и вложенные области в разных модулях | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
 | S385 | Разрешить реквизиты и элементы форм в содержащий их XML | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
 | S386 | Сохранить обратное разрешение пути и расположение владельца | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok` |
+| S402 | Словарь операций приходит в каждом ответе узла, контракт одной операции читается адресом <узел>.Can.<op>, а diff сравнивает данные узлов без словаря | `source` | `view`<br>`view`<br>`diff` | `ok`<br>`ok`<br>`ok` |
+| S403 | Вызов view или diff с прежним filter получает отказ неизвестного аргумента и next к адресу, который его заменил; Can без операции и неприменимая операция отказывают с next к словарю узла | `source` | `view`<br>`diff`<br>`view`<br>`view` | `refused`<br>`refused`<br>`refused`<br>`refused` |
 
 ### Свойства объектов
 
@@ -538,7 +540,7 @@
 | S389 | Движок анализа завершился ошибкой: отказ называет причину и действие без stderr движка | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S390 | Движка анализа нет на машине: check сам запускает доставку и при её отказе называет класс сбоя и действие, а не голое unproven | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S392 | Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку | `source` | `search`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
-| S395 | Узел метода называет ветви графа вызовов без счёта, а секции callGraph у view нет | `source` | `view`<br>`view` | `ok`<br>`unsupported` |
+| S395 | Узел метода называет ветви графа вызовов без счёта, а фильтра секций у view нет | `source` | `view`<br>`view` | `ok`<br>`refused` |
 | S396 | Ветвь графа вызовов заказывает отсутствующий анализатор этим же вызовом, а провал поставки даёт типизированный отказ «нет движка» | `fault-injection/analyzer-delivery-failure` | `view`<br>`view`<br>`view` | `ok`<br>`provider`<br>`provider` |
 | S398 | Подменённый анализатор даёт отказ «нет движка» с полями поставки в data, а не сбой анализа | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 
@@ -583,7 +585,7 @@
 | S194 | Проверить схему компоновки данных | `source` | `check` валидаторы `dcs` | `ok` |
 | S195 | Изучить словарь операций схемы | `source` | `view` | `ok` |
 | S326 | По контракту подсказчика изменить поле, запрос и именованную группу из исходного #1299; preview не пишет, три XML-эффекта и check подтверждены | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`apply` `field.add`<br>`apply`<br>`view`<br>`apply` `query.set`<br>`apply`<br>`view`<br>`apply` `structure.patch`<br>`apply`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S327 | Ошибочные цели, типы, can-фильтры, имена групп и число замен дают точный отказ без изменения XML, включая частично подходящую структуру | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`diff`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `query.patch`<br>`apply` `query.patch`<br>`apply` `structure.patch`<br>`apply` `structure.patch` `structure.patch`<br>`apply` `structure.patch`<br>`apply` `query.patch`<br>`apply` `query.patch` | `ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`unsupported`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
+| S327 | Ошибочные цели, типы, адреса операций словаря, имена групп и число замен дают точный отказ без изменения XML, включая частично подходящую структуру | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`diff`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `query.patch`<br>`apply` `query.patch`<br>`apply` `structure.patch`<br>`apply` `structure.patch` `structure.patch`<br>`apply` `structure.patch`<br>`apply` `query.patch`<br>`apply` `query.patch` | `ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`unsupported`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
 | S328 | Реальный Codex без навыков/обходов самостоятельно находит контракт, публикует три изменения, проверяет XML и честно описывает границу создания схем; полный transcript оценивает независимый агент | `agent-evaluation/codex` | `view`<br>`view`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 | S329 | Текст запроса одинаков при raw quotes/entities; once сохраняет пробелы и пустую замену; preview читается как исходная версия, устаревший токен не публикуется; XML comments/PI сохраняются побайтно | `source` | `view`<br>`apply` `query.set`<br>`view`<br>`apply` `query.patch`<br>`apply`<br>`apply`<br>`apply` `query.patch`<br>`apply`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S330 | Новый DCS template — каркас с Основной, без DataSet; коллекция и XML честно показывают отсутствие набора данных | `source` | `view`<br>`apply` `template.add`<br>`apply`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
@@ -753,7 +755,7 @@
 | S314 | Создать собственный общий модуль расширения, вставить в него код и удалить модуль | `source` | `apply` `object.create`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`apply` `object.remove`<br>`apply`<br>`check` валидаторы `cfe` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S319 | Вставить код в заимствованный общий модуль расширения | `source` | `apply` `object.borrow`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S394 | Проверить и изменить объекты расширения из штатной выгрузки, ссылающиеся на основную конфигурацию через v8:TypeId: реквизит справочника и Source подписки на события проходят проверку, тип реквизита и источник видны как readOnly, правки свойств и замена логических источников не теряют TypeId | `source` | `check` валидаторы `meta`<br>`view`<br>`apply` `attribute.set`<br>`apply`<br>`check` валидаторы `meta`<br>`apply` `props.set`<br>`apply`<br>`view`<br>`apply` `relation.replace`<br>`apply`<br>`check` валидаторы `meta` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S397 | Прочитать заимствованный общий модуль, который платформа выгрузила без свойств: незаписанные свойства и контексты — null, методы доступны, фильтр по контексту отказывает типизированно, вставка кода не трогает описание | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `cfe`<br>`apply` `code.insert`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`unsupported`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S397 | Прочитать заимствованный общий модуль, который платформа выгрузила без свойств: незаписанные свойства и контексты — null, методы доступны с неизвестными контекстами, вставка кода не трогает описание | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `cfe`<br>`apply` `code.insert`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Объекты метаданных
 

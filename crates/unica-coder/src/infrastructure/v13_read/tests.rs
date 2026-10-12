@@ -5,9 +5,7 @@ use super::{
 };
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::{FindRequest, FindResult};
-use crate::application::v13::view::{
-    ViewError, ViewFilter, ViewReadAuthority, ViewRequest, ViewService,
-};
+use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -268,18 +266,12 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     let body = service
         .view(ViewRequest::new("main:CommonModule.КешЗначений.Method.ПР_Удвоенное.Body").unwrap());
     assert!(body.ok, "body must succeed");
-    let filtered = service.view(
-        ViewRequest::new("main:CommonModule.КешЗначений.Method")
-            .unwrap()
-            .with_filter(serde_json::Map::from_iter([(
-                "context".to_string(),
-                json!("server"),
-            )])),
-    );
-    assert!(!filtered.ok, "an unknown context must not filter methods");
+    let methods = service.view(ViewRequest::new("main:CommonModule.КешЗначений.Method").unwrap());
+    assert!(methods.ok, "methods of a borrowed module stay readable");
     assert_eq!(
-        filtered.diagnostics[0]["code"], "unsupported_filter",
-        "an unknown context refuses the filter"
+        methods.data.unwrap()["items"][0]["props"]["compile"]["contexts"],
+        serde_json::Value::Null,
+        "the collection keeps the unknown contexts of its methods"
     );
 
     let view = service.view(ViewRequest::new("main:CommonModule.СерверныеФункции").unwrap());
@@ -301,20 +293,11 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
             "externalConnection"
         ])
     );
-    let filtered = service.view(
-        ViewRequest::new("main:CommonModule.СерверныеФункции.Method")
-            .unwrap()
-            .with_filter(serde_json::Map::from_iter([(
-                "context".to_string(),
-                json!("server"),
-            )])),
-    );
-    assert!(filtered.ok, "filtered must succeed");
 }
 
 /// #1304: контексты известны только при всех четырёх флагах среды.
-/// Без любого одного из них контексты метода — `null`, фильтр отказывает,
-/// а остальные записанные флаги читаются как есть.
+/// Без любого одного из них контексты метода — `null`, а остальные
+/// записанные флаги читаются как есть.
 #[test]
 fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contexts() {
     let environment =
@@ -374,19 +357,6 @@ fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contex
             method.data.unwrap()["props"]["compile"]["contexts"],
             serde_json::Value::Null,
             "{flag}"
-        );
-        let filtered = service.view(
-            ViewRequest::new("main:CommonModule.СерверныеФункции.Method")
-                .unwrap()
-                .with_filter(serde_json::Map::from_iter([(
-                    "context".to_string(),
-                    json!("server"),
-                )])),
-        );
-        assert!(!filtered.ok, "{flag}");
-        assert_eq!(
-            filtered.diagnostics[0]["code"], "unsupported_filter",
-            "{flag}: an unknown context refuses the filter"
         );
     }
 }
@@ -3530,34 +3500,30 @@ fn a_structural_template_read_never_serves_a_cached_payload_to_a_content_read() 
     );
 }
 
+/// `Body` отдаёт исходные строки с их номерами: среза по контексту у `view`
+/// нет (#1374), и клиентский код формы остаётся в ответе.
 #[test]
-fn unsupported_view_filter_is_a_typed_bad_value_instead_of_a_noop() {
+fn module_body_returns_every_source_line_with_its_number() {
     let fixture = RealReaderFixture::new();
-    let result =
+    let source = fs::read_to_string(
         fixture
-            .view_service()
-            .view(ViewRequest::new("main:Configuration").unwrap().with_filter(
-                serde_json::Map::from_iter([("mystery".to_string(), json!(true))]),
-            ));
-
-    assert!(!result.ok);
-    assert_eq!(result.diagnostics[0]["code"], "bad_value");
-}
-
-#[test]
-fn module_body_context_filter_excludes_at_client_source_from_server_slice() {
-    let fixture = RealReaderFixture::new();
-    let result = fixture.view_service().view(
-        ViewRequest::new("main:Report.ParityReport.Form.MainForm.Module.Form.Body")
-            .unwrap()
-            .with_filter(serde_json::Map::from_iter([(
-                "context".to_string(),
-                json!("server"),
-            )])),
-    );
+            .source
+            .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl"),
+    )
+    .unwrap();
+    let expected = source
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .enumerate()
+        .map(|(index, text)| json!({"line": index + 1, "text": text}))
+        .collect::<Vec<_>>();
+    assert!(!expected.is_empty());
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Module.Form.Body").unwrap());
 
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
-    assert_eq!(result.data.as_ref().unwrap()["items"], json!([]));
+    assert_eq!(result.data.as_ref().unwrap()["items"], json!(expected));
 }
 
 #[test]
@@ -3726,24 +3692,6 @@ fn large_configuration_root_rejects_revision_change_during_owner_proof() {
         .view(ViewRequest::new("main:Configuration").unwrap());
     assert!(!result.ok, "mixed-revision Configuration root escaped");
     assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
-}
-
-#[test]
-fn module_method_public_filter_returns_only_export_methods() {
-    let fixture = RealReaderFixture::new();
-    let result = fixture.view_service().view(
-        ViewRequest::new("main:CommonModule.РеактивныйСервер.Method")
-            .unwrap()
-            .with_filter(serde_json::Map::from_iter([(
-                "public".to_string(),
-                json!(true),
-            )])),
-    );
-
-    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
-    let items = result.data.as_ref().unwrap()["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1, "{items:?}");
-    assert_eq!(items[0]["props"]["export"], true);
 }
 
 #[test]
@@ -4659,7 +4607,7 @@ pub(crate) fn one_read_parses_each_metadata_descriptor_once_per_actor_revision()
 
 #[test]
 pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
-    use crate::application::v13::view::{ViewFilter, ViewReadAuthority};
+    use crate::application::v13::view::ViewReadAuthority;
     let fixture = RealReaderFixture::new();
     fs::create_dir_all(fixture.source.join("Ext")).unwrap();
     fs::copy(
@@ -4678,7 +4626,7 @@ pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
         let at = QualifiedAddress::parse(at).unwrap();
         let admitted = authority.snapshot(&at).unwrap();
         authority
-            .read_exact(&at, &ViewFilter::default(), &admitted)
+            .read_exact(&at, &admitted)
             .unwrap_or_else(|error| panic!("{at}: {error:?}"));
     }
     assert_eq!(
@@ -5006,7 +4954,7 @@ fn assert_reader_reaches(authority: &LogicalViewReadAuthority<'_>, addresses: &[
             .snapshot(&address)
             .unwrap_or_else(|error| panic!("{at}: {error:?}"));
         authority
-            .read_exact(&address, &ViewFilter::default(), &admitted)
+            .read_exact(&address, &admitted)
             .unwrap_or_else(|error| panic!("{at}: {error:?}"));
     }
 }
@@ -5030,7 +4978,7 @@ impl<'a> ReaderReach<'a> {
                 .filter(|(name, _)| *name == address.source_set())
                 .any(|(_, authority)| {
                     authority.snapshot(&address).is_ok_and(|admitted| {
-                        match authority.read_exact(&address, &ViewFilter::default(), &admitted) {
+                        match authority.read_exact(&address, &admitted) {
                             Ok(_) => true,
                             // WebSocketClient is the one profile identity whose
                             // source layout 8.3.27 leaves unspecified: it

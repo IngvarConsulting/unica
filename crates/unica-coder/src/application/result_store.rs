@@ -89,7 +89,6 @@ pub struct ResultStore {
 pub(crate) struct ViewCursorBinding {
     pub(crate) canonical_at: String,
     pub(crate) projection: String,
-    pub(crate) normalized_filter: String,
     pub(crate) source_set_identity: String,
     pub(crate) snapshot_id: String,
     pub(crate) page_limit: usize,
@@ -594,7 +593,6 @@ impl ViewCursorStore {
         let binding = &entry.snapshot.binding;
         if binding.canonical_at != expected.canonical_at
             || binding.projection != expected.projection
-            || binding.normalized_filter != expected.normalized_filter
             || binding.source_set_identity != expected.source_set_identity
             || binding.page_limit != expected.page_limit
         {
@@ -841,7 +839,6 @@ impl ViewCursorStore {
         let binding = &entry.snapshot.binding;
         if binding.canonical_at != expected.canonical_at
             || binding.projection != expected.projection
-            || binding.normalized_filter != expected.normalized_filter
             || binding.source_set_identity != expected.source_set_identity
             || binding.page_limit != expected.page_limit
         {
@@ -916,7 +913,6 @@ fn snapshot_charge(
     let binding_heap = [
         &binding.canonical_at,
         &binding.projection,
-        &binding.normalized_filter,
         &binding.source_set_identity,
         &binding.snapshot_id,
     ]
@@ -1233,7 +1229,6 @@ mod tests {
         ViewCursorBinding {
             canonical_at: at.to_string(),
             projection: "Body".to_string(),
-            normalized_filter: "{}".to_string(),
             source_set_identity: "main:sha256-source-id".to_string(),
             snapshot_id: revision.to_string(),
             page_limit: 1,
@@ -1805,12 +1800,6 @@ mod tests {
         );
         let mut other = binding.clone();
         other.projection = "Method".to_string();
-        assert_eq!(
-            store.read(&token, &other, "rev-1").unwrap_err(),
-            ViewCursorError::Invalid
-        );
-        let mut other = binding.clone();
-        other.normalized_filter = "{\"visibility\":\"public\"}".to_string();
         assert_eq!(
             store.read(&token, &other, "rev-1").unwrap_err(),
             ViewCursorError::Invalid
