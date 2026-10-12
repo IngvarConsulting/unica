@@ -8981,7 +8981,7 @@
    "name": "acceptance-profile-content-and-gap-controls",
    "issue": 1245,
    "area": "Формы",
-   "task": "Показать известный дефект #791: проверка формы принимает трёхпараметровый обработчик выбора вместо пяти параметров",
+   "task": "Проверка формы принимает прежнюю трёхпараметровую сигнатуру обработчика выбора и предупреждает об обработчике с сигнатурой другого события (#791)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -9045,22 +9045,115 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
      },
      "expect": [
-      "gap"
+      "ok"
      ],
-     "gap": "#791: связанный ChoiceProcessing имеет три параметра вместо пяти; check ошибочно отвечает passed. Исправление должно дать failed и требует снять gap.",
-     "knownGap": {
-      "name": "form-handler-signature-unchecked",
-      "observedClass": "ok",
-      "issue": 791
-     },
      "status": "passed",
      "validators": [
       "form"
      ],
      "assertions": [
       {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
        "pointer": "/data/diagnostics",
        "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "АвтоПодбор",
+          "handler": "ПолеНаименованиеПолноеНачалоВыбора",
+          "element": "ПолеНаименованиеПолное"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ПолеНаименованиеПолноеНачалоВыбора(Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "form"
+     ],
+     "diagnostic": "native_validation_warning",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 1
+      },
+      {
+       "pointer": "/data/diagnostics",
+       "eq": [
+        {
+         "severity": "warning",
+         "code": "native_validation_warning",
+         "message": "Event 'AutoComplete' of InputField element 'ПолеНаименованиеПолное': handler 'ПолеНаименованиеПолноеНачалоВыбора' (Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка) matches the signature of event 'StartChoice' (Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка), not the bound event (Элемент, Текст, ДанныеВыбора, ПараметрыПолученияДанных, Ожидание, СтандартнаяОбработка)",
+         "validator": "form"
+        }
+       ]
       }
      ]
     }
@@ -33737,6 +33830,98 @@
       {
        "pointer": "/data/code",
        "absent": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S399",
+   "name": "form-handler-full-signature-passes",
+   "issue": 791,
+   "area": "Формы",
+   "task": "Проверка формы принимает обработчик выбора с полной сигнатурой события, `Знач` и необязательным лишним параметром",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "ОбработкаВыбора",
+          "handler": "ПолеНаименованиеОбработкаВыбора",
+          "element": "ПолеНаименование"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ПолеНаименованиеОбработкаВыбора(Знач Элемент, ВыбранноеЗначение, ДополнительныеДанные, ВыборДобавлением, СтандартнаяОбработка, Режим = Неопределено)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "form"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
       }
      ]
     }
