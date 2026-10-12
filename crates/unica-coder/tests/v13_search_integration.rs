@@ -1668,3 +1668,245 @@ fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
     assert_eq!(stale["diagnostics"][0]["code"], "stale_cursor", "{stale:#}");
     mcp.finish();
 }
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).expect("create fixture copy directory");
+    for entry in std::fs::read_dir(from).expect("list fixture directory") {
+        let entry = entry.expect("fixture directory entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("fixture entry type").is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).expect("copy fixture file");
+        }
+    }
+}
+
+/// Reads a whole module body through `view`, page by page.
+fn view_body_lines(
+    mcp: &mut McpProcess,
+    id: &mut u64,
+    at: &str,
+) -> std::collections::BTreeMap<u64, String> {
+    let mut lines = std::collections::BTreeMap::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut args = json!({"at": format!("{at}.Body"), "limit": 50});
+        if let Some(cursor) = &cursor {
+            args["cursor"] = json!(cursor);
+        }
+        let page = mcp.completed_tool_call(call_tool(*id, "unica.view", args));
+        *id += 1;
+        assert_eq!(page["ok"], true, "{at}: {page:#}");
+        for item in page["data"]["items"].as_array().expect("body lines") {
+            lines.insert(
+                item["line"].as_u64().expect("body line number"),
+                item["text"].as_str().expect("body line text").to_owned(),
+            );
+        }
+        match page["cursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => return lines,
+        }
+    }
+}
+
+/// #1298: a text hit names the logical module it was found in, and `view` of
+/// that module's `Body` shows the same line, also on a first line after a BOM.
+/// A file without a proven module owner keeps its hit, named by the scan
+/// ordinal and the reason, never by its path.
+#[test]
+fn text_hits_name_their_module_and_view_reads_the_same_line() {
+    let root = tempfile::tempdir().expect("search integration root");
+    let workspace = root.path();
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace"),
+        workspace,
+    );
+    std::fs::write(
+        workspace.join("src/Ext/Сценарий.bsl"),
+        "// НичейнаяСтрока вне раскладки модулей\n",
+    )
+    .expect("stray BSL file");
+    // A module whose owner the configuration does not register.
+    std::fs::create_dir_all(workspace.join("src/CommonModules/Сирота/Ext"))
+        .expect("unregistered module directory");
+    std::fs::write(
+        workspace.join("src/CommonModules/Сирота/Ext/Module.bsl"),
+        "// НичейнаяСтрока без владельца\n",
+    )
+    .expect("unregistered module");
+    // An extension registers its own module; a module it neither owns nor
+    // borrows stays unproven.
+    std::fs::create_dir_all(workspace.join("ext/CommonModules/Свой/Ext"))
+        .expect("extension module directory");
+    std::fs::create_dir_all(workspace.join("ext/CommonModules/Чужой/Ext"))
+        .expect("unregistered extension module directory");
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n  - name: ext\n    type: EXTENSION\n    path: ext\n",
+    )
+    .expect("workspace manifest with extension");
+    std::fs::write(
+        workspace.join("ext/Configuration.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Расширение</Name></Properties><ChildObjects><CommonModule>Свой</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .expect("extension configuration");
+    std::fs::write(
+        workspace.join("ext/CommonModules/Свой.xml"),
+        r#"<?xml version="1.0" encoding="UTF-8"?><MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="dddddddd-dddd-4ddd-8ddd-dddddddddddd"><Properties><Name>Свой</Name><Global>false</Global><ClientManagedApplication>true</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+    )
+    .expect("extension module descriptor");
+    std::fs::write(
+        workspace.join("ext/CommonModules/Свой/Ext/Module.bsl"),
+        "\u{feff}// НичейнаяСтрока в своём модуле\n",
+    )
+    .expect("extension module");
+    std::fs::write(
+        workspace.join("ext/CommonModules/Чужой/Ext/Module.bsl"),
+        "// НичейнаяСтрока в чужом модуле\n",
+    )
+    .expect("unregistered extension module");
+    for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(workspace)
+            .status()
+            .expect("prepare fixture repository")
+            .success());
+    }
+    let mut mcp = McpProcess::start(workspace);
+    initialize_body_mcp(&mut mcp);
+
+    let mut id = 2;
+    let mut first_line_hits = 0;
+    for (query, expected) in [
+        (
+            "Возврат",
+            [
+                "main:Catalog.Валюты.Module.Manager",
+                "main:Catalog.Валюты.Module.Object",
+                "main:CommonModule.GoogleПереводчик",
+                "main:HTTPService.ПроверкаСвязи.Module.HTTPService",
+                "main:WebService.ОбменДанными.Module.WebService",
+            ]
+            .as_slice(),
+        ),
+        // Every fixture module starts with a byte-order mark.
+        (
+            "#Область ОбработчикиСобытий",
+            [
+                "main:Catalog.Валюты.Module.Object",
+                "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+            ]
+            .as_slice(),
+        ),
+    ] {
+        let found = mcp.completed_tool_call(call_tool(
+            id,
+            "unica.search",
+            json!({"query": query, "scope": "main:Configuration", "limit": 50}),
+        ));
+        id += 1;
+        assert_eq!(found["ok"], true, "{found:#}");
+        assert_eq!(found["page"]["stoppedBy"], "complete", "{found:#}");
+        let matches = found["data"]["matches"].as_array().expect("text matches");
+        let mut modules = std::collections::BTreeSet::new();
+        for hit in matches {
+            assert_eq!(hit["scope"], "main:Configuration", "{hit:#}");
+            assert!(hit.get("path").is_none() && hit.get("file").is_none());
+            let at = hit["at"]
+                .as_str()
+                .unwrap_or_else(|| panic!("hit has no module: {hit:#}"));
+            modules.insert(at.to_owned());
+        }
+        let mut expected = expected.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            modules.iter().map(String::as_str).collect::<Vec<_>>(),
+            expected
+        );
+        for at in &modules {
+            let lines = view_body_lines(&mut mcp, &mut id, at);
+            for hit in matches.iter().filter(|hit| hit["at"] == at.as_str()) {
+                let line = hit["line"].as_u64().expect("hit line");
+                let text = lines.get(&line).map(String::as_str);
+                assert_eq!(text, hit["snippet"].as_str(), "{at} line {line}");
+                let column = usize::try_from(hit["column"].as_u64().expect("hit column"))
+                    .expect("column fits");
+                let tail = text
+                    .expect("hit line")
+                    .chars()
+                    .skip(column - 1)
+                    .collect::<String>();
+                assert!(tail.starts_with(query), "{at} line {line}: {hit:#}");
+                if line == 1 {
+                    first_line_hits += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        first_line_hits >= 2,
+        "a first-line hit after a BOM is checked"
+    );
+
+    let unowned = mcp.completed_tool_call(call_tool(
+        id,
+        "unica.search",
+        json!({"query": "НичейнаяСтрока"}),
+    ));
+    id += 1;
+    assert_eq!(unowned["ok"], true, "{unowned:#}");
+    let unowned_matches = unowned["data"]["matches"].as_array().expect("matches");
+    assert_eq!(unowned_matches.len(), 4, "{unowned:#}");
+    let mut reasons = std::collections::BTreeMap::new();
+    for hit in unowned_matches {
+        assert!(!hit.to_string().contains(".bsl"), "{hit:#}");
+        assert!(hit.get("path").is_none() && hit.get("file").is_none());
+        if let Some(at) = hit["at"].as_str() {
+            assert!(hit.get("unaddressed").is_none() && hit.get("fileId").is_none());
+            reasons.insert(at.to_owned(), hit["scope"].as_str().unwrap().to_owned());
+            assert_eq!(hit["column"], 4, "the BOM is not a column: {hit:#}");
+            continue;
+        }
+        assert!(hit["fileId"]
+            .as_str()
+            .is_some_and(|file| file.starts_with("bsl-")));
+        assert_eq!(hit["line"], 1);
+        let snippet = hit["snippet"].as_str().unwrap();
+        let reason = hit["unaddressed"].as_str().unwrap();
+        reasons.insert(
+            format!("{reason}: {snippet}"),
+            hit["scope"].as_str().unwrap().to_owned(),
+        );
+    }
+    assert_eq!(
+        reasons,
+        std::collections::BTreeMap::from([
+            (
+                "ext:CommonModule.Свой".to_owned(),
+                "ext:Configuration".to_owned()
+            ),
+            (
+                "outside_module_layout: // НичейнаяСтрока вне раскладки модулей".to_owned(),
+                "main:Configuration".to_owned()
+            ),
+            (
+                "owner_unproven: // НичейнаяСтрока без владельца".to_owned(),
+                "main:Configuration".to_owned()
+            ),
+            (
+                "owner_unproven: // НичейнаяСтрока в чужом модуле".to_owned(),
+                "ext:Configuration".to_owned()
+            ),
+        ])
+    );
+    let own = view_body_lines(&mut mcp, &mut id, "ext:CommonModule.Свой");
+    assert_eq!(
+        own.get(&1).map(String::as_str),
+        Some("// НичейнаяСтрока в своём модуле")
+    );
+    mcp.finish();
+}

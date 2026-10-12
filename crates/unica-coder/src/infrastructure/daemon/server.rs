@@ -6660,7 +6660,8 @@ struct ActorLogicalReadLease {"#,
         let first_match = &object_search.data.as_ref().unwrap()["matches"][0];
         assert_eq!(first_match["scope"], "main:Catalog.Items");
         assert!(first_match.get("file").is_none());
-        assert!(first_match.get("at").is_none());
+        // Область поиска и модуль совпадения — разные поля (#1298).
+        assert_eq!(first_match["at"], "main:Catalog.Items.Module.Object");
         assert!(
             !std::fs::read_to_string(source.join("Catalogs/Items.xml"))
                 .unwrap()

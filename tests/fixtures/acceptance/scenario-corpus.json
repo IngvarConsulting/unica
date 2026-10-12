@@ -32021,6 +32021,89 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S389",
+   "name": "text-search-hit-opens-its-module",
+   "issue": 1298,
+   "area": "Код BSL",
+   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку",
+   "workspace": "tests/fixtures/acceptance/workspace",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция ВалютаПоКоду",
+      "limit": 50
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/scope",
+       "eq": "main:Configuration"
+      },
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "main:Catalog.Валюты.Module.Manager"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/data/matches/0/line",
+       "eq": 13
+      }
+     ],
+     "captures": {
+      "moduleAt": {
+       "pointer": "/data/matches/0/at"
+      },
+      "hitLine": {
+       "pointer": "/data/matches/0/line"
+      },
+      "hitSnippet": {
+       "pointer": "/data/matches/0/snippet"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "$capture.moduleAt"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Module.Manager"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/12/line",
+       "eq": "$capture.hitLine"
+      },
+      {
+       "pointer": "/data/items/12/text",
+       "eq": "$capture.hitSnippet"
+      }
+     ]
+    }
+   ]
   }
  ]
 }
