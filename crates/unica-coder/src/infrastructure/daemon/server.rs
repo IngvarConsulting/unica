@@ -10319,9 +10319,12 @@ struct ActorLogicalReadLease {"#,
         let method = "main:CommonModule.Handlers.Method.Run";
 
         let plain = view(serde_json::json!({"at": method}));
-        assert!(plain.ok, "{plain:?}");
+        assert!(plain.ok, "a plain method view succeeds");
         let data = plain.data.as_ref().unwrap();
-        assert!(data["props"].get("callGraph").is_none(), "{plain:?}");
+        assert!(
+            data["props"].get("callGraph").is_none(),
+            "the method node carries no call graph summary"
+        );
         let branches = data["branches"].as_array().unwrap();
         for kind in ["Caller", "Callee"] {
             let branch = format!("{method}.{kind}");
@@ -10329,7 +10332,7 @@ struct ActorLogicalReadLease {"#,
                 branches
                     .iter()
                     .any(|declared| *declared == serde_json::json!({"at": branch})),
-                "{kind} is named without a count: {branches:?}"
+                "{kind} is named without a count"
             );
         }
         assert_eq!(
@@ -10340,14 +10343,14 @@ struct ActorLogicalReadLease {"#,
 
         let section =
             view(serde_json::json!({"at": method, "filter": {"sections": ["callGraph"]}}));
-        assert!(!section.ok, "{section:?}");
+        assert!(!section.ok, "the callGraph section is refused");
         assert_eq!(
             serde_json::to_value(&section).unwrap()["diagnostics"][0]["code"],
             "unsupported_filter"
         );
         let only_branches =
             view(serde_json::json!({"at": method, "filter": {"sections": ["branches"]}}));
-        assert!(only_branches.ok, "{only_branches:?}");
+        assert!(only_branches.ok, "the branches section succeeds");
         assert!(only_branches.data.as_ref().unwrap()["branches"]
             .as_array()
             .unwrap()
@@ -10355,14 +10358,17 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(provider.0.load(Ordering::SeqCst), 0);
 
         let caller = view(serde_json::json!({"at": format!("{method}.Caller")}));
-        assert!(caller.ok, "{caller:?}");
+        assert!(caller.ok, "the Caller branch is read");
         let page = caller.data.as_ref().unwrap();
         assert_eq!(page["kind"], "Caller");
         assert_eq!(page["props"]["callGraph"], "ready");
         assert_eq!(page["props"]["total"], 1, "the branch carries its total");
-        assert_eq!(page["items"][0]["at"], method, "{caller:?}");
+        assert_eq!(
+            page["items"][0]["at"], method,
+            "the recursive call is its own caller"
+        );
         let callee = view(serde_json::json!({"at": format!("{method}.Callee")}));
-        assert!(callee.ok, "{callee:?}");
+        assert!(callee.ok, "the Callee branch is read");
         assert_eq!(
             callee.data.as_ref().unwrap()["props"]["total"],
             0,
