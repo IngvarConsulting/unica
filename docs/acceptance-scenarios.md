@@ -81,7 +81,7 @@
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `object.borrow` | `From` | да | S313, S319 |
+| `object.borrow` | `From` | да | S313, S319, S404, S405 |
 | `object.create` | `values` | да | S103, S104, S105, S106, S107, S108, S109, S110, S117, S119, S120, S121, S122, S123, S124, S314, S355, S387, S391 |
 | `object.remove` | только `at` | да | S111, S112, S285, S293, S296, S314 |
 | `relation.add` | `values` | да | S113, S115 |
@@ -345,6 +345,8 @@
 | S386 | Сохранить обратное разрешение пути и расположение владельца | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 | S402 | Словарь операций приходит в каждом ответе узла, контракт одной операции читается адресом <узел>.Can.<op>, а diff сравнивает данные узлов без словаря | `source` | `view`<br>`view`<br>`diff` | `ok`<br>`ok`<br>`ok` |
 | S403 | Вызов view или diff с прежним filter получает отказ неизвестного аргумента и next к адресу, который его заменил; Can без операции и неприменимая операция отказывают с next к словарю узла; check, resolve, search и apply на адресе операции отказывают и ведут к его чтению через view | `source` | `view`<br>`diff`<br>`view`<br>`view`<br>`check`<br>`resolve`<br>`search`<br>`apply` `attribute.add` | `refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
+| S404 | Заимствовать отдельное значение перечисления вместе с владельцем и повторить без изменений | `source` | `apply` `object.borrow`<br>`apply`<br>`apply` `object.borrow` | `ok`<br>`ok`<br>`ok` |
+| S405 | Отсутствующее значение перечисления не создаёт оболочку владельца | `source` | `apply` `object.borrow` | `refused` |
 
 ### Свойства объектов
 

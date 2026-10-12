@@ -104,10 +104,14 @@ impl ApplyRequest {
                 })?;
                 if !available_source_sets.contains(&parent.source_set())
                     || parent.source_set() == at.source_set()
-                    || parent.segments().len() != 1
+                    || !(parent.segments().len() == 1
+                        || (parent.segments().len() == 2
+                            && parent.segments()[0].kind() == NodeKind::Enum
+                            && parent.segments()[1].kind() == NodeKind::EnumValue
+                            && parent.segments()[1].name().is_some()))
                     || parent.segments()[0].name().is_none()
                 {
-                    return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object in a distinct admitted parent source set"));
+                    return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object or Enum.EnumValue in a distinct admitted parent source set"));
                 }
             }
             // Configuration owns newly created metadata although its address is
@@ -1618,6 +1622,24 @@ mod tests {
             value.as_object().expect("apply fixture must be an object"),
             &["main", "extension"],
         )
+    }
+
+    #[test]
+    fn object_borrow_accepts_only_supported_nested_enum_values() {
+        let request = |from| {
+            parse(
+                json!({"at":"extension:Configuration", "dryRun":true, "ops":[{"op":"object.borrow","args":{"from":from}}]}),
+            )
+        };
+        assert!(request("main:Enum.Operations.EnumValue.Costs").is_ok());
+        for from in [
+            "main:Enum.Operations.EnumValue",
+            "main:Catalog.Orders.Attribute.Code",
+            "extension:Enum.Operations.EnumValue.Costs",
+            "unknown:Enum.Operations.EnumValue.Costs",
+        ] {
+            assert!(request(from).is_err(), "{from}");
+        }
     }
 
     #[test]

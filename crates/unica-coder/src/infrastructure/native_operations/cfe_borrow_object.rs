@@ -497,7 +497,7 @@ fn resolved_value(node: Node<'_, '_>, value: &str) -> (Option<String>, String) {
 // Preserve a copied subtree's meaning, making inherited namespace bindings
 // explicit. Each element is serialized with its own in-scope bindings so a
 // nested rebind and QName-valued content retain their original meaning.
-fn standalone_fragment(node: Node<'_, '_>) -> String {
+pub(crate) fn standalone_fragment(node: Node<'_, '_>) -> String {
     if node.is_text() {
         return escape_xml(node.text().unwrap_or_default());
     }
