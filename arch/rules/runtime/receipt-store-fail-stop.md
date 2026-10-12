@@ -8,6 +8,8 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::every_fail_stop_store_error_is_written_without_reentering_the_actor
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::displaced_receipt_authority_fail_stops_until_process_death
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::tiny_submit_budget_gives_the_receipt_store_its_own_step_budget
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::tiny_submit_budget_after_an_early_cancel_keeps_the_daemon
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 
@@ -15,6 +17,13 @@ gap: https://github.com/IngvarConsulting/unica/issues/984
 
 Если срок команды истёк в очереди до обращения к хранилищу, команда
 не выполняется и возвращает обычную ошибку срока. Хранилище остаётся доступным.
+
+Срок команд хранилища задаёт демон, а не вызывающий. Бюджет ответа submit
+короче двух секунд не сокращает срок записи квитанций: шаги хранилища
+получают две секунды от приёма кадра, проверка прав на хранилище — две секунды
+от своего начала. Короткий бюджет ограничивает только ожидание ответа.
+Если ответ опоздал, вызывающий читает итог восстановлением, а демон
+продолжает работу.
 
 Если запись уже началась и завершение нельзя подтвердить из-за паники
 или истечения срока, демон сообщает о неопределённом результате записи.

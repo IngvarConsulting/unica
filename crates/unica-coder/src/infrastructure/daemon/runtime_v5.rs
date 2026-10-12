@@ -88,6 +88,11 @@ const INLINE_CUTOFF_POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// The durable handoff committed at the cutoff runs under its own bound: the
 /// operation budget of the submit is spent by definition at that moment.
 const CUTOFF_HANDOFF_COMMIT_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
+/// The least time a request gives the receipt store for its own steps. A
+/// caller budget shorter than one durable commit narrows only the wait for
+/// the answer: a write the store already began is never declared uncertain,
+/// and the daemon never fail-stops, because the caller was in a hurry (#1387).
+const DURABLE_STEP_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
 const V5_TASK_POLL_INTERVAL_MS: u64 = 100;
 static NEXT_RETIREMENT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Pause before an expired Task whose retirement failed is tried again. Each
@@ -1982,6 +1987,45 @@ impl V5TaskProjection {
         }
         self.cancel_bound_task(key.reserved_task_id(), deadline)
     }
+
+    /// The Task an exact key passed into, read by its link. A link of the
+    /// same Task id under another key is a caller identity mismatch.
+    fn read_exact_bound_task(
+        &self,
+        key: &ReceiptKey,
+        deadline: Instant,
+    ) -> Result<ExactBoundTask, V5TaskProjectionFailure> {
+        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+        let link = match self
+            .lifecycle_links
+            .read_by_task_id(key.reserved_task_id(), provider_deadline)
+        {
+            Ok(link) => link,
+            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(ExactBoundTask::Absent),
+            Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
+        };
+        if link.key() != key {
+            return Err(V5TaskProjectionFailure {
+                error: ReceiptLedgerError::InvocationIdentityMismatch,
+                fail_stop: false,
+            });
+        }
+        Ok(
+            match self.read_bound_task(key.reserved_task_id(), deadline)? {
+                Some(record) => ExactBoundTask::Live(record),
+                None => ExactBoundTask::Retiring,
+            },
+        )
+    }
+}
+
+/// What the lifecycle link store holds for an exact receipt key.
+enum ExactBoundTask {
+    /// No link: the key, if anywhere, is still in the receipt ledger.
+    Absent,
+    Live(V5StoredInvocationRecord),
+    /// The link is being retired with its Task.
+    Retiring,
 }
 
 fn project_bound_task_for_read(
@@ -2822,7 +2866,6 @@ impl V5ReceiptRuntime {
                             format!("materialize protocol-v5 startup actor-bound Task: {error}")
                         })?;
                     let task_bound = self
-                        .receipt_ledger
                         .complete_bound_task_handoff(key, receipt_version, task_bound, deadline)
                         .map_err(|error| {
                             format!(
@@ -2876,7 +2919,6 @@ impl V5ReceiptRuntime {
                                 })?,
                         };
                     let task_bound = self
-                        .receipt_ledger
                         .complete_bound_task_handoff(key, receipt_version, task_bound, deadline)
                         .map_err(|error| {
                             format!("publish protocol-v5 startup Task handoff ownership: {error}")
@@ -2903,6 +2945,71 @@ impl V5ReceiptRuntime {
         Ok(())
     }
 
+    /// The receipt row of a key leaves the ledger only here, once its Task
+    /// link stands. Under the key's lock, so an exact repeat of the submit
+    /// that looked for the link a moment ago cannot reserve the key again
+    /// after the row is gone (#1384).
+    fn complete_bound_task_handoff(
+        &self,
+        key: ReceiptKey,
+        expected_version: crate::application::receipt_ledger::ReceiptVersion,
+        confirmed_task_bound: TaskBoundReceipt,
+        deadline: Instant,
+    ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+        let _stripe = self.submit_fences.stripe(&digest);
+        self.receipt_ledger.complete_bound_task_handoff(
+            key,
+            expected_version,
+            confirmed_task_bound,
+            deadline,
+        )
+    }
+
+    /// The staged counterpart of [`Self::complete_bound_task_handoff`].
+    fn complete_staged_task_handoff(
+        &self,
+        key: ReceiptKey,
+        expected_version: crate::application::receipt_ledger::ReceiptVersion,
+        confirmed_terminal_bound: crate::application::receipt_ledger::TaskTerminalBoundReceipt,
+        deadline: Instant,
+    ) -> Result<crate::application::receipt_ledger::TaskTerminalBoundReceipt, ReceiptLedgerError>
+    {
+        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+        let _stripe = self.submit_fences.stripe(&digest);
+        self.receipt_ledger.complete_staged_task_handoff(
+            key,
+            expected_version,
+            confirmed_terminal_bound,
+            deadline,
+        )
+    }
+
+    /// An exact repeat of a call whose receipt already passed into its Task
+    /// reads that Task and runs nothing (#1384). A Task already being retired
+    /// has no answer left to read.
+    fn exact_bound_task_reply(
+        &self,
+        key: &ReceiptKey,
+        deadline: Instant,
+    ) -> Result<Option<V5RuntimeReply>, ReceiptLedgerError> {
+        match self
+            .task_projection
+            .read_exact_bound_task(key, deadline)
+            .map_err(|failure| self.project_task_failure(failure))?
+        {
+            ExactBoundTask::Absent => Ok(None),
+            ExactBoundTask::Live(record) => {
+                Ok(Some(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task {
+                        snapshot: task_store_snapshot(&record),
+                    },
+                })))
+            }
+            ExactBoundTask::Retiring => Err(ReceiptLedgerError::ReceiptNotFound),
+        }
+    }
+
     fn ensure_named_authority(&self) -> Result<(), String> {
         self.ensure_named_authority_before(Instant::now() + AUTHORITY_ACQUIRE_TIMEOUT)
     }
@@ -2911,8 +3018,11 @@ impl V5ReceiptRuntime {
         if self.external_store_fail_stop.load(Ordering::Acquire) {
             return Err("protocol-v5 external durable store requires reopen".to_owned());
         }
+        // A probe the store already began is never cut short by a caller in
+        // a hurry: overrunning it would latch fail-stop (#1387).
+        let probe_deadline = deadline.max(Instant::now() + DURABLE_STEP_BUDGET);
         self.receipt_ledger
-            .generation(deadline)
+            .generation(probe_deadline)
             .map(|_| ())
             .map_err(|error| format!("validate protocol-v5 receipt authority: {error}"))
     }
@@ -3139,6 +3249,15 @@ impl V5ReceiptRuntime {
         if self.submit_fences.is_fenced(&digest) {
             return Err(ReceiptLedgerError::ReceiptNotFound);
         }
+        // Once its Task holds the call the ledger forgets the key; the link
+        // is what remembers it. Looked up under the key's lock, which the
+        // handoff completion also takes, so the row cannot leave between this
+        // lookup and the reservation.
+        if let Some(reply) = self.exact_bound_task_reply(&key, deadline)? {
+            return Ok(reply);
+        }
+        self.hooks
+            .pause(V5PausePoint::BeforeSubmitReservation, deadline)?;
         let outcome = self.receipt_ledger.reserve(key.clone(), cutoff, deadline)?;
         drop(stripe);
         let created = matches!(&outcome, ReserveOutcome::Created(_));
@@ -3447,7 +3566,7 @@ impl V5ReceiptRuntime {
                         self.hooks.as_ref(),
                     )
                     .map_err(|failure| self.project_task_failure(failure))?;
-                self.receipt_ledger.complete_bound_task_handoff(
+                self.complete_bound_task_handoff(
                     handoff.key().clone(),
                     handoff.record_version(),
                     task_bound.clone(),
@@ -3916,7 +4035,7 @@ impl V5ReceiptRuntime {
                     V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
                     epoch_ms,
                 );
-                let terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+                let terminal_link = self.complete_staged_task_handoff(
                     handoff.key().clone(),
                     handoff.record_version(),
                     terminal_link,
@@ -3940,7 +4059,7 @@ impl V5ReceiptRuntime {
                     },
                 }));
             }
-            self.receipt_ledger.complete_bound_task_handoff(
+            self.complete_bound_task_handoff(
                 handoff.key().clone(),
                 handoff.record_version(),
                 bound.clone(),
@@ -4422,7 +4541,7 @@ impl V5ReceiptRuntime {
                 self.hooks.as_ref(),
             )
             .map_err(|failure| self.project_task_failure(failure))?;
-        self.receipt_ledger.complete_bound_task_handoff(
+        self.complete_bound_task_handoff(
             handoff.key().clone(),
             handoff.record_version(),
             bound.clone(),
@@ -4522,7 +4641,7 @@ impl V5ReceiptRuntime {
                 V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
                 epoch_ms,
             );
-            let terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+            let terminal_link = self.complete_staged_task_handoff(
                 handoff.key().clone(),
                 handoff.record_version(),
                 terminal_link,
@@ -4546,7 +4665,7 @@ impl V5ReceiptRuntime {
                 },
             }));
         }
-        self.receipt_ledger.complete_bound_task_handoff(
+        self.complete_bound_task_handoff(
             handoff.key().clone(),
             handoff.record_version(),
             bound.clone(),
@@ -4578,7 +4697,7 @@ impl V5ReceiptRuntime {
             .task_projection
             .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
-        self.receipt_ledger.complete_bound_task_handoff(
+        self.complete_bound_task_handoff(
             handoff.key().clone(),
             handoff.record_version(),
             task_bound.clone(),
@@ -5310,7 +5429,7 @@ impl V5ReceiptRuntime {
             V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
             epoch_ms,
         );
-        let terminal_link = self.receipt_ledger.complete_staged_task_handoff(
+        let terminal_link = self.complete_staged_task_handoff(
             staged.key().clone(),
             staged.record_version(),
             terminal_link,
@@ -5384,7 +5503,7 @@ impl V5ReceiptRuntime {
             .task_projection
             .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
-        self.receipt_ledger.complete_bound_task_handoff(
+        self.complete_bound_task_handoff(
             handoff.key().clone(),
             handoff.record_version(),
             task_bound.clone(),
@@ -7161,6 +7280,7 @@ fn handle_probe_connection(
         let deadlines = match runtime.hooks.session_deadline_override() {
             Some(bulk_deadline) => V5RequestDeadlines {
                 operation: bulk_deadline,
+                durable: bulk_deadline,
                 response: bulk_deadline,
             },
             None => v5_request_deadlines(&decoded, request_received_at)?,
@@ -7186,7 +7306,7 @@ fn handle_probe_connection(
             ),
             V5ClientRequestKind::SubmitInvocation => {
                 let epoch_ms = runtime.epoch_ms();
-                match runtime.submit_invocation(decoded, epoch_ms, deadlines.operation) {
+                match runtime.submit_invocation(decoded, epoch_ms, deadlines.durable) {
                     Ok(reply) => {
                         if runtime.hooks.submit_response_disconnect() {
                             return Ok(());
@@ -7407,7 +7527,12 @@ fn handle_probe_connection(
 }
 
 struct V5RequestDeadlines {
+    /// The caller's budget for the operation itself.
     operation: Instant,
+    /// The bound of the request's receipt-store steps: the operation
+    /// deadline, but never less than [`DURABLE_STEP_BUDGET`] after receipt.
+    durable: Instant,
+    /// The last moment the answer is written.
     response: Instant,
 }
 
@@ -7435,8 +7560,13 @@ fn v5_request_deadlines(
                 .checked_add(OWNER_RESPONSE_WRITE_TIMEOUT)
                 .ok_or_else(|| "protocol-v5 response safety deadline overflow".to_owned())?,
         );
+    let durable = request_received_at
+        .checked_add(DURABLE_STEP_BUDGET)
+        .ok_or_else(|| "protocol-v5 durable step deadline overflow".to_owned())?
+        .max(operation);
     Ok(V5RequestDeadlines {
         operation,
+        durable,
         response,
     })
 }

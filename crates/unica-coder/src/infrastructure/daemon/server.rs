@@ -13744,7 +13744,7 @@ mod finite_deadline_guard {
         ),
         (
             "infrastructure/daemon/runtime_v5.rs",
-            27,
+            28,
             "per-step Task store and lifecycle-link I/O bounds",
         ),
     ];

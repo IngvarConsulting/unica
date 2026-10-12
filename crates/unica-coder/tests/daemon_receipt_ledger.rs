@@ -7713,6 +7713,46 @@ fn exact_duplicate_preserves_cutoff_without_second_domain_callback() {
     );
 }
 
+/// #1384: once a known-long call has passed into its Task, the receipt
+/// ledger forgets its key and the Task link remembers it. An exact duplicate
+/// after that reads the same Task; the key is never reserved again.
+#[test]
+fn exact_duplicate_of_a_bound_task_reads_the_task_without_a_second_reservation() {
+    let report = execute(Scenario::fake(vec![
+        known_long_provider(),
+        submit("original"),
+        Action::WaitForEvent {
+            event: EventKind::TaskTerminalBoundCommitted,
+        },
+        Action::Submit {
+            request: RequestCase::SameIdentity,
+            response_budget_ms: 1_000,
+            disconnect: DisconnectPoint::Never,
+            label: "duplicate".to_string(),
+        },
+        checkpoint_action("after-duplicate"),
+    ]));
+
+    let original = response(&report, "original");
+    let duplicate = response(&report, "duplicate");
+    assert_eq!(original.kind, ResponseKind::Task);
+    assert_eq!(duplicate.kind, ResponseKind::Task, "{duplicate:?}");
+    let after = checkpoint(&report, "after-duplicate");
+    let task = only_task(after);
+    assert_eq!(task.status, TaskStatus::Completed);
+    let observed = duplicate
+        .task
+        .as_ref()
+        .expect("the duplicate names its Task");
+    assert_eq!(observed.task_id, task.task_id);
+    assert_eq!(observed.receipt_key, task.receipt_key);
+    assert_eq!(observed.status, TaskStatus::Completed);
+    assert_eq!(count_event(&report, EventKind::ReceiptReserved), 1);
+    assert_eq!(after.receipt_live_count, 0);
+    assert_eq!(after.callbacks.prepare, 1);
+    assert_eq!(after.callbacks.execute, 1);
+}
+
 #[test]
 fn submit_disconnect_before_cutoff_preserves_direct_lifecycle() {
     let report = execute(Scenario::fake(vec![
