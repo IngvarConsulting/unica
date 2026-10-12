@@ -550,7 +550,7 @@ fn invoke_runner(
         args.push("--dry-run".to_string());
     }
     let output = runner
-        .run(&ProcessCommand {
+        .run_staged(&ProcessCommand {
             program: tool.program.clone(),
             args,
             cwd: prepared.context.workspace_root.clone(),

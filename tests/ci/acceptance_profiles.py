@@ -12,7 +12,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
-FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "checksum-mismatch"}
+FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "exit-failure", "missing-engine", "checksum-mismatch"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
 DCS_WORKSPACE = "tests/fixtures/acceptance/workspace-dcs"
 MXL_WORKSPACE = "tests/fixtures/acceptance/workspace-mxl"

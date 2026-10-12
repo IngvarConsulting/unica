@@ -7,6 +7,9 @@ check:
   - crates/unica-coder/src/infrastructure/bundled_tools.rs::presence_skips_the_checksum_and_absence_on_the_failure_path_does_not
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::an_absent_bundled_runner_names_the_missing_engine_in_data
   - crates/unica-coder/src/infrastructure/engine_delivery.rs::a_failed_engine_delivery_carries_the_missing_engine_fields
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::only_a_failed_launch_of_the_runner_is_a_missing_engine
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::module_check_answers_working_while_the_analyzer_is_being_delivered
+  - crates/unica-coder/src/application/diagnostics.rs::absent_engine_reason_is_published_only_in_its_canonical_shape
 ---
 
 # Отсутствие поставляемого движка — один типизированный отказ
@@ -25,11 +28,18 @@ check:
 `start` — проверенный движок не запустился. Шаг определяется типом отказа
 резолвера, а не текстом ошибки. Сообщение называет следующий шаг для режима
 установки: собрать движок в исходном checkout, дождаться доставки или
-переустановить плагин.
+переустановить плагин. Текст причины один на всех маршрутах, включая
+причину неполного анализа `check`; ожидаемый путь едет только в `data.path`.
+
+Шаг `start` получает только запуск, при котором процесс движка не возник;
+причина ОС остаётся в сообщении без путей и секретов. Сбой после старта —
+не отсутствие движка: он отвечает своим кодом без полей движка.
 
 Неудачная доставка, после которой движка нет, отвечает тем же уточнением:
 рядом с `data.delivery` идут поля движка на шаге `delivery`. Доставка,
 которая ещё идёт, остаётся повторяемым `delivery_in_progress`.
 
-Наличие файла проверяется до запуска поставщика без хеша; контрольная
-сумма сверяется на пути отказа, когда запуск не удался.
+Каждый маршрут сам заказывает доставку недостающего движка до проверки
+наличия, поэтому повтор, который советует отказ, её и продолжает. Наличие
+файла проверяется после доставки и до запуска поставщика без хеша;
+контрольная сумма сверяется на пути отказа, когда запуск не удался.

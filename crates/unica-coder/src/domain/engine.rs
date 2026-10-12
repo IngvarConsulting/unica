@@ -148,9 +148,16 @@ impl MissingEngine {
 
     /// Строка для того, кто читает ошибки, а не разбирает поля.
     pub fn message(&self) -> String {
+        format!("{}: {}", self.code, self.public_reason())
+    }
+
+    /// Причина без кода: движок, платформа, шаг и что сделать. Один текст
+    /// на всех маршрутах — и в отказе, и в причине неполного анализа `check`.
+    /// Ожидаемого пути здесь нет: он называет каталоги пользователя и едет
+    /// только полем `data.path`.
+    pub fn public_reason(&self) -> String {
         format!(
-            "{}: {} is not available for {}: {}; {}",
-            self.code,
+            "{} is not available for {}: {}; {}",
             self.tool,
             self.target,
             self.stage.reason(),
@@ -177,11 +184,19 @@ impl MissingEngine {
     /// `provider_unavailable` с уточнением `provider_absent` и полями движка
     /// в `data`.
     pub(crate) fn refusal(&self, at: Option<String>) -> DomainResult {
-        let mut result = DomainResult::canonical_rejection_detailed(
-            at,
-            RefusalDetail::ProviderAbsent,
-            self.message(),
-        );
+        self.refusal_with_message(at, self.message())
+    }
+
+    /// Тот же отказ, но с исходной причиной после общего текста: запуск,
+    /// который не удался, называет, что ответила ОС. Причину вызывающий
+    /// передаёт уже без путей и секретов.
+    pub(crate) fn refusal_with_cause(&self, at: Option<String>, cause: &str) -> DomainResult {
+        self.refusal_with_message(at, format!("{}; cause: {cause}", self.message()))
+    }
+
+    fn refusal_with_message(&self, at: Option<String>, message: String) -> DomainResult {
+        let mut result =
+            DomainResult::canonical_rejection_detailed(at, RefusalDetail::ProviderAbsent, message);
         result.data = Some(self.refusal_data());
         result
     }

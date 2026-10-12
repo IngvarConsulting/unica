@@ -22,7 +22,9 @@ use crate::infrastructure::diagnostics_baseline::{
     baseline_verdict, BaselineFacts, BaselineIssue, BaselineState, BaselineVerdict,
 };
 use crate::infrastructure::diagnostics_jsonl::AnalyzerDiagnosticsBatch;
-use crate::infrastructure::internal_adapters::BslAnalyzerMcpAdapter;
+use crate::infrastructure::internal_adapters::{
+    AnalyzerRunFailure, AnalyzerRunFailureKind, BslAnalyzerMcpAdapter,
+};
 use crate::infrastructure::platform_xml_source_targets::{
     locate_platform_xml_source_path_in, platform_xml_resource_evidence, portable_relative,
     resolve_platform_xml_target_in, resolve_platform_xml_target_in_diagnostic_context,
@@ -339,7 +341,7 @@ trait BslDiagnosticBackend: Send + Sync {
         request: BslDiagnosticBackendRequest,
         timeout: Option<Duration>,
         cancellation: &CancellationToken,
-    ) -> Result<BslDiagnosticBackendReply, String>;
+    ) -> Result<BslDiagnosticBackendReply, AnalyzerRunFailure>;
 }
 
 struct WorkspaceBslDiagnosticBackend;
@@ -351,7 +353,7 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
         request: BslDiagnosticBackendRequest,
         timeout: Option<Duration>,
         cancellation: &CancellationToken,
-    ) -> Result<BslDiagnosticBackendReply, String> {
+    ) -> Result<BslDiagnosticBackendReply, AnalyzerRunFailure> {
         match request {
             BslDiagnosticBackendRequest::Analyze {
                 source_root,
@@ -371,7 +373,10 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
                 arguments,
             } => {
                 let timeout = timeout.ok_or_else(|| {
-                    crate::domain::code_intelligence::ProviderDeadlineError::Unsupported.to_string()
+                    AnalyzerRunFailure::from(
+                        crate::domain::code_intelligence::ProviderDeadlineError::Unsupported
+                            .to_string(),
+                    )
                 })?;
                 WorkspaceServiceManager::new()
                     .call_bsl_mcp_cancellable_with_budget(
@@ -380,6 +385,7 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
                         WorkspaceServiceBslCall::new(tool_name, arguments, timeout, timeout),
                         cancellation,
                     )
+                    .map_err(|error| resident_failure(context, error))
                     .map(|output| {
                         let version = find_plugin_root(&context.workspace.cwd)
                             .and_then(|root| bundled_tool_version(&root, "bsl-analyzer").ok());
@@ -393,6 +399,23 @@ impl BslDiagnosticBackend for WorkspaceBslDiagnosticBackend {
         }
     }
 }
+
+/// A resident session fails with prose only. Whether the engine is absent is
+/// read from the disk through the typed [`MissingEngine`], never from that
+/// prose: a transient "no such file" is not a missing engine (#1338).
+///
+/// [`MissingEngine`]: crate::domain::engine::MissingEngine
+fn resident_failure(context: &DiagnosticContext, error: String) -> AnalyzerRunFailure {
+    let missing = find_plugin_root(&context.workspace.cwd).and_then(|root| {
+        crate::infrastructure::bundled_tools::missing_engine(&root, BSL_ANALYZER_ENGINE)
+    });
+    match missing {
+        Some(missing) => AnalyzerRunFailure::engine_missing(Some(missing), error),
+        None => AnalyzerRunFailure::from(error),
+    }
+}
+
+const BSL_ANALYZER_ENGINE: &str = "bsl-analyzer";
 
 static WORKSPACE_BSL_DIAGNOSTIC_BACKEND: WorkspaceBslDiagnosticBackend =
     WorkspaceBslDiagnosticBackend;
@@ -421,7 +444,7 @@ pub(crate) mod analyze_timeout_probe {
             request: BslDiagnosticBackendRequest,
             timeout: Option<Duration>,
             _cancellation: &CancellationToken,
-        ) -> Result<BslDiagnosticBackendReply, String> {
+        ) -> Result<BslDiagnosticBackendReply, AnalyzerRunFailure> {
             self.timeouts.lock().unwrap().push(timeout);
             match request {
                 BslDiagnosticBackendRequest::Analyze { .. } => {
@@ -446,10 +469,54 @@ pub(crate) mod analyze_timeout_probe {
                     })))
                 }
                 BslDiagnosticBackendRequest::Resident { .. } => {
-                    Err("the analyze probe answers only analyze".to_string())
+                    Err("the analyze probe answers only analyze".to_string().into())
                 }
             }
         }
+    }
+
+    /// A backend whose run stops at a closed place, for `check` paths that
+    /// must name the cause instead of "provider is unavailable" (#1338).
+    struct FailingAnalyzeBackend(AnalyzerRunFailureKind);
+
+    impl BslDiagnosticBackend for FailingAnalyzeBackend {
+        fn invoke(
+            &self,
+            _context: &DiagnosticContext,
+            _request: BslDiagnosticBackendRequest,
+            _timeout: Option<Duration>,
+            _cancellation: &CancellationToken,
+        ) -> Result<BslDiagnosticBackendReply, AnalyzerRunFailure> {
+            Err(failure_for_test(self.0))
+        }
+    }
+
+    /// A failure of the given kind; an absent engine is described as a
+    /// source checkout misses it, with a private expected path.
+    pub(crate) fn failure_for_test(kind: AnalyzerRunFailureKind) -> AnalyzerRunFailure {
+        let message = "private-token /private/engine/bsl-analyzer stderr";
+        if kind == AnalyzerRunFailureKind::EngineMissing {
+            AnalyzerRunFailure::engine_missing(
+                Some(crate::domain::engine::MissingEngine::new(
+                    "bsl-analyzer",
+                    "darwin-arm64",
+                    "/private/engine/bin/darwin-arm64/bsl-analyzer",
+                    Some("0.2.86".to_string()),
+                    crate::domain::engine::InstallMode::Source,
+                )),
+                message,
+            )
+        } else {
+            AnalyzerRunFailure::new(kind, message)
+        }
+    }
+
+    pub(crate) fn failing_provider(
+        kind: AnalyzerRunFailureKind,
+    ) -> std::sync::Arc<dyn DiagnosticProvider> {
+        let backend: &'static FailingAnalyzeBackend =
+            Box::leak(Box::new(FailingAnalyzeBackend(kind)));
+        std::sync::Arc::new(BslAnalyzerDiagnosticProvider::with_backend(backend))
     }
 
     pub(crate) fn recording_provider() -> (
@@ -491,9 +558,12 @@ impl<'a> BslAnalyzerDiagnosticProvider<'a> {
         context: &DiagnosticContext,
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
-    ) -> Result<DiagnosticProviderOutcome, String> {
+    ) -> Result<DiagnosticProviderOutcome, AnalyzerRunFailure> {
         if cancellation.is_cancelled() {
-            return Err("cancelled: diagnostics provider stopped before request".to_string());
+            return Err(AnalyzerRunFailure::new(
+                AnalyzerRunFailureKind::Cancelled,
+                "cancelled: diagnostics provider stopped before request",
+            ));
         }
         // Анализ модуля для `check` идёт без срока, если пользователь его
         // не задал (#1251). Резидентные действия прежней поверхности
@@ -602,18 +672,7 @@ impl DiagnosticProvider for BslAnalyzerDiagnosticProvider<'_> {
     ) -> DiagnosticProviderOutcome {
         match self.execute_inner(request, context, deadline, cancellation) {
             Ok(outcome) => outcome,
-            Err(error) if error.starts_with("cancelled:") => provider_failed(
-                None,
-                "cancelled",
-                "bsl-analyzer diagnostics request was cancelled",
-                false,
-            ),
-            Err(_) => provider_failed(
-                None,
-                "provider_unavailable",
-                "bsl-analyzer diagnostics provider is unavailable",
-                true,
-            ),
+            Err(failure) => backend_failure_outcome(failure),
         }
     }
 }
@@ -978,6 +1037,53 @@ fn parse_common_tags(tags: &[String]) -> Vec<DiagnosticTag> {
     mapped
 }
 
+/// The closed place a backend run stopped becomes the section's code; the
+/// backend's own text never leaves the adapter (#1338). The public wording of
+/// each code belongs to the diagnostics coordinator.
+fn backend_failure_outcome(failure: AnalyzerRunFailure) -> DiagnosticProviderOutcome {
+    let message = failure.missing.as_deref().map_or_else(
+        || "bsl-analyzer diagnostics provider did not produce a result".to_string(),
+        crate::application::diagnostics::missing_engine_public_reason,
+    );
+    let (status, code, retryable) = match failure.kind {
+        AnalyzerRunFailureKind::Cancelled => {
+            return provider_failed(
+                None,
+                "cancelled",
+                "bsl-analyzer diagnostics request was cancelled",
+                false,
+            )
+        }
+        AnalyzerRunFailureKind::EngineMissing => (
+            DiagnosticProviderStatus::Unavailable,
+            crate::domain::engine::BUNDLED_TOOL_MISSING,
+            false,
+        ),
+        AnalyzerRunFailureKind::EngineInvalid => (
+            DiagnosticProviderStatus::Unavailable,
+            "provider_install_invalid",
+            false,
+        ),
+        AnalyzerRunFailureKind::StartFailed => (
+            DiagnosticProviderStatus::Unavailable,
+            "provider_start_failed",
+            true,
+        ),
+        AnalyzerRunFailureKind::TimedOut => {
+            (DiagnosticProviderStatus::Failed, "provider_timeout", true)
+        }
+        AnalyzerRunFailureKind::Exited => {
+            (DiagnosticProviderStatus::Failed, "provider_exited", true)
+        }
+        AnalyzerRunFailureKind::Other => (
+            DiagnosticProviderStatus::Failed,
+            "provider_unavailable",
+            true,
+        ),
+    };
+    provider_failed_with_status(status, None, code, message, retryable)
+}
+
 fn provider_not_ready(
     version: Option<String>,
     message: impl Into<String>,
@@ -1155,7 +1261,7 @@ mod bsl_diagnostics_provider_tests {
     struct FakeBackend {
         calls: Mutex<Vec<BslDiagnosticBackendRequest>>,
         timeouts: Mutex<Vec<Option<Duration>>>,
-        replies: Mutex<VecDeque<Result<BslDiagnosticBackendReply, String>>>,
+        replies: Mutex<VecDeque<Result<BslDiagnosticBackendReply, AnalyzerRunFailure>>>,
     }
 
     impl FakeBackend {
@@ -1164,6 +1270,16 @@ mod bsl_diagnostics_provider_tests {
                 calls: Mutex::new(Vec::new()),
                 timeouts: Mutex::new(Vec::new()),
                 replies: Mutex::new(replies.into_iter().map(Ok).collect()),
+            }
+        }
+
+        fn failing(kind: AnalyzerRunFailureKind) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                timeouts: Mutex::new(Vec::new()),
+                replies: Mutex::new(VecDeque::from([Err(
+                    super::analyze_timeout_probe::failure_for_test(kind),
+                )])),
             }
         }
 
@@ -1183,7 +1299,7 @@ mod bsl_diagnostics_provider_tests {
             request: BslDiagnosticBackendRequest,
             timeout: Option<Duration>,
             _cancellation: &CancellationToken,
-        ) -> Result<BslDiagnosticBackendReply, String> {
+        ) -> Result<BslDiagnosticBackendReply, AnalyzerRunFailure> {
             self.calls.lock().unwrap().push(request);
             self.timeouts.lock().unwrap().push(timeout);
             self.replies
@@ -1218,6 +1334,86 @@ mod bsl_diagnostics_provider_tests {
             [None],
             "an unconfigured analysis must reach the analyzer without a timeout"
         );
+    }
+
+    /// Each place an analyzer run stops keeps its own closed code instead of
+    /// one "provider is unavailable", and the backend's text stays inside
+    /// (#1338).
+    #[test]
+    fn backend_failure_keeps_where_the_run_stopped_and_drops_its_text() {
+        let fixture = ProviderFixture::new();
+        for (kind, status, code, retryable) in [
+            (
+                AnalyzerRunFailureKind::EngineMissing,
+                DiagnosticProviderStatus::Unavailable,
+                "bundled_tool_missing",
+                false,
+            ),
+            (
+                AnalyzerRunFailureKind::EngineInvalid,
+                DiagnosticProviderStatus::Unavailable,
+                "provider_install_invalid",
+                false,
+            ),
+            (
+                AnalyzerRunFailureKind::StartFailed,
+                DiagnosticProviderStatus::Unavailable,
+                "provider_start_failed",
+                true,
+            ),
+            (
+                AnalyzerRunFailureKind::TimedOut,
+                DiagnosticProviderStatus::Failed,
+                "provider_timeout",
+                true,
+            ),
+            (
+                AnalyzerRunFailureKind::Exited,
+                DiagnosticProviderStatus::Failed,
+                "provider_exited",
+                true,
+            ),
+            (
+                AnalyzerRunFailureKind::Other,
+                DiagnosticProviderStatus::Failed,
+                "provider_unavailable",
+                true,
+            ),
+            (
+                AnalyzerRunFailureKind::Cancelled,
+                DiagnosticProviderStatus::Failed,
+                "cancelled",
+                false,
+            ),
+        ] {
+            let backend = FakeBackend::failing(kind);
+            let outcome = execute(
+                &BslAnalyzerDiagnosticProvider::with_backend(&backend),
+                &fixture,
+                DiagnosticAction::Analyze,
+            );
+            assert_eq!(
+                backend.calls.lock().unwrap().len(),
+                1,
+                "{kind:?}: backend must run"
+            );
+            assert_eq!(outcome.status, status, "{kind:?}");
+            assert!(!outcome.complete, "{kind:?}");
+            let error = outcome.error.expect("failed run names its error");
+            assert_eq!(error.code, code, "{kind:?}");
+            assert_eq!(error.retryable, retryable, "{kind:?}");
+            assert!(!error.message.contains("private"), "{kind:?}: {error:?}");
+            if kind == AnalyzerRunFailureKind::EngineMissing {
+                assert_eq!(
+                    crate::application::diagnostics::canonical_missing_engine_reason(
+                        &error.message
+                    )
+                    .as_deref(),
+                    Some(error.message.as_str()),
+                    "an absent engine is named by its install mode's next step"
+                );
+            }
+        }
     }
 
     #[test]

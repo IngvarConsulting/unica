@@ -25,7 +25,9 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
+use crate::infrastructure::internal_adapters::{
+    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
+};
 use crate::infrastructure::platform::PendingProcessHandoff;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -684,16 +686,17 @@ fn invoke_runner(
         runner
             .run_pending_handoff(&command)
             .map(|(output, handoff)| (output, Some(handoff)))
+            .map_err(ProcessStreamFailure::Run)
     } else {
-        runner.run(&command).map(|output| (output, None))
+        runner.run_staged(&command).map(|output| (output, None))
     };
     let (output, handoff) = execution.map_err(|error| {
-        if error.starts_with(CANCELLED_PREFIX) || cancellation.is_cancelled() {
+        if error.message().starts_with(CANCELLED_PREFIX) || cancellation.is_cancelled() {
             reject(
                 RefusalCode::Cancelled,
                 "launch cancelled while reading the runner result",
             )
-        } else if super::runner_014::config_refusal(&error).is_some() {
+        } else if super::runner_014::config_refusal(error.message()).is_some() {
             // Проектный файл отклонён до запуска раннера: клиента ещё нет.
             runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
         } else if owns_client {
@@ -1096,6 +1099,14 @@ fn main() {
 
     impl ProcessRunner for ObservedSystemRunner {
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.run_staged(command)
+                .map_err(|failure| failure.message().to_string())
+        }
+
+        fn run_staged(
+            &self,
+            command: &ProcessCommand,
+        ) -> Result<ProcessOutput, ProcessStreamFailure> {
             let path = |flag: &str| {
                 let index = command
                     .args
@@ -1154,7 +1165,7 @@ fn main() {
                         command.cancellation.cancel();
                     });
                 }
-                crate::infrastructure::internal_adapters::SystemProcessRunner.run(&command)
+                crate::infrastructure::internal_adapters::SystemProcessRunner.run_staged(&command)
             });
             if let Ok(result) = &result {
                 let suffix = if result.timed_out || result.cancelled {

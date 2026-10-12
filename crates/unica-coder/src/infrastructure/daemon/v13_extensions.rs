@@ -285,7 +285,7 @@ impl PreparedExtensions {
             args.push("--dry-run".into());
         }
         let output = runner
-            .run(&ProcessCommand {
+            .run_staged(&ProcessCommand {
                 program: tool.program.clone(),
                 args,
                 cwd: self.context.workspace_root.clone(),

@@ -13,7 +13,9 @@ use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::{
     bundled_tool_version, resolve_bundled_tool, BundledTool, BundledToolError,
 };
-use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
+use crate::infrastructure::internal_adapters::{
+    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
+};
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::{
     open_absolute_directory_path_nofollow, open_directory_child_nofollow,
@@ -853,7 +855,7 @@ fn invoke_runner(
     if dry_run {
         args.push("--dry-run".to_string());
     }
-    let output = runner.run(&ProcessCommand {
+    let output = runner.run_staged(&ProcessCommand {
         program: tool.program.clone(),
         args,
         cwd: prepared.context.workspace_root.clone(),
@@ -1008,6 +1010,11 @@ pub(super) enum RunnerLayer {
 }
 
 /// Устойчивые части текста `AgentError` раннера 0.14 — по одной на слой.
+///
+/// Временная мера: слой опознаётся по тексту, пока раннер не отдаёт его
+/// полем. Типизированное поле слоя запрошено в
+/// IngvarConsulting/v8-runner-rust#485; когда оно появится, эти маркеры
+/// заменяются чтением поля, а не дополняются.
 const RUNNER_CREDENTIALS_REJECTED: &str = " rejected the credentials of user ";
 const RUNNER_ENDPOINT_FAILURES: [&str; 3] = [
     " is unreachable: ",
@@ -1118,17 +1125,22 @@ pub(super) fn missing_runner_rejection(at: Option<String>, absence: RunnerAbsenc
     }
 }
 
-/// Отказ до запуска раннера: отмена, отказ проектного файла или раннер не стартовал.
+/// Отказ, когда раннер не дал ответа: отмена, отказ проектного файла, раннер
+/// не стартовал или сбой после старта.
 ///
 /// Маршрут один на все операции `run`: проектный файл, который адаптер 0.14 не может
 /// передать раннеру, правится человеком или агентом в рабочем пространстве, и отказ
-/// говорит об этом, а не о пропавшем поставщике. Раннер, который прошёл проверку
-/// поставки и не стартовал, — отказ «нет движка» на шаге `start`.
+/// говорит об этом, а не о пропавшем поставщике. Отказом «нет движка» становится
+/// только то, что тип называет запуском: процесс раннера не возник. Раннер к
+/// этому месту уже прошёл полную проверку поставки, поэтому это шаг `start`.
+/// Сбой после старта движок не теряет и отвечает своим кодом.
+/// Исходная причина в обоих случаях остаётся в тексте отказа, без путей и секретов.
 pub(super) fn runner_start_rejection(
     at: Option<String>,
-    error: &str,
+    failure: &ProcessStreamFailure,
     program: &Path,
 ) -> DomainResult {
+    let error = failure.message();
     if error.starts_with(CANCELLED_PREFIX) {
         return DomainResult::canonical_rejection(
             at,
@@ -1139,12 +1151,26 @@ pub(super) fn runner_start_rejection(
     if let Some(reason) = super::runner_014::config_refusal(error) {
         return DomainResult::canonical_rejection(at, RefusalCode::InvalidSource, redactor(reason));
     }
-    crate::infrastructure::bundled_tools::start_failure(
-        find_plugin_root(program).as_deref(),
-        RUNNER_TOOL,
-        program,
-    )
-    .refusal(at)
+    let cause = runner_failure_cause(error, program);
+    match failure {
+        ProcessStreamFailure::Spawn(_) => crate::infrastructure::bundled_tools::start_failure(
+            find_plugin_root(program).as_deref(),
+            RUNNER_TOOL,
+            program,
+        )
+        .refusal_with_cause(at, &cause),
+        ProcessStreamFailure::Run(_) => DomainResult::canonical_rejection(
+            at,
+            RefusalCode::ProviderFailed,
+            format!("bundled v8-runner failed before returning its result: {cause}"),
+        ),
+    }
+}
+
+/// Причина сбоя раннера для ответа: без пути к движку и без секретов.
+fn runner_failure_cause(error: &str, program: &Path) -> String {
+    let error = error.strip_prefix("process_failed: ").unwrap_or(error);
+    redactor(&error.replace(&program.display().to_string(), RUNNER_TOOL))
 }
 
 /// Отказ по коду раннера: с уточнением, когда словарь его знает, иначе по коду.
@@ -2632,18 +2658,73 @@ mod tests {
         assert!(diagnostic.get("detailCode").is_none(), "{error:?}");
         assert!(error.summary.contains("execution_timeout"), "{error:?}");
         assert!(!error.summary.contains("failed to start"), "{error:?}");
+    }
 
-        let absent = runner_start_rejection(
-            Some("download".into()),
-            "No such file or directory",
-            &tool.program,
+    /// Ревью #549: «нет движка» — только когда процесс раннера не возник.
+    /// Настоящий запуск несуществующего файла даёт сбой запуска, и отказ
+    /// называет шаг `start` вместе с причиной ОС, но без пути к движку. Сбой
+    /// после старта движок не теряет: свой код, без полей движка, причина
+    /// сохранена.
+    #[test]
+    fn only_a_failed_launch_of_the_runner_is_a_missing_engine() {
+        use crate::infrastructure::internal_adapters::SystemProcessRunner;
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("private-dir/v8-runner-that-is-not-there");
+        let failure = SystemProcessRunner
+            .run_staged(&ProcessCommand {
+                program: program.clone(),
+                args: Vec::new(),
+                cwd: root.path().to_path_buf(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
+                timeout: None,
+                cancellation: CancellationToken::new(),
+            })
+            .expect_err("a file that is not there cannot start");
+        assert!(
+            matches!(failure, ProcessStreamFailure::Spawn(_)),
+            "{failure:?}"
         );
-        assert_eq!(absent.diagnostics[0]["detailCode"], "provider_absent");
+
+        let absent = runner_start_rejection(Some("download".into()), &failure, &program);
+        let diagnostic = &absent.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_unavailable");
+        assert_eq!(diagnostic["detailCode"], "provider_absent");
         let data = absent.data.as_ref().expect("поля движка в data");
         assert_eq!(data["tool"], "v8-runner");
         assert_eq!(data["stage"], "start");
         assert_eq!(data["retryable"], false);
-        assert_eq!(data["path"], json!(tool.program.display().to_string()));
+        assert_eq!(data["path"], json!(program.display().to_string()));
+        let message = diagnostic["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("bundled_tool_missing: v8-runner is not available for "),
+            "{message}"
+        );
+        assert!(
+            message.contains("; cause: "),
+            "причина ОС сохранена: {message}"
+        );
+        assert!(!message.contains("private-dir"), "{message}");
+
+        let after_start = runner_start_rejection(
+            Some("download".into()),
+            &ProcessStreamFailure::Run(format!(
+                "process_failed: broken pipe while reading {} output",
+                program.display()
+            )),
+            &program,
+        );
+        let diagnostic = &after_start.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_failed");
+        assert!(diagnostic.get("detailCode").is_none(), "{after_start:?}");
+        assert!(after_start.data.is_none(), "{after_start:?}");
+        let message = diagnostic["message"].as_str().unwrap();
+        assert!(
+            message.contains("broken pipe"),
+            "причина сохранена: {message}"
+        );
+        assert!(!message.contains("private-dir"), "{message}");
     }
 
     #[test]
