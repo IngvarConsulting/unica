@@ -769,7 +769,7 @@ impl V5ToolIdentity {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct RequestIdentity {
     core_identity_digest: CoreIdentityDigest,
     tool: V5ToolIdentity,

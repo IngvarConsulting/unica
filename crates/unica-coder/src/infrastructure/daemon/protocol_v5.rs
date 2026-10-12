@@ -811,6 +811,16 @@ impl V5DaemonTaskSnapshot {
         }
     }
 
+    pub(crate) fn version(&self) -> u64 {
+        match self {
+            Self::Queued { version, .. }
+            | Self::Working { version, .. }
+            | Self::Completed { version, .. }
+            | Self::Failed { version, .. }
+            | Self::Cancelled { version, .. } => *version,
+        }
+    }
+
     pub(crate) fn poll_interval_ms(&self) -> u64 {
         match self {
             Self::Queued {

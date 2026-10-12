@@ -451,7 +451,15 @@ fn execute_surface_tool(
             let tool = V5ToolIdentity::from_wire_name(name).ok_or_else(|| {
                 ErrorData::invalid_params("tool is not in the canonical v0.13 profile", None)
             })?;
-            match (router.call)(tool, arguments, host, deadline, cancellation)? {
+            let outcome =
+                (router.call)(tool, arguments, host, deadline, cancellation).map_err(|error| {
+                    if client_supports_tasks {
+                        crate::interfaces::daemon_router::native_lost_submit_next(error)
+                    } else {
+                        error
+                    }
+                })?;
+            match outcome {
                 CanonicalCallOutcome::Direct(result) => Ok(SurfaceToolOutcome::Direct(result)),
                 CanonicalCallOutcome::Task(snapshot) if client_supports_tasks => {
                     Ok(SurfaceToolOutcome::Task(snapshot))

@@ -669,6 +669,21 @@ impl V5DaemonProcessOwner {
         )
     }
 
+    /// Cancel one exact receipt key within `deadline`. A key the daemon has
+    /// never seen is reserved as cancelled, so a submission of it that is
+    /// still on its way never runs.
+    pub(crate) fn cancel_invocation_before(
+        &mut self,
+        receipt_key: ReceiptKey,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::CancelInvocation { receipt_key },
+            "cancel invocation",
+            deadline,
+        )
+    }
+
     pub(crate) fn acknowledge_invocation_receipt_before(
         &mut self,
         receipt_key: ReceiptKey,
