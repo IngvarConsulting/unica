@@ -211,7 +211,7 @@ pub(crate) mod tests {
     use crate::domain::events::DomainEvent;
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
-        MetaEventSource, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
+        MetaEventSource, MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
         MetaPublicationAction, MetaPublicationResource, MetaRelation, MetaRelationTarget,
         MetaScope, MetaValidationStatus, MetadataKind, MetadataReference, RelationEditMode,
     };
@@ -3793,6 +3793,154 @@ pub(crate) mod tests {
         assert!(!owner.contains("<Template uuid="), "{owner}");
         assert!(owner.contains("<Template>Second</Template>"), "{owner}");
         assert!(!child_descriptor.exists());
+    }
+
+    fn template_add_at(name: &str, position: Option<MetaPosition>) -> MetaEditOperation {
+        MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementInput {
+                position,
+                ..MetaElementInput::named(name)
+            }],
+        )
+        .unwrap()
+    }
+
+    fn owner_template_order(fixture: &Fixture) -> Vec<String> {
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        let mut names = Vec::new();
+        let mut rest = owner.as_str();
+        while let Some(start) = rest.find("<Template>") {
+            let tail = &rest[start + "<Template>".len()..];
+            let end = tail.find("</Template>").unwrap();
+            names.push(tail[..end].to_string());
+            rest = &tail[end..];
+        }
+        names
+    }
+
+    /// #1325: соседа для позиции ищут и среди макетов, зарегистрированных во
+    /// владельце только именем, — при добавлении и при перемещении.
+    #[test]
+    fn typed_template_position_resolves_name_registered_siblings() {
+        let fixture = Fixture::new("template-position-by-name");
+        let cancellation = CancellationToken::new();
+        let publish = |operations: Vec<MetaEditOperation>| {
+            MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(operations),
+                &fixture.context,
+                &cancellation,
+            )
+            .unwrap_or_else(|failure| panic!("{:?}", failure.diagnostics))
+            .publish(&cancellation)
+            .unwrap();
+        };
+        publish(vec![template_add_at("A", None)]);
+        publish(vec![template_add_at(
+            "B",
+            Some(MetaPosition::new(Some("A".into()), None).unwrap()),
+        )]);
+        assert_eq!(owner_template_order(&fixture), ["B", "A"]);
+        publish(vec![template_add_at(
+            "C",
+            Some(MetaPosition::new(None, Some("b".into())).unwrap()),
+        )]);
+        assert_eq!(owner_template_order(&fixture), ["B", "C", "A"]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(!owner.contains("<Template uuid="), "{owner}");
+    }
+
+    /// #1325: перемещение макета ищет якорь среди макетов, зарегистрированных
+    /// во владельце только именем.
+    #[test]
+    fn typed_template_update_position_resolves_name_registered_anchor() {
+        let fixture = Fixture::new("template-update-position-by-name");
+        let cancellation = CancellationToken::new();
+        let publish = |operations: Vec<MetaEditOperation>| {
+            MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(operations),
+                &fixture.context,
+                &cancellation,
+            )
+            .unwrap_or_else(|failure| panic!("{:?}", failure.diagnostics))
+            .publish(&cancellation)
+            .unwrap();
+        };
+        for name in ["A", "B", "C"] {
+            publish(vec![template_add_at(name, None)]);
+        }
+        assert_eq!(owner_template_order(&fixture), ["A", "B", "C"]);
+        publish(vec![MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "A".into(),
+                position: Some(MetaPosition::new(None, Some("c".into())).unwrap()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        assert_eq!(owner_template_order(&fixture), ["B", "C", "A"]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(!owner.contains("<Template uuid="), "{owner}");
+    }
+
+    /// #1325: повтор имени макета, зарегистрированного ссылкой, отклоняется
+    /// как `already_exists` до публикации — при добавлении, переименовании и
+    /// в другом регистре.
+    #[test]
+    fn typed_template_duplicate_of_name_registration_is_already_exists() {
+        let fixture = Fixture::new("template-duplicate-by-name");
+        let cancellation = CancellationToken::new();
+        for name in ["Print", "Other"] {
+            MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(vec![template_add_at(name, None)]),
+                &fixture.context,
+                &cancellation,
+            )
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        }
+        let owner_before = fs::read(&fixture.descriptor).unwrap();
+        let rename = MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Other".into(),
+                new_name: Some("Print".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap();
+        for operation in [
+            template_add_at("Print", None),
+            template_add_at("PRINT", None),
+            rename,
+        ] {
+            let failure = match MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(vec![operation]),
+                &fixture.context,
+                &cancellation,
+            ) {
+                Ok(_) => panic!("duplicate template name unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+            assert_eq!(
+                failure.diagnostics[0].code,
+                MetaDiagnosticCode::AlreadyExists,
+                "{:?}",
+                failure.diagnostics
+            );
+            assert_eq!(
+                failure.diagnostics[0].field.as_deref(),
+                Some("operations[0].elements[0].name"),
+                "{:?}",
+                failure.diagnostics
+            );
+        }
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), owner_before);
     }
 
     #[test]

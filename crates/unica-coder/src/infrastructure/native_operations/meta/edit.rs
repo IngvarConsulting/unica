@@ -327,7 +327,8 @@ pub(super) fn meta_edit_ensure_top_child_name_free(
     let object = meta_edit_object_node(&doc)?;
     if let Some(child_objects) = meta_info_child(object, "ChildObjects") {
         for child in meta_info_children(child_objects, tag) {
-            if meta_edit_child_object_name(child)
+            // Forms and templates may be registered by name only (#1325).
+            if typed_physical_owner_child_name(child)
                 .is_some_and(|candidate| metadata_name_eq(&candidate, name))
             {
                 return Err(format!("{tag} '{name}' already exists"));
@@ -446,10 +447,11 @@ pub(super) fn meta_edit_insert_top_child_object_with_position(
     let (target_name, after) = position
         .target()
         .ok_or_else(|| "Position target must be non-empty".to_string())?;
+    // A form or template anchor may be registered by name only (#1325).
     let target = meta_info_children(child_objects, tag)
         .into_iter()
         .find(|child| {
-            meta_edit_child_object_name(*child)
+            typed_physical_owner_child_name(*child)
                 .is_some_and(|candidate| metadata_name_eq(&candidate, target_name))
         })
         .ok_or_else(|| format!("{tag} '{target_name}' not found for positional insert"))?;
@@ -2932,7 +2934,9 @@ fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut Strin
                 let Some(name) = meta_edit_child_object_name(child) else {
                     continue;
                 };
-                if initially_inline.contains(&(tag, name.clone())) {
+                if initially_inline.iter().any(|(inline_tag, inline_name)| {
+                    *inline_tag == tag && metadata_name_eq(inline_name, &name)
+                }) {
                     continue;
                 }
                 replacements.push((
@@ -7687,6 +7691,33 @@ pub(crate) mod tests {
                 .contains("mixed line endings"),
             "{:?}",
             failure.diagnostics
+        );
+    }
+
+    /// #1325: регистрация, встроенная во владельца прежними версиями Unica,
+    /// узнаётся по имени метаданных без учёта регистра и остаётся встроенной;
+    /// новая — сворачивается в ссылку по имени.
+    #[test]
+    fn collapse_keeps_legacy_inline_registration_matched_case_insensitively() {
+        let owner = |children: &str| {
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Catalog uuid=\"11111111-1111-4111-8111-111111111111\"><Properties><Name>Owner</Name></Properties><ChildObjects>{children}</ChildObjects></Catalog></MetaDataObject>"
+            )
+        };
+        let inline = |name: &str| {
+            format!(
+                "<Template uuid=\"22222222-2222-4222-8222-222222222222\"><Properties><Name>{name}</Name></Properties></Template>"
+            )
+        };
+        let pre_image = owner(&inline("Print"));
+        let mut post_image = owner(&format!(
+            "{}<Template uuid=\"33333333-3333-4333-8333-333333333333\"><Properties><Name>Other</Name></Properties></Template>",
+            inline("PRINT")
+        ));
+        collapse_standalone_child_descriptors(&pre_image, &mut post_image);
+        assert_eq!(
+            post_image,
+            owner(&format!("{}<Template>Other</Template>", inline("PRINT")))
         );
     }
 
