@@ -484,6 +484,22 @@ pub(crate) fn predefined_item_id(
         .map_err(|_| "Predefined.xml is not UTF-8".to_string())?
         .trim_start_matches('\u{feff}');
     validate_predefined_text_allowing_self_closing_items(kind, text)?;
+    let mut found = item_identities(text, kind)?
+        .into_iter()
+        .filter(|(_, candidate)| metadata_name_eq(candidate, name));
+    let first = found.next().map(|(id, _)| id);
+    // Имя — селектор адреса: при двух одноимённых элементах адрес ничего
+    // не выбирает, и первый попавшийся не подставляется.
+    if found.next().is_some() {
+        return Err(format!(
+            "Predefined.xml has more than one predefined item named `{name}`"
+        ));
+    }
+    Ok(first)
+}
+
+/// `(id, name)` каждого элемента документа на любой глубине.
+fn item_identities(text: &str, kind: MetadataKind) -> Result<Vec<(String, String)>, String> {
     let document = Document::parse(text).map_err(|error| format!("Predefined.xml: {error}"))?;
     let mut items = Vec::new();
     for item in document
@@ -493,10 +509,47 @@ pub(crate) fn predefined_item_id(
     {
         collect_items(text, item, kind, None, &mut items, &mut || Ok(()))?;
     }
-    Ok(items
+    Ok(items.into_iter().map(|item| (item.id, item.name)).collect())
+}
+
+/// Отказ, если имя `name` уже носит другой элемент (на любой глубине):
+/// имя предопределённого элемента уникально в объекте и служит адресом.
+fn ensure_name_free(
+    text: &str,
+    kind: MetadataKind,
+    name: &str,
+    own_id: &str,
+    context: PredefinedOperationContext<'_>,
+    field: String,
+) -> Result<(), MetaFailure> {
+    let PredefinedOperationContext {
+        owner,
+        operation_index,
+    } = context;
+    let taken = item_identities(text, kind)
+        .map_err(|message| {
+            failure(
+                owner,
+                MetaDiagnosticCode::ValidationFailed,
+                message,
+                Some(operation_index),
+                Some(field.clone()),
+            )
+        })?
         .into_iter()
-        .find(|item| metadata_name_eq(&item.name, name))
-        .map(|item| item.id))
+        .any(|(id, candidate)| {
+            metadata_name_eq(&candidate, name) && !id.eq_ignore_ascii_case(own_id)
+        });
+    if taken {
+        return Err(failure(
+            owner,
+            MetaDiagnosticCode::AlreadyExists,
+            format!("predefined item name `{name}` is already used"),
+            Some(operation_index),
+            Some(field),
+        ));
+    }
+    Ok(())
 }
 
 /// Post-image of `Ext/Predefined.xml` after one predefined-item operation:
@@ -1319,6 +1372,14 @@ fn add_item(
             Some(format!("elements[{element_index}].id")),
         ));
     }
+    ensure_name_free(
+        text,
+        kind,
+        &element.name,
+        &element.id,
+        context,
+        format!("elements[{element_index}].name"),
+    )?;
     expand_self_closing_root(text, eol);
     let (root_qname, root_context, root_range) = {
         let document = Document::parse(text).map_err(|error| {
@@ -1408,6 +1469,16 @@ fn update_item(
             Some(format!("elements[{element_index}].id")),
         ));
     };
+    if let Some(name) = &element.name {
+        ensure_name_free(
+            text,
+            kind,
+            name,
+            &element.id,
+            context,
+            format!("elements[{element_index}].name"),
+        )?;
+    }
     let mut fragment = text[location.range.clone()].to_string();
     let fragment_context = &location.fragment_context;
     if let Some(name) = &element.name {

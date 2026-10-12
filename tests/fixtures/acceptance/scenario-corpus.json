@@ -33094,7 +33094,7 @@
    "name": "retired-member-selectors-route-to-the-member",
    "issue": 1352,
    "area": "Реквизиты и состав",
-   "task": "Член метаданных, названный аргументом на владельце, получает отказ с адресом члена в next; предопределённый элемент, названный идентификатором, — с коллекцией, где видно его имя",
+   "task": "Член метаданных, названный аргументом на владельце, получает отказ с адресом члена и ветвью владельца в next; предопределённый элемент, названный идентификатором, — с коллекцией, где видно его имя; занятое имя предопределённого элемента не принимается",
    "wire": [
     {
      "tool": "unica.apply",
@@ -33124,6 +33124,10 @@
       {
        "pointer": "/next/0/args/filter/can/op",
        "eq": "dimension.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:InformationRegister.АдминистративнаяИерархия.Dimension"
       }
      ]
     },
@@ -33154,6 +33158,12 @@
       {
        "pointer": "/next/0/args/at",
        "eq": "main:Catalog.Валюты.PredefinedItem"
+      },
+      {
+       "pointer": "/next/0/args/filter/sections",
+       "eq": [
+        "items"
+       ]
       }
      ]
     },
@@ -33186,6 +33196,46 @@
         "args": "at",
         "implemented": true
        }
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "predefinedItem.add",
+        "args": {
+         "items": [
+          {
+           "name": "Дубль",
+           "id": "a1b2c3d4-1111-4111-8111-111111111111"
+          },
+          {
+           "name": "дубль",
+           "id": "a1b2c3d4-2222-4222-8222-222222222222"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: predefined item name `дубль` is already used",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[1].name"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+       "eq": false
       }
      ]
     }

@@ -1076,6 +1076,30 @@ impl OperationDescriptor {
         }
     }
 
+    /// Контракт на конкретном узле: для членов метаданных поля, допустимость
+    /// которых зависит от вида владельца и от табличной части, сужены до
+    /// этого узла.
+    pub(crate) fn argument_contract_at(
+        self,
+        site: &OperationSite<'_>,
+    ) -> Option<super::operation_contract::OperationContract> {
+        if self.family == OperationFamily::Metadata && self.name != "template.add" {
+            let owner = site
+                .segments()
+                .first()
+                .and_then(|segment| MetadataKind::parse(segment.kind().as_str()).ok());
+            let in_section = site
+                .segments()
+                .iter()
+                .any(|segment| segment.kind() == NodeKind::TabularSection);
+            return super::operation_contract::OperationContract::metadata_at(
+                self.name,
+                owner.map(|owner| super::operation_contract::MetadataSite { owner, in_section }),
+            );
+        }
+        self.argument_contract()
+    }
+
     pub(crate) fn copyable_skeleton(self) -> OperationRef {
         OperationRef::new(self.name, self.skeleton.args())
     }

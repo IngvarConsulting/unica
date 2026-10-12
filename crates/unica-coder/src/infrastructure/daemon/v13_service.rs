@@ -3814,12 +3814,27 @@ pub(super) fn preflight_apply_operations(
                 );
                 refusal.next.push(json!({
                     "tool": "unica.view",
-                    "args": {"at": redirect.at.to_string()},
-                    "reason": format!("имя узла для операции `{}`", operation.name()),
+                    "args": {"at": redirect.at.to_string(), "filter": {"sections": ["items"]}},
+                    "reason": format!(
+                        "имена узлов для операции `{}`: элемент коллекции несёт свой `id` в `props`",
+                        operation.name()
+                    ),
                 }));
                 return Err(Box::new(refusal));
             }
-            return Err(Box::new(with_operation_dictionary(
+            // Адрес построен из значения аргумента, и узла с таким именем
+            // может не быть: вторым шагом — коллекция, где видны имена.
+            let (member, owner) = redirect
+                .at
+                .segments()
+                .split_last()
+                .expect("a member address has a terminal segment");
+            let branch = QualifiedAddress {
+                source_set: redirect.at.source_set().to_string(),
+                segments: owner.to_vec(),
+            };
+            let branch = format!("{branch}.{}", member.kind().as_str());
+            let mut refusal = with_operation_dictionary(
                 error_result(
                     location,
                     RefusalCode::BadValue,
@@ -3832,7 +3847,13 @@ pub(super) fn preflight_apply_operations(
                 ),
                 &redirect.at.to_string(),
                 descriptor,
-            )));
+            );
+            refusal.next.push(json!({
+                "tool": "unica.view",
+                "args": {"at": branch},
+                "reason": "существующие узлы этого вида у владельца",
+            }));
+            return Err(Box::new(refusal));
         }
         if descriptor.applies_at(&site) {
             continue;

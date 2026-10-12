@@ -255,7 +255,7 @@ pub(super) fn project_view_operation(
         )));
     }
     let implemented = IMPLEMENTED_APPLY_OPERATIONS.contains(&operation);
-    let contract = descriptor.argument_contract();
+    let contract = descriptor.argument_contract_at(&site);
     if implemented && contract.is_none() {
         return Err(ReadModeError::unsupported_section(format!(
             "detailed argument contract for `{operation}` is not available yet"

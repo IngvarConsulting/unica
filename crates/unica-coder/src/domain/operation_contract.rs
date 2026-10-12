@@ -405,6 +405,41 @@ impl OperationContract {
     }
 }
 
+/// The node a metadata member contract is asked for: the owner kind and
+/// whether the address lies inside a tabular section. Field legality that
+/// depends on them (fill values, predefined-item fields) is published only
+/// for the node it holds on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MetadataSite {
+    pub(crate) owner: crate::domain::metadata::MetadataKind,
+    pub(crate) in_section: bool,
+}
+
+/// `fillValue` is accepted for `collection` at `site`; without a site, for any
+/// owner that has the collection.
+fn fill_value_allowed(
+    collection: crate::domain::metadata::MetaCollection,
+    site: Option<MetadataSite>,
+) -> bool {
+    use crate::domain::metadata::{
+        metadata_collection_spec, metadata_fill_value_is_allowed, MetaElementScope,
+    };
+    match site {
+        None => metadata_collection_spec(collection).allows_fill_value,
+        Some(site) => metadata_fill_value_is_allowed(
+            site.owner,
+            collection,
+            if site.in_section {
+                MetaElementScope::TabularSection
+            } else {
+                MetaElementScope::TopLevel
+            },
+        ),
+    }
+}
+
+const IDENTIFIER_PATTERN: &str = r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$";
+
 /// Typed collection of a member operation of a metadata object.
 fn metadata_member_collection(family: &str) -> Option<crate::domain::metadata::MetaCollection> {
     use crate::domain::metadata::MetaCollection;
@@ -426,13 +461,14 @@ fn metadata_member_collection(family: &str) -> Option<crate::domain::metadata::M
 fn metadata_element_schema(
     collection: crate::domain::metadata::MetaCollection,
     update: bool,
+    site: Option<MetadataSite>,
 ) -> Value {
     use crate::domain::metadata::{
         fill_value_schema, metadata_collection_spec, metadata_type_schema, position_schema,
         MetaCollection,
     };
     let spec = metadata_collection_spec(collection);
-    let identifier = json!({"type":"string","pattern":r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$"});
+    let identifier = json!({"type":"string","pattern":IDENTIFIER_PATTERN});
     let mut fields = Map::new();
     if update {
         fields.insert("newName".into(), identifier);
@@ -447,7 +483,7 @@ fn metadata_element_schema(
     if spec.allows_required {
         fields.insert("required".into(), json!({"type":"boolean"}));
     }
-    if spec.allows_fill_value {
+    if fill_value_allowed(collection, site) {
         fields.insert("fillValue".into(), fill_value_schema());
     }
     if spec.allows_position {
@@ -463,7 +499,8 @@ fn metadata_element_schema(
         fields.insert(
             "attributes".into(),
             json!({"type":"array","minItems":1,
-                "items":metadata_element_schema(MetaCollection::Attributes, false)}),
+                "items":metadata_element_schema(MetaCollection::Attributes, false,
+                    site.map(|site| MetadataSite { in_section: true, ..site }))}),
         );
     }
     let mut schema = json!({"type":"object","additionalProperties":false,"properties":fields});
@@ -477,18 +514,29 @@ fn metadata_element_schema(
 
 /// Fields of a predefined item: `add` names a new item with its `id`, `set`
 /// changes an existing one, named by the address (a rename is `newName`).
-fn predefined_item_schema(update: bool) -> Value {
-    use crate::domain::metadata::metadata_type_schema;
+/// With an owner kind only the fields that kind accepts are published.
+fn predefined_item_schema(
+    update: bool,
+    owner: Option<crate::domain::metadata::MetadataKind>,
+) -> Value {
+    use crate::domain::metadata::{metadata_predefined_kind_fields, metadata_type_schema};
     let mut fields = Map::new();
     if update {
-        fields.insert("newName".into(), json!({"type":"string","minLength":1}));
+        fields.insert(
+            "newName".into(),
+            json!({"type":"string","pattern":IDENTIFIER_PATTERN}),
+        );
     } else {
         fields.insert(
             "id".into(),
             json!({"type":"string","pattern":"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"}),
         );
-        fields.insert("name".into(), json!({"type":"string","minLength":1}));
+        fields.insert(
+            "name".into(),
+            json!({"type":"string","pattern":IDENTIFIER_PATTERN}),
+        );
     }
+    let kind_fields = owner.map(metadata_predefined_kind_fields);
     for (name, schema) in [
         ("code", json!({"type":"string"})),
         ("description", json!({"type":"string"})),
@@ -513,7 +561,10 @@ fn predefined_item_schema(update: bool) -> Value {
         ),
         ("actionPeriodIsBase", json!({"type":"boolean"})),
     ] {
-        fields.insert(name.into(), schema);
+        let common = matches!(name, "code" | "description");
+        if common || kind_fields.is_none_or(|allowed| allowed.contains(&name)) {
+            fields.insert(name.into(), schema);
+        }
     }
     let mut schema = json!({"type":"object","additionalProperties":false,"properties":fields});
     if update {
@@ -531,18 +582,25 @@ impl OperationContract {
     /// typed writer accepts for the collection; the planner parses the same
     /// arguments with the writer's own request parser.
     pub(crate) fn metadata(op: &str) -> Option<Self> {
+        Self::metadata_at(op, None)
+    }
+
+    /// The contract on a concrete node: fields whose legality depends on the
+    /// owner kind or on the tabular section are narrowed to that node.
+    pub(crate) fn metadata_at(op: &str, site: Option<MetadataSite>) -> Option<Self> {
         let (family, verb) = op.split_once('.')?;
+        let owner = site.map(|site| site.owner);
         let at = || ("at", text(true));
         if family == "predefinedItem" {
             let (schema, target, effect, example_args) = match verb {
                 "add" => (
-                    object(&[at(), ("items", json!({"type":"array","minItems":1,"items":predefined_item_schema(false)}))], &["items"]),
+                    object(&[at(), ("items", json!({"type":"array","minItems":1,"items":predefined_item_schema(false, owner)}))], &["items"]),
                     "A metadata object with predefined items: <source-set>:<Kind>.<Name>. Read its PredefinedItem branch first; a new item needs a new UUID id and a new name.",
                     "Add predefined items to Ext/Predefined.xml of the owner; the file is created with the first item.",
                     json!({"items":[{"id":"a1b2c3d4-1111-4111-8111-111111111111","name":"Sample","description":"Sample item"}]}),
                 ),
                 "set" => (
-                    object(&[at(), ("values", predefined_item_schema(true))], &["values"]),
+                    object(&[at(), ("values", predefined_item_schema(true, owner))], &["values"]),
                     "The existing item: <source-set>:<Kind>.<Name>.PredefinedItem.<ItemName>. The id is not an input.",
                     "Change the listed fields of the item; newName renames it. Unlisted fields stay.",
                     json!({"values":{"description":"Sample item"}}),
@@ -559,7 +617,7 @@ impl OperationContract {
                 schema,
                 target,
                 effect,
-                notes: "Predefined items are named by their address; there is no id or name selector argument.",
+                notes: "Predefined items are named by their address; there is no id or name selector argument. Item names are unique within the owner at every depth; an add or rename onto a used name is refused. The fields beyond code and description depend on the owner kind.",
                 example_args,
                 help: METADATA_HELP,
             });
@@ -606,21 +664,21 @@ impl OperationContract {
                     _ => json!({"items":[{"name":"Sample"}]}),
                 };
                 (
-                    object(&[at(), ("items", json!({"type":"array","minItems":1,"items":metadata_element_schema(collection, false)}))], &["items"]),
+                    object(&[at(), ("items", json!({"type":"array","minItems":1,"items":metadata_element_schema(collection, false, site)}))], &["items"]),
                     target,
                     "Add new members after the existing ones, or at position.before/position.after an existing sibling. A name already used in the collection is refused.",
-                    "Read the collection branch of the target before choosing a new valid 1C identifier. A new node is addressable only after the plan is executed; within one apply call a later operation may already address it.",
+                    "Read the collection branch of the target before choosing a new valid 1C identifier. A new node is addressable only after the plan is executed; within one apply call a later operation may already address it. Cross-field rules — fillValue needs an explicit type and must match it — are checked by the planner, not by this schema.",
                     example,
                 )
             }
             "set" => (
-                object(&[at(), ("values", metadata_element_schema(collection, true))], &["values"]),
+                object(&[at(), ("values", metadata_element_schema(collection, true, site))], &["values"]),
                 match family {
                     "attribute" => "The existing attribute: <source-set>:<Kind>.<Name>.Attribute.<A> or <source-set>:<Kind>.<Name>.TabularSection.<T>.Attribute.<A>.",
                     _ => "The existing member at its own address: <source-set>:<Kind>.<Name>.<Leaf>.<Member>.",
                 },
                 "Change the listed fields of the member; newName renames it. Unlisted fields stay.",
-                "The member is named by its address, not by values.name. Read the member first.",
+                "The member is named by its address, not by values.name. Read the member first. Cross-field rules — fillValue must match the member type — are checked by the planner, not by this schema.",
                 json!({"values":{"synonym":"Sample"}}),
             ),
             "remove" => (

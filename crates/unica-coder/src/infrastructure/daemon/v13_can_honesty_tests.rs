@@ -1313,7 +1313,7 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
 #[test]
 fn retired_member_arguments_route_next_to_the_member_address() {
     let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
-    for (at, op, args, location, next_at, filter) in [
+    for (at, op, args, location, next_at, filter, branch) in [
         (
             "cf:Catalog.Items",
             "tabularSection.set",
@@ -1321,6 +1321,7 @@ fn retired_member_arguments_route_next_to_the_member_address() {
             "ops[0].args.values.name",
             "cf:Catalog.Items.TabularSection.Rows",
             json!({"sections": ["can"], "can": {"op": "tabularSection.set"}}),
+            Some("cf:Catalog.Items.TabularSection"),
         ),
         (
             "cf:Report.Sales",
@@ -1329,6 +1330,7 @@ fn retired_member_arguments_route_next_to_the_member_address() {
             "ops[0].args.values.name",
             "cf:Report.Sales.Template.Print",
             json!({"sections": ["can"], "can": {"op": "template.remove"}}),
+            Some("cf:Report.Sales.Template"),
         ),
         (
             "cf:Catalog.Items",
@@ -1336,7 +1338,8 @@ fn retired_member_arguments_route_next_to_the_member_address() {
             json!({"values": {"id": "a1b2c3d4-1111-4111-8111-111111111111", "description": "x"}}),
             "ops[0].args.values.id",
             "cf:Catalog.Items.PredefinedItem",
-            Value::Null,
+            json!({"sections": ["items"]}),
+            None,
         ),
     ] {
         let request = apply_request(at, op, args);
@@ -1346,9 +1349,17 @@ fn retired_member_arguments_route_next_to_the_member_address() {
         assert_eq!(value["diagnostics"][0]["code"], "bad_value", "{value}");
         assert_eq!(value["diagnostics"][0]["outcome"], "fixCall", "{value}");
         assert_eq!(value["at"], location, "{value}");
-        assert_eq!(refusal.next.len(), 1, "{value}");
         assert_eq!(refusal.next[0]["tool"], "unica.view", "{value}");
         assert_eq!(refusal.next[0]["args"]["at"], next_at, "{value}");
         assert_eq!(refusal.next[0]["args"]["filter"], filter, "{value}");
+        // Адрес из значения может не существовать: вторым шагом — ветвь
+        // владельца, где видны имена членов этого вида.
+        match branch {
+            Some(branch) => {
+                assert_eq!(refusal.next.len(), 2, "{value}");
+                assert_eq!(refusal.next[1]["args"]["at"], branch, "{value}");
+            }
+            None => assert_eq!(refusal.next.len(), 1, "{value}"),
+        }
     }
 }

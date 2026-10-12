@@ -1763,53 +1763,43 @@ pub(crate) fn validate_metadata_operation_capabilities(
     }
 }
 
+/// Поля предопределённого элемента сверх `id`, `name`, `code` и
+/// `description`, которые принимает вид владельца. Один владелец для писателя
+/// и для опубликованного контракта операций.
+pub(crate) fn metadata_predefined_kind_fields(owner_kind: MetadataKind) -> &'static [&'static str] {
+    match owner_kind {
+        MetadataKind::Catalog => &["isFolder"],
+        MetadataKind::ChartOfCharacteristicTypes => &["isFolder", "type"],
+        MetadataKind::ChartOfAccounts => &[
+            "accountType",
+            "offBalance",
+            "order",
+            "accountingFlags",
+            "extDimensionTypes",
+        ],
+        MetadataKind::ChartOfCalculationTypes => &["actionPeriodIsBase"],
+        _ => &[],
+    }
+}
+
 fn validate_predefined_fields(
     owner_kind: MetadataKind,
     fields: &MetaPredefinedFields,
     prefix: &str,
 ) -> Result<(), MetaDiagnostic> {
-    let unsupported = match owner_kind {
-        MetadataKind::Catalog => [
-            (fields.r#type.is_some(), "type"),
-            (fields.account_type.is_some(), "accountType"),
-            (fields.off_balance.is_some(), "offBalance"),
-            (fields.order.is_some(), "order"),
-            (fields.accounting_flags.is_some(), "accountingFlags"),
-            (fields.ext_dimension_types.is_some(), "extDimensionTypes"),
-            (fields.action_period_is_base.is_some(), "actionPeriodIsBase"),
-        ]
-        .into_iter()
-        .find_map(|(present, field)| present.then_some(field)),
-        MetadataKind::ChartOfCharacteristicTypes => [
-            (fields.account_type.is_some(), "accountType"),
-            (fields.off_balance.is_some(), "offBalance"),
-            (fields.order.is_some(), "order"),
-            (fields.accounting_flags.is_some(), "accountingFlags"),
-            (fields.ext_dimension_types.is_some(), "extDimensionTypes"),
-            (fields.action_period_is_base.is_some(), "actionPeriodIsBase"),
-        ]
-        .into_iter()
-        .find_map(|(present, field)| present.then_some(field)),
-        MetadataKind::ChartOfAccounts => [
-            (fields.is_folder.is_some(), "isFolder"),
-            (fields.r#type.is_some(), "type"),
-            (fields.action_period_is_base.is_some(), "actionPeriodIsBase"),
-        ]
-        .into_iter()
-        .find_map(|(present, field)| present.then_some(field)),
-        MetadataKind::ChartOfCalculationTypes => [
-            (fields.is_folder.is_some(), "isFolder"),
-            (fields.r#type.is_some(), "type"),
-            (fields.account_type.is_some(), "accountType"),
-            (fields.off_balance.is_some(), "offBalance"),
-            (fields.order.is_some(), "order"),
-            (fields.accounting_flags.is_some(), "accountingFlags"),
-            (fields.ext_dimension_types.is_some(), "extDimensionTypes"),
-        ]
-        .into_iter()
-        .find_map(|(present, field)| present.then_some(field)),
-        _ => None,
-    };
+    let allowed = metadata_predefined_kind_fields(owner_kind);
+    let unsupported = [
+        (fields.is_folder.is_some(), "isFolder"),
+        (fields.r#type.is_some(), "type"),
+        (fields.account_type.is_some(), "accountType"),
+        (fields.off_balance.is_some(), "offBalance"),
+        (fields.order.is_some(), "order"),
+        (fields.accounting_flags.is_some(), "accountingFlags"),
+        (fields.ext_dimension_types.is_some(), "extDimensionTypes"),
+        (fields.action_period_is_base.is_some(), "actionPeriodIsBase"),
+    ]
+    .into_iter()
+    .find_map(|(present, field)| (present && !allowed.contains(&field)).then_some(field));
     if let Some(field) = unsupported {
         return Err(MetaDiagnostic::error(
             MetaDiagnosticCode::UnsupportedKind,
