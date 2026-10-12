@@ -926,10 +926,12 @@ impl ProviderReadAuthority {
                 items: Vec::new(),
             }));
         };
-        let code_type = match code_type.ok_or_else(|| ViewError::detailed(
-            RefusalDetail::SourceUnreadable,
-            "predefined code validation is unavailable because the owner CodeType is absent or invalid",
-        ))? {
+        let code_type = match code_type.ok_or_else(|| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                crate::infrastructure::native_operations::meta::MISSING_PREDEFINED_CODE_TYPE,
+            )
+        })? {
             "String" => crate::infrastructure::native_operations::meta::PredefinedCodeType::String,
             "Number" => crate::infrastructure::native_operations::meta::PredefinedCodeType::Number,
             other => {

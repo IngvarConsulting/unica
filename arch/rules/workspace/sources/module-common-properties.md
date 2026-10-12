@@ -14,6 +14,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::common_module_present_damage_is_not_missing
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_missing_reuse_preserves_methods_and_source
   - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::unknown_execution_flags_do_not_become_empty_or_universal_contexts
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::unknown_facts_of_borrowed_objects_are_named_as_node_limits
 gap: https://github.com/IngvarConsulting/unica/issues/973
 ---
 
@@ -37,8 +38,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/973
 
 Если у заимствованного модуля не записан хотя бы один из четырёх флагов среды,
 контексты компиляции его методов и условных областей неизвестны и равны
-`null`; фильтр `context` по такому модулю отказывает `unsupported_filter`,
-а не включает или исключает методы.
+`null`, а ответ о модуле называет это пределом в `limits`. Фильтр
+`context` по такому модулю отказывает `unsupported_filter`, а не включает или
+исключает методы.
 
 `serverCall`, `privileged` и `returnValuesReuse` не являются отдельными
 контекстами компиляции. Проверки охватывают наличие данных на входе

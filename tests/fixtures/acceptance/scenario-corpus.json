@@ -33952,6 +33952,10 @@
       {
        "pointer": "/data/branches",
        "absent": true
+      },
+      {
+       "pointer": "/data/props/parentReason",
+       "contains": "props.extends of `ext:DataProcessor.Обработка`"
       }
      ]
     },
@@ -33965,6 +33969,29 @@
      ],
      "status": "readable",
      "validators": []
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonTemplate.ОбщийМакет"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/belonging",
+       "eq": "borrowed"
+      },
+      {
+       "pointer": "/data/props/extends",
+       "eq": "main:CommonTemplate.ОбщийМакет"
+      },
+      {
+       "pointer": "/data/props/content",
+       "absent": true
+      }
+     ]
     },
     {
      "tool": "unica.view",
@@ -34043,6 +34070,10 @@
         "privileged": null,
         "returnValuesReuse": null
        }
+      },
+      {
+       "pointer": "/data/limits",
+       "contains": "compilation contexts are unknown because the borrowed common module does not state its execution environment"
       }
      ],
      "fileAssertions": [
@@ -34298,6 +34329,10 @@
       {
        "pointer": "/data/props/parentStatus",
        "eq": "unavailable"
+      },
+      {
+       "pointer": "/data/limits",
+       "contains": "relations.registrars не прочитано: registrar applicability is unknown because WriteMode is absent"
       }
      ]
     },

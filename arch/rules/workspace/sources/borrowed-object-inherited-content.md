@@ -9,6 +9,7 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/inherited_content_tests.rs::inherited_refusal_needs_a_borrowed_object_without_its_file
   - crates/unica-coder/src/domain/apply.rs::content_writers_name_the_companion_file_they_write
   - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::inherited_node_can_hides_content_writers
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::unknown_facts_of_borrowed_objects_are_named_as_node_limits
   - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 ---
 
@@ -22,7 +23,9 @@ check:
 родителя указывает и описание владельца.
 
 `view` читает такой объект по описанию: заимствование и
-`content: "inherited"` без счётчиков и ветвей содержимого. Содержимое
+`content: "inherited"` без счётчиков и ветвей содержимого. Форма или
+макет владельца не разрешают родителя сами: `parentReason` называет объект
+расширения, чей `props.extends` указывает родителя. Содержимое
 родителя не подставляется и не считается пустым. Вид макета равен `null`:
 без `TemplateType` платформа записывает умолчание, а не вид родителя.
 Адрес внутри содержимого, в том числе модуль такой формы, который платформа

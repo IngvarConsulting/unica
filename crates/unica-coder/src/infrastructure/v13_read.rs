@@ -899,6 +899,24 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 })
             })
             .collect::<Vec<_>>();
+        // Без `WriteMode` неизвестно, подчинён ли регистр регистратору: список
+        // документов-регистраторов не утверждается ни полным, ни пустым, и
+        // узел с ветвью `Relation` называют это пределом. Повреждённое
+        // значение уже названо диагностикой `properties.WriteMode`.
+        if local.kind == MetadataKind::InformationRegister
+            && !local
+                .properties
+                .iter()
+                .any(|property| property.key == "WriteMode")
+            && !unreadable
+                .iter()
+                .any(|entry| entry["field"] == "properties.WriteMode")
+        {
+            unreadable.push(json!({
+                "field": "relations.registrars",
+                "message": "registrar applicability is unknown because WriteMode is absent",
+            }));
+        }
         // Заимствование отвечает только в наборе расширения; там оно есть у
         // всякого объекта, и «своё» — такой же ответ, как «заимствовано».
         if let Some(borrowing) = read.borrowing {
@@ -2033,6 +2051,9 @@ impl LogicalViewReadAuthority<'_> {
                 {
                     projected = projected.with_prop(&key, value);
                 }
+                if let Some(reason) = child_parent_reason(route.at()) {
+                    projected = projected.with_prop("parentReason", json!(reason));
+                }
                 return Ok(projected);
             }
         }
@@ -2171,6 +2192,18 @@ pub(crate) fn extension_object(at: &QualifiedAddress) -> String {
     }
 }
 
+/// Родителя заимствованной формы или макета владельца читатель не ищет
+/// отдельно: это тот же ребёнок родителя владельца. `parentStatus` у такого
+/// узла остаётся `unavailable`, а причина называет, где адрес разрешается.
+fn child_parent_reason(at: &QualifiedAddress) -> Option<String> {
+    (at.segments().len() > 1).then(|| {
+        format!(
+            "the parent of a borrowed child is the same child of the owner's parent: read props.extends of `{}`",
+            extension_object(at)
+        )
+    })
+}
+
 /// Значение `props.content` узла, чьё содержимое расширение не несёт.
 pub(crate) const INHERITED_CONTENT: &str = "inherited";
 
@@ -2214,6 +2247,9 @@ fn project_inherited_part(
         .to_string();
     let mut props = crate::infrastructure::v13_read_projection::borrowing_props(borrowing);
     props.insert("content".into(), json!(INHERITED_CONTENT));
+    if let Some(reason) = child_parent_reason(at) {
+        props.insert("parentReason".into(), json!(reason));
+    }
     Ok(NodeViewData::Node(NodeView::new(
         at.to_string(),
         kind.as_str(),
@@ -2646,21 +2682,23 @@ fn module_title(at: &QualifiedAddress, capability: ModuleCapability) -> String {
     format!("{} module {owner}", capability.role().as_str())
 }
 
+/// Предел ответа о модуле, чьи флаги среды неизвестны.
+pub(crate) const UNKNOWN_CONTEXTS_LIMIT: &str =
+    "compilation contexts are unknown because the borrowed common module does not state its execution environment";
+
 fn module_projection_view(
     requested: &QualifiedAddress,
     prefix_len: usize,
     projections: &ModuleProjectionSet,
     filter: &ModuleViewFilter,
 ) -> Result<NodeViewData, ViewError> {
-    let suffix = &requested.segments()[prefix_len..];
-    if filter.context.is_some()
-        && projections
-            .summary()
-            .props
-            .common_module
-            .as_ref()
-            .is_some_and(|common| !common.execution_environment_known())
-    {
+    let unknown = projections
+        .summary()
+        .props
+        .common_module
+        .as_ref()
+        .is_some_and(|common| !common.execution_environment_known());
+    if unknown && filter.context.is_some() {
         // Без флагов среды фильтр не может ни включить, ни исключить метод:
         // ответ по нему выдумал бы контексты заимствованного модуля.
         return Err(ViewError::new(
@@ -2668,6 +2706,23 @@ fn module_projection_view(
             "module filter.context needs compilation contexts, but this borrowed common module does not state its execution environment; read the parent module from props.extends when the parent is resolved",
         ));
     }
+    let view = module_projection_view_data(requested, prefix_len, projections, filter)?;
+    // `null` в контекстах — ответ «неизвестно»; предел называет причину на
+    // уровне узла, чтобы её видел и тот, кто контексты не читает (#1364).
+    Ok(if unknown {
+        view.with_limit(UNKNOWN_CONTEXTS_LIMIT)
+    } else {
+        view
+    })
+}
+
+fn module_projection_view_data(
+    requested: &QualifiedAddress,
+    prefix_len: usize,
+    projections: &ModuleProjectionSet,
+    filter: &ModuleViewFilter,
+) -> Result<NodeViewData, ViewError> {
+    let suffix = &requested.segments()[prefix_len..];
     if suffix.is_empty() {
         let summary = projections.summary();
         let props = serde_json::to_value(&summary.props)

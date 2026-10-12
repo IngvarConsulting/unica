@@ -8,6 +8,9 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/meta/info_tests.rs::platform_incomplete_borrowed_metadata_keeps_local_observations
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_or_damaged_code_type_limits_only_dependent_predefined_read
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::platform_borrowed_common_module_preserves_unknown_contexts_and_independent_facts
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::unknown_facts_of_borrowed_objects_are_named_as_node_limits
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/inherited_content_tests.rs::predefined_writes_refuse_an_owner_without_code_type
+  - crates/unica-coder/src/infrastructure/native_operations/meta/predefined.rs::predefined_writer_refuses_an_owner_without_code_type_like_the_reader
 ---
 
 # Неполное описание сохраняет независимые локальные сведения
@@ -22,8 +25,17 @@ check:
 и сохраняет доступные независимые факты. Повреждённое присутствующее значение
 сохраняет диагностику. У отсутствующего применимого списка связей неизвестна
 полнота; явно пустой контейнер остаётся известным пустым списком. Ограничение
-видно как у объекта, так и в ветви `Relation` вместе с доступными ссылками. Проверки идентичности и структуры объекта остаются
-обязательными. Чтение не изменяет исходники.
+видно в `limits` как у объекта, так и в ветви `Relation` вместе с доступными
+ссылками. Так же предел называет регистр сведений без `WriteMode`: список его
+регистраторов неизвестен. Неизвестные контексты общего модуля равны `null`,
+а узел модуля и его ветви называют причину пределом.
+
+Без `CodeType` владельца вид кодов предопределённых элементов неизвестен:
+чтение ограничивает ветвь предопределённых, а запись предопределённых
+отказывает тем же текстом, не проверяя коды по придуманному виду.
+
+Проверки идентичности и структуры объекта остаются обязательными. Чтение
+не изменяет исходники.
 
 Правила общего модуля уточнены в [module-common-properties.md](module-common-properties.md).
 Разрешение родителя следует [borrowed-object-parent.md](borrowed-object-parent.md).

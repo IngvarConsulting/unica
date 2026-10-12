@@ -969,8 +969,7 @@ pub(crate) mod tests {
         assert_eq!(
             platform.status,
             MetaValidationStatus::Passed,
-            "{:?}",
-            platform.diagnostics
+            "the platform export must validate"
         );
         for (label, own_child, mutate) in [
             (

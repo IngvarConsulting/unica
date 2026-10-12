@@ -135,7 +135,10 @@ pub(crate) use info::{
     SubsystemEvidenceProcessingPhase,
 };
 pub(crate) use info_projection::{observe_meta_borrowing_property, observe_meta_info_property};
-pub(crate) use predefined::{read_complete_predefined_items_for_code_type, PredefinedCodeType};
+pub(crate) use predefined::{
+    is_predefined_operation, read_complete_predefined_items_for_code_type,
+    require_predefined_code_type, PredefinedCodeType, MISSING_PREDEFINED_CODE_TYPE,
+};
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add};
 #[cfg(test)]
 pub(crate) use publisher::{

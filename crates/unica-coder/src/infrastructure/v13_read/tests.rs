@@ -107,7 +107,7 @@ fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_cont
     let view = fixture
         .extension_view_service()
         .view(ViewRequest::new("main:CommonModule.CorpusModule").unwrap());
-    assert!(view.ok, "{:?}", view.diagnostics);
+    assert!(view.ok, "view must succeed");
     let data = view.data.unwrap();
     assert_eq!(
         data["props"]["commonModule"]["privileged"],
@@ -414,7 +414,7 @@ fn borrowed_common_module_missing_reuse_preserves_methods_and_source() {
     write(&module, source);
     let service = fixture.extension_view_service();
     let view = service.view(ViewRequest::new("main:CommonModule.CorpusModule").unwrap());
-    assert!(view.ok, "{:?}", view.diagnostics);
+    assert!(view.ok, "view must succeed");
     let data = view.data.unwrap();
     assert_eq!(
         data["props"]["commonModule"]["returnValuesReuse"],
@@ -426,7 +426,7 @@ fn borrowed_common_module_missing_reuse_preserves_methods_and_source() {
         "main:CommonModule.CorpusModule.Body",
     ] {
         let view = service.view(ViewRequest::new(at).unwrap());
-        assert!(view.ok, "{at}: {:?}", view.diagnostics);
+        assert!(view.ok, "{at}: view must succeed");
     }
     assert_eq!(fs::read_to_string(path).unwrap(), descriptor);
     assert_eq!(fs::read_to_string(module).unwrap(), source);
@@ -8171,7 +8171,7 @@ fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_fa
     write(&module, source);
     let service = fixture.extension_view_service();
     let view = service.view(ViewRequest::new("main:CommonModule.CorpusModule").unwrap());
-    assert!(view.ok, "{view:?}");
+    assert!(view.ok, "view must succeed");
     let data = view.data.unwrap();
     let props = data["props"]["commonModule"].as_object().unwrap();
     assert_eq!(props.len(), 8);
@@ -8183,7 +8183,7 @@ fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_fa
         "main:CommonModule.CorpusModule.Body",
     ] {
         let view = service.view(ViewRequest::new(at).unwrap());
-        assert!(view.ok, "{at}: {view:?}");
+        assert!(view.ok, "{at}: view must succeed");
         let filtered = service.view(ViewRequest::new(at).unwrap().with_filter(
             serde_json::Map::from_iter([("context".to_string(), json!("server"))]),
         ));
@@ -8252,7 +8252,10 @@ fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_fa
                 "main:CommonModule.CorpusModule.Method.Проверка",
             ] {
                 let result = service.view(ViewRequest::new(at).unwrap());
-                assert!(!result.ok, "{replacement}: {at}: {result:?}");
+                assert!(
+                    !result.ok,
+                    "{replacement}: {at}: damaged identity must be refused"
+                );
                 assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
                 assert!(result.diagnostics[0]["message"]
                     .as_str()
@@ -8341,7 +8344,7 @@ fn missing_or_damaged_code_type_limits_only_dependent_predefined_read() {
         write(&path, &descriptor);
         let service = fixture.view_service();
         let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok, "the read must succeed");
         let data = result.data.unwrap();
         assert_eq!(data["props"]["CodeLength"], 11);
         assert!(data["limits"]
@@ -8359,7 +8362,7 @@ fn missing_or_damaged_code_type_limits_only_dependent_predefined_read() {
         );
         let dependent =
             service.view(ViewRequest::new("main:Catalog.Items.PredefinedItem").unwrap());
-        assert!(!dependent.ok, "{dependent:?}");
+        assert!(!dependent.ok, "the dependent read must be refused");
         assert_eq!(fs::read_to_string(path).unwrap(), descriptor);
     }
 }
@@ -8390,14 +8393,17 @@ fn missing_relation_preserves_known_targets_and_reports_incompleteness() {
         let service = fixture.view_service();
         for at in ["main:Catalog.Items", "main:Catalog.Items.Relation"] {
             let result = service.view(ViewRequest::new(at).unwrap());
-            assert!(result.ok, "{result:?}");
+            assert!(result.ok, "the read must succeed");
             let data = result.data.unwrap();
             let has_limit = data["limits"].as_array().is_some_and(|limits| {
                 limits
                     .iter()
                     .any(|limit| limit.as_str().unwrap().contains("relations.owners"))
             });
-            assert_eq!(has_limit, expected_unknown, "{data}");
+            assert_eq!(
+                has_limit, expected_unknown,
+                "relation limits must follow the relation state"
+            );
             if at.ends_with(".Relation") {
                 assert!(
                     data["items"]
@@ -8406,7 +8412,7 @@ fn missing_relation_preserves_known_targets_and_reports_incompleteness() {
                         .iter()
                         .any(|item| item["relation"] == "basedOn"
                             && item["at"] == "main:Document.Order"),
-                    "{data}"
+                    "relation limits must follow the relation state"
                 );
             }
         }
@@ -8466,7 +8472,7 @@ fn specialized_relation_limits_distinguish_absence_empty_and_damage() {
             for suffix in ["", ".Relation"] {
                 let result =
                     service.view(ViewRequest::new(&format!("main:{kind}.{name}{suffix}")).unwrap());
-                assert!(result.ok, "{variant}: {result:?}");
+                assert!(result.ok, "{variant}: the read must succeed");
                 let data = result.data.unwrap();
                 let relevant = data["limits"]
                     .as_array()
@@ -8481,15 +8487,118 @@ fn specialized_relation_limits_distinguish_absence_empty_and_damage() {
                 assert_eq!(
                     !relevant.is_empty(),
                     variant != "empty",
-                    "{variant}: {data}"
+                    "{variant}: limits must follow the property state"
                 );
                 assert_eq!(
                     relevant.iter().any(|limit| limit.contains(" is absent;")),
                     variant == "missing",
-                    "{variant}: {data}"
+                    "{variant}: limits must follow the property state"
                 );
             }
             assert_eq!(fs::read_to_string(path).unwrap(), xml);
         }
     }
+}
+
+/// #1381 (вторая вычитка): неизвестное сообщается пределом узла. Регистр без
+/// `WriteMode` не утверждает список регистраторов, модуль без флагов среды —
+/// контексты; ребёнок заимствованного владельца называет, где разрешается
+/// его родитель.
+#[test]
+fn unknown_facts_of_borrowed_objects_are_named_as_node_limits() {
+    let fixture = RealReaderFixture::new();
+    install_inherited_objects(&fixture);
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<InformationRegister>CorpusRegister</InformationRegister><CommonModule>CorpusModule</CommonModule></ChildObjects>",
+        ),
+    );
+    let register =
+        fixture_text("platform_8_3_27/incomplete_borrowed/extension-information-register.xml");
+    let register_path = fixture
+        .source
+        .join("InformationRegisters/CorpusRegister.xml");
+    write(&register_path, &register);
+    write(
+        &fixture.source.join("CommonModules/CorpusModule.xml"),
+        &fixture_text("platform_8_3_27/incomplete_borrowed/extension-common-module.xml"),
+    );
+    write(
+        &fixture
+            .source
+            .join("CommonModules/CorpusModule/Ext/Module.bsl"),
+        "Процедура Проверка() Экспорт\nКонецПроцедуры\n",
+    );
+    let limits = |at: &str| -> Vec<String> {
+        let view = fixture
+            .extension_view_service()
+            .view(ViewRequest::new(at).unwrap());
+        assert!(view.ok, "{at}: view must succeed");
+        view.data.unwrap()["limits"]
+            .as_array()
+            .map(|limits| {
+                limits
+                    .iter()
+                    .filter_map(|limit| limit.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let registrars = |limits: &[String]| {
+        limits
+            .iter()
+            .any(|limit| limit.contains("relations.registrars") && limit.contains("WriteMode"))
+    };
+    assert!(registrars(&limits(
+        "main:InformationRegister.CorpusRegister"
+    )));
+    assert!(registrars(&limits(
+        "main:InformationRegister.CorpusRegister.Relation"
+    )));
+    write(
+        &register_path,
+        &register.replace(
+            "</Properties>",
+            "<WriteMode>Independent</WriteMode></Properties>",
+        ),
+    );
+    assert!(!registrars(&limits(
+        "main:InformationRegister.CorpusRegister"
+    )));
+
+    let contexts = |limits: &[String]| {
+        limits
+            .iter()
+            .any(|limit| limit == super::UNKNOWN_CONTEXTS_LIMIT)
+    };
+    assert!(contexts(&limits("main:CommonModule.CorpusModule")));
+    assert!(contexts(&limits("main:CommonModule.CorpusModule.Method")));
+    write(
+        &fixture.source.join("CommonModules/CorpusModule.xml"),
+        &fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-environment-only.xml")
+            .replace("СерверныеФункции", "CorpusModule"),
+    );
+    assert!(!contexts(&limits("main:CommonModule.CorpusModule")));
+
+    let service = fixture.extension_view_service();
+    for at in [
+        "main:DataProcessor.Обработка.Form.Форма",
+        "main:DataProcessor.Обработка.Template.Макет",
+    ] {
+        let data = service.view(ViewRequest::new(at).unwrap()).data.unwrap();
+        assert!(
+            data["props"]["parentReason"].as_str().is_some_and(
+                |reason| reason.contains("props.extends of `main:DataProcessor.Обработка`")
+            ),
+            "{at}: the child names where its parent is resolved"
+        );
+    }
+    let role = service
+        .view(ViewRequest::new("main:Role.SalesReader").unwrap())
+        .data
+        .unwrap();
+    assert!(role["props"].get("parentReason").is_none());
 }

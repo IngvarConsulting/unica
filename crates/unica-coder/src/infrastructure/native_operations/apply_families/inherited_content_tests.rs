@@ -206,3 +206,92 @@ fn inherited_refusal_needs_a_borrowed_object_without_its_file() {
         "a borrowed role with its own rights is written"
     );
 }
+
+/// Plans one operation on a copy of an acceptance workspace with one source set.
+fn plan_single(
+    workspace: &str,
+    set: &str,
+    kind: SourceSetKind,
+    at: &str,
+    op: Value,
+) -> Result<(), super::ApplyPlanError> {
+    let root = tempfile::tempdir().unwrap();
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance")
+            .join(workspace),
+        root.path(),
+    );
+    let workspace_root = std::fs::canonicalize(root.path()).unwrap();
+    let source = workspace_root.join("src");
+    let context = WorkspaceContext {
+        cwd: workspace_root.clone(),
+        workspace_root: workspace_root.clone(),
+        cache_root: workspace_root.join(".build/unica"),
+        workspace_epoch: 1,
+    };
+    let identity = WorkspaceIdentity::new(
+        &context,
+        [WorkspaceSourceSetInput::new(
+            set,
+            &source,
+            kind,
+            SourceFormat::PlatformXml,
+            SourceProfile::platform_xml_8_3_27_format_2_20(),
+        )],
+        "predefined-code-type",
+    )
+    .unwrap();
+    let actor = WorkspaceActor::new(identity, context).unwrap();
+    let binding: ProviderRootBinding = actor.bind_provider_root(set, &source).unwrap();
+    let admission = actor
+        .admit_apply(
+            &binding,
+            None,
+            true,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let args = json!({"at": at, "ops": [op], "dryRun": true});
+    let request = ApplyRequest::parse(args.as_object().unwrap(), &[set]).unwrap();
+    plan_hidden_v13_apply(&request, &binding, &admission).map(|_| ())
+}
+
+/// #1381 (вторая вычитка): заимствованный справочник без `CodeType` не даёт
+/// вида кодов; запись предопределённых отказывает тем же текстом, что и
+/// чтение, а не проверяет коды по придуманному `String`.
+#[test]
+fn predefined_writes_refuse_an_owner_without_code_type() {
+    let item = json!({"name": "Основной", "id": "a1b2c3d4-1111-4111-8111-111111111111"});
+    for op in [
+        json!({"op": "predefinedItem.add", "args": {"items": [item.clone()]}}),
+        json!({"op": "predefinedItem.set", "args": {"values": {"id": "a1b2c3d4-1111-4111-8111-111111111111", "description": "x"}}}),
+    ] {
+        let error = plan_single(
+            "workspace-incomplete-borrowed",
+            "ext",
+            SourceSetKind::Extension,
+            "ext:Catalog.CorpusCatalog",
+            op,
+        )
+        .expect_err("an unknown CodeType must not be defaulted");
+        assert_eq!(
+            error.to_string(),
+            crate::infrastructure::native_operations::meta::MISSING_PREDEFINED_CODE_TYPE
+        );
+    }
+    if let Err(error) = plan_single(
+        "workspace",
+        "main",
+        SourceSetKind::Configuration,
+        "main:Catalog.Валюты",
+        json!({"op": "predefinedItem.add", "args": {"items": [item]}}),
+    ) {
+        assert_ne!(
+            error.to_string(),
+            crate::infrastructure::native_operations::meta::MISSING_PREDEFINED_CODE_TYPE,
+            "an owner with CodeType is not refused for its absence"
+        );
+    }
+}

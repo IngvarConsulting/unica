@@ -1106,6 +1106,20 @@ pub(crate) fn plan_metadata_batch(
             )
             .at_path(format!("ops[{op_index}].args.at")));
         }
+        // Коды предопределённых проверяются по `CodeType` владельца; описание
+        // без него (заимствованный справочник платформа выгружает так) не
+        // даёт вида кодов, и запись отказывает тем же текстом, что и чтение.
+        if crate::infrastructure::native_operations::meta::is_predefined_operation(edit) {
+            if let Ok(kind) = MetadataKind::parse(&actual_kind) {
+                crate::infrastructure::native_operations::meta::require_predefined_code_type(
+                    kind, &postimage,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(format!("ops[{op_index}].args.at"))
+                })?;
+            }
+        }
         let uuid_seed = format!(
             "{}\0{}\0{}\0{:?}\0{:x}",
             authority.source_set_name(),

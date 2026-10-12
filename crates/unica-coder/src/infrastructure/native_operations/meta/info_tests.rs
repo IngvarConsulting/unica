@@ -745,8 +745,7 @@ fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
         assert_eq!(info.name, name);
         assert!(
             info.diagnostics.is_empty(),
-            "{file}: {:?}",
-            info.diagnostics
+            "{file}: the platform export must read without diagnostics"
         );
         assert_eq!(
             info.predefined_code_type, None,
