@@ -6781,12 +6781,29 @@ fn exact_repeat_submit_reads_its_bound_task_without_a_second_attempt() {
         7_000,
     )
     .expect("valid impostor invocation");
+    let impostor_key = ReceiptKey::new(
+        impostor.invocation_id(),
+        task_id,
+        RequestIdentity::new(
+            CoreIdentity::production_v5().digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(impostor.arguments()),
+            request_scope_hash(impostor.workspace_hint()).expect("request scope"),
+        ),
+    );
     assert_eq!(
         owner.submit_invocation(impostor),
         Ok(V5ServerResponse::Error {
             code: V5DaemonErrorCode::InvocationIdentityMismatch,
         }),
         "another key never takes over the Task id"
+    );
+    assert_eq!(
+        owner.cancel_invocation(impostor_key),
+        Ok(V5ServerResponse::Error {
+            code: V5DaemonErrorCode::InvocationIdentityMismatch,
+        }),
+        "another key never cancels the Task either"
     );
 
     release_tx.send(()).expect("release the execution");
@@ -6816,6 +6833,8 @@ fn exact_repeat_submit_reads_its_bound_task_without_a_second_attempt() {
 /// reservation with a capacity error, which closes nothing.
 struct StoreDeadlineObservingPort {
     observed: mpsc::Sender<(&'static str, Option<Duration>)>,
+    /// Once set, every generation probe is slow.
+    slow_generation: Arc<AtomicBool>,
 }
 
 impl ReceiptLedgerPort for StoreDeadlineObservingPort {
@@ -6823,6 +6842,11 @@ impl ReceiptLedgerPort for StoreDeadlineObservingPort {
         let _ = self
             .observed
             .send(("generation", deadline.remaining_at(Instant::now())));
+        // A slow preceding step: the reservation begins well after the frame
+        // arrived, so a budget counted from the frame would come up short.
+        if self.slow_generation.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(400));
+        }
         Ok(0)
     }
 
@@ -6868,14 +6892,17 @@ impl ReceiptLedgerPort for StoreDeadlineObservingPort {
 }
 
 /// #1387: a submit whose caller budget is a single millisecond still gives
-/// every receipt-store command of the request the daemon's own step budget.
-/// A commit the store began is therefore not cut short by the caller.
+/// every receipt-store step of the request the daemon's own step budget,
+/// counted from the step's start. A commit the store began is therefore not
+/// cut short by the caller.
 #[test]
 fn tiny_submit_budget_gives_the_receipt_store_its_own_step_budget() {
     let root = tempfile::tempdir().expect("temporary state root");
     let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
     let identity = CoreIdentity::production_v5();
     let (observed_tx, observed_rx) = mpsc::channel();
+    let slow_generation = Arc::new(AtomicBool::new(false));
+    let port_slow = slow_generation.clone();
     let config = DaemonServerConfig::new(
         state_root.clone(),
         identity.clone(),
@@ -6883,8 +6910,9 @@ fn tiny_submit_budget_gives_the_receipt_store_its_own_step_budget() {
     );
     let server = thread::spawn(move || {
         run_daemon_configured(config, move |mut runtime| {
-            runtime.receipt_ledger = ReceiptLedgerActor::spawn(StoreDeadlineObservingPort {
+            runtime.receipt_ledger = spawn_receipt_ledger_actor(StoreDeadlineObservingPort {
                 observed: observed_tx,
+                slow_generation: port_slow,
             });
             runtime
         })
@@ -6903,30 +6931,38 @@ fn tiny_submit_budget_gives_the_receipt_store_its_own_step_budget() {
         &state_root,
         identity,
         std::path::PathBuf::from("unused-existing-v5-endpoint"),
-        Duration::from_millis(300),
+        Duration::from_secs(5),
     )
     .expect("connect owner");
     // Drop what the session admission observed: only the submit counts.
     while observed_rx.try_recv().is_ok() {}
+    slow_generation.store(true, Ordering::SeqCst);
     let response = owner.submit_invocation(invocation);
     drop(owner);
     let server_result = server.join().expect("join runtime");
     let observed: Vec<_> = observed_rx.try_iter().collect();
 
-    assert_eq!(
-        response,
-        Ok(V5ServerResponse::Error {
-            code: V5DaemonErrorCode::ReceiptCapacity,
-        })
+    // The answer comes after the caller's millisecond, so the caller may
+    // have stopped reading; what it would read is the store's own refusal.
+    assert!(
+        matches!(
+            &response,
+            Ok(V5ServerResponse::Error {
+                code: V5DaemonErrorCode::ReceiptCapacity,
+            })
+        ) || matches!(&response, Err(error) if error.contains("deadline expired")),
+        "{response:?}"
     );
     assert!(
         observed.iter().any(|(command, _)| *command == "reserve"),
         "the reservation reached the store: {observed:?}"
     );
     for (command, remaining) in &observed {
+        // Read on entry to the port, right after the step began on the
+        // actor thread: only that hand-over separates it from the full budget.
         let remaining = remaining.expect("a store step is bounded");
         assert!(
-            remaining >= DURABLE_STEP_BUDGET - Duration::from_millis(500),
+            remaining >= DURABLE_STEP_BUDGET - Duration::from_millis(100),
             "{command} got only {remaining:?} of the store's own budget"
         );
     }
@@ -7048,6 +7084,9 @@ fn tiny_submit_budget_after_an_early_cancel_keeps_the_daemon() {
 /// exact repeat reach its reservation only once that handoff completed — or
 /// after a second, when the completion waits for the repeat's key lock.
 struct ExactRepeatRaceHooks {
+    /// The point of the racing call and which pass through it races.
+    race_point: V5PausePoint,
+    race_pass: usize,
     handoff_held: Mutex<mpsc::Sender<()>>,
     handoff_gate: (Mutex<bool>, std::sync::Condvar),
     reservations: AtomicUsize,
@@ -7061,10 +7100,7 @@ impl V5RuntimeHooks for ExactRepeatRaceHooks {
     }
 
     fn holds(&self, point: V5PausePoint) -> bool {
-        matches!(
-            point,
-            V5PausePoint::BeforeTaskStoreCreate | V5PausePoint::BeforeSubmitReservation
-        )
+        point == V5PausePoint::BeforeTaskStoreCreate || point == self.race_point
     }
 
     fn pause(&self, point: V5PausePoint, _deadline: Instant) -> Result<(), ReceiptLedgerError> {
@@ -7077,8 +7113,9 @@ impl V5RuntimeHooks for ExactRepeatRaceHooks {
                     released = changed.wait(released).unwrap();
                 }
             }
-            V5PausePoint::BeforeSubmitReservation
-                if self.reservations.fetch_add(1, Ordering::SeqCst) == 1 =>
+            point
+                if point == self.race_point
+                    && self.reservations.fetch_add(1, Ordering::SeqCst) == self.race_pass =>
             {
                 let _ = self.repeat_at_reservation.lock().unwrap().send(());
                 let (lock, changed) = &self.bound;
@@ -7121,6 +7158,8 @@ fn exact_repeat_racing_the_handoff_completion_reads_the_same_task() {
     let (held_tx, held_rx) = mpsc::channel();
     let (repeat_tx, repeat_rx) = mpsc::channel();
     let hooks = Arc::new(ExactRepeatRaceHooks {
+        race_point: V5PausePoint::BeforeSubmitReservation,
+        race_pass: 1,
         handoff_held: Mutex::new(held_tx),
         handoff_gate: (Mutex::new(false), std::sync::Condvar::new()),
         reservations: AtomicUsize::new(0),
@@ -7390,4 +7429,192 @@ fn staged_handoff_completion_waits_for_the_key_lock() {
         Err(ReceiptLedgerError::ReceiptNotFound)
     ));
     assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+}
+
+/// #1384, cancel side: a cancel of the exact key that found no Task link yet
+/// must not write a cancel row after the handoff completion moved the key to
+/// the link. It reaches the call itself: the Task sees the cancel, recovery
+/// reads the Task, and no stray cancel row is left behind.
+#[test]
+fn exact_cancel_racing_the_handoff_completion_cancels_the_task() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, root) = catalog_workspace();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let service = Arc::new(CountedKnownLongService {
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered: Mutex::new(entered_tx),
+        release: Mutex::new(release_rx),
+    });
+    let (held_tx, held_rx) = mpsc::channel();
+    let (cancel_tx, cancel_rx) = mpsc::channel();
+    let hooks = Arc::new(ExactRepeatRaceHooks {
+        race_point: V5PausePoint::BeforeCancelReservation,
+        race_pass: 0,
+        handoff_held: Mutex::new(held_tx),
+        handoff_gate: (Mutex::new(false), std::sync::Condvar::new()),
+        reservations: AtomicUsize::new(0),
+        repeat_at_reservation: Mutex::new(cancel_tx),
+        bound: (Mutex::new(false), std::sync::Condvar::new()),
+    });
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(60),
+    )
+    .with_invocation_service(service.clone())
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    let task_id = TaskId::new();
+    let call = view_catalog_request(task_id, &root);
+    let key = ReceiptKey::new(
+        call.invocation_id(),
+        task_id,
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(call.arguments()),
+            request_scope_hash(call.workspace_hint()).expect("request scope"),
+        ),
+    );
+
+    let mut first_session = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .expect("connect the first session");
+    let first_call = call.clone();
+    let first = thread::spawn(move || first_session.submit_invocation(first_call));
+    held_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the handoff stops before its Task exists");
+    let mut cancel_session = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .expect("connect the cancel session");
+    let cancel_key = key.clone();
+    let cancel = thread::spawn(move || cancel_session.cancel_invocation(cancel_key));
+    cancel_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the cancel found no link and stands before its ledger write");
+    {
+        let (lock, changed) = &hooks.handoff_gate;
+        *lock.lock().unwrap() = true;
+        changed.notify_all();
+    }
+
+    let cancelled = cancel
+        .join()
+        .expect("cancel thread")
+        .expect("cancel answered");
+    let answered = submitted_task_snapshot(first.join().expect("first thread"));
+    assert_eq!(answered.task_id(), task_id);
+    assert!(
+        matches!(
+            &cancelled,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot }
+            } if snapshot.task_id() == task_id && snapshot.cancel_requested()
+        ),
+        "the cancel reaches the Task: {cancelled:?}"
+    );
+    let recovered = owner
+        .recover_invocation_receipt(key)
+        .expect("recover the call");
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot }
+            } if snapshot.task_id() == task_id
+        ),
+        "recovery reads the Task, not a stray cancel row: {recovered:?}"
+    );
+    let _ = entered_rx.recv_timeout(Duration::from_secs(2));
+    let _ = release_tx.send(());
+    let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
+    assert!(
+        terminal.cancel_requested(),
+        "the Task keeps the cancel: {terminal:?}"
+    );
+    assert!(service.prepares.load(Ordering::SeqCst) <= 1);
+    drop(owner);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+/// #1384: every bound handoff completion that does not already hold the
+/// key's lock takes it before the receipt row leaves the ledger.
+#[test]
+fn bound_handoff_completion_waits_for_the_key_lock() {
+    let root = tempfile::tempdir().expect("temporary handoff root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical handoff root");
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity).expect("open handoff state");
+    let config = DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50))
+        .with_invocation_service(Arc::new(CountingService::default()));
+    let clock = Arc::new(ManualEpochClock::new(1_009));
+    let runtime = Arc::new(
+        V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock)
+            .expect("open handoff runtime"),
+    );
+    let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
+    let key = handoff.key().clone();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (_record, task_bound) = runtime
+        .task_projection
+        .materialize_bound_handoff(&handoff, 1_009, deadline, runtime.hooks.as_ref())
+        .unwrap_or_else(|failure| panic!("materialize TaskBound: {}", failure.error));
+    let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+
+    let lock = runtime.submit_fences.stripe(&digest);
+    let completion = {
+        let runtime = Arc::clone(&runtime);
+        let key = key.clone();
+        let version = handoff.record_version();
+        thread::spawn(move || {
+            runtime.complete_bound_task_handoff(key, version, task_bound, deadline)
+        })
+    };
+    // A completion that ignored the lock would be done long before this.
+    thread::sleep(Duration::from_millis(200));
+    let held = runtime
+        .receipt_ledger
+        .recover(key.clone(), Instant::now() + Duration::from_secs(5));
+    assert!(
+        matches!(held, Ok(ReceiptState::TaskHandoffActorBound(_))),
+        "the receipt row left the ledger while its key was locked: {held:?}"
+    );
+    assert!(!completion.is_finished());
+    drop(lock);
+
+    completion
+        .join()
+        .expect("completion thread")
+        .expect("the handoff completes");
+    assert!(matches!(
+        runtime
+            .receipt_ledger
+            .recover(key, Instant::now() + Duration::from_secs(5)),
+        Err(ReceiptLedgerError::ReceiptNotFound)
+    ));
 }
