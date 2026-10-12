@@ -901,6 +901,10 @@ fn legacy_element_definition(
             "html is an internal discriminator; use name and type: HTMLDocumentField in element.add",
         ));
     }
+    if item.contains_key("textDoc") {
+        return Err(bad(op_index, &format!("{location}.textDoc"),
+            "textDoc is an internal discriminator; use name and type: TextDocumentField in element.add"));
+    }
     reject_nested_typed_html(item, op_index, location)?;
     let name = required_string(item, "name", op_index, location)?.to_string();
     let kind = item
@@ -913,6 +917,9 @@ fn legacy_element_definition(
         "InputField" | "Input" | "Field" => {}
         "HTMLDocumentField" => {
             definition.insert("html".to_string(), Value::String(name.clone()));
+        }
+        "TextDocumentField" => {
+            definition.insert("textDoc".to_string(), Value::String(name.clone()));
         }
         "Group" | "UsualGroup" => {
             let orientation = item
@@ -950,7 +957,7 @@ fn legacy_element_definition(
                 op_index,
                 &format!("{location}.type"),
                 format!(
-                    "unknown form element type `{other}`; use InputField, Group, Table, Button, Label, LabelField, CheckBox, Pages, Page, CommandBar or HTMLDocumentField"
+                    "unknown form element type `{other}`; use InputField, Group, Table, Button, Label, LabelField, CheckBox, Pages, Page, CommandBar, HTMLDocumentField or TextDocumentField"
                 ),
             ))
         }
@@ -984,9 +991,16 @@ fn reject_nested_typed_html(
                     continue;
                 };
                 let location = format!("{location}.{key}[{index}]");
-                if child.get("type").and_then(Value::as_str) == Some("HTMLDocumentField") {
-                    return Err(bad(op_index, &format!("{location}.type"),
-                        "add HTMLDocumentField as a separate element.add item with into naming its parent"));
+                if let Some(kind @ ("HTMLDocumentField" | "TextDocumentField")) =
+                    child.get("type").and_then(Value::as_str)
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("{location}.type"),
+                        format!(
+                            "add {kind} as a separate element.add item with into naming its parent"
+                        ),
+                    ));
                 }
                 reject_nested_typed_html(child, op_index, &location)?;
             }
@@ -2664,6 +2678,22 @@ mod tests {
             panic!("`{relative}` keeps bytes");
         };
         String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn typed_text_document_is_mapped_without_becoming_input() {
+        let item = json!({"name":"Protocol","type":"TextDocumentField","path":"ProtocolValue","into":"Page"});
+        let (definition, into, _) =
+            super::legacy_element_definition(item.as_object().unwrap(), 0, "items[0]").unwrap();
+        assert_eq!(definition["textDoc"], "Protocol");
+        assert_eq!(definition["path"], "ProtocolValue");
+        assert_eq!(into.as_deref(), Some("Page"));
+        let raw = json!({"name":"Protocol","textDoc":"Protocol"});
+        assert!(super::legacy_element_definition(raw.as_object().unwrap(), 0, "items[0]").is_err());
+        let nested = json!({"name":"Page","type":"Page","children":[item]});
+        assert!(
+            super::legacy_element_definition(nested.as_object().unwrap(), 0, "items[0]").is_err()
+        );
     }
 
     #[test]

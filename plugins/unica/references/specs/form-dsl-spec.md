@@ -822,7 +822,7 @@ flags/layout/оформление/companions/события общий), плю�
 |-----------|-------------|---------------|----------------|
 | `spreadsheet` | SpreadSheetDocumentField | `mxl:SpreadsheetDocument` | `output` (Disable/Enable), `protection`, `verticalScrollBar`/`horizontalScrollBar`, `viewScalingMode`, `selectionShowMode`, `pointerType`, `showGrid`/`showGroups`/`showHeaders`/`showRowAndColumnNames`/`showCellNames`, `edit`, `enableDrag`/`enableStartDrag` (фактическое значение) |
 | `html` | HTMLDocumentField | `string` | Нативная поддержка: `path`, `title`, `tooltip`, `titleLocation`, `width`/`height`, `autoMaxWidth`/`autoMaxHeight`, `skipOnInput`, общие флаги видимости/доступности/чтения и `on`/`handlers` |
-| `textDoc` | TextDocumentField | `d5p1:TextDocument` | `editMode` |
+| `textDoc` | TextDocumentField | `d5p1:TextDocument` | Native: `path`, `title`, `tooltip`, `titleLocation`, `width`/`height`, `autoMaxWidth`/`autoMaxHeight`, `skipOnInput`, visibility/access/read-only flags, `on`/`handlers` (`OnChange`). `editMode` is not supported. |
 | `formattedDoc` | FormattedDocumentField | `fd:FormattedDocument` | `editMode` |
 | `progressBar` | ProgressBarField | число | `showPercent`, `minValue`/`maxValue` (без `xsi:type`, ≠ типизированных у `input`) |
 | `trackBar` | TrackBarField | число | `minValue`/`maxValue`/`largeStep`/`markingStep`/`step` (числовые), `markingAppearance` |

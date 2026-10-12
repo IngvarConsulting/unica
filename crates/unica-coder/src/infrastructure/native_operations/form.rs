@@ -6802,6 +6802,7 @@ pub(crate) fn form_edit_element_summary(element: &Value) -> Option<String> {
         FormEditElementDefinitionKind::CheckBox => "CheckBox",
         FormEditElementDefinitionKind::InputField => "Input",
         FormEditElementDefinitionKind::HtmlDocumentField => "HTMLDocumentField",
+        FormEditElementDefinitionKind::TextDocumentField => "TextDocumentField",
         FormEditElementDefinitionKind::AutoCommandBar => return None,
     };
     let name = form_edit_element_display_name(element)?;
@@ -7328,8 +7329,26 @@ pub(crate) fn form_edit_validate_emitted_type_qnames(
 ) -> Result<(), String> {
     for value in emitted_type_qnames {
         if value.contains(':') {
-            require_form_type_qname_binding(root, value)
-                .map_err(|error| format!("[ERROR] Emitted Type \"{value}\": {error}"))?;
+            // Special types declare their QName prefix locally on v8:Type.
+            // Validate in that node's namespace scope, not the Form root.
+            let nodes: Vec<_> = root
+                .descendants()
+                .filter(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == "Type"
+                        && form_is_data_type_declaration_type_node(*node)
+                        && node.text().is_some_and(|text| text.trim() == value)
+                })
+                .collect();
+            if nodes.is_empty() {
+                return Err(format!(
+                    "[ERROR] Emitted Type \"{value}\" is absent after edit"
+                ));
+            }
+            for node in nodes {
+                require_form_type_qname_binding(node, value)
+                    .map_err(|error| format!("[ERROR] Emitted Type \"{value}\": {error}"))?;
+            }
         }
     }
     Ok(())
@@ -7526,6 +7545,7 @@ enum FormEditElementDefinitionKind {
     CheckBox,
     InputField,
     HtmlDocumentField,
+    TextDocumentField,
     AutoCommandBar,
 }
 
@@ -7548,6 +7568,11 @@ impl FormEditElementDefinitionKind {
             (Self::CheckBox, "check", object.contains_key("check")),
             (Self::InputField, "input", object.contains_key("input")),
             (Self::HtmlDocumentField, "html", object.contains_key("html")),
+            (
+                Self::TextDocumentField,
+                "textDoc",
+                object.contains_key("textDoc"),
+            ),
             (
                 Self::AutoCommandBar,
                 "autoCmdBar/autoCommandBar",
@@ -7602,6 +7627,7 @@ impl FormEditElementDefinitionKind {
             Self::CheckBox => FormElementKind::CheckBoxField,
             Self::InputField => FormElementKind::InputField,
             Self::HtmlDocumentField => FormElementKind::HtmlDocumentField,
+            Self::TextDocumentField => FormElementKind::TextDocumentField,
         }
     }
 
@@ -7618,6 +7644,7 @@ impl FormEditElementDefinitionKind {
             Self::CheckBox => (&["check"], "checkbox"),
             Self::InputField => (&["input"], "input"),
             Self::HtmlDocumentField => (&["html"], "HTML document field"),
+            Self::TextDocumentField => (&["textDoc"], "text document field"),
             Self::AutoCommandBar => (&["autoCmdBar", "autoCommandBar"], "auto command bar"),
         };
         form_edit_definition_element_name(object, keys, description)
@@ -8090,6 +8117,7 @@ fn form_compile_binding_property_supported(
             kind,
             FormEditElementDefinitionKind::Table
                 | FormEditElementDefinitionKind::HtmlDocumentField
+                | FormEditElementDefinitionKind::TextDocumentField
                 | FormEditElementDefinitionKind::LabelField
                 | FormEditElementDefinitionKind::CheckBox
                 | FormEditElementDefinitionKind::InputField
@@ -8640,7 +8668,8 @@ fn form_compile_validate_element_property_tree(elements: &[Value]) -> Result<(),
                 )?;
             }
             FormEditElementDefinitionKind::InputField
-            | FormEditElementDefinitionKind::HtmlDocumentField => {
+            | FormEditElementDefinitionKind::HtmlDocumentField
+            | FormEditElementDefinitionKind::TextDocumentField => {
                 form_compile_validate_normalized_element_enum(
                     object,
                     "titleLocation",
@@ -8888,9 +8917,22 @@ fn emit_form_element_with_context(
         FormEditElementDefinitionKind::InputField => {
             emit_form_input(lines, object, kind.name(object)?, indent, ids)
         }
-        FormEditElementDefinitionKind::HtmlDocumentField => {
-            emit_form_html_document_field(lines, object, kind.name(object)?, indent, ids)
-        }
+        FormEditElementDefinitionKind::HtmlDocumentField => emit_form_document_field(
+            lines,
+            object,
+            kind.name(object)?,
+            indent,
+            ids,
+            "HTMLDocumentField",
+        ),
+        FormEditElementDefinitionKind::TextDocumentField => emit_form_document_field(
+            lines,
+            object,
+            kind.name(object)?,
+            indent,
+            ids,
+            "TextDocumentField",
+        ),
         FormEditElementDefinitionKind::AutoCommandBar => Ok(()),
     }
 }
@@ -9647,16 +9689,17 @@ fn emit_form_decoration_title(
     lines.extend(rendered);
 }
 
-fn emit_form_html_document_field(
+fn emit_form_document_field(
     lines: &mut Vec<String>,
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    field_tag: &str,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
-        "{indent}<HTMLDocumentField name=\"{}\" id=\"{id}\">",
+        "{indent}<{field_tag} name=\"{}\" id=\"{id}\">",
         escape_xml(name)
     ));
     let inner = format!("{indent}\t");
@@ -9693,7 +9736,7 @@ fn emit_form_html_document_field(
     ] {
         if let Some(value) = element.get(key) {
             let number = value.as_u64().filter(|number| *number <= u32::MAX as u64)
-                .ok_or_else(|| format!("form HTML field property {key} must be an integer in 0..=4294967295 for 8.3.27"))?;
+                .ok_or_else(|| format!("form document field property {key} must be an integer in 0..=4294967295 for 8.3.27"))?;
             lines.push(format!("{inner}<{tag}>{number}</{tag}>"));
         }
         form_compile_validate_element_boolean(element, auto_key)?;
@@ -9716,7 +9759,7 @@ fn emit_form_html_document_field(
         ids,
     )?;
     emit_form_element_events(lines, element, name, &inner);
-    lines.push(format!("{indent}</HTMLDocumentField>"));
+    lines.push(format!("{indent}</{field_tag}>"));
     Ok(())
 }
 
@@ -18316,6 +18359,164 @@ pub(crate) mod tests {
                 "imported subtree changed: {updated}"
             );
         }
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    #[test]
+    fn text_document_qname_uses_local_scope_and_rejects_invalid_bindings() {
+        let values = vec!["cfg:CatalogRef.Test".to_string()];
+        let valid = r#"<Form><Attribute><Type xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">cfg:CatalogRef.Test</Type></Attribute></Form>"#;
+        let doc = Document::parse(valid).unwrap();
+        assert!(form_edit_validate_emitted_type_qnames(doc.root_element(), &values).is_ok());
+        for invalid in [
+            r#"<Form><Attribute><Type>cfg:CatalogRef.Test</Type></Attribute></Form>"#,
+            r#"<Form><Attribute><Type xmlns:cfg="urn:wrong">cfg:CatalogRef.Test</Type></Attribute></Form>"#,
+            r#"<Form><Attribute><Type xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">cfg:CatalogRef.Test</Type></Attribute><Attribute><Type xmlns:cfg="urn:wrong">cfg:CatalogRef.Test</Type></Attribute></Form>"#,
+            r#"<Form/>"#,
+        ] {
+            let doc = Document::parse(invalid).unwrap();
+            assert!(
+                form_edit_validate_emitted_type_qnames(doc.root_element(), &values).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_document_field_matches_platform_export_and_declares_attribute_namespace() {
+        let (xml, _) = form_compile_xml(
+            &json!({
+                "attributes": [{"name":"Протокол","type":"d5p1:TextDocument"}],
+                "elements": [{"textDoc":"ПолеПротокола","path":"Протокол",
+                    "titleLocation":"none","readOnly":true,
+                    "on":["OnChange"],"handlers":{"OnChange":"ПротоколПриИзменении"}}]
+            }),
+            "2.20",
+        )
+        .unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let field = doc
+            .descendants()
+            .find(|n| n.has_tag_name("TextDocumentField"))
+            .unwrap();
+        let oracle = Document::parse(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/text-document-field/platform-field.xml"
+            ))
+            .trim_start_matches('\u{feff}'),
+        )
+        .unwrap();
+        let expected = oracle
+            .descendants()
+            .find(|n| n.has_tag_name("TextDocumentField"))
+            .unwrap();
+        for name in ["DataPath", "TitleLocation"] {
+            assert_eq!(
+                field
+                    .children()
+                    .find(|n| n.has_tag_name(name))
+                    .unwrap()
+                    .text(),
+                expected
+                    .children()
+                    .find(|n| n.has_tag_name(name))
+                    .unwrap()
+                    .text()
+            );
+        }
+        for name in ["ContextMenu", "ExtendedTooltip"] {
+            assert!(field.children().any(|n| n.has_tag_name(name)));
+        }
+        assert!(field
+            .descendants()
+            .any(|n| n.has_tag_name("Event") && n.attribute("name") == Some("OnChange")));
+        let ty = doc
+            .descendants()
+            .find(|n| n.text() == Some("d5p1:TextDocument"))
+            .unwrap();
+        assert_eq!(
+            ty.lookup_namespace_uri(Some("d5p1")),
+            Some("http://v8.1c.ru/8.1/data/txtedt")
+        );
+        assert!(!xml.contains("<HTMLDocumentField"));
+        let mut ids = std::collections::HashSet::new();
+        for n in doc.descendants() {
+            if let Some(id) = n.attribute("id") {
+                assert!(ids.insert(id));
+            }
+        }
+    }
+
+    #[test]
+    fn text_document_field_rejects_invalid_binding_events_and_properties() {
+        for (key, value, expected) in [
+            ("path", json!("Missing"), "missing top-level form attribute"),
+            ("on", json!(["OnClick"]), "FORM_EVENT_NOT_ALLOWED"),
+            ("titleLocation", json!("invalid"), "titleLocation"),
+            ("width", json!(-1), "width"),
+            ("readOnly", json!("true"), "boolean"),
+        ] {
+            let mut element = json!({"textDoc":"ProtocolField","path":"Protocol"});
+            element[key] = value;
+            let error = form_compile_xml(
+                &json!({"attributes":[{"name":"Protocol","type":"d5p1:TextDocument"}],
+                "elements":[element]}),
+                "2.20",
+            )
+            .unwrap_err();
+            assert!(error.contains(expected), "{key}: {error}");
+        }
+    }
+
+    #[test]
+    fn text_document_field_edit_is_preview_safe_and_preserves_siblings() {
+        let context = temp_context("text-document-edit");
+        let path = context.cwd.join("Form.xml");
+        let original = editable_form_xml(false);
+        fs::write(&path, original).unwrap();
+        let args = Map::from_iter([
+            ("FormPath".to_string(), json!(path.display().to_string())),
+            (
+                "definition".to_string(),
+                json!({
+                    "attributes":[{"name":"Protocol","type":"d5p1:TextDocument"}],
+                    "elements":[{"textDoc":"ProtocolField","path":"Protocol","titleLocation":"none"}]
+                }),
+            ),
+        ]);
+        let before = crate::test_support::tree_snapshot(&context.cwd);
+        let preview = preview_form_edit(&args, &context);
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(crate::test_support::tree_snapshot(&context.cwd), before);
+        let changed = edit_form(&args, &context);
+        assert!(changed.ok, "{changed:?}");
+        let current = fs::read_to_string(&path).unwrap();
+        assert!(current.contains("<TextDocumentField name=\"ProtocolField\""));
+        let original_doc = Document::parse(original).unwrap();
+        let current_doc = Document::parse(&current).unwrap();
+        for old in original_doc
+            .descendants()
+            .filter(|n| n.is_element() && n.attribute("name").is_some())
+        {
+            assert!(
+                current_doc.descendants().any(|n| n.is_element()
+                    && n.tag_name() == old.tag_name()
+                    && n.attribute("name") == old.attribute("name")
+                    && n.attribute("id") == old.attribute("id")),
+                "lost original named node: {old:?}"
+            );
+        }
+        let after = crate::test_support::tree_snapshot(&context.cwd);
+        let bad = Map::from_iter([
+            ("FormPath".to_string(), json!(path.display().to_string())),
+            (
+                "definition".to_string(),
+                json!({"elements":[{"textDoc":"Invalid","path":"Protocol","on":["OnClick"]}]}),
+            ),
+        ]);
+        assert!(!edit_form(&bad, &context).ok);
+        assert_eq!(crate::test_support::tree_snapshot(&context.cwd), after);
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
