@@ -484,7 +484,60 @@ fn parse_apply_operation(
         return Err(hidden_apply_family_unimplemented(op_index));
     }
     refuse_misplaced_operation(op_index, operation, binding)?;
+    refuse_inherited_content(op_index, operation, binding)?;
     parse_family_operation(op_index, operation, binding)
+}
+
+/// Содержимое заимствованного объекта, которого расширение не несёт
+/// (`Rights.xml`, `Form.xml` с модулем формы, `Template.xml`, `Package.bin`),
+/// принадлежит родителю: запись туда платформа не сохранит или прочитать
+/// нечего. Решение о наследовании — то же, что у чтения
+/// (`v13_read_port::inherited_companion`); предметный отказ называет родителя
+/// через `props.extends` объекта расширения.
+fn refuse_inherited_content(
+    op_index: usize,
+    operation: &crate::domain::apply::ApplyOp,
+    binding: &ProviderRootBinding,
+) -> Result<(), ApplyPlanError> {
+    use crate::infrastructure::v13_read_port::{companion_owner, inherited_companion};
+    let Some(resource) = crate::domain::apply::OperationRegistry::closed()
+        .lookup(operation.name())
+        .and_then(|descriptor| descriptor.content_resource())
+    else {
+        return Ok(());
+    };
+    let Some(target) = companion_owner(operation.at(), resource) else {
+        return Ok(());
+    };
+    let inherited = inherited_companion(
+        &binding.retained_root(),
+        binding.source_kind(),
+        &target,
+        resource,
+    )
+    .map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
+            .at_path(format!("ops[{op_index}].args.at"))
+    })?;
+    if inherited.is_none() {
+        return Ok(());
+    }
+    let owner = crate::infrastructure::v13_read::extension_object(operation.at());
+    Err(ApplyPlanError::new(
+        ApplyPlanErrorKind::NotFound,
+        format!(
+            "apply operation `{}` writes content of `{}:{}` that is inherited from the parent: the extension does not hold its `{resource}`; read the parent named by props.extends of `{owner}`",
+            operation.name(),
+            operation.at().source_set(),
+            target.as_str(),
+        ),
+    )
+    .at_path(format!("ops[{op_index}].args.at"))
+    .with_next(serde_json::json!({
+        "tool": "unica.view",
+        "args": {"at": owner},
+        "reason": "props.extends names the parent that holds this content",
+    })))
 }
 
 /// Разбор операции семейством: извлечение частей адреса и аргументов. О
@@ -841,6 +894,9 @@ pub(crate) fn plan_hidden_v13_apply(
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }
+
+#[cfg(test)]
+mod inherited_content_tests;
 
 #[cfg(test)]
 mod tests {

@@ -139,6 +139,8 @@ pub(crate) struct ApplyPlanError {
     kind: ApplyPlanErrorKind,
     path: Option<String>,
     message: String,
+    /// The call that continues past this refusal, when the planner knows it.
+    next: Option<Box<serde_json::Value>>,
 }
 
 impl ApplyPlanError {
@@ -147,7 +149,17 @@ impl ApplyPlanError {
             kind,
             path: None,
             message: message.into(),
+            next: None,
         }
+    }
+
+    pub(crate) fn with_next(mut self, next: serde_json::Value) -> Self {
+        self.next = Some(Box::new(next));
+        self
+    }
+
+    pub(crate) fn next(&self) -> Option<&serde_json::Value> {
+        self.next.as_deref()
     }
 
     pub(crate) const fn kind(&self) -> ApplyPlanErrorKind {

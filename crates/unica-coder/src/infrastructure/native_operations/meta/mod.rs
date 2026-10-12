@@ -134,6 +134,7 @@ pub(crate) use info::{
     with_subsystem_evidence_processing_hook, RegistrarProcessingPhase,
     SubsystemEvidenceProcessingPhase,
 };
+pub(crate) use info_projection::{observe_meta_borrowing_property, observe_meta_info_property};
 pub(crate) use predefined::{read_complete_predefined_items_for_code_type, PredefinedCodeType};
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add};
 #[cfg(test)]
@@ -150,8 +151,8 @@ pub(crate) use validation::{
     service_child_semantics, validate_metadata_owner_shape_8_3_27, MetadataValidator,
 };
 pub(crate) use xml_model::{
-    descriptor_extends_parent, meta_info_child, meta_info_child_text, meta_info_children,
-    meta_info_inner_text, parse_meta_borrowing, MetaBorrowing,
+    configuration_is_extension, descriptor_extends_parent, meta_info_child, meta_info_child_text,
+    meta_info_children, meta_info_inner_text, parse_meta_borrowing, MetaBorrowing,
 };
 
 /// The hidden v0.13 tree delegates metadata branches to the current typed

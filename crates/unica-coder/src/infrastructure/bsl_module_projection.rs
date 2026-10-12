@@ -2962,6 +2962,54 @@ mod tests {
         }
     }
 
+    /// #1381 (по PR #1364): без любого из четырёх флагов среды контексты
+    /// методов и областей неизвестны, тело без фильтра доступно; все флаги
+    /// `false` дают известный пустой список.
+    #[test]
+    fn unknown_execution_flags_do_not_become_empty_or_universal_contexts() {
+        use crate::domain::module_projection::CommonModuleProperties;
+        let known = CommonModuleProperties {
+            global: None,
+            server_call: None,
+            privileged: None,
+            return_values_reuse: None,
+            client_managed_application: Some(false),
+            client_ordinary_application: Some(false),
+            server: Some(true),
+            external_connection: Some(false),
+        };
+        let at = QualifiedAddress::parse("ext:CommonModule.Probe").unwrap();
+        let capability = PlatformProfile::v8_3_27().module_capability(&at).unwrap();
+        for missing in 0..5 {
+            let mut props = known.clone();
+            match missing {
+                0 => props.server = None,
+                1 => props.client_managed_application = None,
+                2 => props.client_ordinary_application = None,
+                3 => props.external_connection = None,
+                _ => {}
+            }
+            let projection = project_module(ModuleProjectionRequest {
+                at: &at, capability, title: "Probe".into(), rev: "fixture", source: Some("#Если Сервер Тогда\nПроцедура Test() Экспорт\nСообщить(1);\nКонецПроцедуры\n#КонецЕсли"),
+                common_module: Some(props), handles: &[], declarative_bindings: &[], extension_targets: &[], platform_event_write: PlatformEventWriteCapability::Unproved,
+            }).unwrap();
+            let method = &projection.methods()[0];
+            assert_eq!(method.compile.contexts.is_none(), missing < 4);
+            assert_eq!(projection.compilation()[0].contexts.is_none(), missing < 4);
+            assert!(!projection
+                .method_body(&method.at, None, 100, None)
+                .unwrap()
+                .lines
+                .is_empty());
+        }
+        let mut no_execution = known;
+        no_execution.server = Some(false);
+        assert_eq!(
+            super::base_contexts(capability, Some(&no_execution)),
+            Some(Vec::new())
+        );
+    }
+
     #[test]
     fn common_module_requires_all_normalized_flags() {
         let at = QualifiedAddress::parse("main:CommonModule.ЗаказыСервер").unwrap();

@@ -1612,17 +1612,24 @@ fn validate_one_child_footprint(
     }
 }
 
-/// The owner descriptor and the child's own descriptor both name a parent
-/// object through `ExtendedConfigurationObject`.
+/// The registering root is an extension, and the owner descriptor and the
+/// child's own descriptor both name a parent object through
+/// `ExtendedConfigurationObject`.
 fn borrowed_child_of_borrowed_owner(
     subject: &MetadataValidationSubject,
     child: &MetadataAddress,
 ) -> bool {
-    let owner_borrowed = subject
+    let extension = subject
         .resources
         .iter()
-        .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
-        .is_some_and(|owner| super::descriptor_extends_parent(&owner.bytes));
+        .find(|resource| matches!(resource.role, MetadataResourceRole::Registration))
+        .is_some_and(|root| super::configuration_is_extension(&root.bytes));
+    let owner_borrowed = extension
+        && subject
+            .resources
+            .iter()
+            .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+            .is_some_and(|owner| super::descriptor_extends_parent(&owner.bytes));
     owner_borrowed
         && subject.resources.iter().any(|resource| {
             matches!(

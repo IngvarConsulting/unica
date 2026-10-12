@@ -115,6 +115,15 @@ fn node_site(
     Some((at, format))
 }
 
+/// The borrowed node carries no companion file of its own: its content is the
+/// parent's, and operations writing that content do not apply.
+fn inherited_node(data: &Map<String, Value>) -> bool {
+    data.get("props")
+        .and_then(|props| props.get("content"))
+        .and_then(Value::as_str)
+        == Some(crate::infrastructure::v13_read::INHERITED_CONTENT)
+}
+
 /// The operation dictionary of a node, computed from the one closed registry
 /// that also validates `apply` calls: registry × applicability to the node's
 /// site (source-set kind, route class and address shape) and, for a
@@ -124,11 +133,16 @@ fn node_site(
 fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Option<Vec<Value>> {
     let (at, format) = node_site(data, context)?;
     let site = OperationSite::new(&at, context)?;
+    // Содержимое заимствованного узла без своего файла принадлежит
+    // родителю: операции, которые пишут это содержимое, `apply` отвергнет,
+    // и словарь их не предлагает.
+    let inherited = inherited_node(data);
     Some(
         OperationRegistry::closed()
             .descriptors()
             .iter()
             .filter(|descriptor| descriptor.applies_to_node(&site, format))
+            .filter(|descriptor| !inherited || descriptor.content_resource().is_none())
             .map(|descriptor| {
                 json!({
                     "op": descriptor.name(),
@@ -226,6 +240,12 @@ pub(super) fn project_view_operation(
         ReadModeError::unsupported_section("operation details require a known node kind")
     })?;
     let site = OperationSite::new(&at, context).expect("node_site proved the operation site");
+    let inherited = inherited_node(data);
+    if inherited && descriptor.content_resource().is_some() {
+        return Err(ReadModeError::bad_value(format!(
+            "operation `{operation}` writes content this borrowed node inherits from the parent; read the parent named by props.extends"
+        )));
+    }
     if !descriptor.applies_to_node(&site, format) {
         let kind = at
             .segments()
@@ -691,5 +711,58 @@ mod tests {
             })
         );
         assert!(filter_diff_data(&filtered, &json!({"command": "rm"})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod inherited_can_tests {
+    use super::{project_view_operation, project_view_sections};
+    use crate::domain::apply::SourceSetTraits;
+    use serde_json::json;
+
+    fn extension() -> super::CanContext {
+        SourceSetTraits::read(
+            crate::domain::project_sources::SourceSetKind::Extension,
+            crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+        )
+    }
+
+    /// #1381: словарь заимствованного узла без своего файла не предлагает
+    /// операций, которые пишут унаследованное содержимое; описание объекта
+    /// по-прежнему пишется.
+    #[test]
+    fn inherited_node_can_hides_content_writers() {
+        let ops = |data: &serde_json::Value| -> Vec<String> {
+            project_view_sections(data, &json!(["can"]), Some(extension())).unwrap()["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["op"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let own = json!({"at":"ext:Role.R","kind":"Role","title":"R","props":{}});
+        let inherited =
+            json!({"at":"ext:Role.R","kind":"Role","title":"R","props":{"content":"inherited"}});
+        assert!(ops(&own).iter().any(|op| op == "right.set"));
+        let inherited_ops = ops(&inherited);
+        assert!(!inherited_ops.iter().any(|op| op == "right.set"));
+        assert!(inherited_ops.iter().any(|op| op == "props.set"));
+
+        let form = json!({"at":"ext:DataProcessor.D.Form.F","kind":"Form","title":"F","props":{"content":"inherited"}});
+        let form_ops = ops(&form);
+        assert!(!form_ops
+            .iter()
+            .any(|op| op == "element.add" || op == "event.bind"));
+        assert!(form_ops.iter().any(|op| op == "form.remove"));
+
+        let refused =
+            project_view_operation(&inherited, &json!(["can"]), Some("right.set"), extension())
+                .expect_err("the detailed contract of a content writer is refused");
+        assert!(refused.to_string().contains("inherits from the parent"));
+        if let Err(error) =
+            project_view_operation(&inherited, &json!(["can"]), Some("props.set"), extension())
+        {
+            assert!(!error.to_string().contains("inherits from the parent"));
+        }
     }
 }

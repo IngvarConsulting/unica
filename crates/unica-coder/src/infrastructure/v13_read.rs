@@ -878,19 +878,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
         payload.insert("collections".to_string(), collections);
-        // Ошибка проекции пофактовой части вида оставляет её поле `null`, и
-        // без этой записи `view` выдал бы непрочитанное за отсутствующее:
-        // узел называет его в `limits`, а ветвь без данных отказывает, а не
-        // отвечает пустым списком. Остальные диагностики читателя (например,
-        // значения заполнения реквизитов) сюда сознательно не входят: их поля
-        // не обнуляют ветвей и адресованы внутренним индексом, а не именем.
-        let unreadable = local
+        // Непрочитанное поле — повреждённое свойство, связь или пофактовая
+        // часть вида — узел называет в `limits`, а ветвь без данных отказывает,
+        // а не отвечает пустым списком: иначе `view` выдал бы непрочитанное за
+        // отсутствующее. Сведения, не зависящие от поля, остаются.
+        let mut unreadable = local
             .diagnostics
             .iter()
             .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)
             .filter_map(|diagnostic| {
                 let field = diagnostic.field.as_deref()?;
-                field.starts_with("details.").then(|| {
+                (field.starts_with("details.")
+                    || field.starts_with("properties.")
+                    || field.starts_with("relations."))
+                .then(|| {
                     json!({
                         "field": field,
                         "message": diagnostic.message,
@@ -898,9 +899,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 })
             })
             .collect::<Vec<_>>();
-        if !unreadable.is_empty() {
-            payload.insert("unreadable".to_string(), Value::Array(unreadable));
-        }
         // Заимствование отвечает только в наборе расширения; там оно есть у
         // всякого объекта, и «своё» — такой же ответ, как «заимствовано».
         if let Some(borrowing) = read.borrowing {
@@ -912,13 +910,28 @@ impl<'a> LogicalViewReadAuthority<'a> {
         // Предопределённые элементы — содержимое самого объекта, и писатель у
         // них есть. Без читателя агент, добавивший элемент, не может
         // подтвердить результат: ни счёта, ни списка, ни адреса.
-        if let Some(predefined) = self.read.predefined_items(
+        // Без известного `CodeType` владельца коды элементов не проверить:
+        // ветвь предопределённых ограничена, а не выдумана и не роняет узел.
+        match self.read.predefined_items(
             target,
             local.kind,
             local.predefined_code_type.as_deref(),
             &mut || self.read_checkpoint(),
-        )? {
-            insert_serialized(&mut payload, "predefinedItems", &predefined)?;
+        ) {
+            Ok(Some(predefined)) => {
+                insert_serialized(&mut payload, "predefinedItems", &predefined)?;
+            }
+            Ok(None) => {}
+            Err(error)
+                if local.predefined_code_type.is_none()
+                    && error.detail() == Some(RefusalDetail::SourceUnreadable) =>
+            {
+                unreadable.push(json!({"field": "predefinedItems", "message": error.to_string()}));
+            }
+            Err(error) => return Err(error),
+        }
+        if !unreadable.is_empty() {
+            payload.insert("unreadable".to_string(), Value::Array(unreadable));
         }
         Ok(Value::Object(payload))
     }
@@ -1520,7 +1533,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Err(ViewError::new(
                 RefusalCode::NotFound,
                 format!(
-                    "`{module_at}` belongs to a borrowed form whose content the extension does not carry: there is no `Form.xml`, and the platform keeps no form module without it; read the parent form named by props.extends of the extension object"
+                    "`{module_at}` belongs to a borrowed form whose content the extension does not carry: there is no `Form.xml`, and the platform keeps no form module without it; read the parent named by props.extends of `{}`",
+                    extension_object(module_at)
                 ),
             ));
         }
@@ -1939,9 +1953,11 @@ impl LogicalViewReadAuthority<'_> {
         )>,
         ViewError,
     > {
+        // Модуль формы живёт в её содержимом: без `Form.xml` платформа его
+        // не хранит, и узлы модуля такой формы в расширении не существуют.
         let resource = match route.reader() {
             LogicalReader::Role => "Rights.xml",
-            LogicalReader::Form => "Form.xml",
+            LogicalReader::Form | LogicalReader::Module => "Form.xml",
             LogicalReader::Xdto => "Package.bin",
             LogicalReader::Dcs | LogicalReader::Mxl => "Template.xml",
             _ => return Ok(None),
@@ -1949,13 +1965,15 @@ impl LogicalViewReadAuthority<'_> {
         if self.read.source_set_kind() != SourceSetKind::Extension {
             return Ok(None);
         }
-        let Some(target) = route.reader_metadata_path() else {
+        let Some(target) =
+            crate::infrastructure::v13_read_port::companion_owner(route.at(), resource)
+        else {
             return Ok(None);
         };
-        self.verify_registered_owner(target, admitted)?;
+        self.verify_registered_owner(&target, admitted)?;
         Ok(self
             .read
-            .inherited_resource(target, resource)?
+            .inherited_resource(&target, resource)?
             .map(|borrowing| (borrowing, resource)))
     }
 
@@ -2000,17 +2018,26 @@ impl LogicalViewReadAuthority<'_> {
             }
             _ => None,
         };
+        if format.is_some() {
+            if let Some(borrowing) = self.read.inherited_resource(&child, "Template.xml")? {
+                // Тела у заимствованного макета в расширении нет: ветвей не
+                // выдумываем, узел называет содержимое унаследованным. Вид
+                // макета в описании расширения платформа пишет умолчанием,
+                // когда его не задали, поэтому он не говорит о виде тела
+                // родителя и остаётся неизвестным.
+                projected = projected
+                    .with_prop("format", Value::Null)
+                    .with_prop("content", json!(INHERITED_CONTENT));
+                for (key, value) in
+                    crate::infrastructure::v13_read_projection::borrowing_props(&borrowing)
+                {
+                    projected = projected.with_prop(&key, value);
+                }
+                return Ok(projected);
+            }
+        }
         if let Some(format) = format {
             projected = projected.with_prop("format", Value::String(format.into()));
-            if self
-                .read
-                .inherited_resource(&child, "Template.xml")?
-                .is_some()
-            {
-                // Тела у заимствованного макета в расширении нет: ветвей не
-                // выдумываем, узел называет содержимое унаследованным.
-                return Ok(projected.with_prop("content", json!(INHERITED_CONTENT)));
-            }
         }
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
@@ -2131,6 +2158,19 @@ impl LogicalViewReadAuthority<'_> {
     }
 }
 
+/// Объект верхнего уровня, чей `props.extends` называет родителя: у формы и
+/// макета владельца адрес родителя разрешается по владельцу.
+pub(crate) fn extension_object(at: &QualifiedAddress) -> String {
+    match at.segments().first() {
+        Some(owner) => format!(
+            "{}:{}",
+            at.source_set(),
+            render_segments(std::slice::from_ref(owner))
+        ),
+        None => at.to_string(),
+    }
+}
+
 /// Значение `props.content` узла, чьё содержимое расширение не несёт.
 pub(crate) const INHERITED_CONTENT: &str = "inherited";
 
@@ -2147,14 +2187,14 @@ fn project_inherited_part(
     resource: &str,
 ) -> Result<NodeViewData, ViewError> {
     let at = route.at();
-    let depth = route
-        .reader_metadata_path()
+    let depth = crate::infrastructure::v13_read_port::companion_owner(at, resource)
         .map_or(0, |target| target.as_str().split('.').count().div_ceil(2));
     if at.segments().len() != depth {
         return Err(ViewError::new(
             RefusalCode::NotFound,
             format!(
-                "`{at}` lies inside content this borrowed object does not carry: the extension has no `{resource}`, so its content is inherited from the parent; read the parent named by props.extends of the extension object"
+                "`{at}` lies inside content this borrowed object does not carry: the extension has no `{resource}`, so its content is inherited from the parent; read the parent named by props.extends of `{}`",
+                extension_object(at)
             ),
         ));
     }
@@ -2482,50 +2522,100 @@ fn common_module_properties(
     let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
     let root = document.root_element();
+    use crate::domain::metadata::{
+        MetaInfoPropertyAbsence, MetaInfoPropertyValue, META_INFO_PROPERTY_PROFILE,
+    };
+    const NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    // Идентичность заимствования проверяется строго до того, как разрешить
+    // пропуски: один объект `CommonModule`, один прямой `Properties` из
+    // пространства имён метаданных, единственные корректные `ObjectBelonging`
+    // и `ExtendedConfigurationObject`. Иначе повреждённый маркер открыл бы
+    // послабление для любого описания.
+    let objects = root
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .collect::<Vec<_>>();
+    let [object] = objects.as_slice() else {
+        return Err(ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "common module descriptor must contain one object",
+        ));
+    };
+    if !object.has_tag_name((NS, "CommonModule")) {
+        return Err(ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "common module descriptor has the wrong object kind",
+        ));
+    }
+    let containers = object
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    let properties = match containers.as_slice() {
+        [node] if node.tag_name().namespace() == Some(NS) => *node,
+        _ => {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "common module descriptor must contain one direct Properties container",
+            ))
+        }
+    };
+    let borrowing_property = |name| {
+        crate::infrastructure::native_operations::meta::observe_meta_borrowing_property(
+            properties,
+            MetadataKind::CommonModule,
+            name,
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))
+    };
+    borrowing_property("ObjectBelonging")?;
     let borrowed = source_kind == SourceSetKind::Extension
-        && crate::infrastructure::native_operations::meta::parse_meta_borrowing(bytes)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
-            .extends
-            .is_some_and(|id| uuid::Uuid::parse_str(&id).is_ok());
+        && borrowing_property("ExtendedConfigurationObject")?.is_some();
     // Платформа 8.3.27 принимает и выгружает заимствованный общий модуль без
     // любого из этих свойств и не переносит в него значения родителя.
     // Отсутствие у заимствованного модуля читается как неизвестное (`None`),
     // у обычного остаётся ошибкой источника. Записанное значение проверяется
     // одинаково.
-    let property = |name: &str| -> Result<Option<roxmltree::Node<'_, '_>>, ViewError> {
-        match root
-            .descendants()
-            .find(|node| node.is_element() && node.tag_name().name() == name)
+    let observe = |name: &str| -> Result<Option<MetaInfoPropertyValue>, ViewError> {
+        let value = crate::infrastructure::native_operations::meta::observe_meta_info_property(
+            properties,
+            MetadataKind::CommonModule,
+            name,
+        )
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
+        if value.is_none()
+            && META_INFO_PROPERTY_PROFILE.absence(MetadataKind::CommonModule, name, borrowed)
+                == MetaInfoPropertyAbsence::Required
         {
-            None if borrowed => Ok(None),
-            None => Err(ViewError::detailed(
+            return Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
                 format!("common module descriptor has no {name} property"),
-            )),
-            Some(node) => Ok(Some(node)),
+            ));
         }
+        Ok(value)
     };
     let boolean = |name: &str| -> Result<Option<bool>, ViewError> {
-        property(name)?
-            .map(|node| match node.text().map(str::trim) {
-                Some("true") => Ok(true),
-                Some("false") => Ok(false),
-                _ => Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    format!("common module {name} property is not boolean"),
-                )),
-            })
-            .transpose()
-    };
-    let return_values_reuse = property("ReturnValuesReuse")?
-        .map(|node| match node.text().map(str::trim) {
-            Some(value) if !value.is_empty() => Ok(value.to_string()),
-            _ => Err(ViewError::detailed(
+        match observe(name)? {
+            Some(MetaInfoPropertyValue::Boolean(value)) => Ok(Some(value)),
+            None => Ok(None),
+            Some(_) => Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
-                "common module ReturnValuesReuse property is empty",
+                format!("common module {name} property is not boolean"),
             )),
-        })
-        .transpose()?;
+        }
+    };
+    let return_values_reuse = match observe("ReturnValuesReuse")? {
+        Some(MetaInfoPropertyValue::String(value)) if !value.trim().is_empty() => {
+            Some(value.trim().to_string())
+        }
+        None => None,
+        Some(_) => {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "common module ReturnValuesReuse property is empty or malformed",
+            ))
+        }
+    };
     Ok(CommonModuleProperties {
         global: boolean("Global")?,
         client_managed_application: boolean("ClientManagedApplication")?,

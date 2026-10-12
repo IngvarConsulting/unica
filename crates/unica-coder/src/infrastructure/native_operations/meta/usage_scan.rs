@@ -305,7 +305,12 @@ fn read_predefined_items(
                 .with_field("predefinedItems"))
             }
         };
-    let code_type = match code_type.unwrap_or("String") {
+    let code_type = match code_type.ok_or_else(|| {
+        MetaDiagnostic::error(
+        MetaDiagnosticCode::ProviderUnavailable,
+        "predefined code validation is unavailable because the owner CodeType is absent or invalid",
+    ).with_metadata_path(metadata_path.clone()).with_field("predefinedItems")
+    })? {
         "String" => super::predefined::PredefinedCodeType::String,
         "Number" => super::predefined::PredefinedCodeType::Number,
         other => {

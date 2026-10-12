@@ -647,10 +647,10 @@ pub(crate) mod tests {
                 declarations: crate::domain::metadata::MetaInfoDeclarations::default(),
                 predefined_code_type: Some("String".to_string()),
                 relations: crate::domain::metadata::MetaRelationsData {
-                    owners: Vec::new(),
-                    register_records: Vec::new(),
-                    based_on: Vec::new(),
-                    input_by_string: Vec::new(),
+                    owners: Some(Some(Vec::new())),
+                    register_records: Some(Some(Vec::new())),
+                    based_on: Some(Some(Vec::new())),
+                    input_by_string: Some(Some(Vec::new())),
                     data_lock_fields: None,
                     source: Vec::new(),
                     source_type_ids: Vec::new(),
@@ -1032,7 +1032,7 @@ pub(crate) mod tests {
             "an inherited child footprint holds no directory"
         );
 
-        for role in ["owner", "child"] {
+        for role in ["owner", "child", "registration"] {
             let (mut subject, _, context, _root) = read(&|_| {});
             let resource = subject
                 .resources
@@ -1040,13 +1040,20 @@ pub(crate) mod tests {
                 .find(|resource| match (role, &resource.role) {
                     ("owner", MetadataResourceRole::Descriptor) => true,
                     ("child", MetadataResourceRole::Form { name, .. }) => name == "Форма",
+                    ("registration", MetadataResourceRole::Registration) => true,
                     _ => false,
                 })
                 .unwrap();
             let text = String::from_utf8(resource.bytes.clone()).unwrap();
-            let start = text.find("<ExtendedConfigurationObject>").unwrap();
-            let end = text.find("</ExtendedConfigurationObject>").unwrap()
-                + "</ExtendedConfigurationObject>".len();
+            // The registration loses its extension purpose; the descriptors
+            // lose their parent.
+            let element = if role == "registration" {
+                "ConfigurationExtensionPurpose"
+            } else {
+                "ExtendedConfigurationObject"
+            };
+            let start = text.find(&format!("<{element}>")).unwrap();
+            let end = text.find(&format!("</{element}>")).unwrap() + element.len() + 3;
             resource.bytes = format!("{}{}", &text[..start], &text[end..]).into_bytes();
             let validation =
                 MetadataOperations::validate(&subject, &context, &CancellationToken::new());
@@ -1054,7 +1061,7 @@ pub(crate) mod tests {
                 validation.diagnostics.iter().any(|diagnostic| diagnostic
                     .message
                     .contains("DataProcessor.Обработка.Form.Форма")),
-                "{role}: an empty footprint needs both descriptors to prove the borrowing"
+                "{role}: an empty footprint needs an extension root and both descriptors to prove the borrowing"
             );
         }
     }
