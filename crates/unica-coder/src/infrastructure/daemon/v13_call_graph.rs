@@ -163,19 +163,36 @@ pub(super) fn declare_method_branches(data: &mut Map<String, Value>) {
 
 /// Есть ли у узла метода граф вызовов: метод BSL-модуля роли, которую
 /// анализатор называет. Модуль формы и команды он называет файлом — такой
-/// метод узнаётся по сегменту `Module` в адресе.
-fn method_has_call_graph(at: &str) -> bool {
-    let Ok(address) = QualifiedAddress::parse(at) else {
-        return false;
-    };
-    match CallGraphIdentity::from_address(&address, None) {
-        Ok(_) => true,
-        Err(CallGraphIdentityError::PathRequired) => address
-            .segments()
-            .iter()
-            .any(|segment| segment.kind() == NodeKind::Module),
-        Err(_) => false,
+/// метод узнаётся по модулю `Form` или `Command` под формой или командой
+/// объекта. Ответ не спрашивает анализатор и не строит раскладку: им узел
+/// называет ветви, а ветвь отказывает до заказа поставки.
+pub(super) fn call_graph_support(at: &QualifiedAddress) -> Result<(), String> {
+    match CallGraphIdentity::from_address(at, None) {
+        Ok(_) => Ok(()),
+        Err(CallGraphIdentityError::PathRequired) => {
+            let segments = at.segments();
+            let module = segments
+                .len()
+                .checked_sub(2)
+                .and_then(|index| segments.get(index))
+                .filter(|segment| segment.kind() == NodeKind::Module);
+            match module.and_then(AddressSegment::name) {
+                Some("Form" | "Command") if segments.len() > 3 => Ok(()),
+                _ => Err("call graph answers for a BSL module method only".to_string()),
+            }
+        }
+        Err(CallGraphIdentityError::UnsupportedRole(role)) => Err(format!(
+            "call graph does not cover module role `{role}` yet"
+        )),
+        Err(CallGraphIdentityError::NotAMethod) => {
+            Err("call graph answers for a method node only".to_string())
+        }
+        Err(CallGraphIdentityError::Malformed(detail)) => Err(detail),
     }
+}
+
+fn method_has_call_graph(at: &str) -> bool {
+    QualifiedAddress::parse(at).is_ok_and(|address| call_graph_support(&address).is_ok())
 }
 
 /// Страница одной ветви: элементы показывают наружу.
@@ -231,6 +248,14 @@ pub(super) fn branch_collection(
     }
     if let Some(revision) = result.revision {
         props.insert("graphRevision".to_string(), json!(revision));
+    }
+    // Счёт соседей — от анализатора, а не длина страницы: он верен и при
+    // урезанной странице и включает соседей без адреса. Печатается только
+    // у готового графа, где ноль — доказанное отсутствие вызовов.
+    if result.state == CallGraphState::Ready {
+        if let Some(total) = result.total {
+            props.insert("total".to_string(), json!(total));
+        }
     }
     node.insert("props".to_string(), Value::Object(props));
     node.insert("items".to_string(), Value::Array(items));
@@ -598,6 +623,12 @@ mod tests {
             .unwrap()
             .get("items")
             .is_none());
+        assert!(
+            not_ready_answer.data.as_ref().unwrap()["props"]
+                .get("total")
+                .is_none(),
+            "a graph that is not ready prints no total"
+        );
         assert!(not_ready_answer.page.is_none());
         assert!(not_ready_answer.cursor.is_none());
         assert!(not_ready_answer.rev.is_none());
@@ -667,6 +698,26 @@ mod tests {
         );
         declare_method_branches(&mut form);
         assert_eq!(form["branches"].as_array().unwrap().len(), 2);
+        // Модуль общей формы и набора записей граф пока не покрывает.
+        for unsupported in [
+            "main:CommonForm.Форма.Module.Form.Method.ПриОткрытии",
+            "main:InformationRegister.Курсы.Module.RecordSet.Method.ПередЗаписью",
+        ] {
+            let mut node = Map::new();
+            node.insert("kind".to_string(), json!("Method"));
+            node.insert("at".to_string(), json!(unsupported));
+            declare_method_branches(&mut node);
+            assert!(node.get("branches").is_none(), "{unsupported}");
+        }
+        // Команда объекта, как и форма, названа файлом, и граф у неё есть.
+        let mut command = Map::new();
+        command.insert("kind".to_string(), json!("Method"));
+        command.insert(
+            "at".to_string(),
+            json!("main:Catalog.Валюты.Command.Обновить.Module.Command.Method.Обработка"),
+        );
+        declare_method_branches(&mut command);
+        assert_eq!(command["branches"].as_array().unwrap().len(), 2);
         // Метод HTTP-сервиса — не метод BSL: ветвей графа у него нет.
         let mut http = Map::new();
         http.insert("kind".to_string(), json!("Method"));
@@ -727,6 +778,8 @@ mod tests {
         assert_eq!(page["kind"], "Caller");
         assert_eq!(page["props"]["callGraph"], "ready");
         assert_eq!(page["props"]["graphRevision"], 1);
+        // Счёт — от анализатора: в нём и сосед без адреса.
+        assert_eq!(page["props"]["total"], 3);
         assert_eq!(
             page["items"],
             json!([

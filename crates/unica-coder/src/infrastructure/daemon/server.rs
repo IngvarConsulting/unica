@@ -2968,6 +2968,34 @@ pub(crate) mod actor_capacity_tests {
                     "{kind}: {result:?}"
                 );
             }
+            // Ветвь метода без графа отказывает по адресу и поставку не
+            // заказывает, хотя здесь заказ был бы возможен.
+            for branch in [
+                "main:HTTPService.Связь.URLTemplate.Шаблон.Method.POST.Caller",
+                "main:CommonForm.Форма.Module.Form.Method.ПриОткрытии.Callee",
+                "main:InformationRegister.Курсы.Module.RecordSet.Method.ПередЗаписью.Caller",
+            ] {
+                let result = submit_canonical(
+                    &runtime,
+                    &workspace,
+                    ToolIdentity::View,
+                    serde_json::json!({"at": branch}),
+                );
+                assert!(!result.ok, "a branch without a call graph is refused");
+                assert_eq!(
+                    serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                    "bad_value",
+                    "a branch without a call graph is refused by its address"
+                );
+                assert!(
+                    result
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("delivery"))
+                        .is_none(),
+                    "a branch without a call graph never orders the analyzer"
+                );
+            }
             for arguments in [
                 serde_json::json!({"query":"Needle","role":"lexical"}),
                 serde_json::json!({"query":"Needle"}),
@@ -10318,17 +10346,25 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(provider.0.load(Ordering::SeqCst), 0);
 
         let caller = view(serde_json::json!({"at": format!("{method}.Caller")}));
-        crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
-            .with(|slot| *slot.borrow_mut() = None);
         assert!(caller.ok, "{caller:?}");
         let page = caller.data.as_ref().unwrap();
         assert_eq!(page["kind"], "Caller");
         assert_eq!(page["props"]["callGraph"], "ready");
+        assert_eq!(page["props"]["total"], 1, "the branch carries its total");
         assert_eq!(page["items"][0]["at"], method, "{caller:?}");
+        let callee = view(serde_json::json!({"at": format!("{method}.Callee")}));
+        assert!(callee.ok, "{callee:?}");
+        assert_eq!(
+            callee.data.as_ref().unwrap()["props"]["total"],
+            0,
+            "a ready empty branch proves the absence of calls"
+        );
+        crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+            .with(|slot| *slot.borrow_mut() = None);
         assert_eq!(
             provider.0.load(Ordering::SeqCst),
-            2,
-            "both directions are read"
+            4,
+            "each branch read asks both directions"
         );
     }
 
@@ -10343,7 +10379,7 @@ struct ActorLogicalReadLease {"#,
             use unica_bootstrap::{BootstrapError, DownloadObserver, Downloader};
 
             /// Holds the only download until the test releases it, so the
-            /// delivery stays in flight while `check` runs.
+            /// delivery stays in flight while the branch view runs.
             struct HeldDownload {
                 entered: Mutex<mpsc::Sender<()>>,
                 release: Mutex<mpsc::Receiver<()>>,

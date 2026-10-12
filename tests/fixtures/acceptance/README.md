@@ -193,7 +193,10 @@ S390 исполняет драйвер `fault-injection/analyzer-delivery-failur
 ни манифеста выпуска. Обычное чтение метода поставку не заказывает, а чтение
 каждой ветви заказывает её и получает типизированный отказ «нет движка» с
 классом провала `configuration`. Состояние поставки `working` корпус не
-воспроизводит: для этого нужен управляемый медленный источник выпуска.
+воспроизводит: для этого нужен управляемый медленный источник выпуска. Его
+проверяет Rust-тест
+`call_graph_branch_answers_working_while_the_analyzer_is_being_delivered`
+в `crates/unica-coder/src/infrastructure/daemon/server.rs`.
 
 S347–S348 используют синтетическое `workspace-metadata-warning/`:
 публичный журнал документов с пустыми RegisteredDocuments возвращает

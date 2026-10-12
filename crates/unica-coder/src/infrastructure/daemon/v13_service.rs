@@ -9,9 +9,9 @@ const CALL_GRAPH_ENGINE: &str = "bsl-analyzer";
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
 use super::v13_call_graph::{
-    branch_collection, branch_direction, branch_owner, complete_branch, declare_method_branches,
-    fetch_summary, module_file_for_placed, placed_for_module_file, unready_branch_result,
-    CallGraphFetchError, CallGraphSummary, CompleteBranchError,
+    branch_collection, branch_direction, branch_owner, call_graph_support, complete_branch,
+    declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
+    unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
 use super::v13_read_modes::{filter_diff_data, project_view_operation, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
@@ -537,6 +537,12 @@ impl CanonicalV13ReadService {
                     "call graph branch does not accept a filter",
                 );
             }
+            // Ветвь метода, у которого графа нет (метод HTTP-сервиса, модуль
+            // непокрытой роли), отказывает по адресу, до чтения владельца и заказа поставки: ни скачивание,
+            // ни наличие движка не меняют этого ответа.
+            if let Err(message) = call_graph_support(&owner) {
+                return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
+            }
             let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
             let owner_result = service.view(match ViewRequest::new(&owner.to_string()) {
                 Ok(request) => request,
@@ -562,9 +568,17 @@ impl CanonicalV13ReadService {
             // машине, она поставляет этим же вызовом, как `check` и `search`:
             // пока поставка идёт, ответ просит повтор, провал поставки — её
             // типизированный отказ, а не граф «недоступен».
-            if let Some(plugin_root) = crate::infrastructure::plugin_runtime::find_plugin_root(
+            let plugin_root = crate::infrastructure::plugin_runtime::find_plugin_root(
                 &invocation.workspace_context().cwd,
-            ) {
+            );
+            // Тестовый поставщик графа заменяет анализатор: заказывать его
+            // поставку тогда незачем, и тест не зависит от окружения.
+            #[cfg(test)]
+            let plugin_root = plugin_root.filter(|_| {
+                crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+                    .with(|slot| slot.borrow().is_none())
+            });
+            if let Some(plugin_root) = plugin_root {
                 let progress =
                     crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
                 let state = crate::infrastructure::engine_delivery::deliver_if_missing(
