@@ -7753,3 +7753,241 @@ fn retained_mxl_check_keeps_unbounded_body_read_and_format_warnings() {
     fixture.cancellation.cancel();
     assert!(authority.mxl_validation_input(&at).is_err());
 }
+
+/// Описание из выгрузки платформы, сверенное с `manifest.json` опыта: тест
+/// читает ровно ту форму, которую выгрузила платформа.
+fn platform_borrow_fixture(name: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let manifest: serde_json::Value =
+        serde_json::from_str(&fixture_text("platform_8_3_27/cfe_borrow/manifest.json")).unwrap();
+    let text = fixture_text(&format!("platform_8_3_27/cfe_borrow/{name}"));
+    let digest = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        manifest["files"][name]["sha256"].as_str(),
+        Some(digest.as_str()),
+        "{name} differs from the platform export recorded in the manifest"
+    );
+    text
+}
+
+/// Дерево из выгрузки опыта #1381: роль, общая форма, обработка с формой и
+/// двумя макетами и пакет XDTO заимствованы без своих файлов содержимого.
+fn install_inherited_objects(fixture: &RealReaderFixture) {
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<CommonForm>ОбщаяФорма</CommonForm><DataProcessor>Обработка</DataProcessor><XDTOPackage>ПакетОбмена</XDTOPackage></ChildObjects>",
+        ),
+    );
+    fs::remove_dir_all(fixture.source.join("Roles/SalesReader")).unwrap();
+    for (relative, name) in [
+        ("Roles/SalesReader.xml", "extension-role-inherited.xml"),
+        (
+            "CommonForms/ОбщаяФорма.xml",
+            "extension-common-form-inherited.xml",
+        ),
+        (
+            "DataProcessors/Обработка.xml",
+            "extension-data-processor.xml",
+        ),
+        (
+            "DataProcessors/Обработка/Forms/Форма.xml",
+            "extension-object-form-inherited.xml",
+        ),
+        (
+            "DataProcessors/Обработка/Templates/Макет.xml",
+            "extension-template-spreadsheet-inherited.xml",
+        ),
+        (
+            "DataProcessors/Обработка/Templates/СхемаКомпоновки.xml",
+            "extension-template-schema-inherited.xml",
+        ),
+        (
+            "XDTOPackages/ПакетОбмена.xml",
+            "extension-xdto-package-inherited.xml",
+        ),
+    ] {
+        write(
+            &fixture.source.join(relative),
+            &platform_borrow_fixture(name),
+        );
+    }
+}
+
+/// #1381: платформа 8.3.27 выгружает заимствованные роль, формы, макеты и
+/// пакет XDTO без `Rights.xml`, `Form.xml`, `Template.xml` и `Package.bin`.
+/// Такой узел читается по описанию: заимствование, `content: "inherited"`,
+/// ни счёта, ни ветвей содержимого. Адрес внутри содержимого отказывает
+/// `not_found`, а не `source_unreadable`.
+#[test]
+fn borrowed_objects_without_companion_files_read_their_content_as_inherited() {
+    let fixture = RealReaderFixture::new();
+    install_inherited_objects(&fixture);
+    let service = fixture.extension_view_service();
+    for (at, kind) in [
+        ("main:Role.SalesReader", "Role"),
+        ("main:CommonForm.ОбщаяФорма", "Form"),
+        ("main:DataProcessor.Обработка.Form.Форма", "Form"),
+        ("main:XDTOPackage.ПакетОбмена", "XDTOPackage"),
+    ] {
+        let view = service.view(ViewRequest::new(at).unwrap());
+        assert!(view.ok, "{at}: an inherited node must be readable");
+        let data = view.data.unwrap();
+        assert_eq!(data["kind"], kind, "{at}");
+        assert_eq!(data["props"]["content"], "inherited", "{at}");
+        assert_eq!(data["props"]["belonging"], "borrowed", "{at}");
+        assert!(
+            data["props"]["parentId"].is_string(),
+            "{at}: the parent stays addressable"
+        );
+        assert!(
+            data.get("branches").is_none(),
+            "{at}: no branch is invented for content the extension does not carry"
+        );
+    }
+    assert_eq!(
+        service
+            .view(ViewRequest::new("main:Role.SalesReader").unwrap())
+            .data
+            .unwrap()["props"]["overrides"],
+        "Rights"
+    );
+    for (at, format) in [
+        (
+            "main:DataProcessor.Обработка.Template.Макет",
+            "SpreadsheetDocument",
+        ),
+        (
+            "main:DataProcessor.Обработка.Template.СхемаКомпоновки",
+            "DataCompositionSchema",
+        ),
+    ] {
+        let view = service.view(ViewRequest::new(at).unwrap());
+        assert!(view.ok, "{at}: an inherited template must be readable");
+        let data = view.data.unwrap();
+        assert_eq!(data["props"]["format"], format, "{at}");
+        assert_eq!(data["props"]["content"], "inherited", "{at}");
+        assert!(data.get("branches").is_none(), "{at}");
+    }
+    for (at, resource) in [
+        ("main:Role.SalesReader.Right", "Rights.xml"),
+        ("main:CommonForm.ОбщаяФорма.Item", "Form.xml"),
+        ("main:CommonForm.ОбщаяФорма.Module.Form", "Form.xml"),
+        (
+            "main:DataProcessor.Обработка.Form.Форма.Attribute",
+            "Form.xml",
+        ),
+        (
+            "main:DataProcessor.Обработка.Template.СхемаКомпоновки.DataSet",
+            "Template.xml",
+        ),
+        (
+            "main:DataProcessor.Обработка.Template.Макет.Area",
+            "Template.xml",
+        ),
+        ("main:XDTOPackage.ПакетОбмена.Type", "Package.bin"),
+    ] {
+        let view = service.view(ViewRequest::new(at).unwrap());
+        assert!(!view.ok, "{at}: inherited content has no interior here");
+        assert_eq!(view.diagnostics[0]["code"], "not_found", "{at}");
+        assert!(
+            view.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(
+                    |message| message.contains(resource) && message.contains("props.extends")
+                ),
+            "{at}: the refusal names the absent file and the way to the parent"
+        );
+    }
+    let owner = service.view(ViewRequest::new("main:DataProcessor.Обработка").unwrap());
+    assert!(owner.ok, "the borrowed owner of inherited children reads");
+}
+
+/// #1381: послабление касается только заимствованного объекта расширения.
+/// В конфигурации, у собственного объекта расширения и у заимствованного
+/// объекта со своим файлом отсутствие файла остаётся ошибкой источника, а
+/// присутствующий файл читается как прежде.
+#[test]
+fn missing_companion_file_stays_a_source_error_outside_borrowing() {
+    let fixture = RealReaderFixture::new();
+    install_inherited_objects(&fixture);
+    let configuration = fixture.view_service();
+    for at in [
+        "main:Role.SalesReader",
+        "main:CommonForm.ОбщаяФорма",
+        "main:XDTOPackage.ПакетОбмена",
+        "main:DataProcessor.Обработка.Template.Макет",
+    ] {
+        let view = configuration.view(ViewRequest::new(at).unwrap());
+        assert!(!view.ok, "{at}: a configuration object needs its file");
+        assert_eq!(
+            view.diagnostics[0]["detailCode"], "source_unreadable",
+            "{at}"
+        );
+    }
+
+    for (descriptor, at) in [
+        ("Roles/SalesReader.xml", "main:Role.SalesReader"),
+        ("CommonForms/ОбщаяФорма.xml", "main:CommonForm.ОбщаяФорма"),
+        (
+            "XDTOPackages/ПакетОбмена.xml",
+            "main:XDTOPackage.ПакетОбмена",
+        ),
+        (
+            "DataProcessors/Обработка/Templates/Макет.xml",
+            "main:DataProcessor.Обработка.Template.Макет",
+        ),
+    ] {
+        let own = RealReaderFixture::new();
+        install_inherited_objects(&own);
+        let path = own.source.join(descriptor);
+        let text = fs::read_to_string(&path).unwrap();
+        let start = text.find("<ExtendedConfigurationObject>").unwrap();
+        let end = text.find("</ExtendedConfigurationObject>").unwrap()
+            + "</ExtendedConfigurationObject>".len();
+        write(&path, &format!("{}{}", &text[..start], &text[end..]));
+        let view = own
+            .extension_view_service()
+            .view(ViewRequest::new(at).unwrap());
+        assert!(!view.ok, "{at}: an own extension object needs its file");
+        assert_eq!(
+            view.diagnostics[0]["detailCode"], "source_unreadable",
+            "{at}"
+        );
+    }
+
+    // Маркер без UUID родителя заимствования не доказывает.
+    let marked = RealReaderFixture::new();
+    install_inherited_objects(&marked);
+    let path = marked.source.join("Roles/SalesReader.xml");
+    let text = fs::read_to_string(&path).unwrap();
+    let start =
+        text.find("<ExtendedConfigurationObject>").unwrap() + "<ExtendedConfigurationObject>".len();
+    let end = text.find("</ExtendedConfigurationObject>").unwrap();
+    write(&path, &format!("{}parent{}", &text[..start], &text[end..]));
+    let view = marked
+        .extension_view_service()
+        .view(ViewRequest::new("main:Role.SalesReader").unwrap());
+    assert!(
+        !view.ok,
+        "a marker without a parent UUID proves no borrowing"
+    );
+    assert_eq!(view.diagnostics[0]["detailCode"], "source_unreadable");
+
+    copy_fixture(
+        "acceptance/workspace-borrowed/src/cf/Roles/SalesReader/Ext/Rights.xml",
+        &fixture.source.join("Roles/SalesReader/Ext/Rights.xml"),
+    );
+    let view = fixture
+        .extension_view_service()
+        .view(ViewRequest::new("main:Role.SalesReader").unwrap());
+    assert!(view.ok, "a borrowed role with its own rights reads them");
+    let data = view.data.unwrap();
+    assert!(data["props"].get("content").is_none());
+    assert_eq!(data["props"]["totalallowed"], 0);
+}

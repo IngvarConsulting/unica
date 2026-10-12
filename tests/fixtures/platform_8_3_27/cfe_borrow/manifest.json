@@ -36,6 +36,46 @@
       "sha256": "3fea75ac5715bc702a358d093c74b7b43e1ae369670ca644bed0757a7dd8956f",
       "size": 1598,
       "source": "Raw platform export of the parent CommonModule adopted by extension-common-module-inherited.xml; its Privileged=true and ReturnValuesReuse=DuringRequest are not copied into the extension descriptor (#1304)."
+    },
+    "extension-role-inherited.xml": {
+      "sha256": "1253fba5bab4d0cd440e5a085cb80e763ddbc268cde22676f46b1275acbfbc36",
+      "size": 1375,
+      "source": "Raw platform export of an adopted Role imported without Ext/Rights.xml: no rights file is exported, the platform adds only PropertyState Rights/Extended (#1381)."
+    },
+    "extension-common-form-inherited.xml": {
+      "sha256": "7e6bd863d496c95272f9a4415d449490e67f7dd22b7754d2aa1461e2c61c46ae",
+      "size": 1394,
+      "source": "Raw platform export of an adopted CommonForm imported without Ext/Form.xml: no form file is exported, the platform adds only PropertyState Form/Extended (#1381)."
+    },
+    "extension-data-processor.xml": {
+      "sha256": "3caf5e1a725d5d78bd5093a002d95d45b7e206f6fcdbea4aa13ba9d5f3a33416",
+      "size": 1924,
+      "source": "Raw platform export of an adopted DataProcessor whose adopted form and two adopted templates carry no payload files (#1381)."
+    },
+    "extension-object-form-inherited.xml": {
+      "sha256": "7be6c5a45850d7c9d963a52e7acb50368787be9ae537a6acab83da15aa8c5c46",
+      "size": 1372,
+      "source": "Raw platform export of an adopted object form imported without Ext/Form.xml; same shape as the adopted CommonForm (#1381)."
+    },
+    "extension-template-spreadsheet-inherited.xml": {
+      "sha256": "9ce6b784852ec2cfe6b93068bd599ea2937fbcaeebe4fae8da1f83cb31a22d4f",
+      "size": 1296,
+      "source": "Raw platform export of an adopted object template imported without TemplateType and Ext/Template.xml: the platform writes TemplateType SpreadsheetDocument and no template body (#1381)."
+    },
+    "extension-template-schema-inherited.xml": {
+      "sha256": "447a94b6fc8b75d5342575dc75f6ba88ee7b2b3105b27a37b9333b825e8b0c25",
+      "size": 1318,
+      "source": "Raw platform export of an adopted DataCompositionSchema template imported with TemplateType but without Ext/Template.xml (#1381)."
+    },
+    "extension-common-template-inherited.xml": {
+      "sha256": "608c10e0de2ae6c8782219f8c54a2318ec12594033779dd193a94b087de5ade6",
+      "size": 1318,
+      "source": "Raw platform export of an adopted CommonTemplate imported without Ext/Template.xml (#1381)."
+    },
+    "extension-xdto-package-inherited.xml": {
+      "sha256": "1bd78b0d3b0911b8853107cd4c283e1460ffd1ead1d6683377c53141af42da1a",
+      "size": 1261,
+      "source": "Raw platform export of an adopted XDTOPackage imported without Namespace and Ext/Package.bin: neither is exported (#1381)."
     }
   }
 }

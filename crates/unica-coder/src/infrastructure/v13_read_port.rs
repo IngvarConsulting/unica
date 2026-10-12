@@ -30,8 +30,8 @@ use crate::infrastructure::native_operations::dcs::parse_dcs_info_xml;
 use crate::infrastructure::native_operations::form::parse_form_info_xml;
 use crate::infrastructure::native_operations::form::FormInfoData;
 use crate::infrastructure::native_operations::meta::{
-    parse_child_profile_from_bytes, parse_meta_borrowing, parse_typed_meta_local_info,
-    MetaBorrowing,
+    descriptor_extends_parent, parse_child_profile_from_bytes, parse_meta_borrowing,
+    parse_typed_meta_local_info, MetaBorrowing,
 };
 use crate::infrastructure::native_operations::mxl::parse_mxl_info_xml;
 use crate::infrastructure::native_operations::role::parse_role_info_xml;
@@ -836,6 +836,43 @@ impl ProviderReadAuthority {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+    }
+
+    /// Заимствование объекта, чей сопутствующий файл расширение не несёт.
+    ///
+    /// Платформа 8.3.27 импортирует и выгружает заимствованные роль, форму,
+    /// пакет XDTO и макет без `Rights.xml`, `Form.xml`, `Package.bin` и
+    /// `Template.xml`: своего содержимого у такого объекта в расширении нет,
+    /// действует содержимое родителя. `Some` — именно этот случай: набор
+    /// вида `extension`, файла нет, а дескриптор указывает родителя через
+    /// `ExtendedConfigurationObject`. У обычного и собственного объекта
+    /// расширения отсутствие файла остаётся ошибкой источника у читателя.
+    pub(crate) fn inherited_resource(
+        &self,
+        target: &MetadataAddress,
+        resource: &str,
+    ) -> Result<Option<MetaBorrowing>, ViewError> {
+        if self.source_set_kind != SourceSetKind::Extension {
+            return Ok(None);
+        }
+        let relative = self.attached_resource_relative(target, resource)?;
+        match self.root.open_relative_regular_nofollow(&relative) {
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    error.to_string(),
+                ))
+            }
+        }
+        let descriptor = self.metadata_descriptor(target)?;
+        if !descriptor_extends_parent(&descriptor) {
+            return Ok(None);
+        }
+        parse_meta_borrowing(&descriptor)
+            .map(Some)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     /// Локальное чтение объекта: разбор дескриптора и заимствование берутся из

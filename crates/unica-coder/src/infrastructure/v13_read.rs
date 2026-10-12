@@ -1512,6 +1512,18 @@ impl<'a> LogicalViewReadAuthority<'a> {
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &form.logical_path()).map_err(
                 |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
             )?;
+        if self
+            .read
+            .inherited_resource(&metadata_path, "Form.xml")?
+            .is_some()
+        {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                format!(
+                    "`{module_at}` belongs to a borrowed form whose content the extension does not carry: there is no `Form.xml`, and the platform keeps no form module without it; read the parent form named by props.extends of the extension object"
+                ),
+            ));
+        }
         let data = self.form_data(&metadata_path, admitted)?;
         Ok(form_semantic_inputs(form_at, &FormEventEvidence::from_info(&data)).bindings)
     }
@@ -1646,6 +1658,12 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         if route.reader() != LogicalReader::Role {
             return Ok(at.clone());
         }
+        if let Some((borrowing, resource)) = self.inherited_route_part(&route, admitted)? {
+            // Без своих прав каноническим остаётся сам адрес роли; адрес
+            // права внутри неё отказывает так же, как в `view`.
+            project_inherited_part(&route, &borrowing, resource)?;
+            return Ok(at.clone());
+        }
         let payload = self.typed_payload_for(&route, admitted)?;
         let projected = project_typed_payload(&route, payload)?;
         #[cfg(test)]
@@ -1757,7 +1775,10 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         let module_filter = validate_view_filter(&route, filter)?;
-        let projected = if route.reader() == LogicalReader::Module {
+        let inherited = self.inherited_route_part(&route, admitted)?;
+        let projected = if let Some((borrowing, resource)) = &inherited {
+            project_inherited_part(&route, borrowing, resource)?
+        } else if route.reader() == LogicalReader::Module {
             self.module_view(&route, admitted, &module_filter)?
         } else if route.reader() == LogicalReader::Configuration
             && matches!(
@@ -1857,7 +1878,13 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             let projected = project_typed_payload(&route, payload)?;
             self.with_template_body_branches(projected, &route)?
         };
-        let projected = self.with_module_branch(projected, at, admitted)?;
+        // Модуль формы без `Form.xml` платформа не выгружает: ветви модуля у
+        // унаследованной формы нет.
+        let projected = if inherited.is_some() {
+            projected
+        } else {
+            self.with_module_branch(projected, at, admitted)?
+        };
         self.read_checkpoint()?;
         if admitted.revision != self.exact_revision()? {
             return Err(ViewError::new(
@@ -1896,6 +1923,40 @@ impl LogicalViewReadAuthority<'_> {
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
         self.verify_registered_owner(&target, admitted)
+    }
+
+    /// Сопутствующий файл, которого заимствованный объект в расширении не
+    /// несёт (см. `ProviderReadAuthority::inherited_resource`): права роли,
+    /// описание формы, пакет XDTO или тело макета.
+    fn inherited_route_part(
+        &self,
+        route: &LogicalTreeRoute,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<
+        Option<(
+            crate::infrastructure::native_operations::meta::MetaBorrowing,
+            &'static str,
+        )>,
+        ViewError,
+    > {
+        let resource = match route.reader() {
+            LogicalReader::Role => "Rights.xml",
+            LogicalReader::Form => "Form.xml",
+            LogicalReader::Xdto => "Package.bin",
+            LogicalReader::Dcs | LogicalReader::Mxl => "Template.xml",
+            _ => return Ok(None),
+        };
+        if self.read.source_set_kind() != SourceSetKind::Extension {
+            return Ok(None);
+        }
+        let Some(target) = route.reader_metadata_path() else {
+            return Ok(None);
+        };
+        self.verify_registered_owner(target, admitted)?;
+        Ok(self
+            .read
+            .inherited_resource(target, resource)?
+            .map(|borrowing| (borrowing, resource)))
     }
 
     /// A template's own body (data sets of a DCS, areas of a spreadsheet) is
@@ -1941,6 +2002,15 @@ impl LogicalViewReadAuthority<'_> {
         };
         if let Some(format) = format {
             projected = projected.with_prop("format", Value::String(format.into()));
+            if self
+                .read
+                .inherited_resource(&child, "Template.xml")?
+                .is_some()
+            {
+                // Тела у заимствованного макета в расширении нет: ветвей не
+                // выдумываем, узел называет содержимое унаследованным.
+                return Ok(projected.with_prop("content", json!(INHERITED_CONTENT)));
+            }
         }
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
@@ -2059,6 +2129,57 @@ impl LogicalViewReadAuthority<'_> {
         }
         Ok(projected.with_branch(branch))
     }
+}
+
+/// Значение `props.content` узла, чьё содержимое расширение не несёт.
+pub(crate) const INHERITED_CONTENT: &str = "inherited";
+
+/// Узел заимствованного объекта без своего сопутствующего файла.
+///
+/// Сам объект читается по дескриптору: заимствование и адрес родителя, а
+/// `content: "inherited"` говорит, что прав, элементов формы, типов пакета
+/// или тела макета в расширении нет и действует содержимое родителя. Счёт и
+/// ветви не выдумываются. Адрес внутри такого содержимого в этом наборе не
+/// существует: отказ `not_found` направляет к родителю.
+fn project_inherited_part(
+    route: &LogicalTreeRoute,
+    borrowing: &crate::infrastructure::native_operations::meta::MetaBorrowing,
+    resource: &str,
+) -> Result<NodeViewData, ViewError> {
+    let at = route.at();
+    let depth = route
+        .reader_metadata_path()
+        .map_or(0, |target| target.as_str().split('.').count().div_ceil(2));
+    if at.segments().len() != depth {
+        return Err(ViewError::new(
+            RefusalCode::NotFound,
+            format!(
+                "`{at}` lies inside content this borrowed object does not carry: the extension has no `{resource}`, so its content is inherited from the parent; read the parent named by props.extends of the extension object"
+            ),
+        ));
+    }
+    let kind = if route.reader() == LogicalReader::Form {
+        NodeKind::Form
+    } else {
+        at.segments()
+            .last()
+            .map(AddressSegment::kind)
+            .unwrap_or(NodeKind::Configuration)
+    };
+    let title = at
+        .segments()
+        .last()
+        .and_then(AddressSegment::name)
+        .unwrap_or(kind.as_str())
+        .to_string();
+    let mut props = crate::infrastructure::v13_read_projection::borrowing_props(borrowing);
+    props.insert("content".into(), json!(INHERITED_CONTENT));
+    Ok(NodeViewData::Node(NodeView::new(
+        at.to_string(),
+        kind.as_str(),
+        title,
+        props,
+    )))
 }
 
 fn module_branch_owner(branch: &QualifiedAddress) -> Result<Option<MetadataAddress>, ViewError> {

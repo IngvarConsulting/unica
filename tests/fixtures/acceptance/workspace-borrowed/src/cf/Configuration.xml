@@ -250,8 +250,13 @@
 		</Properties>
 		<ChildObjects>
 			<Language>Русский</Language>
+			<Role>SalesReader</Role>
+			<CommonTemplate>ОбщийМакет</CommonTemplate>
 			<CommonModule>КешЗначений</CommonModule>
 			<CommonModule>СерверныеФункции</CommonModule>
+			<XDTOPackage>ПакетОбмена</XDTOPackage>
+			<CommonForm>ОбщаяФорма</CommonForm>
+			<DataProcessor>Обработка</DataProcessor>
 		</ChildObjects>
 	</Configuration>
 </MetaDataObject>
