@@ -245,7 +245,7 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     let service = fixture.extension_view_service();
 
     let view = service.view(ViewRequest::new("main:CommonModule.КешЗначений").unwrap());
-    assert!(view.ok, "{:?}", view.diagnostics);
+    assert!(view.ok, "view must succeed");
     let data = view.data.unwrap();
     for key in COMMON_MODULE_PROPERTY_KEYS {
         assert_eq!(
@@ -256,18 +256,18 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     }
     let method = service
         .view(ViewRequest::new("main:CommonModule.КешЗначений.Method.ПР_Удвоенное").unwrap());
-    assert!(method.ok, "{:?}", method.diagnostics);
+    assert!(method.ok, "method must succeed");
     let method = method.data.unwrap();
     assert_eq!(method["kind"], "Method");
     assert_eq!(method["props"]["export"], true);
     assert_eq!(
         method["props"]["compile"]["contexts"],
         serde_json::Value::Null,
-        "contexts of a borrowed module without environment flags are unknown: {method}"
+        "contexts of a borrowed module without environment flags are unknown"
     );
     let body = service
         .view(ViewRequest::new("main:CommonModule.КешЗначений.Method.ПР_Удвоенное.Body").unwrap());
-    assert!(body.ok, "{:?}", body.diagnostics);
+    assert!(body.ok, "body must succeed");
     let filtered = service.view(
         ViewRequest::new("main:CommonModule.КешЗначений.Method")
             .unwrap()
@@ -279,12 +279,11 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     assert!(!filtered.ok, "an unknown context must not filter methods");
     assert_eq!(
         filtered.diagnostics[0]["code"], "unsupported_filter",
-        "{:?}",
-        filtered.diagnostics
+        "an unknown context refuses the filter"
     );
 
     let view = service.view(ViewRequest::new("main:CommonModule.СерверныеФункции").unwrap());
-    assert!(view.ok, "{:?}", view.diagnostics);
+    assert!(view.ok, "view must succeed");
     let common = &view.data.as_ref().unwrap()["props"]["commonModule"];
     assert_eq!(common["server"], true);
     assert_eq!(common["externalConnection"], true);
@@ -292,7 +291,7 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     assert_eq!(common["privileged"], serde_json::Value::Null);
     let method = service
         .view(ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Удвоенное").unwrap());
-    assert!(method.ok, "{:?}", method.diagnostics);
+    assert!(method.ok, "method must succeed");
     assert_eq!(
         method.data.unwrap()["props"]["compile"]["contexts"],
         json!([
@@ -310,7 +309,7 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
                 json!("server"),
             )])),
     );
-    assert!(filtered.ok, "{:?}", filtered.diagnostics);
+    assert!(filtered.ok, "filtered must succeed");
 }
 
 /// #1304: контексты известны только при всех четырёх флагах среды.
@@ -363,14 +362,14 @@ fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contex
         );
         let service = fixture.extension_view_service();
         let module = service.view(ViewRequest::new("main:CommonModule.СерверныеФункции").unwrap());
-        assert!(module.ok, "{flag}: {:?}", module.diagnostics);
+        assert!(module.ok, "{flag}: module view must succeed");
         let common = &module.data.as_ref().unwrap()["props"]["commonModule"];
         assert_eq!(common[flag], serde_json::Value::Null, "{flag}");
         assert_eq!(common["serverCall"], true, "{flag}");
         let method = service.view(
             ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Разность").unwrap(),
         );
-        assert!(method.ok, "{flag}: {:?}", method.diagnostics);
+        assert!(method.ok, "{flag}: method view must succeed");
         assert_eq!(
             method.data.unwrap()["props"]["compile"]["contexts"],
             serde_json::Value::Null,
@@ -387,8 +386,7 @@ fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contex
         assert!(!filtered.ok, "{flag}");
         assert_eq!(
             filtered.diagnostics[0]["code"], "unsupported_filter",
-            "{flag}: {:?}",
-            filtered.diagnostics
+            "{flag}: an unknown context refuses the filter"
         );
     }
 }
