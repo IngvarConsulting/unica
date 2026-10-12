@@ -236,7 +236,15 @@ fn form_method_facts(module: &ModuleProjectionSet) -> Vec<FormMethodFact<'_>> {
                 &method.name,
                 method.method_kind,
                 &method.signature,
-                method.compile.contexts.iter().map(String::as_str).collect(),
+                // Формы и владельцы событий всегда знают контексты; `None`
+                // бывает только у заимствованного общего модуля без событий.
+                method
+                    .compile
+                    .contexts
+                    .iter()
+                    .flatten()
+                    .map(String::as_str)
+                    .collect(),
             )
             .with_directive(method.compile.directive.as_deref())
         })

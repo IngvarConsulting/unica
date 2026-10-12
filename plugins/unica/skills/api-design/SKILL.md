@@ -40,7 +40,7 @@ Classify every exported method before changing or calling it:
 1. Map source-sets with `unica.view {}` and inspect subsystem/object boundaries with `unica.view` on the subsystem node or `unica.view` on the object node.
 2. When the API belongs to a concrete metadata object, inspect `unica.view` on the object node for related modules, roles, subscriptions, and functional options before classifying the boundary.
 3. Find the candidate API with `unica.search`; inspect the module with `unica.view` on the module node (its `Method` branch lists the methods) before reading broad code.
-4. Find callers and impact of exported methods with `unica.search` by the method name (a call graph is not on the v0.13 surface); the same search covers export area comments, module suffixes, deprecated sections, and literal contract mentions.
+4. Find callers of exported methods with `unica.view` at `<method>.Caller` (callees at `<method>.Callee`); `unica.search` by the method name covers export area comments, module suffixes, deprecated sections, and literal contract mentions.
 5. Check standards through `unica.docs` with `source: "development-standard"`: functional subsystems, libraries, overridable modules, version numbering, and backward compatibility.
 6. Classify the change: new method, optional parameter, mandatory parameter, removed/renamed method, changed parameter type, behavior change, deprecated method, or direct data access across a boundary.
 7. Decide the required version impact and migration path.

@@ -5,6 +5,11 @@
 Спецификация формата `DataCompositionSchema` — макетов типа «Схема компоновки данных» в конфигурации 1С:Предприятие 8.3.
 Составлена на основе анализа 930 схем конфигурации «Бухгалтерия предприятия 3.0.180» (платформа 8.3.24).
 
+Это справка о платформенном XML. Составление и изменение схемы через Unica
+описаны в [сценарии работы с отчётами](../use-cases/reports-printing.md#composing-and-changing-a-dcs).
+Аргументы отдельных операций запрашиваются в `can` соответствующего узла
+через `unica.view`. Полное описание XML не является аргументом операции.
+
 ---
 
 ## 0. Файловая структура
@@ -114,13 +119,17 @@ DataCompositionSchema
 ├── totalField*              — итоговые поля (раздел 7)
 ├── parameter*               — параметры схемы (раздел 8)
 ├── template*                — макеты областей (раздел 9)
+├── fieldTemplate*           — привязки макетов полей
 ├── groupTemplate*           — привязки макетов группировок (раздел 10)
+├── nestedSchema*            — вложенные схемы
 ├── settingsVariant*         — варианты настроек (раздел 11)
 ```
 
 `*` — 0..N элементов.
 
-Минимальная DCS содержит: 1 dataSource + 1 dataSet + 1 settingsVariant.
+Для отчёта с данными нужны источник, набор данных и вариант настроек.
+Промежуточная заготовка может ещё не содержать набор: её составляют
+последовательными операциями над компонентами.
 
 ---
 
@@ -269,6 +278,12 @@ DataCompositionSchema
 | `inputParameters` | нет | Параметры ввода / связи параметров выбора (раздел 4.9) |
 | `presentationExpression` | нет | Выражение для формирования представления (на языке 1С) |
 
+Порядок дочерних элементов поля:
+`dataPath, field, title, useRestriction, attributeUseRestriction, role,
+presentationExpression, valueType, appearance, availableValue*, inputParameters`.
+У поля набора Query тип определяется результатом запроса; тип объекта
+описывается в `valueType`.
+
 ### 4.5. Ограничения использования поля (useRestriction / attributeUseRestriction)
 
 ```xml
@@ -300,9 +315,22 @@ DataCompositionSchema
 | `dcscom:account` | Поле является счётом |
 | `dcscom:accountTypeExpression` | Выражение для определения типа счёта |
 | `dcscom:balance` | Поле является остатком |
-| `dcscom:balanceGroup` | Группа остатка |
+| `dcscom:balanceGroupName` | Имя группы остатка |
 | `dcscom:periodNumber` | Номер периода (обычно `1`) |
-| `dcscom:periodType` | Тип периода (`Main`, `Additional`) |
+| `dcscom:periodType` | Тип периода (`Main`, `Specify`, `Additional`) |
+| `dcscom:parentDimension` | Родительское измерение |
+| `dcscom:balanceType` | Вид остатка (`None`, `OpeningBalance`, `ClosingBalance`) |
+| `dcscom:accountingBalanceType` | Бухгалтерский вид остатка (`None`, `Debit`, `Credit`) |
+| `dcscom:accountField` | Поле счёта |
+| `dcscom:ignoreNullValues` | Игнорировать NULL |
+| `dcscom:required` | Обязательное поле |
+| `dcscom:dimensionAttribute` | Реквизит измерения |
+
+Все дочерние элементы `role` принадлежат пространству имён `common`,
+включая элементы со строковым значением. Их порядок:
+`periodNumber, periodType, dimension, parentDimension, account,
+accountTypeExpression, balance, balanceGroupName, balanceType,
+accountingBalanceType, accountField, ignoreNullValues, required, dimensionAttribute`.
 
 ### 4.7. Тип значения (valueType)
 
@@ -401,7 +429,8 @@ DataCompositionSchema
 | `sourceExpression` | да | Выражение из источника (поле или формула) |
 | `destinationExpression` | да | Выражение для сопоставления в целевом наборе |
 | `parameter` | нет | Имя параметра для передачи значения |
-| `parameterListAllowed` | нет | Допустим ли список значений (`true`/`false`) |
+| `parameterListAllowed` | нет | Допустим ли список значений (`true`/`false`); по умолчанию `false` |
+| `required` | нет | Обязательна ли связь (`true`/`false`); по умолчанию `true` |
 
 ---
 
@@ -526,7 +555,7 @@ DataCompositionSchema
 |---|---|---|
 | Дата | `xs:dateTime` | `0001-01-01T00:00:00` |
 | Строка | `xs:string` | `Т13` |
-| Стандартный период | `v8:StandardPeriod` | `<v8:variant>LastMonth</v8:variant>` |
+| Стандартный период | `v8:StandardPeriod` | `<v8:variant xsi:type="v8:StandardPeriodVariant">LastMonth</v8:variant>` |
 | Ссылка | `d5p1:CatalogRef.ИмяСправочника` (с `xmlns:d5p1="http://v8.1c.ru/8.1/data/enterprise/current-config"`) | `xsi:nil="true"` |
 | null | — | `xsi:nil="true"` |
 
@@ -550,7 +579,11 @@ DataCompositionSchema
 </parameter>
 ```
 
-Порядок элементов: `name, title, valueType, value*, useRestriction, …, valueListAllowed`.
+Порядок элементов параметра:
+`name, title, valueType, value*, useRestriction, expression, availableValue*,
+valueListAllowed, availableAsField, denyIncompleteValues, use`.
+`availableValue` задаёт доступное значение и его представление;
+`valueListAllowed` разрешает список значений и не заменяет этот перечень.
 
 ---
 
@@ -669,10 +702,11 @@ DataCompositionSchema
 dcsset:settings
 ├── dcsset:selection              — выбранные поля (раздел 11.2)
 ├── dcsset:filter                 — отборы (раздел 11.3)
+├── dcsset:dataParameters         — значения параметров данных (раздел 11.7)
 ├── dcsset:order                  — сортировка (раздел 11.4)
 ├── dcsset:conditionalAppearance  — условное оформление (раздел 11.5)
 ├── dcsset:outputParameters       — параметры вывода (раздел 11.6)
-├── dcsset:dataParameters         — значения параметров данных (раздел 11.7)
+├── dcsset:userFields             — пользовательские поля
 ├── dcsset:item*                  — элементы структуры (раздел 11.8)
 ```
 
@@ -817,13 +851,25 @@ dcsset:settings
 |---|---|---|
 | `Заголовок` | `v8:LocalStringType` | Заголовок отчёта |
 | `МакетОформления` | `xs:string` | Имя макета оформления: `ОформлениеОтчетовЧерноБелый`, `Зеленый` и др. |
-| `РасположениеПолейГруппировки` | `dcsset:DataCompositionGroupFieldsPlacement` | `Together`, `Separately`, `SeparatelyAndInGroups` |
-| `РасположениеРеквизитов` | `dcsset:DataCompositionAttributesPlacement` | `Together`, `Separately`, `SeparatelyAndInGroups` |
-| `ГоризонтальноеРасположениеОбщихИтогов` | `dcscor:DataCompositionTotalPlacement` | `None`, `Begin`, `End`, `Auto` |
-| `ВертикальноеРасположениеОбщихИтогов` | `dcscor:DataCompositionTotalPlacement` | `None`, `Begin`, `End`, `Auto` |
+| `РасположениеПолейГруппировки` | `dcsset:DataCompositionGroupFieldsPlacement` | `Together`, `Separately`, `SeparatelyAndInTotalsOnly` |
+| `РасположениеРеквизитов` | `dcsset:DataCompositionAttributesPlacement` | `Together`, `Separately`, `WithOwnerField`, `SpecialPosition` |
+| `ГоризонтальноеРасположениеОбщихИтогов` | `dcscor:DataCompositionTotalPlacement` | `None`, `Begin`, `End`, `BeginAndEnd`, `Auto` |
+| `ВертикальноеРасположениеОбщихИтогов` | `dcscor:DataCompositionTotalPlacement` | `None`, `Begin`, `End`, `BeginAndEnd`, `Auto` |
 | `ВыводитьЗаголовок` | `dcsset:DataCompositionTextOutputType` | `Auto`, `DontOutput`, `Output` |
 | `ВыводитьПараметрыДанных` | `dcsset:DataCompositionTextOutputType` | То же |
 | `ВыводитьОтбор` | `dcsset:DataCompositionTextOutputType` | То же |
+| `РасположениеГруппировки` | `dcsset:DataCompositionGroupPlacement` | `None`, `Begin`, `End`, `BeginAndEnd` |
+| `РасположениеРесурсов` | `dcsset:DataCompositionResourcesPlacement` | `Vertically`, `Horizontally` |
+| `ТипМакета` | `dcsset:DataCompositionGroupTemplateType` | `Vertical`, `Horizontal`, `Auto` |
+
+Значения перечислений сверены с официальным API EDT:
+[поля группировки](https://edt.1c.ru/dev/edt/2025.2/apidocs/com/_1c/g5/v8/dt/dcs/model/settings/DataCompositionGroupFieldsPlacement.html),
+[реквизиты](https://edt.1c.ru/dev/edt/2025.2/apidocs/com/_1c/g5/v8/dt/dcs/model/settings/DataCompositionAttributesPlacement.html),
+[итоги](https://edt.1c.ru/dev/edt/2024.2/apidocs/com/_1c/g5/v8/dt/dcs/model/core/DataCompositionTotalPlacement.html),
+[группировки](https://edt.1c.ru/dev/edt/2025.2/apidocs/com/_1c/g5/v8/dt/dcs/model/settings/DataCompositionGroupPlacement.html),
+[ресурсы](https://edt.1c.ru/dev/edt/2024.2/apidocs/com/_1c/g5/v8/dt/dcs/model/settings/DataCompositionResourcesPlacement.html),
+[тип макета](https://edt.1c.ru/dev/edt/2024.2/apidocs/com/_1c/g5/v8/dt/dcs/model/settings/DataCompositionGroupTemplateType.html).
+
 
 ### 11.7. Параметры данных (dataParameters)
 

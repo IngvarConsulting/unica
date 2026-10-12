@@ -291,6 +291,8 @@ fn mutation_compatible_read_key(xml_name: &str) -> Option<(&'static str, MetaPro
         "Hierarchical" => ("Hierarchical", Hierarchical),
         "Autonumbering" => ("Autonumbering", Autonumbering),
         "UseStandardCommands" => ("UseStandardCommands", UseStandardCommands),
+        "IncludeHelpInContents" => ("IncludeHelpInContents", IncludeHelpInContents),
+        "RegisterType" => ("RegisterType", RegisterType),
         _ => return None,
     })
 }
@@ -324,6 +326,7 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
             | Hierarchical
             | Autonumbering
             | UseStandardCommands
+            | IncludeHelpInContents
     ) {
         MetaInfoPropertyValueKind::Boolean
     } else if matches!(
@@ -373,7 +376,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         }
         Event | Handler => kind == EventSubscription,
         DistributedInfoBase => kind == ExchangePlan,
-        EnableTotalsSplitting => kind == AccumulationRegister,
+        EnableTotalsSplitting | RegisterType => kind == AccumulationRegister,
         MainFilterOnPeriod | WriteMode => kind == InformationRegister,
         NumberAllowedLength
         | NumberPeriodicity
@@ -439,6 +442,24 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
                 | Report
                 | DataProcessor
         ),
+        IncludeHelpInContents => matches!(
+            kind,
+            Catalog
+                | Document
+                | InformationRegister
+                | AccumulationRegister
+                | AccountingRegister
+                | CalculationRegister
+                | ChartOfAccounts
+                | ChartOfCharacteristicTypes
+                | ChartOfCalculationTypes
+                | BusinessProcess
+                | Task
+                | ExchangePlan
+                | DocumentJournal
+                | Report
+                | DataProcessor
+        ),
     }
 }
 
@@ -471,7 +492,6 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
                 | "AuxiliaryObjectForm"
                 | "AuxiliaryListForm"
                 | "AuxiliaryChoiceForm"
-                | "IncludeHelpInContents"
                 | "DataLockControlMode"
                 | "FullTextSearch"
                 | "ObjectPresentation"
@@ -547,7 +567,6 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
                 | "DefaultListForm"
                 | "AuxiliaryRecordForm"
                 | "AuxiliaryListForm"
-                | "IncludeHelpInContents"
                 | "DataLockControlMode"
                 | "FullTextSearch"
                 | "EnableTotalsSliceFirst"
@@ -565,8 +584,6 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
             name,
             "DefaultListForm"
                 | "AuxiliaryListForm"
-                | "RegisterType"
-                | "IncludeHelpInContents"
                 | "DataLockControlMode"
                 | "FullTextSearch"
                 | "ListPresentation"
@@ -578,7 +595,6 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
             "ChartOfAccounts"
                 | "DefaultListForm"
                 | "AuxiliaryListForm"
-                | "IncludeHelpInContents"
                 | "DataLockControlMode"
                 | "EnableTotalsSplitting"
                 | "FullTextSearch"
@@ -591,7 +607,6 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
             "DefaultListForm"
                 | "AuxiliaryListForm"
                 | "ChartOfCalculationTypes"
-                | "IncludeHelpInContents"
                 | "DataLockControlMode"
                 | "FullTextSearch"
                 | "ListPresentation"
@@ -665,7 +680,6 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
             name,
             "DefaultForm"
                 | "AuxiliaryForm"
-                | "IncludeHelpInContents"
                 | "ListPresentation"
                 | "ExtendedListPresentation"
                 | "Explanation"
@@ -681,17 +695,12 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
                 | "AuxiliaryVariantForm"
                 | "VariantsStorage"
                 | "SettingsStorage"
-                | "IncludeHelpInContents"
                 | "ExtendedPresentation"
                 | "Explanation"
         ),
         DataProcessor => matches!(
             name,
-            "DefaultForm"
-                | "AuxiliaryForm"
-                | "IncludeHelpInContents"
-                | "ExtendedPresentation"
-                | "Explanation"
+            "DefaultForm" | "AuxiliaryForm" | "ExtendedPresentation" | "Explanation"
         ),
         CommonModule => matches!(name, "Client" | "ClientOrdinaryApplication"),
         ScheduledJob => name == "Key",
@@ -720,8 +729,7 @@ fn additional_value_kind(kind: MetadataKind, name: &str) -> MetaInfoPropertyValu
         MetaInfoPropertyValueKind::LocalizedString
     } else if matches!(
         name,
-        "IncludeHelpInContents"
-            | "ActionPeriod"
+        "ActionPeriod"
             | "ActionPeriodUse"
             | "AutoOrderByCode"
             | "BasePeriod"

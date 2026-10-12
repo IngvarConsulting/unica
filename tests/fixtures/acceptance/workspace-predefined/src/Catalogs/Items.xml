@@ -1,0 +1,6 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+ <Catalog uuid="22222222-2222-4222-8222-222222222222">
+  <Properties><Name>Items</Name><Hierarchical>true</Hierarchical><HierarchyType>HierarchyFoldersAndItems</HierarchyType><CodeType>String</CodeType><CodeLength>3</CodeLength><DescriptionLength>100</DescriptionLength></Properties>
+  <ChildObjects/>
+ </Catalog>
+</MetaDataObject>

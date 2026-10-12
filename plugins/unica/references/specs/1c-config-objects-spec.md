@@ -422,6 +422,13 @@ Platform-generated CDFI sidecar `ConfigDumpInfo.xml` с корнем
 элемент как `incomplete` с предупреждением и не становится разрешённым входом
 мутации.
 
+Тип объекта основной конфигурации в выгрузке расширения записан
+`<v8:TypeId>UUID</v8:TypeId>` (см. [1c-extension-spec.md](1c-extension-spec.md)).
+`unica.view` возвращает его вариантом `{"kind":"typeId","typeId":"<UUID>"}`,
+а весь тип — с `mutationCapability: readOnly`: имени у такого типа нет, во вход
+writer он не передаётся. Правка других свойств элемента его не меняет; явная
+замена `type` записывает новый тип целиком.
+
 **Составной тип (несколько типов):**
 ```xml
 <Type>
@@ -1097,12 +1104,13 @@ XML-элемент: `<AccumulationRegister>`.
 **Специфичные свойства:**
 
 ```xml
-<RegisterType>Balances</RegisterType>       <!-- Balances (остатки) | Turnovers (обороты) -->
+<RegisterType>Balance</RegisterType>        <!-- Balance (остатки) | Turnovers (обороты) -->
 <EnableTotalsSplitting>true</EnableTotalsSplitting>
 ```
 
-- `Balances` — хранит остатки (приход/расход → итоговое сальдо)
+- `Balance` — хранит остатки (приход/расход → итоговое сальдо)
 - `Turnovers` — хранит только обороты (без остатков)
+- Вид регистра задаёт поля движения: у `Balance` есть стандартный реквизит `ВидДвижения` (`RecordType`: `Receipt`/`Expense`, в коде `ВидДвиженияНакопления.Приход`/`Расход`), у `Turnovers` его нет — движение оборотного регистра не указывает вид, а обращение к `ВидДвижения` падает при проведении.
 
 **Дочерние объекты:** `<Dimension>`, `<Resource>`, `<Attribute>`.
 
@@ -1910,6 +1918,7 @@ XML-элемент: `<WebService>`. Трёхуровневая вложенно�
 | Posting | - | + | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
 | RegisterRecords | - | + | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
 | RegisterType | - | - | - | - | - | + | - | - | - | - | - | - | - | - | - | - | - |
+| IncludeHelpInContents | + | + | - | - | + | + | + | + | + | + | + | + | + | + | + | + | + |
 | Periodicity | - | - | - | - | + | - | - | + | - | - | - | - | - | - | - | - | - |
 | WriteMode | - | - | - | - | + | - | - | - | - | - | - | - | - | - | - | - | - |
 | ChartOfAccounts | - | - | - | - | - | - | + | - | - | - | - | - | - | - | - | - | - |

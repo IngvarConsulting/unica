@@ -599,7 +599,7 @@ fn complete_read_proof_diagnostics(subject: &MetadataValidationSubject) -> Vec<M
                 .resources
                 .iter()
                 .find(|resource| matches!(resource.role, MetadataResourceRole::Registration));
-            for (index, source) in sources.iter().enumerate() {
+            for (index, source) in sources.sources.iter().enumerate() {
                 let Some(target) = source.metadata_path() else {
                     continue;
                 };
@@ -1787,8 +1787,10 @@ fn validate_event_subscription_binding_subject(
         Ok(source) => source,
         Err(message) => return fail("relations.source", message),
     };
+    // `v8:TypeId` members have no event class here; the binding is checked
+    // against the classes of this source set's members (#1361).
     let sources = match parse_meta_event_subscription_source(source_node) {
-        Ok(sources) => sources,
+        Ok(observed) => observed.sources,
         Err(message) => return fail("relations.source", message),
     };
     let properties = match source_node.parent_element() {
@@ -3018,13 +3020,35 @@ pub(super) fn meta_validate_check_child_element(
             report.error(format!("7. {kind} '{name}' missing Type block"));
             return false;
         };
+        // Designer writes an extension's reference to a type of the extended
+        // configuration as `v8:TypeId` (UUID of the generated type), alone or
+        // after `v8:Type`/`v8:TypeSet`. The platform keeps an unresolved but
+        // well-formed identifier and rejects only a malformed one (#1361).
+        let type_ids = meta_info_children(type_el, "TypeId");
         if meta_info_children(type_el, "Type").is_empty()
             && meta_info_children(type_el, "TypeSet").is_empty()
+            && type_ids.is_empty()
         {
             report.error(format!(
-                "7. {kind} '{name}' Type block has no v8:Type or v8:TypeSet"
+                "7. {kind} '{name}' Type block has no v8:Type, v8:TypeSet or v8:TypeId"
             ));
             return false;
+        }
+        let mut seen_type_ids = HashSet::new();
+        for type_id in type_ids.into_iter().map(meta_info_inner_text) {
+            let type_id = type_id.trim();
+            if !is_guid(type_id) {
+                report.error(format!(
+                    "7. {kind} '{name}' has invalid v8:TypeId '{type_id}'"
+                ));
+                return false;
+            }
+            if !seen_type_ids.insert(type_id.to_ascii_lowercase()) {
+                report.error(format!(
+                    "7. {kind} '{name}' has duplicate v8:TypeId '{type_id}'"
+                ));
+                return false;
+            }
         }
     }
     true
@@ -3202,16 +3226,8 @@ pub(super) fn meta_validate_check_cross_properties(
     };
     let mut check_ok = true;
     let mut issues = 0usize;
-    if meta_info_child_text(props_node, "Hierarchical").as_deref() == Some("false") {
-        if let Some(hierarchy_type) =
-            meta_info_child_text(props_node, "HierarchyType").filter(|value| !value.is_empty())
-        {
-            report.warn(format!(
-                "10. HierarchyType='{hierarchy_type}' but Hierarchical=false"
-            ));
-            issues += 1;
-        }
-    }
+    // HierarchyType is inactive while Hierarchical=false: platform 8.3.27
+    // writes it for every catalog, and any value is valid in that state.
     if md_type == "CommonModule" {
         let any_enabled = [
             "Server",
@@ -3234,14 +3250,18 @@ pub(super) fn meta_validate_check_cross_properties(
             check_ok = false;
             issues += 1;
         }
-        let has_source = meta_info_child(props_node, "Source")
-            .map(|node| {
-                ["Type", "TypeSet"]
-                    .iter()
-                    .any(|name| !meta_info_children(node, name).is_empty())
-            })
-            .unwrap_or(false);
-        if !has_source {
+        let source = meta_info_child(props_node, "Source");
+        let count = |name: &str| source.map_or(0, |node| meta_info_children(node, name).len());
+        let logical_sources = count("Type") + count("TypeSet");
+        if logical_sources == 0 && count("TypeId") > 0 {
+            // Platform 8.3.27 refuses to load it: «Имя события должно быть
+            // задано» — the event is resolved against this source set (#1361).
+            report.error(
+                "10. EventSubscription: Source has only v8:TypeId types of the extended configuration; platform requires at least one source of this source set",
+            );
+            check_ok = false;
+            issues += 1;
+        } else if logical_sources == 0 {
             report.warn("10. EventSubscription: no Source types specified");
             issues += 1;
         }
@@ -6529,6 +6549,61 @@ mod tests {
     }
 
     #[test]
+    fn hierarchy_type_is_not_checked_on_a_non_hierarchical_catalog() {
+        let registration = owner(&[("Catalog", "Stores")]);
+        let catalog = |hierarchical: &str, hierarchy_type: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="{MD_NS}" version="2.20">
+<Catalog uuid="66666666-6666-4666-8666-666666666666">
+<Properties><Name>Stores</Name><Hierarchical>{hierarchical}</Hierarchical><HierarchyType>{hierarchy_type}</HierarchyType></Properties><ChildObjects/>
+</Catalog></MetaDataObject>"#
+            )
+        };
+        let hierarchy_findings = |hierarchical: &str, hierarchy_type: &str| {
+            let descriptor = catalog(hierarchical, hierarchy_type);
+            let proof = subject("Catalog.Stores", Some(&descriptor), &registration, &[]);
+            let result = MetadataValidator.validate(&proof, &context());
+            let findings = result
+                .diagnostics
+                .into_iter()
+                .filter(|item| item.message.contains("HierarchyType"))
+                .collect::<Vec<_>>();
+            (result.status, findings)
+        };
+
+        // The pair every 8.3.27 dump and the catalog template write for a
+        // non-hierarchical catalog, and a valid hierarchical catalog, are clean.
+        for (hierarchical, hierarchy_type) in [
+            ("false", "HierarchyFoldersAndItems"),
+            ("true", "HierarchyFoldersAndItems"),
+            ("true", "HierarchyOfItems"),
+        ] {
+            let (_, findings) = hierarchy_findings(hierarchical, hierarchy_type);
+            assert!(
+                findings.is_empty(),
+                "Hierarchical={hierarchical}, HierarchyType={hierarchy_type}: {findings:?}"
+            );
+        }
+
+        // HierarchyType is inactive on a non-hierarchical catalog, so no value
+        // there is a finding.
+        let (_, findings) = hierarchy_findings("false", "HierarchyOfItems");
+        assert!(findings.is_empty(), "{findings:?}");
+
+        // An invalid type on a hierarchical catalog is still a validation error.
+        let (status, findings) = hierarchy_findings("true", "HierarchyOfFolders");
+        assert_eq!(status, MetaValidationStatus::Failed);
+        assert!(
+            findings.iter().any(|item| {
+                item.severity == MetaDiagnosticSeverity::Error
+                    && item.code == MetaDiagnosticCode::ValidationFailed
+                    && item.message.contains("'HierarchyOfFolders'")
+            }),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
     fn internal_invalid_reference_failure_matches_legacy_classification() {
         let descriptor = format!(
             r#"<MetaDataObject xmlns="{MD_NS}" version="2.20">
@@ -6729,6 +6804,118 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == MetaDiagnosticCode::ProviderUnavailable));
+    }
+
+    /// Платформа 8.3.27 выгружает ссылку расширения на тип расширяемой
+    /// конфигурации как `v8:TypeId`: один и после `v8:Type` в составном
+    /// типе, в том числе у реквизита табличной части (#1361). Фикстура —
+    /// выгрузка `ibcmd config export --extension`.
+    #[test]
+    fn extension_type_id_reference_is_a_valid_type_block() {
+        let dump = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acceptance/workspace-format/src-ext/Catalogs/ПР_НастройкиВалют.xml"
+        ));
+        let options = MetaValidationOptions { max_errors: 30 };
+        let inputs = MetaValidationReferenceInputs {
+            config_dir: None,
+            language_codes: Vec::new(),
+            proof_subject: None,
+        };
+        let validate = |xml: &str| meta_validate_source(xml.as_bytes(), &options, &inputs).unwrap();
+        let currency = "<v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId>";
+        let rate_mode = "<v8:TypeId>d7bc4697-f470-58f7-aca4-4e6bf45f9e69</v8:TypeId>";
+        assert_eq!(
+            dump.matches(currency).count(),
+            3,
+            "composite, single and tabular section"
+        );
+        assert_eq!(dump.matches(rate_mode).count(), 2, "composite and single");
+
+        let run = validate(dump);
+        assert!(run.ok, "{:?}", run.errors);
+        assert!(
+            run.errors.is_empty() && run.warnings.is_empty(),
+            "{:?} {:?}",
+            run.errors,
+            run.warnings
+        );
+
+        let malformed = validate(&dump.replace(rate_mode, "<v8:TypeId>not-a-uuid</v8:TypeId>"));
+        assert!(!malformed.ok);
+        assert!(
+            malformed
+                .errors
+                .iter()
+                .any(|error| error.contains("has invalid v8:TypeId 'not-a-uuid'")),
+            "{:?}",
+            malformed.errors
+        );
+
+        let duplicate = validate(&dump.replacen(
+            currency,
+            &format!(
+                "{currency}{}",
+                currency.to_uppercase().replace("V8:TYPEID", "v8:TypeId")
+            ),
+            1,
+        ));
+        assert!(
+            duplicate
+                .errors
+                .iter()
+                .any(|error| error.contains("has duplicate v8:TypeId")),
+            "{:?}",
+            duplicate.errors
+        );
+
+        let empty = validate(&dump.replace(currency, "").replace(rate_mode, ""));
+        assert!(!empty.ok);
+        for name in ["Attribute 'ОсновнаяВалюта'", "Attribute 'КодЯзыка'"] {
+            assert!(
+                empty
+                    .errors
+                    .iter()
+                    .any(|error| error.contains(name) && error.contains("Type block has no")),
+                "{name}: {:?}",
+                empty.errors
+            );
+        }
+    }
+
+    /// Source подписки расширения из штатной выгрузки 8.3.27 содержит
+    /// `v8:TypeId` источника из основной конфигурации после собственного
+    /// `v8:Type` (#1361) — это допустимо. Source из одних `v8:TypeId`
+    /// платформа не загружает («Имя события должно быть задано»).
+    #[test]
+    fn extension_event_subscription_type_id_source_needs_an_own_source() {
+        let dump = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acceptance/workspace-format/src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml"
+        ));
+        let options = MetaValidationOptions { max_errors: 30 };
+        let inputs = MetaValidationReferenceInputs {
+            config_dir: None,
+            language_codes: Vec::new(),
+            proof_subject: None,
+        };
+        let own = "<v8:Type>cfg:CatalogObject.ПР_НастройкиВалют</v8:Type>";
+        assert!(dump.contains(own) && dump.contains("<v8:TypeId>"));
+
+        let run = meta_validate_source(dump.as_bytes(), &options, &inputs).unwrap();
+        assert!(run.ok, "{:?}", run.errors);
+        assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+
+        let only_type_id = dump.replace(own, "");
+        let run = meta_validate_source(only_type_id.as_bytes(), &options, &inputs).unwrap();
+        assert!(!run.ok);
+        assert!(
+            run.errors
+                .iter()
+                .any(|error| error.contains("Source has only v8:TypeId")),
+            "{:?}",
+            run.errors
+        );
     }
 
     #[test]

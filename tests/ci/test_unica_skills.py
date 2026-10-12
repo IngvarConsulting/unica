@@ -1365,11 +1365,14 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertIn("exact-byte no-op", documents["meta-edit"])
         self.assertNotIn("upsert-predefined", documents["meta-edit"])
 
-        # Названный пробел важнее гладкой прозы: читателя у предопределённых
-        # элементов на канонической поверхности нет, и оба скилла это говорят.
+        # Предопределённый элемент читается и правится по одному адресу
+        # `…PredefinedItem.<Имя>`; прежний пробел «читателя нет» закрыт, и
+        # скиллы не должны его повторять.
         for skill in ("meta-info", "meta-edit"):
-            with self.subTest(skill=skill, gap="predefined items have no reader"):
-                self.assertIn("предопределённых элементов", documents[skill])
+            with self.subTest(skill=skill, reader="predefined items by address"):
+                self.assertIn(".PredefinedItem.", documents[skill])
+                self.assertIn("`props.id`", documents[skill])
+                self.assertNotIn("читателя у предопределённых", documents[skill].lower())
 
         for skill in ("meta-add", "meta-edit"):
             with self.subTest(skill=skill, contract="preview effects"):

@@ -1,4 +1,4 @@
-use crate::domain::engine::{InstallMode, MissingEngine};
+use crate::domain::engine::{EngineStage, InstallMode, MissingEngine};
 use crate::infrastructure::platform::current_target_id;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -15,6 +15,41 @@ pub(crate) struct BundledTool {
     /// Вызывающий обязан это показать: путь к тому, чего нет, выглядит как
     /// готовая к запуску команда, и это худший из возможных ответов.
     pub(crate) missing: Option<MissingEngine>,
+}
+
+/// Почему поставляемый движок не разрешился.
+///
+/// Причина типизирована в источнике: шаг поставки, на котором движка не
+/// оказалось, называет место отказа, а не фраза, которую вызывающему пришлось
+/// бы разбирать (#549).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BundledToolError {
+    /// Движка нет или он не годится к запуску; шаг и поля названы.
+    Missing(Box<MissingEngine>),
+    /// Сбой ввода-вывода, который об отсутствии движка не говорит: файл на
+    /// месте, но прочитать его для контрольной суммы не удалось.
+    Io(String),
+}
+
+impl BundledToolError {
+    fn missing(engine: MissingEngine) -> Self {
+        Self::Missing(Box::new(engine))
+    }
+}
+
+impl std::fmt::Display for BundledToolError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(engine) => formatter.write_str(&engine.message()),
+            Self::Io(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<BundledToolError> for String {
+    fn from(error: BundledToolError) -> Self {
+        error.to_string()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +136,10 @@ struct LockTool {
     assets: BTreeMap<String, serde_json::Value>,
 }
 
+/// Почему запись манифеста не дала бинарь: шаг поставки и текст для
+/// предупреждения предпросмотра.
+type ManifestBinaryError = (EngineStage, String);
+
 pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Result<String, String> {
     let manifest_path = plugin_root.join("third-party").join("manifest.json");
     if let Ok(text) = fs::read_to_string(&manifest_path) {
@@ -136,10 +175,132 @@ pub(crate) fn resolve_bundled_tool(
     plugin_root: &Path,
     tool_name: &str,
     verify: bool,
-) -> Result<BundledTool, String> {
-    let target_id = current_target_id()?;
+) -> Result<BundledTool, BundledToolError> {
+    let Ok(target_id) = current_target_id() else {
+        return Err(BundledToolError::missing(describe_missing(
+            plugin_root,
+            tool_name,
+            &host_label(),
+            EngineStage::Target,
+            None,
+        )));
+    };
     let cache = std::env::var_os(ARTIFACT_CACHE_ENV).map(PathBuf::from);
     resolve_bundled_tool_in(plugin_root, cache.as_deref(), tool_name, target_id, verify)
+}
+
+/// Движок с полной проверкой поставки, включая контрольную сумму, — или
+/// описание того, на каком шаге его не оказалось.
+///
+/// Нужна там, где запуск уже не удался, а причину надо назвать типом: хеш
+/// считается только на этом пути, а не на каждом вызове.
+pub(crate) fn engine_absence(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
+    match resolve_bundled_tool(plugin_root, tool_name, true) {
+        Err(BundledToolError::Missing(engine)) => Some(*engine),
+        Ok(_) | Err(BundledToolError::Io(_)) => None,
+    }
+}
+
+/// Движок проверен, но его процесс не запустился. Без корня плагина пин и
+/// режим установки неизвестны: следующий шаг от них на этом шаге не зависит.
+pub(crate) fn start_failure(
+    plugin_root: Option<&Path>,
+    tool_name: &str,
+    program: &Path,
+) -> MissingEngine {
+    let target = current_target_id()
+        .map(str::to_owned)
+        .unwrap_or_else(|_| host_label());
+    match plugin_root {
+        Some(plugin_root) => describe_missing(
+            plugin_root,
+            tool_name,
+            &target,
+            EngineStage::Start,
+            Some(program.to_path_buf()),
+        ),
+        None => MissingEngine::new(
+            tool_name,
+            target,
+            program.display().to_string(),
+            None,
+            InstallMode::Marketplace,
+        )
+        .at_stage(EngineStage::Start),
+    }
+}
+
+/// Причина незапуска движка для ответа: текст ОС без служебного префикса,
+/// без пути к самому движку и после общей редакции секретов. Другие пути,
+/// если ОС их назвала, редакция не обещает убрать.
+pub(crate) fn launch_failure_cause(error: &str, tool_name: &str, program: &Path) -> String {
+    let error = error.strip_prefix("process_failed: ").unwrap_or(error);
+    crate::infrastructure::redaction::redactor(
+        &error.replace(&program.display().to_string(), tool_name),
+    )
+}
+
+/// Проверенный движок, процесс которого ОС не создаёт: отказ на шаге `start`
+/// с причиной ОС.
+///
+/// Поставщики поиска и графа запускают движок в службе рабочего
+/// пространства, и до этого маршрута доходит только текст их ошибки. Тип
+/// незапуска здесь получается тем же путём, что у раннера: движок
+/// запускается напрямую, и решает [`ManagedSpawnFailure::Launch`], а не
+/// текст. Запущенный процесс сразу завершается. Неготовое окружение или
+/// неудачное подключение процесса к дереву — не незапуск движка (#549).
+///
+/// [`ManagedSpawnFailure::Launch`]: crate::infrastructure::platform::ManagedSpawnFailure::Launch
+pub(crate) fn launch_probe_failure(
+    plugin_root: &Path,
+    tool_name: &str,
+) -> Option<(MissingEngine, String)> {
+    use crate::infrastructure::platform::{ManagedChild, ManagedCommand, ManagedSpawnFailure};
+    let program = installed_engine_path(plugin_root, tool_name)?;
+    let probe = ManagedChild::spawn_staged(ManagedCommand {
+        program: program.clone(),
+        args: vec!["--version".into()],
+        cwd: plugin_root.to_path_buf(),
+        env: Vec::new(),
+        env_remove: Vec::new(),
+        capture_limits: Some((4096, 4096)),
+        timeout: Some(std::time::Duration::from_secs(1)),
+        cancellation: crate::domain::cancellation::CancellationToken::new(),
+    });
+    let message = match probe {
+        Ok(mut child) => {
+            let _ = child.terminate();
+            return None;
+        }
+        Err(ManagedSpawnFailure::Launch(message)) => message,
+        Err(ManagedSpawnFailure::Prepare(_) | ManagedSpawnFailure::Attach(_)) => return None,
+    };
+    Some((
+        start_failure(Some(plugin_root), tool_name, &program),
+        launch_failure_cause(&message, tool_name, &program),
+    ))
+}
+
+/// Доставка движка не удалась, и файла на месте нет.
+pub(crate) fn delivery_failure(plugin_root: &Path, tool_name: &str) -> MissingEngine {
+    let target = current_target_id()
+        .map(str::to_owned)
+        .unwrap_or_else(|_| host_label());
+    describe_missing(plugin_root, tool_name, &target, EngineStage::Delivery, None)
+}
+
+/// Корень плагина не найден: поставки, из которой взялся бы движок, нет.
+pub(crate) fn plugin_root_missing(tool_name: &str) -> MissingEngine {
+    let target = current_target_id()
+        .map(str::to_owned)
+        .unwrap_or_else(|_| host_label());
+    MissingEngine::new(tool_name, target, "", None, InstallMode::Marketplace)
+        .at_stage(EngineStage::Manifest)
+}
+
+/// Имя платформы, под которую Unica не поставляет движков.
+fn host_label() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// Разрешение с явно названным кешем артефактов: так его видно в тесте, а
@@ -150,7 +311,7 @@ fn resolve_bundled_tool_in(
     tool_name: &str,
     target_id: &str,
     verify: bool,
-) -> Result<BundledTool, String> {
+) -> Result<BundledTool, BundledToolError> {
     if let Some(cache) = artifact_cache {
         if let Some(tool) =
             resolve_from_artifact_cache(plugin_root, cache, tool_name, target_id, verify)?
@@ -159,6 +320,11 @@ fn resolve_bundled_tool_in(
         }
     }
     resolve_bundled_tool_for_target(plugin_root, tool_name, target_id, verify)
+}
+
+fn read_manifest(plugin_root: &Path) -> Option<BundledManifest> {
+    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()
 }
 
 /// Движок в кеше артефактов:
@@ -171,15 +337,11 @@ fn resolve_from_artifact_cache(
     tool_name: &str,
     target_id: &str,
     verify: bool,
-) -> Result<Option<BundledTool>, String> {
+) -> Result<Option<BundledTool>, BundledToolError> {
     let Ok(version) = bundled_tool_version(plugin_root, tool_name) else {
         return Ok(None);
     };
-    let manifest_path = plugin_root.join("third-party").join("manifest.json");
-    let Ok(bytes) = fs::read(&manifest_path) else {
-        return Ok(None);
-    };
-    let Ok(manifest) = serde_json::from_slice::<BundledManifest>(&bytes) else {
+    let Some(manifest) = read_manifest(plugin_root) else {
         return Ok(None);
     };
     let Ok(binary) = manifest_binary(&manifest, tool_name, target_id) else {
@@ -192,9 +354,20 @@ fn resolve_from_artifact_cache(
         .find(|tool| tool.name == tool_name)
         .and_then(|tool| tool.artifact.clone())
         .unwrap_or_else(|| tool_name.to_string());
-    let delivery = artifact_delivery_key(&manifest, &artifact, &version)?;
+    let manifest_defect = || {
+        BundledToolError::missing(describe_missing(
+            plugin_root,
+            tool_name,
+            target_id,
+            EngineStage::Manifest,
+            None,
+        ))
+    };
+    let delivery =
+        artifact_delivery_key(&manifest, &artifact, &version).map_err(|_| manifest_defect())?;
     let target_root = cache.join(&artifact).join(delivery).join(target_id);
-    let program = manifest_relative_path(&target_root, binary.delivered())?;
+    let program =
+        manifest_relative_path(&target_root, binary.delivered()).map_err(|_| manifest_defect())?;
     if !program.is_file() {
         return Ok(None);
     }
@@ -235,8 +408,7 @@ fn artifact_delivery_key(
 /// Имя архива, в котором приезжает инструмент. Несколько инструментов делят
 /// один: `rlm-tools-bsl` несёт два.
 pub(crate) fn artifact_for(plugin_root: &Path, tool_name: &str) -> Option<String> {
-    let manifest_path = plugin_root.join("third-party").join("manifest.json");
-    let manifest: BundledManifest = serde_json::from_slice(&fs::read(&manifest_path).ok()?).ok()?;
+    let manifest = read_manifest(plugin_root)?;
     let tool = manifest.tools.iter().find(|tool| tool.name == tool_name)?;
     Some(
         tool.artifact
@@ -262,8 +434,7 @@ fn engine_path_for(plugin_root: &Path, tool_name: &str, target_id: &str) -> Opti
             return Some(tool.program);
         }
     }
-    let manifest_path = plugin_root.join("third-party").join("manifest.json");
-    let manifest: BundledManifest = serde_json::from_slice(&fs::read(&manifest_path).ok()?).ok()?;
+    let manifest = read_manifest(plugin_root)?;
     let binary = manifest_binary(&manifest, tool_name, target_id).ok()?;
     let program = manifest_relative_path(plugin_root, &binary.binary_path).ok()?;
     program.is_file().then_some(program)
@@ -272,11 +443,22 @@ fn engine_path_for(plugin_root: &Path, tool_name: &str, target_id: &str) -> Opti
 /// Чего не хватает инструменту, чтобы запуститься. `None` — движок на месте.
 ///
 /// Собирается из того, что уже известно поставке: имя, цель, ожидаемый путь,
-/// пин версии и режим установки. Разбирать текст сообщения вызывающему не
-/// придётся — поля названы, а следующий шаг зависит от режима: исходный чекаут
-/// собирает инструменты сам, опубликованная поставка их доставляет.
+/// пин версии, режим установки и шаг, на котором движка нет. Разбирать текст
+/// сообщения вызывающему не придётся — поля названы, а следующий шаг зависит
+/// от режима: исходный чекаут собирает инструменты сам, опубликованная
+/// поставка их доставляет. Контрольная сумма здесь не считается: её сверяет
+/// [`engine_absence`] на пути отказа.
 pub(crate) fn missing_engine(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
-    missing_engine_for(plugin_root, tool_name, current_target_id().ok()?)
+    let Ok(target_id) = current_target_id() else {
+        return Some(describe_missing(
+            plugin_root,
+            tool_name,
+            &host_label(),
+            EngineStage::Target,
+            None,
+        ));
+    };
+    missing_engine_for(plugin_root, tool_name, target_id)
 }
 
 /// Описать отсутствие для той же цели, которую разрешал вызывающий.
@@ -288,23 +470,70 @@ fn missing_engine_for(
     if engine_path_for(plugin_root, tool_name, target_id).is_some() {
         return None;
     }
-    let manifest_path = plugin_root.join("third-party").join("manifest.json");
-    let manifest = fs::read(&manifest_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<BundledManifest>(&bytes).ok());
-    let install_mode = match manifest.as_ref() {
-        Some(manifest) if !manifest.source_manifest => InstallMode::Marketplace,
-        _ => InstallMode::Source,
+    let stage = match read_manifest(plugin_root) {
+        None => EngineStage::Manifest,
+        Some(manifest) => match manifest_binary(&manifest, tool_name, target_id) {
+            Ok(_) => EngineStage::Delivery,
+            Err((stage, _)) => stage,
+        },
     };
-    let expected = expected_engine_path(plugin_root, tool_name, target_id)
-        .unwrap_or_else(|| plugin_root.join("bin").join(target_id).join(tool_name));
-    Some(MissingEngine::new(
+    Some(describe_missing(
+        plugin_root,
         tool_name,
         target_id,
-        expected.display().to_string(),
+        stage,
+        None,
+    ))
+}
+
+/// Режим установки: исходный checkout собирает движки сам, опубликованная
+/// поставка их доставляет.
+///
+/// Манифест называет режим сам. Если его нет или он не читается, режим не
+/// выводится из этого: опубликованная поставка с испорченным манифестом не
+/// должна получать совет собрать движок из исходников. Исходным checkout
+/// считается только дерево, где рядом с плагином лежит сборщик движков.
+fn install_mode_of(plugin_root: &Path) -> InstallMode {
+    match read_manifest(plugin_root) {
+        Some(manifest) if manifest.source_manifest => InstallMode::Source,
+        Some(_) => InstallMode::Marketplace,
+        None if source_checkout_builder(plugin_root).is_file() => InstallMode::Source,
+        None => InstallMode::Marketplace,
+    }
+}
+
+/// Сборщик движков исходного checkout: `<repo>/scripts/ci/build-unica-tools.py`
+/// для плагина в `<repo>/plugins/unica`.
+fn source_checkout_builder(plugin_root: &Path) -> PathBuf {
+    plugin_root
+        .join("..")
+        .join("..")
+        .join("scripts")
+        .join("ci")
+        .join("build-unica-tools.py")
+}
+
+/// Описание движка, которого нет на шаге `stage`. Путь, если не назван, —
+/// тот, где движок оказался бы, если бы приехал.
+fn describe_missing(
+    plugin_root: &Path,
+    tool_name: &str,
+    target_id: &str,
+    stage: EngineStage,
+    path: Option<PathBuf>,
+) -> MissingEngine {
+    let install_mode = install_mode_of(plugin_root);
+    let path = path
+        .or_else(|| expected_engine_path(plugin_root, tool_name, target_id))
+        .unwrap_or_else(|| plugin_root.join("bin").join(target_id).join(tool_name));
+    MissingEngine::new(
+        tool_name,
+        target_id,
+        path.display().to_string(),
         bundled_tool_version(plugin_root, tool_name).ok(),
         install_mode,
-    ))
+    )
+    .at_stage(stage)
 }
 
 /// Где движок оказался бы, если бы приехал.
@@ -314,9 +543,7 @@ fn expected_engine_path(plugin_root: &Path, tool_name: &str, target_id: &str) ->
         bundled_tool_version(plugin_root, tool_name),
         artifact_for(plugin_root, tool_name),
     ) {
-        let manifest_path = plugin_root.join("third-party").join("manifest.json");
-        if let Some((binary, delivery)) = fs::read(&manifest_path).ok().and_then(|bytes| {
-            let manifest = serde_json::from_slice::<BundledManifest>(&bytes).ok()?;
+        if let Some((binary, delivery)) = read_manifest(plugin_root).and_then(|manifest| {
             let binary = manifest_binary(&manifest, tool_name, target_id).ok()?;
             let delivery = artifact_delivery_key(&manifest, &artifact, &version).ok()?;
             Some((binary, delivery))
@@ -342,33 +569,45 @@ fn resolve_bundled_tool_for_target(
     tool_name: &str,
     target_id: &str,
     verify: bool,
-) -> Result<BundledTool, String> {
+) -> Result<BundledTool, BundledToolError> {
+    let absent = |stage: EngineStage| {
+        BundledToolError::missing(describe_missing(
+            plugin_root,
+            tool_name,
+            target_id,
+            stage,
+            None,
+        ))
+    };
     let manifest_path = plugin_root.join("third-party").join("manifest.json");
     if !manifest_path.is_file() {
+        if verify {
+            return Err(absent(EngineStage::Manifest));
+        }
         let reason = format!(
             "Unica third-party manifest not found: {}",
             manifest_path.display()
         );
-        if verify {
-            return Err(reason);
-        }
         return resolve_from_lock_for_dry_run(plugin_root, tool_name, target_id, &reason);
     }
 
-    let manifest_text = fs::read_to_string(&manifest_path)
-        .map_err(|err| format!("failed to read Unica third-party manifest: {err}"))?;
-    let manifest: BundledManifest = serde_json::from_str(&manifest_text)
-        .map_err(|err| format!("invalid Unica third-party manifest: {err}"))?;
+    // Манифест на месте, но не читается: поставка испорчена, и движка для
+    // вызывающего нет так же, как без манифеста.
+    let manifest: BundledManifest = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .ok_or_else(|| absent(EngineStage::Manifest))?;
 
     let binary = match manifest_binary(&manifest, tool_name, target_id) {
         Ok(binary) => binary,
-        Err(error) if !verify => {
-            return resolve_from_lock_for_dry_run(plugin_root, tool_name, target_id, &error);
+        Err((_, reason)) if !verify => {
+            return resolve_from_lock_for_dry_run(plugin_root, tool_name, target_id, &reason);
         }
-        Err(error) => return Err(error),
+        Err((stage, _)) => return Err(absent(stage)),
     };
 
-    let program = manifest_relative_path(plugin_root, &binary.binary_path)?;
+    let program = manifest_relative_path(plugin_root, &binary.binary_path)
+        .map_err(|_| absent(EngineStage::Manifest))?;
     let mut warnings = Vec::new();
     let mut missing = None;
     if verify {
@@ -378,7 +617,7 @@ fn resolve_bundled_tool_for_target(
             "dry run: bundled tool binary is not present yet: {}",
             program.display()
         ));
-        missing = missing_engine(plugin_root, tool_name);
+        missing = missing_engine_for(plugin_root, tool_name, target_id);
     }
     Ok(BundledTool {
         program,
@@ -391,23 +630,35 @@ fn manifest_binary(
     manifest: &BundledManifest,
     tool_name: &str,
     target_id: &str,
-) -> Result<ManifestBinary, String> {
+) -> Result<ManifestBinary, ManifestBinaryError> {
     let tool = manifest
         .tools
         .iter()
         .find(|tool| tool.name == tool_name)
-        .ok_or_else(|| format!("tool not found in manifest: {tool_name}"))?;
+        .ok_or_else(|| {
+            (
+                EngineStage::Manifest,
+                format!("tool not found in manifest: {tool_name}"),
+            )
+        })?;
 
     if let Some(binaries) = &tool.binaries {
         let binary = binaries.get(target_id).ok_or_else(|| {
             let supported = binaries.keys().cloned().collect::<Vec<_>>().join(", ");
-            format!("tool {tool_name} is not packaged for {target_id}; supported: {supported}")
+            (
+                EngineStage::Target,
+                format!("tool {tool_name} is not packaged for {target_id}; supported: {supported}"),
+            )
         })?;
         if let Some(target_triple) = &binary.target_triple {
-            let expected = target_triple_for_id(target_id)?;
+            let expected =
+                target_triple_for_id(target_id).map_err(|error| (EngineStage::Target, error))?;
             if target_triple != expected {
-                return Err(format!(
-                    "tool {tool_name} manifest target triple mismatch for {target_id}: {target_triple} != {expected}"
+                return Err((
+                    EngineStage::Target,
+                    format!(
+                        "tool {tool_name} manifest target triple mismatch for {target_id}: {target_triple} != {expected}"
+                    ),
                 ));
             }
         }
@@ -415,51 +666,66 @@ fn manifest_binary(
     }
 
     if let Some(target_triple) = &manifest.target_triple {
-        let expected = target_triple_for_id(target_id)?;
+        let expected =
+            target_triple_for_id(target_id).map_err(|error| (EngineStage::Target, error))?;
         if target_triple != expected {
-            return Err(format!(
-                "Unica ships binaries for {target_triple}; current host is {expected}."
+            return Err((
+                EngineStage::Target,
+                format!("Unica ships binaries for {target_triple}; current host is {expected}."),
             ));
         }
     }
     Ok(ManifestBinary {
         target_triple: manifest.target_triple.clone(),
         binary_path: tool.binary_path.clone().ok_or_else(|| {
-            format!("tool {tool_name} is missing binaryPath in third-party manifest")
+            (
+                EngineStage::Manifest,
+                format!("tool {tool_name} is missing binaryPath in third-party manifest"),
+            )
         })?,
         delivered_path: tool.delivered_path.clone(),
-        sha256: tool
-            .sha256
-            .clone()
-            .ok_or_else(|| format!("tool {tool_name} is missing sha256 in third-party manifest"))?,
+        sha256: tool.sha256.clone().ok_or_else(|| {
+            (
+                EngineStage::Manifest,
+                format!("tool {tool_name} is missing sha256 in third-party manifest"),
+            )
+        })?,
     })
 }
 
+/// Предпросмотр без манифеста строит путь по `tools.lock.json`. Если и пина
+/// для цели нет, движка не описывает ни один источник поставки.
 fn resolve_from_lock_for_dry_run(
     plugin_root: &Path,
     tool_name: &str,
     target_id: &str,
     reason: &str,
-) -> Result<BundledTool, String> {
+) -> Result<BundledTool, BundledToolError> {
     let lock_path = plugin_root.join("third-party").join("tools.lock.json");
-    let lock_text = fs::read_to_string(&lock_path).map_err(|err| {
-        format!("{reason}; failed to read Unica tools lock for dry run fallback: {err}")
-    })?;
-    let lock: ToolsLock = serde_json::from_str(&lock_text)
-        .map_err(|err| format!("{reason}; invalid Unica tools lock: {err}"))?;
+    let absent = |stage: EngineStage| {
+        BundledToolError::missing(describe_missing(
+            plugin_root,
+            tool_name,
+            target_id,
+            stage,
+            None,
+        ))
+    };
+    let lock: ToolsLock = fs::read_to_string(&lock_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .ok_or_else(|| absent(EngineStage::Manifest))?;
     let target = lock
         .targets
         .get(target_id)
-        .ok_or_else(|| format!("{reason}; tools lock has no target {target_id}"))?;
+        .ok_or_else(|| absent(EngineStage::Target))?;
     let tool = lock
         .tools
         .iter()
         .find(|tool| tool.name == tool_name)
-        .ok_or_else(|| format!("{reason}; tool not found in tools lock: {tool_name}"))?;
+        .ok_or_else(|| absent(EngineStage::Manifest))?;
     if !tool.assets.contains_key(target_id) {
-        return Err(format!(
-            "{reason}; tool {tool_name} has no tools.lock asset for {target_id}"
-        ));
+        return Err(absent(EngineStage::Target));
     }
 
     Ok(BundledTool {
@@ -480,19 +746,22 @@ fn verify_binary(
     target_id: &str,
     program: &Path,
     expected_sha: &str,
-) -> Result<(), String> {
+) -> Result<(), BundledToolError> {
+    let absent = |stage: EngineStage| {
+        BundledToolError::missing(describe_missing(
+            plugin_root,
+            tool_name,
+            target_id,
+            stage,
+            Some(program.to_path_buf()),
+        ))
+    };
     if !program.is_file() {
-        // Устойчивый код, инструмент, цель, ожидаемый путь и следующий шаг:
-        // вызывающий не должен разбирать фразу, чтобы понять, чего не хватает.
-        return Err(missing_engine_for(plugin_root, tool_name, target_id)
-            .map(|missing| missing.message())
-            .unwrap_or_else(|| format!("Unica binary is missing: {}", program.display())));
+        return Err(absent(EngineStage::Delivery));
     }
-    let actual = sha256_file(program)?;
+    let actual = sha256_file(program).map_err(BundledToolError::Io)?;
     if !actual.eq_ignore_ascii_case(expected_sha) {
-        return Err(format!(
-            "Unica binary checksum mismatch for {tool_name}. expected: {expected_sha}; actual: {actual}"
-        ));
+        return Err(absent(EngineStage::Checksum));
     }
     Ok(())
 }
@@ -628,7 +897,7 @@ mod tests {
             resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", "darwin-arm64", true)
                 .unwrap_err();
 
-        assert!(error.contains("checksum mismatch"));
+        assert_eq!(stage_of(&error), Some(EngineStage::Checksum), "{error}");
     }
 
     #[test]
@@ -721,6 +990,13 @@ mod tests {
             installed.join("rlm-bsl-index"),
             "путь строится по артефакту, а не по имени инструмента"
         );
+    }
+
+    pub(super) fn stage_of(error: &BundledToolError) -> Option<EngineStage> {
+        match error {
+            BundledToolError::Missing(engine) => Some(engine.stage),
+            BundledToolError::Io(_) => None,
+        }
     }
 
     pub(super) fn temp_plugin_root(name: &str) -> PathBuf {
@@ -1202,7 +1478,11 @@ mod delivery_tests {
         )
         .expect_err("deliveredPath traversal must fail closed");
 
-        assert!(error.contains("stay inside"), "{error}");
+        assert_eq!(
+            tests::stage_of(&error),
+            Some(EngineStage::Manifest),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1322,6 +1602,11 @@ mod missing_engine_tests {
         assert_eq!(missing.tool, "v8-runner");
         assert_eq!(missing.install_mode, InstallMode::Source);
         assert_eq!(missing.pinned_version.as_deref(), Some("0.5.1"));
+        assert_eq!(
+            missing.stage,
+            EngineStage::Manifest,
+            "плейсхолдер исходного чекаута движка не описывает"
+        );
         assert!(
             missing
                 .expected_path
@@ -1392,29 +1677,36 @@ mod missing_binary_refusal_tests {
     use super::*;
     use std::fs;
 
+    fn missing(error: BundledToolError) -> MissingEngine {
+        match error {
+            BundledToolError::Missing(engine) => *engine,
+            BundledToolError::Io(message) => panic!("expected a typed absence, got I/O: {message}"),
+        }
+    }
+
     #[test]
-    fn a_missing_binary_is_refused_with_a_machine_readable_code() {
+    fn a_missing_binary_is_refused_with_a_typed_delivery_stage() {
         // #549: «Unica binary is missing: <path>» не машиночитаемо и не
-        // подсказывает действие. Отказ обязан назвать код, инструмент, цель и
-        // следующий шаг.
+        // подсказывает действие. Отказ называет инструмент, цель, путь, пин,
+        // шаг поставки и следующий шаг полями, а не фразой.
         let plugin_root = tests::temp_plugin_root("missing-code");
         tests::write_manifest_with_bsl_analyzer(&plugin_root);
         let target = tests::host_target();
-        fs::remove_file(plugin_root.join(tests::host_binary("bsl-analyzer"))).unwrap();
+        let binary = plugin_root.join(tests::host_binary("bsl-analyzer"));
+        fs::remove_file(&binary).unwrap();
 
-        let error = resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", target, true)
-            .unwrap_err();
+        let engine = missing(
+            resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", target, true)
+                .unwrap_err(),
+        );
 
-        assert!(
-            error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING),
-            "код назван: {error}"
-        );
-        assert!(error.contains("bsl-analyzer"), "инструмент назван: {error}");
-        assert!(error.contains(target), "цель названа: {error}");
-        assert!(
-            error.contains("delivered") || error.contains("build-unica-tools.py"),
-            "следующий шаг назван: {error}"
-        );
+        assert_eq!(engine.tool, "bsl-analyzer");
+        assert_eq!(engine.target, target);
+        assert_eq!(engine.stage, EngineStage::Delivery);
+        assert_eq!(engine.pinned_version.as_deref(), Some("test"));
+        assert_eq!(engine.expected_path, binary.display().to_string());
+        assert_eq!(engine.install_mode, InstallMode::Marketplace);
+        assert!(engine.next_step.contains("delivered"), "{engine:?}");
     }
 
     #[test]
@@ -1429,32 +1721,148 @@ mod missing_binary_refusal_tests {
         let exe = if foreign == "win-x64" { ".exe" } else { "" };
         fs::remove_file(plugin_root.join(format!("bin/{foreign}/bsl-analyzer{exe}"))).unwrap();
 
-        let error = resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", foreign, true)
-            .unwrap_err();
-
-        assert!(
-            error.contains(crate::domain::engine::BUNDLED_TOOL_MISSING),
-            "refusal stays machine-readable: {error}"
+        let engine = missing(
+            resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", foreign, true)
+                .unwrap_err(),
         );
-        assert!(error.contains(foreign), "resolved target is named: {error}");
-        assert!(!error.contains(host), "host target is irrelevant: {error}");
+
+        assert_eq!(engine.target, foreign);
+        assert!(!engine.message().contains(host), "{engine:?}");
+    }
+
+    /// Каждая причина отсутствия выходит своим шагом поставки, и ни одна не
+    /// требует читать текст: нет манифеста, движок в нём не назван, не
+    /// упакован под платформу, файла нет, сумма не совпала.
+    #[test]
+    fn every_delivery_step_is_named_by_type_without_reading_text() {
+        let target = tests::host_target();
+
+        let no_manifest = tests::temp_plugin_root("stage-no-manifest");
+        let engine = missing(
+            resolve_bundled_tool_for_target(&no_manifest, "bsl-analyzer", target, true)
+                .unwrap_err(),
+        );
+        assert_eq!(engine.stage, EngineStage::Manifest);
+        // Без манифеста режим не выводится в исходный checkout: совет
+        // собрать движок получает только дерево со сборщиком рядом.
+        assert_eq!(engine.install_mode, InstallMode::Marketplace);
+
+        let unreadable = tests::temp_plugin_root("stage-unreadable-manifest");
+        fs::write(unreadable.join("third-party/manifest.json"), "{not json").unwrap();
+        let engine = missing(
+            resolve_bundled_tool_for_target(&unreadable, "bsl-analyzer", target, true).unwrap_err(),
+        );
+        assert_eq!(engine.stage, EngineStage::Manifest);
+        assert_eq!(engine.install_mode, InstallMode::Marketplace);
+        assert!(engine.next_step.contains("reinstall"), "{engine:?}");
+        assert!(
+            !engine.next_step.contains("build-unica-tools"),
+            "{engine:?}"
+        );
+
+        let checkout = tests::temp_plugin_root("stage-unreadable-in-checkout");
+        let checkout_plugin = checkout.join("plugins").join("unica");
+        fs::create_dir_all(checkout_plugin.join("third-party")).unwrap();
+        fs::write(
+            checkout_plugin.join("third-party/manifest.json"),
+            "{not json",
+        )
+        .unwrap();
+        fs::create_dir_all(checkout.join("scripts/ci")).unwrap();
+        fs::write(checkout.join("scripts/ci/build-unica-tools.py"), "").unwrap();
+        let engine = missing(
+            resolve_bundled_tool_for_target(&checkout_plugin, "bsl-analyzer", target, true)
+                .unwrap_err(),
+        );
+        assert_eq!(engine.install_mode, InstallMode::Source);
+        assert!(engine.next_step.contains("build-unica-tools"), "{engine:?}");
+
+        let unnamed = tests::temp_plugin_root("stage-unnamed");
+        tests::write_manifest_with_bsl_analyzer(&unnamed);
+        assert_eq!(
+            missing(
+                resolve_bundled_tool_for_target(&unnamed, "v8-runner", target, true).unwrap_err()
+            )
+            .stage,
+            EngineStage::Manifest
+        );
+
+        let foreign_platform = tests::temp_plugin_root("stage-target");
+        fs::write(
+            foreign_platform.join("third-party/manifest.json"),
+            r#"{"schemaVersion":2,"tools":[{"name":"bsl-analyzer","version":"test",
+                "binaries":{"elsewhere":{"binaryPath":"bin/x/bsl-analyzer","sha256":"00"}}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            missing(
+                resolve_bundled_tool_for_target(&foreign_platform, "bsl-analyzer", target, true)
+                    .unwrap_err()
+            )
+            .stage,
+            EngineStage::Target
+        );
+
+        let absent = tests::temp_plugin_root("stage-delivery");
+        tests::write_manifest_with_bsl_analyzer(&absent);
+        fs::remove_file(absent.join(tests::host_binary("bsl-analyzer"))).unwrap();
+        assert_eq!(
+            missing(
+                resolve_bundled_tool_for_target(&absent, "bsl-analyzer", target, true).unwrap_err()
+            )
+            .stage,
+            EngineStage::Delivery
+        );
+
+        let tampered = tests::temp_plugin_root("stage-checksum");
+        tests::write_manifest_with_bsl_analyzer(&tampered);
+        let binary = tampered.join(tests::host_binary("bsl-analyzer"));
+        fs::write(&binary, "tampered").unwrap();
+        let engine = missing(
+            resolve_bundled_tool_for_target(&tampered, "bsl-analyzer", target, true).unwrap_err(),
+        );
+        assert_eq!(engine.stage, EngineStage::Checksum);
+        assert_eq!(engine.expected_path, binary.display().to_string());
+    }
+
+    /// Наличие проверяется без хеша, а полная проверка на пути отказа
+    /// различает подменённый файл.
+    #[test]
+    fn presence_skips_the_checksum_and_absence_on_the_failure_path_does_not() {
+        let plugin_root = tests::temp_plugin_root("presence-vs-absence");
+        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        fs::write(
+            plugin_root.join(tests::host_binary("bsl-analyzer")),
+            "tampered",
+        )
+        .unwrap();
+
+        assert_eq!(missing_engine(&plugin_root, "bsl-analyzer"), None);
+        assert_eq!(
+            engine_absence(&plugin_root, "bsl-analyzer").map(|engine| engine.stage),
+            Some(EngineStage::Checksum)
+        );
+
+        let intact = tests::temp_plugin_root("presence-intact");
+        tests::write_manifest_with_bsl_analyzer(&intact);
+        assert_eq!(engine_absence(&intact, "bsl-analyzer"), None);
     }
 
     #[test]
-    fn a_missing_binary_still_reads_as_an_unavailable_provider() {
-        // Поставщики, умеющие обойтись без движка, узнают это состояние по
-        // устойчивому коду, а не по фразе, которую перепишут.
-        let plugin_root = tests::temp_plugin_root("missing-unavailable");
+    fn a_failed_start_names_the_start_step_and_the_program() {
+        let plugin_root = tests::temp_plugin_root("start-failure");
         tests::write_manifest_with_bsl_analyzer(&plugin_root);
-        fs::remove_file(plugin_root.join("bin/darwin-arm64/bsl-analyzer")).unwrap();
+        let program = plugin_root.join(tests::host_binary("bsl-analyzer"));
 
-        let error =
-            resolve_bundled_tool_for_target(&plugin_root, "bsl-analyzer", "darwin-arm64", true)
-                .unwrap_err();
+        let engine = start_failure(Some(&plugin_root), "bsl-analyzer", &program);
 
-        assert!(
-            crate::infrastructure::code_intelligence::is_provider_unavailable_error(&error),
-            "{error}"
+        assert_eq!(engine.stage, EngineStage::Start);
+        assert_eq!(engine.expected_path, program.display().to_string());
+        assert_eq!(engine.pinned_version.as_deref(), Some("test"));
+        assert!(engine.next_step.contains("permissions"), "{engine:?}");
+        assert_eq!(
+            start_failure(None, "bsl-analyzer", &program).stage,
+            EngineStage::Start
         );
     }
 }

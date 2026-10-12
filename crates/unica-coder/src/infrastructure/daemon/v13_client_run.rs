@@ -17,7 +17,7 @@ use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    RunnerAbsence, CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
@@ -25,7 +25,9 @@ use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::BundledTool;
-use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
+use crate::infrastructure::internal_adapters::{
+    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
+};
 use crate::infrastructure::platform::PendingProcessHandoff;
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
@@ -682,27 +684,30 @@ fn invoke_runner(
     };
     let execution = if owns_client {
         runner
-            .run_pending_handoff(&command)
+            .run_pending_handoff_staged(&command)
             .map(|(output, handoff)| (output, Some(handoff)))
     } else {
-        runner.run(&command).map(|output| (output, None))
+        runner.run_staged(&command).map(|output| (output, None))
     };
     let (output, handoff) = execution.map_err(|error| {
-        if error.starts_with(CANCELLED_PREFIX) || cancellation.is_cancelled() {
+        if error.message().starts_with(CANCELLED_PREFIX) || cancellation.is_cancelled() {
             reject(
                 RefusalCode::Cancelled,
                 "launch cancelled while reading the runner result",
             )
-        } else if super::runner_014::config_refusal(&error).is_some() {
+        } else if super::runner_014::config_refusal(error.message()).is_some() {
             // Проектный файл отклонён до запуска раннера: клиента ещё нет.
-            runner_start_rejection(Some(OPERATION.to_string()), &error)
-        } else if owns_client {
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
+        } else if owns_client && matches!(error, ProcessStreamFailure::Run(_)) {
+            // Владеемый запуск, который начался, мог оставить клиента:
+            // его причина не публикуется, а исход — сбой поставщика. Раннер,
+            // который не возник, — тот же отказ «нет движка», что у всех (#549).
             reject(
                 RefusalCode::ProviderFailed,
                 "v8-runner could not complete the owned launch",
             )
         } else {
-            reject_absent_runner("failed to run bundled v8-runner for launch")
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
         }
     })?;
     let (envelope, outcome) = parse_runner_output(output, prepared)?;
@@ -845,8 +850,8 @@ fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
 
 /// Поставляемого раннера нет: маршрут один на все операции `run`, уточнение
 /// `provider_absent` назначает общий помощник.
-fn reject_absent_runner(message: impl Into<String>) -> DomainResult {
-    missing_runner_rejection(Some(OPERATION.to_string()), message)
+fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
+    missing_runner_rejection(Some(OPERATION.to_string()), absence)
 }
 
 #[cfg(test)]
@@ -1096,6 +1101,14 @@ fn main() {
 
     impl ProcessRunner for ObservedSystemRunner {
         fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            self.run_staged(command)
+                .map_err(|failure| failure.message().to_string())
+        }
+
+        fn run_staged(
+            &self,
+            command: &ProcessCommand,
+        ) -> Result<ProcessOutput, ProcessStreamFailure> {
             let path = |flag: &str| {
                 let index = command
                     .args
@@ -1154,7 +1167,7 @@ fn main() {
                         command.cancellation.cancel();
                     });
                 }
-                crate::infrastructure::internal_adapters::SystemProcessRunner.run(&command)
+                crate::infrastructure::internal_adapters::SystemProcessRunner.run_staged(&command)
             });
             if let Ok(result) = &result {
                 let suffix = if result.timed_out || result.cancelled {
@@ -1339,6 +1352,69 @@ fn main() {
         );
     }
 
+    /// Ревью #549: владеемый запуск, раннер которого не возник, — тот же отказ
+    /// «нет движка» на шаге `start`, что у остальных операций; владеемый
+    /// запуск, который начался и не завершился, остаётся сбоем поставщика без
+    /// полей движка.
+    #[test]
+    fn owned_launch_that_never_started_is_a_missing_engine() {
+        let root = workspace();
+        let prepared = prepared(root.path(), json!({"clientMode": "thin"}), false);
+        assert!(
+            prepared.arguments.wait_timeout_ms.is_none(),
+            "launch is owned"
+        );
+        let missing = tool(root.path());
+
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &crate::infrastructure::internal_adapters::SystemProcessRunner,
+            CancellationToken::new(),
+            &missing,
+        );
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
+        assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
+        let data = result.data.as_ref().expect("поля движка в data");
+        assert_eq!(data["tool"], "v8-runner");
+        assert_eq!(data["stage"], "start");
+        assert_eq!(data["path"], json!(missing.program.display().to_string()));
+        let message = result.diagnostics[0]["message"].as_str().unwrap();
+        assert!(message.contains("; cause: "), "{message}");
+        assert!(
+            !message.contains(&root.path().display().to_string()),
+            "{message}"
+        );
+
+        struct FailsAfterStart;
+        impl ProcessRunner for FailsAfterStart {
+            fn run(&self, _command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                unreachable!("an owned launch hands its process tree over")
+            }
+            fn run_pending_handoff(
+                &self,
+                _command: &ProcessCommand,
+            ) -> Result<(ProcessOutput, PendingProcessHandoff), String> {
+                Err("process_failed: launcher output ended early".to_string())
+            }
+        }
+        let result = execute_with_resolved_runner(
+            &prepared,
+            &FailsAfterStart,
+            CancellationToken::new(),
+            &missing,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "provider_failed",
+            "{result:?}"
+        );
+        assert!(
+            result.diagnostics[0].get("detailCode").is_none(),
+            "{result:?}"
+        );
+        assert!(result.data.is_none(), "{result:?}");
+    }
+
     #[test]
     fn waited_launch_real_process_timeout_cancel_and_spawn_failure_clean_up_private_logs() {
         let (_executable_directory, executable) = fake_launch_executable();
@@ -1376,7 +1452,15 @@ fn main() {
                 }
             );
             assert_private_launch_cleanup(&result, &runner.paths.lock().unwrap()[0]);
-            assert!(!serde_json::to_string(&result)
+            let mut published = result.clone();
+            if scenario == "spawn-failure" {
+                // Раннер, который не стартовал, — отказ «нет движка» (#549):
+                // путь к движку назван только полем `data.path`, а не текстом.
+                let data = published.data.take().expect("поля движка в data");
+                assert_eq!(data["stage"], "start", "{data}");
+                assert_eq!(data["path"], json!(missing.program.display().to_string()));
+            }
+            assert!(!serde_json::to_string(&published)
                 .unwrap()
                 .contains(&root.path().display().to_string()));
         }

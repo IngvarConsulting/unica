@@ -21,6 +21,21 @@
       "sha256": "cd5c3afcfdd43363db4db6489b66cc85f0e812cd4af9cdddc94e092cce8f3597",
       "size": 1585,
       "source": "Raw platform export of the isolated parent configuration used for the CommonModule.Server/Notify probe."
+    },
+    "extension-common-module-inherited.xml": {
+      "sha256": "f9c442d55915d64173e9ce6b406f3997a8fe847e7109d9e13b9a1e008b710942",
+      "size": 1402,
+      "source": "Raw platform export of an adopted CommonModule imported with only ObjectBelonging, Name, Comment and ExtendedConfigurationObject: none of the eight CommonModule properties is written; the platform added only PropertyState Module/Extended for the extension module. Byte-exact after a second independent infobase import/export (#1304)."
+    },
+    "extension-common-module-environment-only.xml": {
+      "sha256": "69fe18ef8ca2f27c7e61c15896b5dafc0d482e0090657a156e745169348e9a90",
+      "size": 1677,
+      "source": "Raw platform export of an adopted CommonModule imported with the six environment flags but without Privileged and ReturnValuesReuse; the platform keeps exactly that set. Byte-exact after a second independent infobase import/export (#1304)."
+    },
+    "parent-common-module-cache.xml": {
+      "sha256": "3fea75ac5715bc702a358d093c74b7b43e1ae369670ca644bed0757a7dd8956f",
+      "size": 1598,
+      "source": "Raw platform export of the parent CommonModule adopted by extension-common-module-inherited.xml; its Privileged=true and ReturnValuesReuse=DuringRequest are not copied into the extension descriptor (#1304)."
     }
   }
 }

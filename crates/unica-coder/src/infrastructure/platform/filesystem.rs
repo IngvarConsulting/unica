@@ -1605,6 +1605,24 @@ pub(crate) fn file_identity(file: &fs::File) -> io::Result<FileIdentity> {
     })
 }
 
+/// When the metadata of an entry last changed (`ctime`), where the platform
+/// reports it with the metadata itself. It cannot be set by hand, so a
+/// restored content time does not hide an edit. Windows keeps it only behind
+/// an open handle: `None` there.
+#[cfg(unix)]
+pub(crate) fn metadata_change_time(metadata: &fs::Metadata) -> Option<std::time::SystemTime> {
+    use std::os::unix::fs::MetadataExt;
+
+    let seconds = u64::try_from(metadata.ctime()).ok()?;
+    let nanos = u32::try_from(metadata.ctime_nsec()).ok()?;
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(seconds, nanos))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn metadata_change_time(_metadata: &fs::Metadata) -> Option<std::time::SystemTime> {
+    None
+}
+
 #[cfg(unix)]
 pub(crate) fn file_change_time(
     _file: &fs::File,

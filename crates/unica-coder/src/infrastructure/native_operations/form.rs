@@ -697,7 +697,7 @@ pub(crate) fn form_validate_data_paths(
     }
 }
 
-const FORM_BINDING_PATH_PROPERTIES: [(&str, &str); 8] = [
+pub(crate) const FORM_BINDING_PATH_PROPERTIES: [(&str, &str); 8] = [
     ("path", "DataPath"),
     ("titleDataPath", "TitleDataPath"),
     ("footerDataPath", "FooterDataPath"),
@@ -2594,14 +2594,13 @@ pub(crate) fn add_form_with_data(
         let form_dir = forms_dir.join(form_name);
         let form_ext_dir = form_dir.join("Ext");
         let form_module_dir = form_ext_dir.join("Form");
-        // The pre-v0.13 form command has no language profile; it keeps ru.
         let form_metadata = form_add_metadata_xml(
             form_name,
             synonym,
             &object_type,
             &format_version,
             &fresh_uuid(),
-            "ru",
+            LEGACY_FORM_TEXT_LANGUAGE,
         );
 
         let form_xml_path = form_ext_dir.join("Form.xml");
@@ -4715,7 +4714,13 @@ fn form_edit_with_mode_data(
             planned_removals,
             companion_count,
             form_name,
-        } = form_edit_apply_definition(&mut xml_text, &defn, &form_path, form_root_start)?;
+        } = form_edit_apply_definition(
+            &mut xml_text,
+            &defn,
+            &form_path,
+            form_root_start,
+            Some(LEGACY_FORM_TEXT_LANGUAGE),
+        )?;
         form_edit_require_valid(validate_form_with_source(
             args,
             context,
@@ -4855,6 +4860,7 @@ pub(crate) fn form_edit_apply_definition(
     defn: &Value,
     form_path: &Path,
     form_root_start: usize,
+    lang: Option<&str>,
 ) -> Result<FormEditApplied, String> {
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_named_objects(xml_text, attributes, "Attribute", "attribute")?;
@@ -4893,6 +4899,7 @@ pub(crate) fn form_edit_apply_definition(
                 elements,
                 defn.get("into").and_then(Value::as_str),
                 defn.get("after").and_then(Value::as_str),
+                lang,
             )?;
             if !elements_are_idempotent {
                 form_edit_validate_element_names(xml_text, elements)?;
@@ -4901,11 +4908,15 @@ pub(crate) fn form_edit_apply_definition(
                     defn.get("into").and_then(Value::as_str),
                     defn.get("after").and_then(Value::as_str),
                 )?;
-                let in_command_bar = form_edit_placement_is_command_bar(
-                    xml_text,
-                    defn.get("into").and_then(Value::as_str),
-                    defn.get("after").and_then(Value::as_str),
-                )?;
+                let in_command_bar = {
+                    let document = Document::parse(xml_text)
+                        .map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
+                    form_edit_placement_is_command_bar(
+                        document.root_element(),
+                        defn.get("into").and_then(Value::as_str),
+                        defn.get("after").and_then(Value::as_str),
+                    )?
+                };
                 let element_indent = insert_target.child_indent().to_string();
                 let start = elem_ids.next;
                 let mut lines = Vec::<String>::new();
@@ -4917,6 +4928,7 @@ pub(crate) fn form_edit_apply_definition(
                         &element_indent,
                         &mut elem_ids,
                         in_command_bar,
+                        lang,
                     )?;
                     if let Some(record) = record {
                         added_elements.push(record);
@@ -4942,7 +4954,7 @@ pub(crate) fn form_edit_apply_definition(
                     continue;
                 };
                 let id = attr_ids.next()?;
-                emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t")?;
+                emit_form_edit_attribute_item(&mut lines, object, name, id, "\t\t", lang)?;
                 let type_name = object
                     .get("type")
                     .and_then(Value::as_str)
@@ -4970,7 +4982,7 @@ pub(crate) fn form_edit_apply_definition(
                     continue;
                 };
                 let id = cmd_ids.next()?;
-                emit_form_edit_command_item(&mut lines, object, name, id, "\t\t");
+                emit_form_edit_command_item(&mut lines, object, name, id, "\t\t", lang)?;
                 added_cmds.push(FormEditAddedCommand {
                     name: name.to_string(),
                     action: object
@@ -6622,10 +6634,11 @@ fn form_edit_expected_element_fingerprint(
     xml_text: &str,
     element: &Value,
     in_command_bar: bool,
+    lang: Option<&str>,
 ) -> Result<FormEditElementFingerprint, String> {
     let mut lines = Vec::new();
     let mut ids = FormIdAllocator::new();
-    emit_form_element_with_context(&mut lines, element, "\t", &mut ids, in_command_bar)?;
+    emit_form_element_with_context(&mut lines, element, "\t", &mut ids, in_command_bar, lang)?;
     let fragment = lines.join("\n");
 
     let source_document =
@@ -6734,10 +6747,12 @@ fn form_edit_elements_are_idempotent_noop(
     elements: &[Value],
     into_name: Option<&str>,
     after_name: Option<&str>,
+    lang: Option<&str>,
 ) -> Result<bool, String> {
     let document =
         Document::parse(xml_text).map_err(|error| format!("[ERROR] XML parse error: {error}"))?;
     let root = document.root_element();
+    let in_command_bar = form_edit_placement_is_command_bar(root, into_name, after_name)?;
     let mut requested_names = Vec::with_capacity(elements.len());
     let mut existing = Vec::with_capacity(elements.len());
     for element in elements {
@@ -6753,8 +6768,8 @@ fn form_edit_elements_are_idempotent_noop(
         let [node] = matches.as_slice() else {
             return Ok(false);
         };
-        let in_command_bar = form_edit_placement_is_command_bar(xml_text, into_name, after_name)?;
-        let expected = form_edit_expected_element_fingerprint(xml_text, element, in_command_bar)?;
+        let expected =
+            form_edit_expected_element_fingerprint(xml_text, element, in_command_bar, lang)?;
         if form_edit_element_fingerprint(*node) != expected {
             return Ok(false);
         }
@@ -7065,12 +7080,10 @@ pub(crate) fn form_edit_target_child_items_range(
 }
 
 fn form_edit_placement_is_command_bar(
-    xml_text: &str,
+    root: roxmltree::Node<'_, '_>,
     into_name: Option<&str>,
     after_name: Option<&str>,
 ) -> Result<bool, String> {
-    let doc = Document::parse(xml_text).map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
-    let root = doc.root_element();
     let container = if let Some(name) = into_name.filter(|name| !name.is_empty()) {
         form_edit_find_placement_element(root, name)?
     } else if let Some(name) = after_name.filter(|name| !name.is_empty()) {
@@ -7467,6 +7480,7 @@ pub(crate) fn emit_form_edit_attribute_item(
     name: &str,
     id: usize,
     indent: &str,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     lines.push(format!(
         "{indent}<Attribute name=\"{}\" id=\"{id}\">",
@@ -7474,7 +7488,7 @@ pub(crate) fn emit_form_edit_attribute_item(
     ));
     let inner = format!("{indent}\t");
     if let Some(title) = attr.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
     if let Some(type_name) = attr.get("type").and_then(Value::as_str) {
         emit_form_type(lines, type_name, &inner)?;
@@ -7493,7 +7507,7 @@ pub(crate) fn emit_form_edit_attribute_item(
             escape_xml(fill_checking)
         ));
     }
-    emit_form_attribute_columns(lines, attr.get("columns"), &inner)?;
+    emit_form_attribute_columns(lines, attr.get("columns"), &inner, lang)?;
     lines.push(format!("{indent}</Attribute>"));
     Ok(())
 }
@@ -7504,19 +7518,21 @@ pub(crate) fn emit_form_edit_command_item(
     name: &str,
     id: usize,
     indent: &str,
-) {
+    lang: Option<&str>,
+) -> Result<(), String> {
     lines.push(format!(
         "{indent}<Command name=\"{}\" id=\"{id}\">",
         escape_xml(name)
     ));
     let inner = format!("{indent}\t");
     if let Some(title) = cmd.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
     if let Some(action) = cmd.get("action").and_then(Value::as_str) {
         lines.push(format!("{inner}<Action>{}</Action>", escape_xml(action)));
     }
     lines.push(format!("{indent}</Command>"));
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -7701,6 +7717,7 @@ pub(crate) fn form_compile_xml(
         form_edit_validate_new_element_event_tree(elements, &context)?;
     }
 
+    let lang = Some(LEGACY_FORM_TEXT_LANGUAGE);
     let mut ids = FormIdAllocator::new();
     let mut lines = Vec::<String>::new();
     lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
@@ -7713,7 +7730,7 @@ pub(crate) fn form_compile_xml(
             .and_then(|props| json_string_field(props, "title"))
     });
     if let Some(title) = form_title.as_deref() {
-        emit_form_mltext(&mut lines, "\t", "Title", title);
+        emit_form_mltext(&mut lines, "\t", "Title", title, lang)?;
     }
 
     let props_src = defn.get("properties").and_then(Value::as_object);
@@ -7769,7 +7786,7 @@ pub(crate) fn form_compile_xml(
         if !elements.is_empty() {
             lines.push("\t<ChildItems>".to_string());
             for element in elements {
-                emit_form_element(&mut lines, element, "\t\t", &mut ids)?;
+                emit_form_element(&mut lines, element, "\t\t", &mut ids, lang)?;
             }
             lines.push("\t</ChildItems>".to_string());
         }
@@ -7779,7 +7796,7 @@ pub(crate) fn form_compile_xml(
         .get("attributes")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
-    emit_form_attributes(&mut lines, defn.get("attributes"), "\t", &mut ids)?;
+    emit_form_attributes(&mut lines, defn.get("attributes"), "\t", &mut ids, lang)?;
 
     let parameters = defn
         .get("parameters")
@@ -7791,7 +7808,7 @@ pub(crate) fn form_compile_xml(
         .get("commands")
         .and_then(Value::as_array)
         .map_or(0, Vec::len);
-    emit_form_commands(&mut lines, defn.get("commands"), "\t", &mut ids)?;
+    emit_form_commands(&mut lines, defn.get("commands"), "\t", &mut ids, lang)?;
 
     lines.push("</Form>".to_string());
     Ok((
@@ -8290,38 +8307,67 @@ pub(crate) fn form_element_has_command_bar(element: &Value) -> bool {
     false
 }
 
-pub(crate) fn emit_form_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
+/// Language of multilingual values written by the pre-v0.13 form commands
+/// (`unica.form.add`, `unica.form.compile`, `unica.form.edit`). They take no
+/// source-set language profile and keep `ru`; the v0.13 form operations
+/// write in the source set's default language instead (#909, #1257).
+pub(crate) const LEGACY_FORM_TEXT_LANGUAGE: &str = "ru";
+
+/// Refusal of a plain-string form text emitted without a language; see
+/// [`form_edit_apply_definition`].
+pub(crate) const FORM_TEXT_LANGUAGE_REQUIRED: &str =
+    "a plain-string form text needs the default language";
+
+/// Writes `text` as a multilingual `tag` in the `lang` language
+/// (`LanguageCode`); an empty `text` writes the empty element. A non-empty
+/// `text` without a language fails with [`FORM_TEXT_LANGUAGE_REQUIRED`].
+pub(crate) fn emit_form_mltext(
+    lines: &mut Vec<String>,
+    indent: &str,
+    tag: &str,
+    text: &str,
+    lang: Option<&str>,
+) -> Result<(), String> {
     if text.is_empty() {
         lines.push(format!("{indent}<{tag}/>"));
-        return;
+        return Ok(());
     }
+    let lang = lang
+        .filter(|lang| !lang.is_empty())
+        .ok_or_else(|| FORM_TEXT_LANGUAGE_REQUIRED.to_string())?;
     lines.push(format!("{indent}<{tag}>"));
     lines.push(format!("{indent}\t<v8:item>"));
-    lines.push(format!("{indent}\t\t<v8:lang>ru</v8:lang>"));
+    lines.push(format!(
+        "{indent}\t\t<v8:lang>{}</v8:lang>",
+        escape_xml(lang)
+    ));
     lines.push(format!(
         "{indent}\t\t<v8:content>{}</v8:content>",
         escape_xml(text)
     ));
     lines.push(format!("{indent}\t</v8:item>"));
     lines.push(format!("{indent}</{tag}>"));
+    Ok(())
 }
 
+/// Writes a multilingual `tag` from `value`: a plain string in the `lang`
+/// language, a language-to-text object as given.
 pub(crate) fn emit_form_mltext_value(
     lines: &mut Vec<String>,
     indent: &str,
     tag: &str,
     value: &Value,
-) {
+    lang: Option<&str>,
+) -> Result<(), String> {
     if let Some(text) = value.as_str() {
         if text.is_empty() {
-            return;
+            return Ok(());
         }
-        emit_form_mltext(lines, indent, tag, text);
-        return;
+        return emit_form_mltext(lines, indent, tag, text, lang);
     }
 
     let Some(texts) = value.as_object() else {
-        return;
+        return Ok(());
     };
     let texts = texts
         .iter()
@@ -8333,7 +8379,7 @@ pub(crate) fn emit_form_mltext_value(
         })
         .collect::<Vec<_>>();
     if texts.is_empty() {
-        return;
+        return Ok(());
     }
 
     lines.push(format!("{indent}<{tag}>"));
@@ -8350,15 +8396,17 @@ pub(crate) fn emit_form_mltext_value(
         lines.push(format!("{indent}\t</v8:item>"));
     }
     lines.push(format!("{indent}</{tag}>"));
+    Ok(())
 }
 
 pub(crate) fn emit_form_element_tooltip(
     lines: &mut Vec<String>,
     element: &Map<String, Value>,
     indent: &str,
-) {
+    lang: Option<&str>,
+) -> Result<(), String> {
     if let Some(tooltip) = element.get("tooltip") {
-        emit_form_mltext_value(lines, indent, "ToolTip", tooltip);
+        emit_form_mltext_value(lines, indent, "ToolTip", tooltip, lang)?;
     }
     if let Some(representation) = element
         .get("tooltipRepresentation")
@@ -8370,6 +8418,7 @@ pub(crate) fn emit_form_element_tooltip(
             escape_xml(representation)
         ));
     }
+    Ok(())
 }
 
 pub(crate) fn emit_form_font(lines: &mut Vec<String>, font: &Value, indent: &str) {
@@ -8870,8 +8919,9 @@ pub(crate) fn emit_form_element(
     element: &Value,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
-    emit_form_element_with_context(lines, element, indent, ids, false)
+    emit_form_element_with_context(lines, element, indent, ids, false, lang)
 }
 
 fn emit_form_element_with_context(
@@ -8880,6 +8930,7 @@ fn emit_form_element_with_context(
     indent: &str,
     ids: &mut FormIdAllocator,
     in_command_bar: bool,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(object) = element.as_object() else {
         return Ok(());
@@ -8888,13 +8939,13 @@ fn emit_form_element_with_context(
     form_edit_validate_element_event_payload_types(object, kind, kind.name(object)?)?;
     match kind {
         FormEditElementDefinitionKind::Table => {
-            emit_form_table(lines, object, kind.name(object)?, indent, ids)
+            emit_form_table(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::Label => {
-            emit_form_label_decoration(lines, object, kind.name(object)?, indent, ids)
+            emit_form_label_decoration(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::LabelField => {
-            emit_form_label_field(lines, object, kind.name(object)?, indent, ids)
+            emit_form_label_field(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::Button => emit_form_button(
             lines,
@@ -8903,27 +8954,28 @@ fn emit_form_element_with_context(
             indent,
             ids,
             in_command_bar,
+            lang,
         ),
         FormEditElementDefinitionKind::CommandBar => {
-            emit_form_command_bar_element(lines, object, kind.name(object)?, indent, ids)
+            emit_form_command_bar_element(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::Pages => {
-            emit_form_pages(lines, object, kind.name(object)?, indent, ids)
+            emit_form_pages(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::Page => {
-            emit_form_page(lines, object, kind.name(object)?, indent, ids)
+            emit_form_page(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::Group => {
-            emit_form_group(lines, object, kind.name(object)?, indent, ids)
+            emit_form_group(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::CheckBox => {
-            emit_form_check(lines, object, kind.name(object)?, indent, ids)
+            emit_form_check(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::InputField => {
-            emit_form_input(lines, object, kind.name(object)?, indent, ids)
+            emit_form_input(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::HtmlDocumentField => {
-            emit_form_html_document_field(lines, object, kind.name(object)?, indent, ids)
+            emit_form_html_document_field(lines, object, kind.name(object)?, indent, ids, lang)
         }
         FormEditElementDefinitionKind::AutoCommandBar => Ok(()),
     }
@@ -8952,6 +9004,7 @@ pub(crate) fn emit_form_group(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -8960,7 +9013,7 @@ pub(crate) fn emit_form_group(
     ));
     let inner = format!("{indent}\t");
     if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
     if let Some(value) = element
         .get("group")
@@ -9016,7 +9069,7 @@ pub(crate) fn emit_form_group(
         &inner,
         ids,
     )?;
-    emit_form_children(lines, element, &inner, ids)?;
+    emit_form_children(lines, element, &inner, ids, lang)?;
     lines.push(format!("{indent}</UsualGroup>"));
     Ok(())
 }
@@ -9027,6 +9080,7 @@ pub(crate) fn emit_form_pages(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9035,7 +9089,7 @@ pub(crate) fn emit_form_pages(
     ));
     let inner = format!("{indent}\t");
     if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
     if let Some(value) = element.get("pagesRepresentation").and_then(Value::as_str) {
         lines.push(format!(
@@ -9058,7 +9112,7 @@ pub(crate) fn emit_form_pages(
         ids,
     )?;
     emit_form_element_events(lines, element, name, &inner);
-    emit_form_children(lines, element, &inner, ids)?;
+    emit_form_children(lines, element, &inner, ids, lang)?;
     lines.push(format!("{indent}</Pages>"));
     Ok(())
 }
@@ -9069,6 +9123,7 @@ pub(crate) fn emit_form_page(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9077,7 +9132,7 @@ pub(crate) fn emit_form_page(
     ));
     let inner = format!("{indent}\t");
     if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
     emit_form_common_flags(lines, element, &inner);
     if let Some(value) = element
@@ -9101,7 +9156,7 @@ pub(crate) fn emit_form_page(
         &inner,
         ids,
     )?;
-    emit_form_children(lines, element, &inner, ids)?;
+    emit_form_children(lines, element, &inner, ids, lang)?;
     lines.push(format!("{indent}</Page>"));
     Ok(())
 }
@@ -9111,6 +9166,7 @@ pub(crate) fn emit_form_children(
     element: &Map<String, Value>,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(children) = element.get("children").and_then(Value::as_array) else {
         return Ok(());
@@ -9120,7 +9176,7 @@ pub(crate) fn emit_form_children(
     }
     lines.push(format!("{indent}<ChildItems>"));
     for child in children {
-        emit_form_element(lines, child, &format!("{indent}\t"), ids)?;
+        emit_form_element(lines, child, &format!("{indent}\t"), ids, lang)?;
     }
     lines.push(format!("{indent}</ChildItems>"));
     Ok(())
@@ -9226,6 +9282,7 @@ pub(crate) fn emit_form_check(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9237,9 +9294,9 @@ pub(crate) fn emit_form_check(
         lines.push(format!("{inner}<DataPath>{}</DataPath>", escape_xml(path)));
     }
     if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
-    emit_form_element_tooltip(lines, element, &inner);
+    emit_form_element_tooltip(lines, element, &inner, lang)?;
     emit_form_common_flags(lines, element, &inner);
     let title_location = element
         .get("titleLocation")
@@ -9287,6 +9344,7 @@ pub(crate) fn emit_form_input(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9298,9 +9356,9 @@ pub(crate) fn emit_form_input(
         lines.push(format!("{inner}<DataPath>{}</DataPath>", escape_xml(path)));
     }
     if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
-    emit_form_element_tooltip(lines, element, &inner);
+    emit_form_element_tooltip(lines, element, &inner, lang)?;
     emit_form_common_flags(lines, element, &inner);
     if let Some(value) = element.get("titleLocation").and_then(Value::as_str) {
         let location = form_compile_title_location(value).unwrap_or(value);
@@ -9389,7 +9447,7 @@ pub(crate) fn emit_form_input(
         ));
     }
     if let Some(hint) = element.get("inputHint").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "InputHint", hint);
+        emit_form_mltext(lines, &inner, "InputHint", hint, lang)?;
     }
     emit_form_companion(
         lines,
@@ -9417,6 +9475,7 @@ pub(crate) fn emit_form_button(
     indent: &str,
     ids: &mut FormIdAllocator,
     in_command_bar: bool,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9483,9 +9542,9 @@ pub(crate) fn emit_form_button(
         ));
     }
     if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
-    emit_form_element_tooltip(lines, element, &inner);
+    emit_form_element_tooltip(lines, element, &inner, lang)?;
     emit_form_common_flags(lines, element, &inner);
     if element.get("defaultButton").and_then(Value::as_bool) == Some(true) {
         lines.push(format!("{inner}<DefaultButton>true</DefaultButton>"));
@@ -9536,6 +9595,7 @@ pub(crate) fn emit_form_command_bar_element(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9561,7 +9621,14 @@ pub(crate) fn emit_form_command_bar_element(
         if !children.is_empty() {
             lines.push(format!("{inner}<ChildItems>"));
             for child in children {
-                emit_form_element_with_context(lines, child, &format!("{inner}\t"), ids, true)?;
+                emit_form_element_with_context(
+                    lines,
+                    child,
+                    &format!("{inner}\t"),
+                    ids,
+                    true,
+                    lang,
+                )?;
             }
             lines.push(format!("{inner}</ChildItems>"));
         }
@@ -9583,6 +9650,7 @@ pub(crate) fn emit_form_label_decoration(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9621,7 +9689,7 @@ pub(crate) fn emit_form_label_decoration(
             escape_xml(value)
         ));
     }
-    emit_form_decoration_title(lines, element, name, &inner);
+    emit_form_decoration_title(lines, element, name, &inner, lang)?;
     emit_form_companion(
         lines,
         "ContextMenu",
@@ -9649,7 +9717,8 @@ fn emit_form_decoration_title(
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
-) {
+    lang: Option<&str>,
+) -> Result<(), String> {
     // A decoration without an explicit title takes its own name, the way the
     // platform does; writing nothing left the element unlabelled (#450 review).
     let fallback;
@@ -9667,7 +9736,7 @@ fn emit_form_decoration_title(
         .unwrap_or(false);
     let text = title.get("text").unwrap_or(title);
     let mut rendered = Vec::new();
-    emit_form_mltext_value(&mut rendered, indent, "Title", text);
+    emit_form_mltext_value(&mut rendered, indent, "Title", text, lang)?;
     // A decoration title always carries the attribute, true or false; the
     // platform writes it either way, so omitting it when false would diverge.
     if let Some(first) = rendered.first_mut() {
@@ -9679,6 +9748,7 @@ fn emit_form_decoration_title(
         );
     }
     lines.extend(rendered);
+    Ok(())
 }
 
 fn emit_form_html_document_field(
@@ -9687,6 +9757,7 @@ fn emit_form_html_document_field(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9696,9 +9767,9 @@ fn emit_form_html_document_field(
     let inner = format!("{indent}\t");
     emit_form_binding_path_property(lines, element, "path", "DataPath", &inner);
     if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title);
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
-    emit_form_element_tooltip(lines, element, &inner);
+    emit_form_element_tooltip(lines, element, &inner, lang)?;
     for key in [
         "visible",
         "hidden",
@@ -9760,6 +9831,7 @@ pub(crate) fn emit_form_label_field(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9770,7 +9842,7 @@ pub(crate) fn emit_form_label_field(
     if let Some(path) = element.get("path").and_then(Value::as_str) {
         lines.push(format!("{inner}<DataPath>{}</DataPath>", escape_xml(path)));
     }
-    emit_form_element_tooltip(lines, element, &inner);
+    emit_form_element_tooltip(lines, element, &inner, lang)?;
     emit_form_common_flags(lines, element, &inner);
     emit_form_binding_path_property(lines, element, "footerDataPath", "FooterDataPath", &inner);
     emit_form_companion(
@@ -9798,6 +9870,7 @@ pub(crate) fn emit_form_table(
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
@@ -9920,7 +9993,7 @@ pub(crate) fn emit_form_table(
         if !columns.is_empty() {
             lines.push(format!("{inner}<ChildItems>"));
             for column in columns {
-                emit_form_element(lines, column, &format!("{inner}\t"), ids)?;
+                emit_form_element(lines, column, &format!("{inner}\t"), ids, lang)?;
             }
             lines.push(format!("{inner}</ChildItems>"));
         }
@@ -10210,6 +10283,7 @@ pub(crate) fn emit_form_attributes(
     attrs: Option<&Value>,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(attrs) = attrs.and_then(Value::as_array) else {
         return Ok(());
@@ -10233,7 +10307,7 @@ pub(crate) fn emit_form_attributes(
         ));
         let inner = format!("{indent}\t\t");
         if let Some(title) = object.get("title").and_then(Value::as_str) {
-            emit_form_mltext(lines, &inner, "Title", title);
+            emit_form_mltext(lines, &inner, "Title", title, lang)?;
         }
         let type_name = object.get("type").and_then(Value::as_str);
         if let Some(type_name) = type_name {
@@ -10264,7 +10338,7 @@ pub(crate) fn emit_form_attributes(
                 escape_xml(fill_checking)
             ));
         }
-        emit_form_compile_attribute_columns(lines, object.get("columns"), &inner, ids)?;
+        emit_form_compile_attribute_columns(lines, object.get("columns"), &inner, ids, lang)?;
         lines.push(format!("{indent}\t</Attribute>"));
     }
     lines.push(format!("{indent}</Attributes>"));
@@ -10275,8 +10349,9 @@ pub(crate) fn emit_form_attribute_columns(
     lines: &mut Vec<String>,
     columns: Option<&Value>,
     indent: &str,
+    lang: Option<&str>,
 ) -> Result<(), String> {
-    emit_form_attribute_columns_with_ids(lines, columns, indent, |index| Ok(index + 1))
+    emit_form_attribute_columns_with_ids(lines, columns, indent, |index| Ok(index + 1), lang)
 }
 
 fn emit_form_compile_attribute_columns(
@@ -10284,8 +10359,9 @@ fn emit_form_compile_attribute_columns(
     columns: Option<&Value>,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
-    emit_form_attribute_columns_with_ids(lines, columns, indent, |_| ids.next())
+    emit_form_attribute_columns_with_ids(lines, columns, indent, |_| ids.next(), lang)
 }
 
 fn emit_form_attribute_columns_with_ids(
@@ -10293,6 +10369,7 @@ fn emit_form_attribute_columns_with_ids(
     columns: Option<&Value>,
     indent: &str,
     mut next_id: impl FnMut(usize) -> Result<usize, String>,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(columns) = columns else {
         return Ok(());
@@ -10321,7 +10398,7 @@ fn emit_form_attribute_columns_with_ids(
         ));
         let inner = format!("{column_indent}\t");
         if let Some(title) = object.get("title").and_then(Value::as_str) {
-            emit_form_mltext(lines, &inner, "Title", title);
+            emit_form_mltext(lines, &inner, "Title", title, lang)?;
         }
         let type_name = object
             .get("type")
@@ -10454,6 +10531,7 @@ pub(crate) fn emit_form_commands(
     cmds: Option<&Value>,
     indent: &str,
     ids: &mut FormIdAllocator,
+    lang: Option<&str>,
 ) -> Result<(), String> {
     let Some(cmds) = cmds.and_then(Value::as_array) else {
         return Ok(());
@@ -10477,7 +10555,7 @@ pub(crate) fn emit_form_commands(
         ));
         let inner = format!("{indent}\t\t");
         if let Some(title) = object.get("title").and_then(Value::as_str) {
-            emit_form_mltext(lines, &inner, "Title", title);
+            emit_form_mltext(lines, &inner, "Title", title, lang)?;
         }
         for (key, tag) in [
             ("action", "Action"),
@@ -13834,7 +13912,14 @@ pub(crate) mod tests {
                 .root_element()
                 .range()
                 .start;
-            form_edit_apply_definition(&mut unchanged, &json!({}), &form_path, root_start).unwrap();
+            form_edit_apply_definition(
+                &mut unchanged,
+                &json!({}),
+                &form_path,
+                root_start,
+                Some("ru"),
+            )
+            .unwrap();
             assert_eq!(unchanged, original, "a no-op does not allocate an ID");
             let args = Map::from_iter([
                 (
@@ -14388,7 +14473,12 @@ pub(crate) mod tests {
         let mut xml=format!("<Form xmlns=\"{FORM_LOGFORM_NS}\"><AutoCommandBar name=\"RootBar\" id=\"-1\"><ChildItems><Button name=\"First\" id=\"4\"/></ChildItems></AutoCommandBar><ChildItems><Table name=\"Rows\" id=\"1\"><AutoCommandBar name=\"RowsBar\" id=\"2\"/></Table></ChildItems></Form>");
         assert!(form_edit_target_child_items_range(&xml, None, Some("RootBar")).is_err());
         assert!(form_edit_target_child_items_range(&xml, None, Some("RowsBar")).is_err());
-        assert!(form_edit_placement_is_command_bar(&xml, None, Some("First")).unwrap());
+        assert!(form_edit_placement_is_command_bar(
+            Document::parse(&xml).unwrap().root_element(),
+            None,
+            Some("First")
+        )
+        .unwrap());
         let target = form_edit_target_child_items_range(&xml, None, Some("First")).unwrap();
         form_edit_insert_lines_into_target(
             &mut xml,
@@ -17149,6 +17239,7 @@ pub(crate) mod tests {
             "Check",
             "\t",
             &mut ids,
+            Some("ru"),
         )
         .unwrap();
         let input = json!({"titleLocation": "</TitleLocation><Injected/>"});
@@ -17158,6 +17249,7 @@ pub(crate) mod tests {
             "Input",
             "\t",
             &mut ids,
+            Some("ru"),
         )
         .unwrap();
         lines.push("</Form>".to_string());

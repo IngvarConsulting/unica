@@ -10,6 +10,7 @@ check:
   - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_a_build_pin_is_answered_by_its_family_guide_with_a_disclosure
   - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_a_build_pin_of_an_absent_family_is_still_refused
   - crates/unica-coder/src/infrastructure/kb_1ci.rs::kb_provider_names_available_versions_when_the_requested_one_is_absent
+  - crates/unica-coder/src/infrastructure/kb_1ci.rs::administrator_default_node_discovers_hidden_versions_and_reads_the_pinned_family
 gap: https://github.com/IngvarConsulting/unica/issues/597
 ---
 

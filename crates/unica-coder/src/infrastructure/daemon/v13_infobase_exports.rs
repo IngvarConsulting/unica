@@ -6,13 +6,16 @@ use super::protocol::InvocationRequest;
 use super::runner_014::Runner014ProcessRunner;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
+use crate::domain::engine::MissingEngine;
 use crate::domain::invocation::{DomainResult, SafeIdentityHash};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::{
-    bundled_tool_version, resolve_bundled_tool, BundledTool,
+    bundled_tool_version, resolve_bundled_tool, BundledTool, BundledToolError,
 };
-use crate::infrastructure::internal_adapters::{ProcessCommand, ProcessOutput, ProcessRunner};
+use crate::infrastructure::internal_adapters::{
+    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
+};
 use crate::infrastructure::path_policy::WorkspacePathPolicy;
 use crate::infrastructure::platform::filesystem::{
     open_absolute_directory_path_nofollow, open_directory_child_nofollow,
@@ -852,7 +855,7 @@ fn invoke_runner(
     if dry_run {
         args.push("--dry-run".to_string());
     }
-    let output = runner.run(&ProcessCommand {
+    let output = runner.run_staged(&ProcessCommand {
         program: tool.program.clone(),
         args,
         cwd: prepared.context.workspace_root.clone(),
@@ -872,6 +875,7 @@ fn invoke_runner(
             return Err(runner_start_rejection(
                 Some(prepared.operation.name().to_string()),
                 &error,
+                &tool.program,
             ));
         }
     };
@@ -974,17 +978,93 @@ const RUNNER_WIRE_CODES: [&str; 16] = [
 /// Отображает код раннера в наш отказ, а значит и в исход для агента.
 ///
 /// **Платформа отказала — это «нужен человек», и дальше мы не разбираем.** Отказ
-/// авторизации, отсутствие права и отсутствие лицензии приходят от платформы одним
-/// `platform_failure`, и различать их Unica не должна: ни один из трёх не решается
-/// ни повтором, ни правкой вызова — нужен человек. Поэтому прав мы заранее не
-/// проверяем: факта отказа платформы достаточно.
-/// Уточнение к коду раннера, когда оно есть: «платформа, версия или соединение
-/// не готовы» — это отсутствующий поставщик, и агент видит причину, а не только
-/// исход. `platform_failure` уточнения не получает намеренно (см. выше).
-pub(super) fn map_runner_detail(code: &str) -> Option<RefusalDetail> {
+/// авторизации пакетного конфигуратора, отсутствие права и отсутствие лицензии
+/// приходят от платформы одним `platform_failure`, и различать их Unica не должна:
+/// ни один из трёх не решается ни повтором, ни правкой вызова — нужен человек.
+/// Поэтому прав мы заранее не проверяем: факта отказа платформы достаточно.
+///
+/// `environment_unavailable` раннер 0.14 отдаёт за любой отказ среды: агент
+/// конфигуратора не принял пользователя ИБ, точка входа агента не ответила,
+/// платформа или агент не стартовали. Кода у этих слоёв раннер не различает,
+/// поэтому слой опознаётся по устойчивой части собственного текста раннера
+/// (`AgentError` 0.14), как и предупреждение о базе другой копии. Нераспознанный
+/// текст остаётся средой раннера: «поставщик не готов», а не отказ учётных
+/// данных (#1333).
+pub(super) fn map_runner_detail(code: &str, message: &str) -> Option<RunnerLayer> {
     match code {
-        "environment_unavailable" => Some(RefusalDetail::ProviderAbsent),
+        "environment_unavailable" => Some(RunnerLayer::of_environment_message(message)),
         _ => None,
+    }
+}
+
+/// Слой, который отверг вызов раннера.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RunnerLayer {
+    /// Агент конфигуратора не принял учётные данные пользователя ИБ: у агента
+    /// это та же пара, что у пакетного конфигуратора.
+    InfobaseUser,
+    /// Точка входа агента не ответила или назвалась чужим ключом хоста.
+    AgentEndpoint,
+    /// Прочая среда раннера: платформа, запуск агента, порт.
+    RunnerEnvironment,
+}
+
+/// Устойчивые части текста `AgentError` раннера 0.14 — по одной на слой.
+///
+/// Временная мера: слой опознаётся по тексту, пока раннер не отдаёт его
+/// полем. Типизированное поле слоя запрошено в
+/// IngvarConsulting/v8-runner-rust#485; когда оно появится, эти маркеры
+/// заменяются чтением поля, а не дополняются.
+const RUNNER_CREDENTIALS_REJECTED: &str = " rejected the credentials of user ";
+const RUNNER_ENDPOINT_FAILURES: [&str; 3] = [
+    " is unreachable: ",
+    "SSH handshake with the agent at ",
+    " as its host key, but ",
+];
+
+impl RunnerLayer {
+    fn of_environment_message(message: &str) -> Self {
+        if message.contains(RUNNER_CREDENTIALS_REJECTED) {
+            Self::InfobaseUser
+        } else if RUNNER_ENDPOINT_FAILURES
+            .iter()
+            .any(|marker| message.contains(marker))
+        {
+            Self::AgentEndpoint
+        } else {
+            Self::RunnerEnvironment
+        }
+    }
+
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::InfobaseUser => "infobase_user",
+            Self::AgentEndpoint => "agent_endpoint",
+            Self::RunnerEnvironment => "runner_environment",
+        }
+    }
+
+    pub(super) const fn detail(self) -> RefusalDetail {
+        match self {
+            Self::InfobaseUser => RefusalDetail::CredentialsRejected,
+            Self::AgentEndpoint => RefusalDetail::EndpointUnreachable,
+            Self::RunnerEnvironment => RefusalDetail::ProviderAbsent,
+        }
+    }
+
+    /// Шаг проверки или исправления настройки для этого слоя.
+    const fn advice(self) -> &'static str {
+        match self {
+            Self::InfobaseUser => {
+                "the designer agent rejected the infobase user: set the infobase user and password in the project's infobase connection settings; an infobase without users takes an empty user"
+            }
+            Self::AgentEndpoint => {
+                "the designer agent endpoint did not answer or presented another host key: check that the 1C platform can start its designer agent on this machine and that local ports are not blocked"
+            }
+            Self::RunnerEnvironment => {
+                "the runner environment is not ready: check the installed 1C platform version and the project's platform settings"
+            }
+        }
     }
 }
 
@@ -994,38 +1074,74 @@ pub(super) struct BundledRunner {
     pub(super) version: String,
 }
 
-/// Разрешение поставляемого раннера. Четыре причины неудачи — корня плагина
-/// нет, бинарь не разрешается, версия не читается, процесс не стартовал —
-/// значат для вызывающего одно: поставщика нет. Поэтому маршрут один на все
-/// семь операций `run`, и починка одного из них не выдаётся за починку всех.
-pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, String> {
+/// Почему поставляемого раннера нет.
+pub(super) enum RunnerAbsence {
+    /// Движка нет на одном из шагов поставки: общий отказ #549.
+    Missing(Box<MissingEngine>),
+    /// Раннер на месте, но его не прочитать или его версию адаптер не
+    /// принимает.
+    Unusable(String),
+}
+
+impl From<String> for RunnerAbsence {
+    fn from(message: String) -> Self {
+        Self::Unusable(message)
+    }
+}
+
+/// Разрешение поставляемого раннера. Причины неудачи — корня плагина нет,
+/// движок не разрешается на одном из шагов поставки, версия не читается —
+/// значат для вызывающего одно: поставщика нет. Маршрут один на все семь
+/// операций `run`, и починка одного из них не выдаётся за починку всех.
+pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, RunnerAbsence> {
     let Some(plugin_root) = find_plugin_root(cwd) else {
-        return Err("Unica plugin root could not be located for the bundled v8-runner".to_string());
+        return Err(RunnerAbsence::Missing(Box::new(
+            crate::infrastructure::bundled_tools::plugin_root_missing(RUNNER_TOOL),
+        )));
     };
     let tool =
-        resolve_bundled_tool(&plugin_root, "v8-runner", true).map_err(|error| redactor(&error))?;
+        resolve_bundled_tool(&plugin_root, RUNNER_TOOL, true).map_err(|error| match error {
+            BundledToolError::Missing(engine) => RunnerAbsence::Missing(engine),
+            BundledToolError::Io(message) => RunnerAbsence::Unusable(redactor(&message)),
+        })?;
     let version =
-        bundled_tool_version(&plugin_root, "v8-runner").map_err(|error| redactor(&error))?;
+        bundled_tool_version(&plugin_root, RUNNER_TOOL).map_err(|error| redactor(&error))?;
     super::runner_014::check_version(&version)?;
     Ok(BundledRunner { tool, version })
 }
 
-/// Отказ «поставляемого раннера нет». Уточнение `provider_absent` названо
-/// здесь один раз: словарь говорит «поставщика нет: … поставщик не стартовал»,
-/// а исход — человек над средой, а не повтор и не правка вызова.
-pub(super) fn missing_runner_rejection(
-    at: Option<String>,
-    message: impl Into<String>,
-) -> DomainResult {
-    DomainResult::canonical_rejection_detailed(at, RefusalDetail::ProviderAbsent, message)
+/// Имя поставляемого раннера в поставке.
+const RUNNER_TOOL: &str = "v8-runner";
+
+/// Отказ «поставляемого раннера нет». Отсутствие движка отвечает общим отказом
+/// «нет поставляемого движка» с полями в `data`; негодная версия — тем же
+/// уточнением `provider_absent` с текстом причины.
+pub(super) fn missing_runner_rejection(at: Option<String>, absence: RunnerAbsence) -> DomainResult {
+    match absence {
+        RunnerAbsence::Missing(engine) => engine.refusal(at),
+        RunnerAbsence::Unusable(message) => {
+            DomainResult::canonical_rejection_detailed(at, RefusalDetail::ProviderAbsent, message)
+        }
+    }
 }
 
-/// Отказ до запуска раннера: отмена, отказ проектного файла или раннер не стартовал.
+/// Отказ, когда раннер не дал ответа: отмена, отказ проектного файла, раннер
+/// не стартовал или сбой после старта.
 ///
 /// Маршрут один на все операции `run`: проектный файл, который адаптер 0.14 не может
 /// передать раннеру, правится человеком или агентом в рабочем пространстве, и отказ
-/// говорит об этом, а не о пропавшем поставщике.
-pub(super) fn runner_start_rejection(at: Option<String>, error: &str) -> DomainResult {
+/// говорит об этом, а не о пропавшем поставщике. Отказом «нет движка» становится
+/// только то, что тип называет запуском: процесс раннера не возник. Раннер к
+/// этому месту уже прошёл полную проверку поставки, поэтому это шаг `start`.
+/// Сбой после старта движок не теряет и отвечает своим кодом.
+/// Исходная причина в обоих случаях остаётся в тексте отказа: путь к раннеру
+/// из неё убран, секреты закрыты общей редакцией.
+pub(super) fn runner_start_rejection(
+    at: Option<String>,
+    failure: &ProcessStreamFailure,
+    program: &Path,
+) -> DomainResult {
+    let error = failure.message();
     if error.starts_with(CANCELLED_PREFIX) {
         return DomainResult::canonical_rejection(
             at,
@@ -1036,20 +1152,48 @@ pub(super) fn runner_start_rejection(at: Option<String>, error: &str) -> DomainR
     if let Some(reason) = super::runner_014::config_refusal(error) {
         return DomainResult::canonical_rejection(at, RefusalCode::InvalidSource, redactor(reason));
     }
-    missing_runner_rejection(
-        at,
-        format!("failed to start bundled v8-runner: {}", redactor(error)),
-    )
+    let cause = runner_failure_cause(error, program);
+    match failure {
+        ProcessStreamFailure::Spawn(_) => crate::infrastructure::bundled_tools::start_failure(
+            find_plugin_root(program).as_deref(),
+            RUNNER_TOOL,
+            program,
+        )
+        .refusal_with_cause(at, &cause),
+        ProcessStreamFailure::Run(_) => DomainResult::canonical_rejection(
+            at,
+            RefusalCode::ProviderFailed,
+            format!("bundled v8-runner failed before returning its result: {cause}"),
+        ),
+    }
+}
+
+/// Причина сбоя раннера для ответа: без пути к самому раннеру и после общей
+/// редакции секретов.
+fn runner_failure_cause(error: &str, program: &Path) -> String {
+    crate::infrastructure::bundled_tools::launch_failure_cause(error, RUNNER_TOOL, program)
 }
 
 /// Отказ по коду раннера: с уточнением, когда словарь его знает, иначе по коду.
+///
+/// Отказ среды называет слой в `data.layer` вместе с кодом раннера и шаг
+/// исправления настройки; текст раннера остаётся уликой после него.
 pub(super) fn runner_rejection(
     at: Option<String>,
     code: &str,
     message: impl Into<String>,
 ) -> DomainResult {
-    match map_runner_detail(code) {
-        Some(detail) => DomainResult::canonical_rejection_detailed(at, detail, message),
+    let message = message.into();
+    match map_runner_detail(code, &message) {
+        Some(layer) => {
+            let mut result = DomainResult::canonical_rejection_detailed(
+                at,
+                layer.detail(),
+                format!("{}; v8-runner said: {message}", layer.advice()),
+            );
+            result.data = Some(json!({"layer": layer.as_str(), "runnerCode": code}));
+            result
+        }
         None => DomainResult::canonical_rejection(at, map_runner_code(code), message),
     }
 }
@@ -1536,21 +1680,165 @@ mod tests {
     /// Поставляемого раннера нет — у всех семи операций `run` один ответ.
     ///
     /// Прежде каждая операция отвечала голым `provider_unavailable`, и агент
-    /// читал умолчание `needsHuman` без причины: «поставщик недоступен» не
-    /// отличало отсутствующий бинарь от занятой базы. Уточнение называет
-    /// причину, а маршрут один — починка одной операции из семи не выдаётся за
-    /// починку всех.
+    /// читал умолчание `needsHuman` без причины. Теперь отказ общий для всех
+    /// маршрутов «нет поставляемого движка» (#549): уточнение `provider_absent`
+    /// и поля движка в `data`, взятые из типа резолвера, а не из текста.
     #[test]
-    fn an_absent_bundled_runner_names_the_missing_provider() {
-        let rejection = missing_runner_rejection(
-            Some("infobase.dump".to_string()),
-            "Unica plugin root could not be located for the bundled v8-runner",
-        );
+    fn an_absent_bundled_runner_names_the_missing_engine_in_data() {
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("plugins/unica");
+        fs::create_dir_all(plugin.join("skills")).unwrap();
+        fs::create_dir_all(plugin.join("third-party")).unwrap();
+        fs::write(
+            plugin.join("third-party/manifest.json"),
+            r#"{"schemaVersion":2,"sourceManifest":true,"tools":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            plugin.join("third-party/tools.lock.json"),
+            r#"{"schemaVersion":1,
+  "targets":{"darwin-arm64":{"exe":""},"linux-x64":{"exe":""},"win-x64":{"exe":".exe"}},
+  "tools":[{"name":"v8-runner","version":"0.14.0","binaryName":"v8-runner"}]}"#,
+        )
+        .unwrap();
+
+        let absence = match resolve_bundled_runner(root.path()) {
+            Err(absence) => absence,
+            Ok(_) => panic!("a source checkout without a built runner has no runner"),
+        };
+        let rejection = missing_runner_rejection(Some("infobase.dump".to_string()), absence);
 
         let diagnostic = &rejection.diagnostics[0];
         assert_eq!(diagnostic["code"], "provider_unavailable");
         assert_eq!(diagnostic["detailCode"], "provider_absent");
         assert_eq!(diagnostic["outcome"], "needsHuman");
+        let data = rejection.data.as_ref().expect("поля движка в data");
+        assert_eq!(data["tool"], "v8-runner");
+        assert_eq!(data["pinnedVersion"], "0.14.0");
+        assert_eq!(data["stage"], "manifest");
+        assert_eq!(data["retryable"], false);
+        assert_eq!(
+            data["target"],
+            crate::infrastructure::platform::current_target_id().unwrap()
+        );
+        assert!(
+            data["path"]
+                .as_str()
+                .is_some_and(|path| path.replace('\\', "/").contains("/bin/")),
+            "{data}"
+        );
+
+        let rootless = missing_runner_rejection(
+            None,
+            RunnerAbsence::Missing(Box::new(
+                crate::infrastructure::bundled_tools::plugin_root_missing("v8-runner"),
+            )),
+        );
+        assert_eq!(rootless.diagnostics[0]["detailCode"], "provider_absent");
+        assert_eq!(rootless.data.as_ref().unwrap()["path"], Value::Null);
+        assert_eq!(rootless.data.as_ref().unwrap()["stage"], "manifest");
+    }
+
+    /// #1333: отказ среды раннера называет слой. Агент конфигуратора не принял
+    /// пользователя ИБ, точка входа агента не ответила, прочая среда раннера и
+    /// отсутствующий поставляемый раннер — четыре разных ответа, а не один
+    /// `provider_absent`.
+    #[test]
+    fn runner_environment_refusals_name_the_layer_that_refused() {
+        // Тексты — `AgentError` раннера 0.14 дословно, с контекстом, который
+        // раннер дописывает перед ним.
+        for (message, detail, layer) in [
+            (
+                "agent at 127.0.0.1:56018 rejected the credentials of user ''",
+                "credentials_rejected",
+                "infobase_user",
+            ),
+            (
+                "push; agent at 127.0.0.1:56018 rejected the credentials of user 'Админ'",
+                "credentials_rejected",
+                "infobase_user",
+            ),
+            (
+                "agent at 127.0.0.1:56018 is unreachable: Connection refused (os error 61)",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
+                "SSH handshake with the agent at 127.0.0.1:56018 failed: Disconnect",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
+                "agent at 127.0.0.1:56018 presented SHA256:a as its host key, but SHA256:b was expected",
+                "endpoint_unreachable",
+                "agent_endpoint",
+            ),
+            (
+                "no 1C platform 8.3.27 is installed on this machine",
+                "provider_absent",
+                "runner_environment",
+            ),
+        ] {
+            let rejection = runner_rejection(
+                Some("push".to_string()),
+                "environment_unavailable",
+                message,
+            );
+            let diagnostic = &rejection.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable", "{message}");
+            assert_eq!(diagnostic["detailCode"], detail, "{message}");
+            assert_eq!(diagnostic["outcome"], "needsHuman", "{message}");
+            assert_eq!(
+                rejection.data,
+                Some(json!({"layer": layer, "runnerCode": "environment_unavailable"})),
+                "{message}"
+            );
+            let text = diagnostic["message"].as_str().unwrap();
+            assert!(text.ends_with(message), "улика раннера сохранена: {text}");
+            assert!(
+                text.len() > message.len() + "; v8-runner said: ".len(),
+                "шаг исправления назван: {text}"
+            );
+        }
+
+        // Маршруты передают текст раннера после общей редакции секретов:
+        // маркеры слоя должны её пережить, иначе пароль или ключ в тексте
+        // увёл бы отказ в чужой слой.
+        for (message, layer) in [
+            (
+                "agent at 127.0.0.1:56018 rejected the credentials of user 'Админ' (password=secret-1333)",
+                RunnerLayer::InfobaseUser,
+            ),
+            (
+                "agent at 127.0.0.1:56018 is unreachable: token=secret-1333 Connection refused",
+                RunnerLayer::AgentEndpoint,
+            ),
+            (
+                "SSH handshake with the agent at 127.0.0.1:56018 failed: Pwd=secret-1333",
+                RunnerLayer::AgentEndpoint,
+            ),
+            (
+                "agent at 127.0.0.1:56018 presented SHA256:a as its host key, but SHA256:b was expected; password=secret-1333",
+                RunnerLayer::AgentEndpoint,
+            ),
+        ] {
+            let redacted = redactor(message);
+            assert!(!redacted.contains("secret-1333"), "{redacted}");
+            assert_eq!(
+                map_runner_detail("environment_unavailable", &redacted),
+                Some(layer),
+                "{redacted}"
+            );
+        }
+
+        // Тот же текст под другим кодом слоя не выбирает: решает код раннера.
+        let platform = runner_rejection(
+            Some("push".to_string()),
+            "platform_failure",
+            "agent at 127.0.0.1:1 rejected the credentials of user ''",
+        );
+        assert!(platform.diagnostics[0].get("detailCode").is_none());
+        assert!(platform.data.is_none());
     }
 
     #[test]
@@ -2401,9 +2689,73 @@ mod tests {
         assert!(diagnostic.get("detailCode").is_none(), "{error:?}");
         assert!(error.summary.contains("execution_timeout"), "{error:?}");
         assert!(!error.summary.contains("failed to start"), "{error:?}");
+    }
 
-        let absent = runner_start_rejection(Some("download".into()), "No such file or directory");
-        assert_eq!(absent.diagnostics[0]["detailCode"], "provider_absent");
+    /// Ревью #549: «нет движка» — только когда процесс раннера не возник.
+    /// Настоящий запуск несуществующего файла даёт сбой запуска, и отказ
+    /// называет шаг `start` вместе с причиной ОС, но без пути к движку. Сбой
+    /// после старта движок не теряет: свой код, без полей движка, причина
+    /// сохранена.
+    #[test]
+    fn only_a_failed_launch_of_the_runner_is_a_missing_engine() {
+        use crate::infrastructure::internal_adapters::SystemProcessRunner;
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("private-dir/v8-runner-that-is-not-there");
+        let failure = SystemProcessRunner
+            .run_staged(&ProcessCommand {
+                program: program.clone(),
+                args: Vec::new(),
+                cwd: root.path().to_path_buf(),
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                capture_limits: None,
+                timeout: None,
+                cancellation: CancellationToken::new(),
+            })
+            .expect_err("a file that is not there cannot start");
+        assert!(
+            matches!(failure, ProcessStreamFailure::Spawn(_)),
+            "{failure:?}"
+        );
+
+        let absent = runner_start_rejection(Some("download".into()), &failure, &program);
+        let diagnostic = &absent.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_unavailable");
+        assert_eq!(diagnostic["detailCode"], "provider_absent");
+        let data = absent.data.as_ref().expect("поля движка в data");
+        assert_eq!(data["tool"], "v8-runner");
+        assert_eq!(data["stage"], "start");
+        assert_eq!(data["retryable"], false);
+        assert_eq!(data["path"], json!(program.display().to_string()));
+        let message = diagnostic["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("bundled_tool_missing: v8-runner is not available for "),
+            "{message}"
+        );
+        assert!(
+            message.contains("; cause: "),
+            "причина ОС сохранена: {message}"
+        );
+        assert!(!message.contains("private-dir"), "{message}");
+
+        let after_start = runner_start_rejection(
+            Some("download".into()),
+            &ProcessStreamFailure::Run(format!(
+                "process_failed: broken pipe while reading {} output",
+                program.display()
+            )),
+            &program,
+        );
+        let diagnostic = &after_start.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_failed");
+        assert!(diagnostic.get("detailCode").is_none(), "{after_start:?}");
+        assert!(after_start.data.is_none(), "{after_start:?}");
+        let message = diagnostic["message"].as_str().unwrap();
+        assert!(
+            message.contains("broken pipe"),
+            "причина сохранена: {message}"
+        );
+        assert!(!message.contains("private-dir"), "{message}");
     }
 
     #[test]

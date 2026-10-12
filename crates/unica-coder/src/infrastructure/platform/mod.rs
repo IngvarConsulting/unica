@@ -19,8 +19,9 @@ pub(crate) use filesystem::restrict_directory_to_owner;
 pub(crate) use filesystem::short_private_runtime_dir;
 pub(crate) use process::{
     ensure_truncation_diagnostics, ManagedChild, ManagedCommand, ManagedLineOutput, ManagedOutput,
-    ManagedStartupChild, PendingProcessHandoff, RuntimeProcessTreeHandle, RuntimeProcessTreeState,
-    StreamControl, STDERR_CAPTURE_LIMIT, STDOUT_CAPTURE_LIMIT, STREAM_LINE_TOO_LONG_ERROR,
+    ManagedSpawnFailure, ManagedStartupChild, PendingProcessHandoff, PendingRunFailure,
+    RuntimeProcessTreeHandle, RuntimeProcessTreeState, StreamControl, STDERR_CAPTURE_LIMIT,
+    STDOUT_CAPTURE_LIMIT, STREAM_LINE_TOO_LONG_ERROR,
 };
 #[cfg(test)]
 pub(crate) use process::{

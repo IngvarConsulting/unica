@@ -1007,7 +1007,7 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 
 #### parameters — параметры схемы дин-списка
 
-Параметры запроса дин-списка — это та же сущность `DataCompositionSchemaParameter`, что и параметры СКД (`&Параметр` в тексте запроса). **Грамматика идентична параметрам СКД** (см. [dcs-dsl-spec.md](dcs-dsl-spec.md)): shorthand `"Имя [Заголовок]: Тип = Значение @valueList @hidden"` или объект. Используй те же ключи — модель переносит знание один-в-один.
+Параметры запроса дин-списка используют платформенный тип `DataCompositionSchemaParameter` (`&Параметр` в тексте запроса; см. [XML-формат СКД](1c-dcs-spec.md#8-параметры-схемы-parameter)). В DSL формы доступны shorthand `"Имя [Заголовок]: Тип = Значение @valueList @hidden"` и объектная форма, описанные ниже. Эти аргументы относятся к форме; контракты операций над СКД запрашиваются через `can`.
 
 ```json
 "settings": {
@@ -1029,7 +1029,7 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 | `useRestriction` | Эмитится всегда, **умолчание `true`**; для выключения — объект `{ "useRestriction": false }` |
 | `value` | Нет ключа → `xsi:nil`. **Явная пустая строка `value: ""`** → типизированный пустой `<dcssch:value xsi:type="xs:string"/>` (НЕ nil; платформа так пишет часть пустых строковых параметров — корпус 27). Декомпилятор различает: пустой строковый тег → `""`, nil-тег → ключ опущен/`null` |
 
-Объектные ключи (как в СКД): `name`, `title`, `type`/`valueType`, `value`, `valueListAllowed`, `useRestriction`, `availableAsField`, `expression`, `availableValues` (`[{ value, presentation }]`), `inputParameters`, `denyIncompleteValues`, `use`.
+Объектные ключи параметра динамического списка: `name`, `title`, `type`/`valueType`, `value`, `valueListAllowed`, `useRestriction`, `availableAsField`, `expression`, `availableValues` (`[{ value, presentation }]`), `inputParameters`, `denyIncompleteValues`, `use`.
 
 > **Тип-токен `typeid:<GUID>`** (раундтрип, не для ручного авторинга) — тип, заданный глобальным стабильным GUID (`<v8:TypeId>`, не `<v8:Type>`). Платформа так сериализует типы, чьё имя в данном контексте недоступно (определяемые типы / характеристики). GUID глобально стабилен → эмитится verbatim. Применим везде, где принимается `type`/`valueType` (параметры, реквизиты). Декомпилятор ставит его сам; вручную указывают только реальный существующий GUID типа конфигурации.
 
@@ -1062,11 +1062,11 @@ Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и 
 | `periodAdditionType` | Дополнение периода для группировки по дате (умолчание `None`) |
 | `periodAdditionBegin` / `periodAdditionEnd` | Границы дополнения периода: ISO-дата (`xs:dateTime`) или путь к полю (`dcscor:Field`) — авто-детект |
 
-> Грамматика уровня совпадает с элементом `groupBy`/`groupFields` структуры СКД (см. [dcs-dsl-spec.md](dcs-dsl-spec.md)); отличие от СКД — плоская модель (нет `children`/`selection`/`order`/детальных записей, которых у группировки списка не бывает).
+> DSL группировки списка использует плоский массив уровней: `children`, `selection`, `order` и детальные записи не входят в эту модель. Платформенные типы группировки описаны в [XML-формате СКД](1c-dcs-spec.md#118-элементы-структуры-structure-items).
 
 #### calculatedFields — вычисляемые поля набора
 
-Поля, вычисляемые выражением (XML: `<CalculatedField>` в DataSet). Грамматика как в СКД (см. [dcs-dsl-spec.md](dcs-dsl-spec.md)).
+Поля, вычисляемые выражением (XML: `<CalculatedField>` в DataSet). В DSL формы используются следующие shorthand и объектная форма:
 
 Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #noFilter #noGroup #noOrder"` — всё кроме имени опционально:
 ```json
@@ -1088,7 +1088,7 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 
 #### order / filter / conditionalAppearance
 
-Грамматика этих ключей идентична настройкам СКД — см. [dcs-dsl-spec.md](dcs-dsl-spec.md) (разделы filter / order / conditionalAppearance). Кратко:
+Настройки динамического списка используют платформенные типы отбора, сортировки и условного оформления СКД. Формы аргументов для DSL формы описаны ниже; XML-структура — в [спецификации СКД](1c-dcs-spec.md#11-варианты-настроек-settingsvariant).
 
 ```json
 "settings": {

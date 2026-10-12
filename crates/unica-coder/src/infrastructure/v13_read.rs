@@ -1,5 +1,6 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::body_snapshot::BodySnapshot;
+use crate::application::v13::resolve::ResolvedLines;
 use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
@@ -183,6 +184,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
         )
     }
 
+    /// The exact platform profile the reader serves; a logical reader exists
+    /// only for such a profile.
+    pub(crate) const fn platform_profile(&self) -> PlatformProfile {
+        self.profile
+    }
+
     pub(crate) fn with_read_authority(
         cancellation: &'a CancellationToken,
         read: ProviderReadAuthority,
@@ -340,6 +347,130 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         }
         Ok(())
+    }
+
+    /// Resolve can reuse the typed identity locator only after reading the
+    /// exact node. View treats an absent BSL file as empty; a source location
+    /// must distinguish that case from an existing empty file.
+    pub(crate) fn existing_export_path(&self, at: &QualifiedAddress) -> Result<String, ViewError> {
+        self.read_checkpoint()?;
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if route.reader() == LogicalReader::Module {
+            let capability = route.module().ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "the logical node has no BSL module")
+            })?;
+            let (module_at, _) = module_prefix(at, self.profile, capability)?;
+            let target = module_source_address(&module_at, capability)?;
+            if !self.read.module_source_exists(&target)? {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the BSL module source file does not exist",
+                ));
+            }
+        }
+        let path = self.identity_export_path(at)?.ok_or_else(|| {
+            ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
+        })?;
+        self.read_checkpoint()?;
+        Ok(path)
+    }
+
+    /// Resolve names the node's kind and its own source lines. In a BSL
+    /// module `Method` spans the whole declaration through its closing line,
+    /// and `Body` only the text between them. The module `Body` counts the
+    /// file stream like the view fast path, without projecting the module.
+    pub(crate) fn source_lines(
+        &self,
+        at: &QualifiedAddress,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<(String, ResolvedLines), ViewError> {
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let capability = route
+            .module()
+            .filter(|_| route.reader() == LogicalReader::Module);
+        let Some(capability) = capability else {
+            let projected = self.read_exact(at, &ViewFilter::default(), admitted)?;
+            return Ok((projected.kind().to_string(), ResolvedLines::NotLineBased));
+        };
+        let (module_at, prefix_len) = module_prefix(at, self.profile, capability)?;
+        let suffix = &at.segments()[prefix_len..];
+        let is_named =
+            |segment: &AddressSegment, kind| segment.kind() == kind && segment.name().is_some();
+        let is_branch =
+            |segment: &AddressSegment, kind| segment.kind() == kind && segment.name().is_none();
+        let module_body = matches!(suffix, [body] if is_branch(body, NodeKind::Body));
+        let method = matches!(suffix, [method] if is_named(method, NodeKind::Method));
+        let method_body = matches!(
+            suffix,
+            [method, body] if is_named(method, NodeKind::Method) && is_branch(body, NodeKind::Body)
+        );
+        let region = !suffix.is_empty()
+            && suffix
+                .iter()
+                .all(|segment| is_named(segment, NodeKind::Region));
+        if !(module_body || method || method_body || region) {
+            let projected = self.read_exact(at, &ViewFilter::default(), admitted)?;
+            return Ok((projected.kind().to_string(), ResolvedLines::NotLineBased));
+        }
+        self.read_checkpoint()?;
+        if admitted.source_set_identity != self.read.source_set_identity()
+            || admitted.revision != self.exact_revision()?
+        {
+            return Err(ViewError::new(
+                RefusalCode::StaleCursor,
+                "source revision changed before the source line read",
+            ));
+        }
+        self.verify_module_owner(&module_at, capability, admitted)?;
+        if capability.role() == ModuleRole::WebSocketClient {
+            return Err(ViewError::detailed(
+                RefusalDetail::ProviderAbsent,
+                "WebSocketClient source layout is not specified for platform profile 8.3.27",
+            ));
+        }
+        if module_body {
+            let target = module_source_address(&module_at, capability)?;
+            let count = self
+                .read
+                .module_line_count(&target, || self.read_checkpoint())?
+                .ok_or_else(|| {
+                    ViewError::new(
+                        RefusalCode::NotFound,
+                        "the BSL module source file does not exist",
+                    )
+                })?;
+            return Ok((NodeKind::Body.as_str().to_string(), line_range(1, count)));
+        }
+        let projections = self.module_projection(&module_at, capability, admitted)?;
+        let (kind, lines) = if region {
+            let region = projections
+                .region(&at.to_string())
+                .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+            (
+                NodeKind::Region,
+                region.end_line.map_or(ResolvedLines::NotLineBased, |end| {
+                    line_range(region.line, end)
+                }),
+            )
+        } else {
+            let name = suffix[0].name().unwrap_or_default();
+            let method = find_method(&projections, name)?;
+            if method_body {
+                (
+                    NodeKind::Body,
+                    line_range(method.body_from_line, method.body_to_line),
+                )
+            } else {
+                (
+                    NodeKind::Method,
+                    line_range(method.from_line, method.to_line),
+                )
+            }
+        };
+        self.read_checkpoint()?;
+        Ok((kind.as_str().to_string(), lines))
     }
 
     #[cfg(test)]
@@ -785,7 +916,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             target,
             local.kind,
             local.predefined_code_type.as_deref(),
-            PREDEFINED_ITEM_PAGE_LIMIT,
+            &mut || self.read_checkpoint(),
         )? {
             insert_serialized(&mut payload, "predefinedItems", &predefined)?;
         }
@@ -1799,6 +1930,18 @@ impl LogicalViewReadAuthority<'_> {
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
         let mut projected = projected;
+        let format = match self.read.metadata_child_profile(&child) {
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::DataCompositionSchema)) => {
+                Some("DataCompositionSchema")
+            }
+            Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
+                Some("SpreadsheetDocument")
+            }
+            _ => None,
+        };
+        if let Some(format) = format {
+            projected = projected.with_prop("format", Value::String(format.into()));
+        }
         for (kind, count) in self.template_body_branches(&child)? {
             if count > 0 {
                 projected = projected.with_branch(BranchRef::new(
@@ -1833,6 +1976,18 @@ impl LogicalViewReadAuthority<'_> {
                             .get("variants")
                             .and_then(Value::as_array)
                             .map_or(0, Vec::len),
+                    ),
+                    (
+                        NodeKind::Item,
+                        ["dataSources", "links"]
+                            .iter()
+                            .map(|key| {
+                                payload
+                                    .get(*key)
+                                    .and_then(Value::as_array)
+                                    .map_or(0, Vec::len)
+                            })
+                            .sum(),
                     ),
                 ]
             }
@@ -2211,44 +2366,45 @@ fn common_module_properties(
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
             .extends
             .is_some_and(|id| uuid::Uuid::parse_str(&id).is_ok());
-    let boolean = |name| -> Result<bool, ViewError> {
-        let raw = xml_descendant_text(root, name).ok_or_else(|| {
-            ViewError::detailed(
+    // Платформа 8.3.27 принимает и выгружает заимствованный общий модуль без
+    // любого из этих свойств и не переносит в него значения родителя.
+    // Отсутствие у заимствованного модуля читается как неизвестное (`None`),
+    // у обычного остаётся ошибкой источника. Записанное значение проверяется
+    // одинаково.
+    let property = |name: &str| -> Result<Option<roxmltree::Node<'_, '_>>, ViewError> {
+        match root
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == name)
+        {
+            None if borrowed => Ok(None),
+            None => Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
                 format!("common module descriptor has no {name} property"),
-            )
-        })?;
-        match raw {
-            "true" => Ok(true),
-            "false" => Ok(false),
+            )),
+            Some(node) => Ok(Some(node)),
+        }
+    };
+    let boolean = |name: &str| -> Result<Option<bool>, ViewError> {
+        property(name)?
+            .map(|node| match node.text().map(str::trim) {
+                Some("true") => Ok(true),
+                Some("false") => Ok(false),
+                _ => Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!("common module {name} property is not boolean"),
+                )),
+            })
+            .transpose()
+    };
+    let return_values_reuse = property("ReturnValuesReuse")?
+        .map(|node| match node.text().map(str::trim) {
+            Some(value) if !value.is_empty() => Ok(value.to_string()),
             _ => Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
-                format!("common module {name} property is not boolean"),
+                "common module ReturnValuesReuse property is empty",
             )),
-        }
-    };
-    let privileged = match root
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == "Privileged")
-    {
-        None if borrowed => None,
-        None => {
-            return Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                "common module descriptor has no Privileged property",
-            ));
-        }
-        Some(node) => match node.text().map(str::trim) {
-            Some("true") => Some(true),
-            Some("false") => Some(false),
-            _ => {
-                return Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "common module Privileged property is not boolean",
-                ));
-            }
-        },
-    };
+        })
+        .transpose()?;
     Ok(CommonModuleProperties {
         global: boolean("Global")?,
         client_managed_application: boolean("ClientManagedApplication")?,
@@ -2256,23 +2412,9 @@ fn common_module_properties(
         external_connection: boolean("ExternalConnection")?,
         client_ordinary_application: boolean("ClientOrdinaryApplication")?,
         server_call: boolean("ServerCall")?,
-        privileged,
-        return_values_reuse: xml_descendant_text(root, "ReturnValuesReuse")
-            .ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "common module descriptor has no ReturnValuesReuse property",
-                )
-            })?
-            .to_string(),
+        privileged: boolean("Privileged")?,
+        return_values_reuse,
     })
-}
-
-fn xml_descendant_text<'a>(root: roxmltree::Node<'a, 'a>, name: &str) -> Option<&'a str> {
-    root.descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == name)
-        .and_then(|node| node.text())
-        .map(str::trim)
 }
 
 fn module_title(at: &QualifiedAddress, capability: ModuleCapability) -> String {
@@ -2300,6 +2442,21 @@ fn module_projection_view(
     filter: &ModuleViewFilter,
 ) -> Result<NodeViewData, ViewError> {
     let suffix = &requested.segments()[prefix_len..];
+    if filter.context.is_some()
+        && projections
+            .summary()
+            .props
+            .common_module
+            .as_ref()
+            .is_some_and(|common| !common.execution_environment_known())
+    {
+        // Без флагов среды фильтр не может ни включить, ни исключить метод:
+        // ответ по нему выдумал бы контексты заимствованного модуля.
+        return Err(ViewError::new(
+            RefusalCode::UnsupportedFilter,
+            "module filter.context needs compilation contexts, but this borrowed common module does not state its execution environment; read the parent module from props.extends when the parent is resolved",
+        ));
+    }
     if suffix.is_empty() {
         let summary = projections.summary();
         let props = serde_json::to_value(&summary.props)
@@ -2400,17 +2557,6 @@ fn module_projection_view(
         (NodeKind::Region, _, _) => {
             let region = projections
                 .region(&requested.to_string())
-                .or_else(|_| {
-                    suffix
-                        .last()
-                        .and_then(AddressSegment::name)
-                        .ok_or_else(|| {
-                            crate::domain::module_projection::ProjectionError::not_found(
-                                "region name is missing",
-                            )
-                        })
-                        .and_then(|name| projections.region(name))
-                })
                 .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
             Ok(NodeViewData::Node(region_node(requested, region)))
         }
@@ -2505,6 +2651,7 @@ fn module_method_matches_filter(method: &MethodProjection, filter: &ModuleViewFi
                 .compile
                 .contexts
                 .iter()
+                .flatten()
                 .any(|candidate| module_context_matches(context, candidate))
         })
 }
@@ -2538,6 +2685,7 @@ fn module_body_line_matches_filter(
                 .compile
                 .contexts
                 .iter()
+                .flatten()
                 .any(|candidate| module_context_matches(context, candidate))
             && projections
                 .compilation()
@@ -2547,6 +2695,7 @@ fn module_body_line_matches_filter(
                     range
                         .contexts
                         .iter()
+                        .flatten()
                         .any(|candidate| module_context_matches(context, candidate))
                 })
     })
@@ -2566,6 +2715,14 @@ fn module_collection(
         ),
         items,
     )))
+}
+
+/// An empty interval has no lines to name: such a node is not line-based.
+fn line_range(from: usize, to: usize) -> ResolvedLines {
+    if from == 0 || to < from {
+        return ResolvedLines::NotLineBased;
+    }
+    ResolvedLines::Range { from, to }
 }
 
 fn find_method<'a>(
@@ -2712,9 +2869,6 @@ fn named_segment(address: &QualifiedAddress, kind: NodeKind) -> Option<&str> {
 #[cfg(test)]
 use crate::infrastructure::v13_read_projection::project_known_suffix;
 use crate::infrastructure::v13_read_projection::project_typed_payload;
-
-/// Страница предопределённых элементов: объявленный максимум поверхности.
-const PREDEFINED_ITEM_PAGE_LIMIT: usize = 50;
 
 #[cfg(test)]
 pub(crate) mod tests;

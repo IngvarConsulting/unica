@@ -470,19 +470,17 @@ fn creation_name(
             format!("`{name}` is not a valid 1C identifier"),
         ));
     }
-    match target.segments() {
-        [root] if root.kind() == NodeKind::Configuration => {}
-        [only] if only.kind() == kind && only.name() == Some(name.as_str()) => {}
-        _ => {
-            return Err(bad(
-                op_index,
-                "at",
-                format!(
-                    "creation targets the configuration root (or `{}.{name}` itself)",
-                    kind.as_str()
-                ),
-            ))
-        }
+    // Узел создаёт операция родителя: `at` всегда называет существующий
+    // узел, а имя нового — аргумент.
+    if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
+        return Err(bad(
+            op_index,
+            "at",
+            format!(
+                "`{}` creation targets the configuration root; name the new object in `values.name`",
+                kind.as_str()
+            ),
+        ));
     }
     Ok(name)
 }
@@ -493,7 +491,7 @@ pub(crate) fn parse_form_resource_plan_operation(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanOperation, ApplyPlanError> {
-    validate_platform_xml_binding(binding, op_index)?;
+    validate_platform_xml_binding(binding, operation, op_index)?;
     let object = args.as_object().ok_or_else(|| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
@@ -686,6 +684,15 @@ fn parse_support_operation(
     let target = qualified_target(args, op_index, binding)?;
     match operation {
         "supportCapability.set" => {
+            // Возможность изменения — свойство всей конфигурации; вызов на
+            // объекте писал бы не в тот узел.
+            if !matches!(target.segments(), [root] if root.kind() == NodeKind::Configuration) {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    "supportCapability.set targets the configuration root",
+                ));
+            }
             let values = required_values(args, op_index, &["enabled", "rule"])?;
             let enabled =
                 match (values.get("enabled"), values.get("rule")) {
@@ -962,13 +969,119 @@ fn legacy_element_definition(
             "name" | "type" | "orientation" => {}
             "after" => after = value.as_str().map(str::to_string),
             "into" => into = value.as_str().map(str::to_string),
-            _ => {
+            known
+                if ELEMENT_DEFINITION_KEYS.contains(&known)
+                    || crate::infrastructure::native_operations::form::FORM_BINDING_PATH_PROPERTIES
+                        .iter()
+                        .any(|(json_key, _)| *json_key == known) =>
+            {
                 definition.insert(key.clone(), value.clone());
+            }
+            unknown => {
+                return Err(bad(
+                    op_index,
+                    &format!("{location}.{unknown}"),
+                    format!("unknown form element property `{unknown}`"),
+                ))
             }
         }
     }
     Ok((Value::Object(definition), into, after))
 }
+
+/// Свойства элемента, которые читают генераторы элементов формы
+/// (`form::emit_form_*`), и внутренние различители вида. Пути привязки
+/// (`path`, `headerDataPath`, …) берутся из таблицы генератора
+/// `FORM_BINDING_PATH_PROPERTIES`: её проверка даёт предметный отказ, например
+/// для `headerDataPath` у обычной группы. Неизвестный ключ
+/// отказывает: раньше он молча пропадал, и опечатка давала элемент без
+/// заказанного свойства (#1351).
+const ELEMENT_DEFINITION_KEYS: &[&str] = &[
+    // Различитель таблицы динамического списка: без него генератор не пишет
+    // блок свойств списка (`autoRefresh`, `showRoot`, …).
+    "_dynList",
+    "allowGettingCurrentRowURL",
+    "allowRootChoice",
+    "autoCmdBar",
+    "autoCommandBar",
+    "autoInsertNewRow",
+    "autoMaxHeight",
+    "autoMaxWidth",
+    "autoRefresh",
+    "autoRefreshPeriod",
+    "autofill",
+    "backColor",
+    "behavior",
+    "button",
+    "check",
+    "checkBoxType",
+    "children",
+    "choiceButton",
+    "choiceFoldersAndItems",
+    "clearButton",
+    "cmdBar",
+    "collapsed",
+    "columns",
+    "command",
+    "commandBar",
+    "commandBarLocation",
+    "commandName",
+    "commandSource",
+    "currentRowUse",
+    "defaultButton",
+    "disabled",
+    "dropListButton",
+    "elements",
+    "enableDrag",
+    "enabled",
+    "font",
+    "formatted",
+    "group",
+    "handlers",
+    "headerHorizontalAlign",
+    "height",
+    "hidden",
+    "horizontalAlign",
+    "horizontalStretch",
+    "html",
+    "hyperlink",
+    "initialTreeView",
+    "input",
+    "inputHint",
+    "label",
+    "labelField",
+    "locationInCommandBar",
+    "markIncomplete",
+    "multiLine",
+    "on",
+    "page",
+    "pages",
+    "pagesRepresentation",
+    "passwordMode",
+    "picture",
+    "readOnly",
+    "representation",
+    "restoreCurrentRow",
+    "showInHeader",
+    "showLeftMargin",
+    "showRoot",
+    "showTitle",
+    "skipOnInput",
+    "spinButton",
+    "stdCommand",
+    "table",
+    "tableAutofill",
+    "text",
+    "title",
+    "titleLocation",
+    "tooltip",
+    "tooltipRepresentation",
+    "updateOnDataChange",
+    "userVisible",
+    "verticalStretch",
+    "visible",
+    "width",
+];
 
 // Nested children still use the internal element description. Refuse a typed
 // HTML child before its `name` could make that description default to InputField.
@@ -1063,6 +1176,29 @@ fn parse_form_operation(
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let address = qualified_target(args, op_index, binding)?;
     let target = form_target(&address, op_index)?;
+    // Узел, на котором исполняется операция, — ровно её `at`. Операции,
+    // которые не читают элемент или форму из адреса, отказывают, а не пишут
+    // молча в форму или во владельца (#1351).
+    match operation {
+        "element.remove" | "event.bind" => {}
+        "form.add" | "form.set" if target.form.is_some() => {
+            return Err(bad(
+                op_index,
+                "at",
+                format!("{operation} targets the form owner `Owner.Name`, not a form"),
+            ));
+        }
+        _ if target.item.is_some() => {
+            return Err(bad(
+                op_index,
+                "at",
+                format!(
+                    "{operation} targets the form `Owner.Name.Form.F`, not its element; name a parent element in `items[].into`"
+                ),
+            ));
+        }
+        _ => {}
+    }
     let items_path = format!("ops[{op_index}].args.items");
     let form_of = |target: &FormTarget| -> Result<String, ApplyPlanError> {
         target.form.clone().ok_or_else(|| {
@@ -1225,6 +1361,16 @@ fn parse_form_operation(
         "element.remove" => {
             let form = form_of(&target)?;
             let names = match &target.item {
+                // Элемент назван адресом: список в аргументах называл бы
+                // другие узлы, и молча его не отбрасываем.
+                Some(_) if args.contains_key("items") || args.contains_key("values") => {
+                    let key = if args.contains_key("items") { "items" } else { "values" };
+                    return Err(bad(
+                        op_index,
+                        key,
+                        "element.remove at an element address removes that element; drop `items`/`values` or call it at the form",
+                    ));
+                }
                 Some(item) => vec![item.clone()],
                 None => listed_names(args, "name", op_index).map_err(|_| {
                     bad(
@@ -1307,6 +1453,15 @@ fn parse_form_operation(
             entry.insert("handler".to_string(), Value::String(handler.to_string()));
             if let Some(call_type) = values.get("callType").and_then(Value::as_str) {
                 entry.insert("callType".to_string(), Value::String(call_type.to_string()));
+            }
+            // Элемент, названный адресом, не переназначается аргументом:
+            // иначе событие легло бы на другой узел.
+            if target.item.is_some() && values.contains_key("element") {
+                return Err(bad(
+                    op_index,
+                    "values.element",
+                    "event.bind at an element address binds that element; drop `values.element` or call it at the form",
+                ));
             }
             let element = values
                 .get("element")
@@ -1698,14 +1853,35 @@ fn stage_form_edit(
     };
     let absolute = authority.source_root().join(&relative);
     let args_path = format!("ops[{op_index}].args");
+    // Plain-string titles, tooltips and input hints are written in the
+    // default language of the source set (#1257). It is read only when a
+    // definition writes such text: the definition is first applied without a
+    // language and, if it needs one, applied again from the same image.
+    let mut lang: Option<String> = None;
     for definition in definitions {
-        crate::infrastructure::native_operations::form::form_edit_apply_definition(
-            &mut xml_text,
-            definition,
-            &absolute,
-            root_start,
-        )
-        .map_err(|message| {
+        let apply = |xml_text: &mut String, lang: Option<&str>| {
+            crate::infrastructure::native_operations::form::form_edit_apply_definition(
+                xml_text, definition, &absolute, root_start, lang,
+            )
+        };
+        let before = xml_text.clone();
+        let result = match apply(&mut xml_text, lang.as_deref()) {
+            Err(message)
+                if lang.is_none()
+                    && message
+                        == crate::infrastructure::native_operations::form::FORM_TEXT_LANGUAGE_REQUIRED =>
+            {
+                xml_text = before;
+                let resolved = super::metadata::staged_text_language(
+                    staged,
+                    authority.source_kind(),
+                    op_index,
+                )?;
+                apply(&mut xml_text, Some(&resolved)).map(|_| lang = Some(resolved))
+            }
+            result => result.map(|_| ()),
+        };
+        result.map_err(|message| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
         })?;
     }
@@ -2633,6 +2809,22 @@ fn stage_support_state(
 #[cfg(test)]
 mod tests {
     use super::{parse_form_resource_plan_operation, plan_form_resource_batch};
+
+    #[test]
+    fn a_dynamic_list_table_keeps_its_discriminator() {
+        let item = json!({
+            "name": "Список",
+            "type": "Table",
+            "path": "Список",
+            "_dynList": true,
+            "autoRefresh": true,
+        });
+        let (definition, _, _) =
+            super::legacy_element_definition(item.as_object().unwrap(), 0, "ops[0].args.items[0]")
+                .expect("a dynamic-list table is a valid element definition");
+        assert_eq!(definition["_dynList"], true);
+        assert_eq!(definition["autoRefresh"], true);
+    }
     use crate::infrastructure::native_operations::apply::ApplyPlanErrorKind;
     use crate::infrastructure::native_operations::apply_families::request::IndexedPlanOperation;
     use crate::infrastructure::native_operations::apply_families::tests::ApplySeamFixture;
@@ -2695,22 +2887,7 @@ mod tests {
     #[test]
     fn role_create_and_form_add_write_the_configuration_default_language() {
         let fixture = ApplySeamFixture::new();
-        // The same source set, its only language switched to English.
-        let configuration = fixture.source_dir().join("Configuration.xml");
-        let text = std::fs::read_to_string(&configuration)
-            .unwrap()
-            .replace("Language.Русский", "Language.English")
-            .replace(
-                "<Language>Русский</Language>",
-                "<Language>English</Language>",
-            );
-        std::fs::write(&configuration, text).unwrap();
-        std::fs::remove_file(fixture.source_dir().join("Languages/Русский.xml")).unwrap();
-        std::fs::write(
-            fixture.source_dir().join("Languages/English.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>English</Name><Comment/><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#,
-        )
-        .unwrap();
+        fixture.use_english_only_language();
         let admission = fixture.admission();
         let staged = admission.staged_state().unwrap();
         let authority = admission
@@ -2745,6 +2922,175 @@ mod tests {
                 "{relative}\n{text}"
             );
         }
+    }
+
+    /// #1257: titles, tooltips and input hints of new form elements,
+    /// attributes and commands are written in the default language of the
+    /// source set; an explicit language-to-text value is written as given.
+    #[test]
+    fn form_item_titles_and_tooltips_write_the_configuration_default_language() {
+        let fixture = ApplySeamFixture::new();
+        fixture.use_english_only_language();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                    .unwrap_or_else(|error| panic!("{op}: {error:?}")),
+            )
+        };
+        let form = "main:Document.First.Form.Main";
+        let operations = [
+            parse(
+                "form.add",
+                json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]}),
+                0,
+            ),
+            parse(
+                "element.add",
+                json!({"at": form, "items": [
+                    {"name": "Header", "type": "Group", "title": "Header"},
+                    {"name": "Total", "path": "Объект.Total", "title": "Total",
+                     "tooltip": "Total hint", "inputHint": "Type the total"},
+                    {"name": "Count", "path": "Объект.Total",
+                     "tooltip": {"en": "Count hint", "de": "Anzahl"}},
+                    {"name": "Note", "type": "Label", "title": "Note"}
+                ]}),
+                1,
+            ),
+            parse(
+                "formAttribute.add",
+                json!({"at": form, "items": [{"name": "Comment", "type": "String", "title": "Comment"}]}),
+                2,
+            ),
+            parse(
+                "formCommand.add",
+                json!({"at": form, "items": [{"name": "Refresh", "title": "Refresh"}]}),
+                3,
+            ),
+        ];
+        let (staged, _) = plan_form_resource_batch(staged, authority, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        assert!(!text.contains("<v8:lang>ru</v8:lang>"), "{text}");
+        let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let translations = document
+            .descendants()
+            .filter(|node| node.tag_name().name() == "item")
+            .filter_map(|item| {
+                let part = |name: &str| {
+                    item.children()
+                        .find(|child| child.tag_name().name() == name)
+                        .and_then(|child| child.text())
+                };
+                Some((part("lang")?.to_string(), part("content")?.to_string()))
+            })
+            .collect::<Vec<_>>();
+        for content in [
+            "Header",
+            "Total",
+            "Total hint",
+            "Type the total",
+            "Count hint",
+            "Note",
+            "Comment",
+            "Refresh",
+        ] {
+            assert!(
+                translations.contains(&("en".to_string(), content.to_string())),
+                "`{content}` must be written in en: {translations:?}\n{text}"
+            );
+        }
+        assert!(
+            translations.contains(&("de".to_string(), "Anzahl".to_string())),
+            "an explicit translation is written as given\n{text}"
+        );
+    }
+
+    /// Only a plain-string text needs the default language: in a source set
+    /// whose language cannot be read, an element without text, an explicit
+    /// translation and a removal pass, a plain-string title is refused.
+    #[test]
+    fn form_edits_without_plain_text_do_not_read_the_default_language() {
+        let fixture = ApplySeamFixture::new();
+        let form = "main:Document.First.Form.Main";
+        let plan = |operations: &[(&str, serde_json::Value)]| {
+            let admission = fixture.admission();
+            let staged = admission.staged_state().unwrap();
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            let operations = operations
+                .iter()
+                .enumerate()
+                .map(|(index, (op, args))| {
+                    IndexedPlanOperation::new(
+                        index,
+                        parse_form_resource_plan_operation(op, args, index, &fixture.binding)
+                            .unwrap_or_else(|error| panic!("{op}: {error:?}")),
+                    )
+                })
+                .collect::<Vec<_>>();
+            plan_form_resource_batch(staged, authority, &operations).map(|(staged, _)| staged)
+        };
+        let staged = plan(&[
+            (
+                "form.add",
+                json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]}),
+            ),
+            (
+                "element.add",
+                json!({"at": form, "items": [{"name": "Header", "type": "Group", "title": "Header"}]}),
+            ),
+        ])
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        for relative in [
+            "Documents/First.xml",
+            "Documents/First/Forms/Main.xml",
+            "Documents/First/Forms/Main/Ext/Form.xml",
+            "Documents/First/Forms/Main/Ext/Form/Module.bsl",
+        ] {
+            let path = fixture.source_dir().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, staged_text(&staged, relative)).unwrap();
+        }
+        std::fs::remove_file(fixture.source_dir().join("Languages/Русский.xml")).unwrap();
+
+        let error = plan(&[(
+            "element.add",
+            json!({"at": form, "items": [{"name": "Footer", "type": "Group", "title": "Footer"}]}),
+        )])
+        .expect_err("a new title needs the default language");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error:?}");
+
+        let staged = plan(&[
+            (
+                "element.add",
+                json!({"at": form, "items": [{"name": "Plain", "path": "Объект.Total"}]}),
+            ),
+            (
+                "element.add",
+                json!({"at": form, "items": [{"name": "Hinted", "path": "Объект.Total",
+                    "tooltip": {"en": "Hint"}}]}),
+            ),
+        ])
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        assert!(text.contains("name=\"Plain\""), "{text}");
+        assert!(text.contains("<v8:lang>en</v8:lang>"), "{text}");
+        assert!(!text.contains("<v8:lang></v8:lang>"), "{text}");
+
+        let staged = plan(&[(
+            "element.remove",
+            json!({"at": format!("{form}.Item.Header")}),
+        )])
+        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        assert!(!text.contains("name=\"Header\""), "{text}");
     }
 
     #[test]

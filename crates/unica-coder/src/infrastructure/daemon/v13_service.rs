@@ -6,9 +6,9 @@ const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
 use super::v13_call_graph::{
-    branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
-    fetch_summary, module_file_for_placed, placed_for_module_file, unready_branch_result,
-    CallGraphFetchError, CallGraphSummary, CompleteBranchError, CALL_GRAPH_SECTION,
+    branch_collection, branch_direction, branch_owner, call_graph_support, complete_branch,
+    declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
+    unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
 use super::v13_read_modes::{filter_diff_data, project_view_operation, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
@@ -23,7 +23,9 @@ use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSo
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::OperationRegistry;
+use crate::domain::apply::{
+    OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, UNWRITABLE_SOURCE_MESSAGE,
+};
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -36,7 +38,8 @@ use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::native_operations::apply::{
-    ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
+    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingErrorKind,
+    PlannedApplyEffects, StagedChangeKind, StagedFileState,
 };
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
@@ -248,40 +251,18 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        for (index, operation) in request.ops().iter().enumerate() {
-            let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
-                return with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].op")),
-                        RefusalCode::UnsupportedOperation,
-                        format!(
-                            "apply operation `{}` is not in the canonical registry",
-                            operation.name()
-                        ),
-                    ),
-                    &operation.at().to_string(),
-                );
-            };
-            let target_kind = operation
-                .at()
-                .segments()
-                .last()
-                .expect("a parsed logical address has a terminal segment")
-                .kind();
-            if !descriptor.applies_to_operation_target(operation.at()) {
-                return with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].at")),
-                        RefusalCode::BadValue,
-                        format!(
-                            "apply operation `{}` does not apply to {}",
-                            operation.name(),
-                            target_kind.as_str()
-                        ),
-                    ),
-                    &operation.at().to_string(),
-                );
-            }
+        let traits = SourceSetTraits::of_source(
+            binding.source_kind(),
+            binding.source_format(),
+            binding.source_profile(),
+        );
+        let template_format = |template: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_template_format(
+                &admission, &binding, template,
+            )
+        };
+        if let Err(refusal) = preflight_apply_operations(&request, traits, &template_format) {
+            return *refusal;
         }
         admission.bind_request(&request);
         let operations = request
@@ -308,11 +289,13 @@ impl CanonicalV13ReadService {
                 )
             }
             Err(error) => {
-                return error_result(
-                    error.path().map(str::to_string),
-                    apply_plan_error_code(error.kind()),
-                    error.to_string(),
-                )
+                let refusal = apply_plan_error_result(&error);
+                let node_exists = |at: &QualifiedAddress| {
+                    crate::infrastructure::native_operations::apply_families::staged_node_existence(
+                        &admission, &binding, at,
+                    )
+                };
+                return with_missing_target_parent(refusal, &request, &error, &node_exists);
             }
             Ok(planned) => planned,
         };
@@ -341,14 +324,9 @@ impl CanonicalV13ReadService {
         let prepared = match admission.prepare_with_effects(staged, effects) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return error_result(
+                return apply_staging_refusal(
                     Some("ops".to_string()),
-                    match error.kind() {
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
-                        _ => RefusalCode::ProviderUnavailable,
-                    },
+                    error.kind(),
                     error.to_string(),
                 )
             }
@@ -534,6 +512,12 @@ impl CanonicalV13ReadService {
                     "call graph branch does not accept a filter",
                 );
             }
+            // Ветвь метода, у которого графа нет (метод HTTP-сервиса, модуль
+            // непокрытой роли), отказывает по адресу, до чтения владельца и заказа поставки: ни скачивание,
+            // ни наличие движка не меняют этого ответа.
+            if let Err(message) = call_graph_support(&owner) {
+                return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
+            }
             let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
             let owner_result = service.view(match ViewRequest::new(&owner.to_string()) {
                 Ok(request) => request,
@@ -554,6 +538,32 @@ impl CanonicalV13ReadService {
                     service.view_preloaded_collection(request, &owner, expected_revision, None),
                     at,
                 );
+            }
+            // Ветвь — единственный вход в граф, и анализатор, которого нет на
+            // машине, она поставляет этим же вызовом, как `check` и `search`:
+            // пока поставка идёт, ответ просит повтор, провал поставки — её
+            // типизированный отказ, а движок, которого и после поставки нет,
+            // — общий отказ «нет поставляемого движка» (#549), а не граф
+            // «недоступен».
+            // Тестовый поставщик графа заменяет анализатор: заказывать его
+            // поставку тогда незачем, и тест не зависит от окружения.
+            #[cfg(not(test))]
+            let analyzer_engine = true;
+            #[cfg(test)]
+            let analyzer_engine =
+                crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+                    .with(|slot| slot.borrow().is_none());
+            let cwd = &invocation.workspace_context().cwd;
+            if analyzer_engine {
+                if let Err(refusal) = acquire_engine(
+                    invocation,
+                    cwd,
+                    BSL_ANALYZER_ENGINE,
+                    Some(at.to_string()),
+                    cancellation,
+                ) {
+                    return *refusal;
+                }
             }
             return match self.call_graph_summary(
                 invocation,
@@ -589,6 +599,21 @@ impl CanonicalV13ReadService {
                             )
                         }
                     };
+                    // Анализатор не ответил на ветвь: движок, не прошедший
+                    // проверку поставки или не запустившийся, — тот же отказ
+                    // «нет движка», что на всех маршрутах (#549).
+                    if analyzer_engine
+                        && summary.result(direction).state == CallGraphState::Unavailable
+                    {
+                        if let Some(refusal) = engine_failure_refusal(
+                            cwd,
+                            BSL_ANALYZER_ENGINE,
+                            Some(at.to_string()),
+                            cancellation,
+                        ) {
+                            return refusal;
+                        }
+                    }
                     if summary.result(direction).state != CallGraphState::Ready {
                         return enforce_view_result_limit(
                             unready_branch_result(&address, direction, &summary),
@@ -644,11 +669,7 @@ impl CanonicalV13ReadService {
             .get("filter")
             .and_then(Value::as_object)
             .and_then(|filter| filter.get("sections"));
-        let call_graph_requested = sections.and_then(Value::as_array).is_some_and(|sections| {
-            sections
-                .iter()
-                .any(|section| section.as_str() == Some(CALL_GRAPH_SECTION))
-        });
+        let can_context = SourceSetTraits::read(source.source_kind(), authority.platform_profile());
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
         let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
             let mut data = data.clone();
@@ -670,55 +691,19 @@ impl CanonicalV13ReadService {
                 }
             }
             self.resolve_borrowed_parent(invocation, &address, &mut data, cancellation);
+            // Узел метода называет ветви графа, не спрашивая анализатор: граф
+            // читается только адресом ветви.
+            if let Some(node) = data.as_object_mut() {
+                declare_method_branches(node);
+            }
             if let Some(sections) = sections {
-                project_view_operation(&data, sections, can_operation.as_deref())
+                project_view_operation(&data, sections, can_operation.as_deref(), can_context)
                     .map_err(|error| ViewError::new(error.code(), error.to_string()))
             } else {
                 Ok(data)
             }
         };
-        let mut result = if call_graph_requested {
-            service.view(request)
-        } else {
-            service.view_projected(request, &enrich_and_project)
-        };
-        if call_graph_requested && result.ok {
-            let is_method = result
-                .data
-                .as_ref()
-                .and_then(|data| data.get("kind"))
-                .and_then(Value::as_str)
-                == Some(NodeKind::Method.as_str());
-            if !is_method {
-                return error_result(
-                    Some(at.to_string()),
-                    RefusalCode::UnsupportedSection,
-                    "view section `callGraph` is computed for a method node only",
-                );
-            }
-            match self.call_graph_summary(invocation, &address, CALL_GRAPH_PAGE_LIMIT, cancellation)
-            {
-                Ok((summary, _directory)) => {
-                    if let Some(reason) = summary.reason.clone() {
-                        result.warnings.push(json!({"callGraph": reason}));
-                    }
-                    if let Some(data) = result.data.as_mut().and_then(Value::as_object_mut) {
-                        extend_method_node(data, &address, &summary);
-                    }
-                }
-                Err(refusal) => return *refusal,
-            }
-        }
-        if result.ok && call_graph_requested {
-            if let (Some(data), Some(sections)) = (result.data.as_ref(), sections) {
-                match project_view_operation(data, sections, can_operation.as_deref()) {
-                    Ok(projected) => result.data = Some(projected),
-                    Err(error) => {
-                        return error_result(Some(at.to_string()), error.code(), error.to_string())
-                    }
-                }
-            }
-        }
+        let result = service.view_projected(request, &enrich_and_project);
         enforce_view_result_limit(result, at)
     }
 
@@ -1531,28 +1516,10 @@ impl CanonicalV13ReadService {
         #[cfg(test)]
         let engine = engine.filter(|_| self.search_providers.is_none());
         if let Some(engine) = engine {
-            if let Some(plugin_root) =
-                crate::infrastructure::plugin_runtime::find_plugin_root(&context.cwd)
+            if let Err(refusal) =
+                acquire_engine(invocation, &context.cwd, engine, None, cancellation)
             {
-                let progress =
-                    crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
-                let state = crate::infrastructure::engine_delivery::deliver_if_missing(
-                    invocation.delivery_work(),
-                    &plugin_root,
-                    engine,
-                    cancellation,
-                    &progress,
-                );
-                if cancellation.is_cancelled() {
-                    return error_result(None, RefusalCode::Cancelled, "role search cancelled");
-                }
-                if let Some(result) =
-                    crate::infrastructure::engine_delivery::canonical_delivery_result(
-                        state, &progress,
-                    )
-                {
-                    return result;
-                }
+                return *refusal;
             }
         }
         let request = SearchRequest {
@@ -1621,6 +1588,11 @@ impl CanonicalV13ReadService {
         } {
             Ok(execution) => execution,
             Err(error) => {
+                if let Some(refusal) = engine.and_then(|engine| {
+                    engine_failure_refusal(&context.cwd, engine, None, cancellation)
+                }) {
+                    return refusal;
+                }
                 let code = if error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX) {
                     RefusalCode::Cancelled
                 } else {
@@ -1642,6 +1614,15 @@ impl CanonicalV13ReadService {
             result_fingerprint: None,
             page_limit: limit,
         };
+        // Поставщик не ответил: если причина — движок, не прошедший проверку
+        // поставки (контрольная сумма), отказ называет движок, а не сбой поиска.
+        if !execution.ok {
+            if let Some(refusal) = engine
+                .and_then(|engine| engine_failure_refusal(&context.cwd, engine, None, cancellation))
+            {
+                return refusal;
+            }
+        }
         provider_search_page(
             &self.search_cursors,
             role,
@@ -2254,6 +2235,16 @@ impl CanonicalV13ReadService {
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
     ) -> DomainResult {
+        if address
+            .segments()
+            .iter()
+            .any(|segment| !segment.kind().is_metadata_kind())
+        {
+            return match self.resolve_projected_source(invocation, address, cancellation) {
+                Ok(source) => resolve_result(source),
+                Err(error) => view_error_result(Some(address.to_string()), error),
+            };
+        }
         let at = address.to_string();
         let directory = match self.layout_directory(
             invocation,
@@ -2264,76 +2255,185 @@ impl CanonicalV13ReadService {
             Ok(directory) => directory,
             Err(refusal) => return *refusal,
         };
-        let owner = owning_metadata_address(address);
-        let Some(entry) = directory.locate_address(&owner) else {
+        let Some(entry) = directory.locate_address(&at) else {
             return error_result(
-                Some(at),
+                Some(at.clone()),
                 RefusalCode::NotFound,
-                format!("the source layout does not place `{owner}`"),
+                format!("the source layout does not place `{at}`"),
             );
         };
         let Some(placed) = entry.placed_path() else {
             return error_result(
-                Some(at),
+                Some(at.clone()),
                 RefusalCode::NotFound,
-                format!("the source layout does not place `{owner}`"),
+                format!("the source layout does not place `{at}`"),
             );
         };
         let kind = entry.kind().to_string();
         let placed = placed.to_string();
-        let lines = match self.resolve_lines(invocation, address, cancellation) {
-            Ok(lines) => lines,
-            Err(result) => return *result,
-        };
-        resolve_result(ResolvedSource::new(at, kind, placed, lines))
+        resolve_result(ResolvedSource::new(
+            at,
+            kind,
+            placed,
+            ResolvedLines::NotLineBased,
+        ))
     }
 
-    /// Строки обещаются там, где источник строчный. У BSL они настоящие, и
-    /// проекция модуля их уже знает; у реквизита и элемента формы источник
-    /// древовидный, и обещать строки значило бы обещать то, что развалится.
-    fn resolve_lines(
+    fn resolve_projected_source(
         &self,
         invocation: &ActorBoundExecution,
         address: &QualifiedAddress,
         cancellation: &CancellationToken,
-    ) -> Result<ResolvedLines, Box<DomainResult>> {
-        if !address
-            .segments()
-            .iter()
-            .any(|segment| segment.kind() == NodeKind::Module)
-        {
-            return Ok(ResolvedLines::NotLineBased);
+    ) -> Result<ResolvedSource, ViewError> {
+        let source = invocation
+            .read_sources()
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
+            .into_iter()
+            .find(|source| source.source_set_name() == address.source_set())
+            .ok_or_else(|| {
+                ViewError::new(RefusalCode::NotFound, "resolve source set was not admitted")
+            })?;
+        let authority = source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let snapshot = authority.snapshot(address)?;
+        let canonical = authority.canonical_address(address, &snapshot)?;
+        let (kind, lines) = authority.source_lines(&canonical, &snapshot)?;
+        let path = authority.existing_export_path(&canonical)?;
+        if authority.snapshot(&canonical)?.revision != snapshot.revision {
+            return Err(ViewError::new(
+                RefusalCode::StaleCursor,
+                "source revision changed during source location resolution",
+            ));
         }
-        let at = address.to_string();
-        let view_arguments = Map::from_iter([("at".to_string(), Value::String(at.clone()))]);
-        let viewed = self.execute_view_arguments(invocation, &view_arguments, cancellation);
-        if !viewed.ok {
-            return Err(Box::new(viewed));
-        }
-        let props = viewed
-            .data
-            .as_ref()
-            .and_then(|data| data.get("props"))
-            .cloned()
-            .unwrap_or(Value::Null);
-        let from = props.get("line").and_then(Value::as_u64);
-        let to = props.get("endLine").and_then(Value::as_u64);
-        match (from, to) {
-            (Some(from), Some(to)) => Ok(ResolvedLines::Range {
-                from: from as usize,
-                to: to as usize,
-            }),
-            // Узел модуля есть, но собственного диапазона у него нет: предмет
-            // занимает файл целиком, и называть часть было бы неверно.
-            _ => Ok(ResolvedLines::NotLineBased),
-        }
+        authority.read_checkpoint()?;
+        Ok(ResolvedSource::new(
+            canonical.to_string(),
+            kind,
+            path,
+            lines,
+        ))
     }
 }
+
+/// Поставить движок маршрута, если его нет, и убедиться, что он на месте.
+///
+/// Незавершённая поставка отвечает `working` с повтором, неудачная — своим
+/// классом с полями движка; движок, которого после поставки нет, — общим
+/// отказом «нет поставляемого движка» (#549). Поставку начинает сам вызов,
+/// поэтому повтор того же вызова, который советует отказ, её и завершает.
+/// Контрольная сумма здесь не считается: её сверяет
+/// [`engine_absence_refusal`] на пути отказа.
+fn acquire_engine(
+    invocation: &ActorBoundExecution,
+    cwd: &std::path::Path,
+    engine: &str,
+    at: Option<String>,
+    cancellation: &CancellationToken,
+) -> Result<(), Box<DomainResult>> {
+    let Some(plugin_root) = crate::infrastructure::plugin_runtime::find_plugin_root(cwd) else {
+        return Err(Box::new(
+            crate::infrastructure::bundled_tools::plugin_root_missing(engine).refusal(at),
+        ));
+    };
+    if let Some(mut result) = deliver_missing_engine(invocation, &plugin_root, engine, cancellation)
+    {
+        result.at = at;
+        return Err(Box::new(result));
+    }
+    if let Some(missing) =
+        crate::infrastructure::bundled_tools::missing_engine(&plugin_root, engine)
+    {
+        return Err(Box::new(missing.refusal(at)));
+    }
+    Ok(())
+}
+
+/// Delivers an engine the call needs before it starts its provider. `None`
+/// means the engine is in place or this installation has nothing to deliver;
+/// otherwise the answer is the delivery's typed state — still working,
+/// failed with its class and the engine's fields — or the caller's
+/// cancellation.
+fn deliver_missing_engine(
+    invocation: &ActorBoundExecution,
+    plugin_root: &std::path::Path,
+    engine: &str,
+    cancellation: &CancellationToken,
+) -> Option<DomainResult> {
+    let progress = crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
+    let state = crate::infrastructure::engine_delivery::deliver_if_missing(
+        invocation.delivery_work(),
+        plugin_root,
+        engine,
+        cancellation,
+        &progress,
+    );
+    if cancellation.is_cancelled() {
+        return Some(error_result(
+            None,
+            RefusalCode::Cancelled,
+            format!("cancelled while waiting for {engine} delivery"),
+        ));
+    }
+    crate::infrastructure::engine_delivery::canonical_engine_delivery_result(
+        state,
+        &progress,
+        plugin_root,
+        engine,
+    )
+}
+
+/// Отказ «нет поставляемого движка» после неудачного прогона поставщика:
+/// движок, который есть на диске, но не прошёл полную проверку поставки
+/// (контрольную сумму), называется тем же отказом, что и отсутствующий.
+/// Решает тип отказа резолвера, а не текст ошибки поставщика.
+fn engine_absence_refusal(
+    cwd: &std::path::Path,
+    engine: &str,
+    at: Option<String>,
+    cancellation: &CancellationToken,
+) -> Option<DomainResult> {
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    let missing = match crate::infrastructure::plugin_runtime::find_plugin_root(cwd) {
+        None => crate::infrastructure::bundled_tools::plugin_root_missing(engine),
+        Some(plugin_root) => {
+            crate::infrastructure::bundled_tools::engine_absence(&plugin_root, engine)?
+        }
+    };
+    Some(missing.refusal(at))
+}
+
+/// Отказ «нет поставляемого движка» после неудачного прогона поставщика,
+/// который запускает движок в службе рабочего пространства: шаг поставки
+/// называет резолвер, а проверенный движок, процесс которого ОС не создаёт,
+/// — шаг `start`. Иначе это не отсутствие движка (#549).
+fn engine_failure_refusal(
+    cwd: &std::path::Path,
+    engine: &str,
+    at: Option<String>,
+    cancellation: &CancellationToken,
+) -> Option<DomainResult> {
+    if let Some(refusal) = engine_absence_refusal(cwd, engine, at.clone(), cancellation) {
+        return Some(refusal);
+    }
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    let plugin_root = crate::infrastructure::plugin_runtime::find_plugin_root(cwd)?;
+    let (missing, cause) =
+        crate::infrastructure::bundled_tools::launch_probe_failure(&plugin_root, engine)?;
+    Some(missing.refusal_with_cause(at, &cause))
+}
+
+/// Движок диагностик BSL, поиска символов и графа вызовов.
+const BSL_ANALYZER_ENGINE: &str = "bsl-analyzer";
 
 fn selected_role_engine(role: ProviderRole) -> Option<&'static str> {
     match role {
         ProviderRole::Lexical => None,
-        ProviderRole::Symbol => Some("bsl-analyzer"),
+        ProviderRole::Symbol => Some(BSL_ANALYZER_ENGINE),
         ProviderRole::Semantic => Some("rlm-bsl-mcp"),
     }
 }
@@ -2870,9 +2970,8 @@ fn resolve_result(resolved: ResolvedSource) -> DomainResult {
     result
 }
 
-/// Узел, который раскладка действительно размещает. Метод, область и тело
-/// лежат внутри файла своего владельца, поэтому путь берётся у владельца, а
-/// внутренняя часть адреса отвечает за строки.
+/// Владелец модуля, который размещает раскладка. Граф вызовов по нему
+/// находит файл BSL метода: метод, область и тело лежат внутри этого файла.
 fn owning_metadata_address(address: &QualifiedAddress) -> String {
     let segments = address.segments();
     let owned = segments
@@ -3023,16 +3122,46 @@ fn name_search_interruption(
     None
 }
 
-fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
-    match kind {
+fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
+    let at = error.path().map(str::to_string);
+    let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
         ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
         ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,
         ApplyPlanErrorKind::InvalidSource => RefusalCode::InvalidSource,
-        ApplyPlanErrorKind::Staging(_) => RefusalCode::ProviderUnavailable,
+        ApplyPlanErrorKind::Staging(kind) => {
+            return apply_staging_refusal(at, kind, error.to_string())
+        }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
-    }
+    };
+    error_result(at, code, error.to_string())
+}
+
+/// Отказ подготовки staged-исходников называет нарушенное предусловие.
+///
+/// Прежде любой вид сводился к `provider_unavailable` с исходом `needsHuman`,
+/// и агент ждал поставщика там, где надо было создать файл, убрать ссылку
+/// из исходников или подготовить новый предпросмотр (#955, #1332). Поставщик
+/// здесь — файловая система набора: ошибка её чтения остаётся
+/// `provider_unavailable`, но с уточнением `source_unreadable`.
+fn apply_staging_refusal(
+    at: Option<String>,
+    kind: ApplyStagingErrorKind,
+    message: String,
+) -> DomainResult {
+    let code = match kind {
+        ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
+        ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
+        ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
+        ApplyStagingErrorKind::ContainmentIdentity => RefusalCode::ContainmentDenied,
+        ApplyStagingErrorKind::AbsentChainOccupied => RefusalCode::InvalidSource,
+        ApplyStagingErrorKind::Invariant => RefusalCode::InvalidState,
+        ApplyStagingErrorKind::UnsupportedProvider => {
+            return error_result_detailed(at, RefusalDetail::SourceUnreadable, message)
+        }
+    };
+    error_result(at, code, message)
 }
 
 fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
@@ -3061,7 +3190,12 @@ fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> RefusalCode 
         ApplyPublicationErrorKind::Cancelled => RefusalCode::Cancelled,
         ApplyPublicationErrorKind::Deadline => RefusalCode::DeadlineExceeded,
         ApplyPublicationErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::ProviderUnavailable,
+        // Publication re-proves the containment the plan established. A
+        // failure means the sources changed physically after the plan (a
+        // swapped directory, a link or alias that appeared, an occupied
+        // chain); a new preview names the precise cause. The static causes
+        // themselves are refused at planning by `apply_staging_refusal`.
+        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::StaleRevision,
         ApplyPublicationErrorKind::ProviderPostvalidation => RefusalCode::PostconditionFailed,
         ApplyPublicationErrorKind::SourceSelectionChanged => RefusalCode::SourceSelectionChanged,
         ApplyPublicationErrorKind::RollbackIncomplete => RefusalCode::RollbackIncomplete,
@@ -3084,9 +3218,9 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 ///
 /// Провайдеры собраны в продуктовом реестре давно, но канонический провод до
 /// них не доходил: `check` отвечал «читается» и молчал о находках, ради
-/// которых его и зовут. Порты здесь строятся свои — путь диагностик стола
-/// доставок не трогает, бинарь анализатора берётся из поставляемых
-/// инструментов, — и потому общий стол сервера не нужен.
+/// которых его и зовут. Порты здесь строятся свои, а недоставленный
+/// анализатор доставляется через стол доставок демона до запуска анализа,
+/// как у поиска с ролью.
 fn run_bsl_diagnostics(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     address: &QualifiedAddress,
@@ -3137,6 +3271,24 @@ fn run_bsl_diagnostics(
             )))
         }
     };
+    // Анализатор, которого ещё нет на машине, доставляется этим же вызовом,
+    // как у поиска с ролью: незавершённая поставка отвечает `working`
+    // с повтором, неудачная — своим классом и полями движка (#1338), а
+    // движок, которого и после поставки нет, — общим отказом (#549).
+    let analyzer_engine = true;
+    #[cfg(test)]
+    let analyzer_engine = analyzer_engine
+        && crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+            .with(|slot| slot.borrow().is_none());
+    if analyzer_engine {
+        acquire_engine(
+            invocation,
+            &context.cwd,
+            BSL_ANALYZER_ENGINE,
+            Some(address.to_string()),
+            cancellation,
+        )?;
+    }
     let metadata_path = mapping.target().metadata_path.clone();
     let request = DiagnosticRequest {
         action: DiagnosticAction::Analyze,
@@ -3176,14 +3328,35 @@ fn run_bsl_diagnostics(
             // «проверено и чисто» — худшее направление ошибки для инструмента
             // проверки.
             if !bsl_result_proves_full_verdict(&result) {
-                // Прогон начался и не завершился — это не отсутствие
-                // поставщика: уточнения у такого случая нет, и код отвечает
-                // своим умолчанием. Причину, которую поставщик назвал
-                // (сломанная базовая линия), сообщение передаёт дальше.
+                // Движок не доставлен, не прошёл проверку поставки или не
+                // запустился — поставщика нет, и отказ тот же, что на всех
+                // маршрутах: поля движка в `data` (#549). Решает тип
+                // резолвера, а не текст поставщика.
+                if analyzer_engine && bsl_provider_absent(&result) {
+                    if let Some(refusal) = bsl_engine_refusal(
+                        &context.cwd,
+                        &result,
+                        Some(address.to_string()),
+                        cancellation,
+                    ) {
+                        return Err(Box::new(refusal));
+                    }
+                }
+                // Прогон, который начался и не завершился, отвечает
+                // умолчанием кода. В обоих случаях сообщение называет
+                // причину и действие восстановления (#1338).
+                let message = bsl_incomplete_message(&result);
+                if bsl_provider_absent(&result) {
+                    return Err(Box::new(error_result_detailed(
+                        Some(address.to_string()),
+                        RefusalDetail::ProviderAbsent,
+                        message,
+                    )));
+                }
                 return Err(Box::new(error_result(
                     Some(address.to_string()),
                     RefusalCode::ProviderUnavailable,
-                    bsl_incomplete_message(&result),
+                    message,
                 )));
             }
             let findings: Vec<Value> = result
@@ -3255,53 +3428,123 @@ impl From<(bool, Vec<Value>)> for CheckStepVerdict {
 
 const BSL_INCOMPLETE_MESSAGE: &str = "BSL analysis did not complete, so the module is unproven";
 
-/// Named incomplete causes retain their own sanitization boundary; JSONL
-/// failures cross only through the existing closed stream-error formatter.
+/// Names why the analysis is incomplete and what restores it (#1338).
+///
+/// Named baseline causes and canonical JSONL failures keep their own
+/// sanitization boundary. Every other provider or resource failure is named
+/// by its closed code through the coordinator's fixed public wording, never
+/// by the provider's text; an incompleteness nobody named still says so and
+/// what to do.
 fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult) -> String {
-    let mut reasons: Vec<String> = result
+    use crate::application::diagnostics::public_diagnostic_error_message;
+    let mut reasons: Vec<String> = Vec::new();
+    let mut push = |reason: String| {
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+    };
+    for suppression in result
         .providers
         .iter()
         .flat_map(|section| section.suppressions.iter())
-        .filter_map(|suppression| {
-            let reason = suppression.reason()?;
-            Some(match &reason.detail {
+    {
+        if let Some(reason) = suppression.reason() {
+            push(match &reason.detail {
                 Some(detail) => format!("diagnostics baseline {}: {detail}", reason.code),
                 None => format!("diagnostics baseline {}", reason.code),
-            })
-        })
-        .collect();
+            });
+        }
+    }
     for section in &result.providers {
         if let Some(error) = &section.error {
-            if error.code == "diagnostics_invalid" {
-                if let Some(message) =
+            // Two closed formatters may name the cause in their own words:
+            // a JSONL failure, and an absent engine with the next step its
+            // install mode chooses. Anything else is named by its code.
+            let canonical = match error.code.as_str() {
+                "diagnostics_invalid" => {
                     crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message)
-                {
-                    if !reasons.contains(&message) {
-                        reasons.push(message);
-                    }
                 }
-            }
+                crate::domain::engine::BUNDLED_TOOL_MISSING => {
+                    crate::application::diagnostics::canonical_missing_engine_reason(&error.message)
+                }
+                _ => None,
+            };
+            push(canonical.unwrap_or_else(|| {
+                format!(
+                    "{}: {}",
+                    section.id,
+                    public_diagnostic_error_message(&error.code)
+                )
+            }));
         }
     }
     for item in &result.items {
         if let crate::domain::diagnostics::DiagnosticItem::ResourceFailure { error, .. } = item {
-            if matches!(
-                error.code.as_str(),
-                "analysis_out_of_scope"
-                    | "analysis_filter_unproven"
-                    | "analysis_scope_unproven"
-                    | "analysis_config_unproven"
-            ) && !reasons.contains(&error.message)
-            {
-                reasons.push(error.message.clone());
-            }
+            push(public_diagnostic_error_message(&error.code).to_string());
         }
     }
     if reasons.is_empty() {
-        BSL_INCOMPLETE_MESSAGE.to_string()
+        format!("{BSL_INCOMPLETE_MESSAGE}: {BSL_UNNAMED_INCOMPLETENESS}")
     } else {
         format!("{BSL_INCOMPLETE_MESSAGE}: {}", reasons.join("; "))
     }
+}
+
+const BSL_UNNAMED_INCOMPLETENESS: &str = "the analyzer did not name a cause. Repeat the call; if the problem persists, report this reason.";
+
+/// The typed missing-engine refusal of an analyzer that gave no result:
+/// the resolver names the stage where the engine is absent (manifest, target,
+/// file or checksum); an engine that passed every install check but whose
+/// process the provider could not start is absent at the `start` stage. Any
+/// other incompleteness is not an absent engine (#549).
+fn bsl_engine_refusal(
+    cwd: &std::path::Path,
+    result: &crate::domain::diagnostics::DiagnosticResult,
+    at: Option<String>,
+    cancellation: &CancellationToken,
+) -> Option<DomainResult> {
+    if let Some(refusal) =
+        engine_absence_refusal(cwd, BSL_ANALYZER_ENGINE, at.clone(), cancellation)
+    {
+        return Some(refusal);
+    }
+    let start_failed = result.providers.iter().any(|section| {
+        section
+            .error
+            .as_ref()
+            .is_some_and(|error| error.code == "provider_start_failed")
+    });
+    if !start_failed || cancellation.is_cancelled() {
+        return None;
+    }
+    let plugin_root = crate::infrastructure::plugin_runtime::find_plugin_root(cwd)?;
+    let program = crate::infrastructure::bundled_tools::installed_engine_path(
+        &plugin_root,
+        BSL_ANALYZER_ENGINE,
+    )?;
+    Some(
+        crate::infrastructure::bundled_tools::start_failure(
+            Some(&plugin_root),
+            BSL_ANALYZER_ENGINE,
+            &program,
+        )
+        .refusal(at),
+    )
+}
+
+/// The engine is not on this machine, failed its install checks or could not
+/// be started: the provider is absent rather than broken mid-run.
+fn bsl_provider_absent(result: &crate::domain::diagnostics::DiagnosticResult) -> bool {
+    result.providers.iter().any(|section| {
+        section.error.as_ref().is_some_and(|error| {
+            matches!(
+                error.code.as_str(),
+                crate::domain::engine::BUNDLED_TOOL_MISSING
+                    | "provider_install_invalid"
+                    | "provider_start_failed"
+            )
+        })
+    })
 }
 
 /// Подавление по настройке пользователя называется фактом рядом с
@@ -3645,6 +3888,252 @@ fn unreadable_target_format_refusal(
     ))
 }
 
+/// Предварительная проверка `apply`: каждая операция есть в реестре, набор
+/// исходников её семейство пишет, а сама она исполнима на своём узле.
+///
+/// Сначала читается таблица снятых аргументов: вызов, который называет
+/// подузел аргументом, получает `bad_value` с адресом подузла в `next` — а не
+/// вердикт «не тот узел» с тупиком к `can` того же узла. Затем проверяется
+/// применимость к месту; `next` неприменимой операции ведёт к `can`
+/// ближайшего узла, где она исполнима. Если такого узла нет, `next` ведёт к
+/// `can` того же узла, когда тот читается, иначе к корню набора, а текст
+/// называет форму нужного адреса. `template_format` читает формат макета-
+/// предка: `next` не уводит на макет другого формата.
+pub(super) fn preflight_apply_operations(
+    request: &crate::domain::apply::ApplyRequest,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+) -> Result<(), Box<DomainResult>> {
+    let registry = OperationRegistry::closed();
+    for (index, operation) in request.ops().iter().enumerate() {
+        let Some(descriptor) = registry.lookup(operation.name()) else {
+            return Err(Box::new(with_node_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].op")),
+                    RefusalCode::UnsupportedOperation,
+                    format!(
+                        "apply operation `{}` is not in the canonical registry",
+                        operation.name()
+                    ),
+                ),
+                &operation.at().to_string(),
+            )));
+        };
+        // Набор, который семейство не пишет, — свойство набора, а не «не тот
+        // узел»: тот же отказ даёт разбор планировщиком.
+        if !source.writes(descriptor.family()) {
+            return Err(Box::new(DomainResult::canonical_rejection_detailed(
+                Some(format!("ops[{index}].op")),
+                RefusalDetail::WrongSourceKind,
+                UNWRITABLE_SOURCE_MESSAGE,
+            )));
+        }
+        let target_kind = operation
+            .at()
+            .segments()
+            .last()
+            .expect("a parsed logical address has a terminal segment")
+            .kind();
+        let Some(site) = OperationSite::new(operation.at(), source) else {
+            return Err(Box::new(error_result(
+                Some(format!("ops[{index}].at")),
+                RefusalCode::NotFound,
+                format!(
+                    "logical address `{}` is not available in the platform profile",
+                    operation.at()
+                ),
+            )));
+        };
+        if let Some(redirect) =
+            registry.retired_argument_redirect(operation.name(), &site, operation.args())
+        {
+            let location = Some(format!("ops[{index}].args.{}", redirect.location));
+            if redirect.listing {
+                // Значение называло подузел не именем: адрес из него не
+                // строится, и `next` ведёт к коллекции, где имя видно.
+                let mut refusal = error_result(
+                    location,
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; call it at `{}.<Name>`, reading the name in `{}`",
+                        operation.name(),
+                        redirect.location,
+                        redirect.at,
+                        redirect.at
+                    ),
+                );
+                refusal.next.push(json!({
+                    "tool": "unica.view",
+                    "args": {"at": redirect.at.to_string(), "filter": {"sections": ["items"]}},
+                    "reason": format!(
+                        "имена узлов для операции `{}`: элемент коллекции несёт свой `id` в `props`",
+                        operation.name()
+                    ),
+                }));
+                return Err(Box::new(refusal));
+            }
+            // Адрес построен из значения аргумента, и узла с таким именем
+            // может не быть: вторым шагом — коллекция, где видны имена.
+            let (member, owner) = redirect
+                .at
+                .segments()
+                .split_last()
+                .expect("a member address has a terminal segment");
+            let branch = QualifiedAddress {
+                source_set: redirect.at.source_set().to_string(),
+                segments: owner.to_vec(),
+            };
+            let branch = format!("{branch}.{}", member.kind().as_str());
+            let mut refusal = with_operation_dictionary(
+                error_result(
+                    location,
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; call it at `{}`",
+                        operation.name(),
+                        redirect.location,
+                        redirect.at
+                    ),
+                ),
+                &redirect.at.to_string(),
+                descriptor,
+            );
+            refusal.next.push(json!({
+                "tool": "unica.view",
+                "args": {"at": branch},
+                "reason": "существующие узлы этого вида у владельца",
+            }));
+            return Err(Box::new(refusal));
+        }
+        if descriptor.applies_at(&site) {
+            continue;
+        }
+        let refused = format!(
+            "apply operation `{}` does not apply to {} `{}`",
+            operation.name(),
+            target_kind.as_str(),
+            operation.at()
+        );
+        let refusal = match descriptor.nearest_applicable_ancestor(&site, template_format) {
+            Some(target) => with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    format!("{refused}; it applies at `{target}`"),
+                ),
+                &target.to_string(),
+                descriptor,
+            ),
+            None => {
+                let message = format!("{refused}; it addresses {}", descriptor.address_shape());
+                let refusal = error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    message,
+                );
+                // Узел, который читается, показывает свой словарь; адрес,
+                // которого нет ни в одном дереве, ведёт к корню набора.
+                let readable = crate::infrastructure::logical_tree::route_logical_address(
+                    operation.at(),
+                    source.profile(),
+                )
+                .is_ok();
+                if readable {
+                    with_node_dictionary(refusal, &operation.at().to_string())
+                } else {
+                    with_node_dictionary(
+                        refusal,
+                        &format!("{}:Configuration", operation.at().source_set()),
+                    )
+                }
+            }
+        };
+        return Err(Box::new(refusal));
+    }
+    Ok(())
+}
+
+/// `next` к словарю узла, где операция исполнима. Подробный контракт
+/// операции запрашивается только там, где он вычисляется: иначе `view`
+/// ответил бы на сам переход отказом.
+fn with_operation_dictionary(
+    mut result: DomainResult,
+    at: &str,
+    descriptor: crate::domain::apply::OperationDescriptor,
+) -> DomainResult {
+    let mut filter = json!({"sections": ["can"]});
+    if descriptor.argument_contract().is_some() {
+        filter["can"] = json!({"op": descriptor.name()});
+    }
+    result.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": at, "filter": filter},
+        "reason": format!("где исполнима операция `{}`", descriptor.name()),
+    }));
+    result
+}
+
+/// Отказ планировщика «узел не найден» по адресу операции: узел создаёт
+/// операция родителя, поэтому `next` ведёт к словарю родителя, а не к адресу,
+/// который `view` тоже не найдёт. `node_exists` отличает отсутствующий узел
+/// от существующего, у которого нет присоединённого ресурса (`Rights.xml`
+/// роли, `Form.xml` формы): во втором случае создавать нечего, и `next` не
+/// добавляется.
+pub(super) fn with_missing_target_parent(
+    mut result: DomainResult,
+    request: &crate::domain::apply::ApplyRequest,
+    error: &crate::infrastructure::native_operations::apply::ApplyPlanError,
+    node_exists: &dyn Fn(&QualifiedAddress) -> Option<bool>,
+) -> DomainResult {
+    if error.kind() != ApplyPlanErrorKind::NotFound {
+        return result;
+    }
+    let Some((index, tail)) = error.path().and_then(|path| {
+        let rest = path.strip_prefix("ops[")?;
+        let (index, tail) = rest.split_once(']')?;
+        Some((index.parse::<usize>().ok()?, tail))
+    }) else {
+        return result;
+    };
+    let Some(operation) = request.ops().get(index) else {
+        return result;
+    };
+    // Отказ касается самого узла операции, когда он назван путём `at` или
+    // когда операция не несёт ничего, кроме адреса (`attribute.remove`):
+    // тогда «не найден» — это её узел, а не что-то из аргументов.
+    let address_only = OperationRegistry::closed()
+        .lookup(operation.name())
+        .is_some_and(|descriptor| descriptor.skeleton_key() == "at");
+    if !(matches!(tail, ".at" | ".args.at") || address_only) {
+        return result;
+    }
+    if node_exists(operation.at()) != Some(false) {
+        return result;
+    }
+    let segments = operation.at().segments();
+    let parent = if segments.len() > 1 {
+        QualifiedAddress {
+            source_set: operation.at().source_set().to_string(),
+            segments: segments[..segments.len() - 1].to_vec(),
+        }
+    } else {
+        match QualifiedAddress::parse(&format!("{}:Configuration", operation.at().source_set())) {
+            Ok(root)
+                if segments.first().map(|first| first.kind()) != Some(NodeKind::Configuration) =>
+            {
+                root
+            }
+            _ => return result,
+        }
+    };
+    result.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": parent.to_string(), "filter": {"sections": ["can"]}},
+        "reason": "узел создаёт операция родителя",
+    }));
+    result
+}
+
 /// Отказ по операции называет маршрут к словарю узла, а не перечисляет
 /// операции в тексте: перечень уже публикуется секцией `can`, и агенту нужен
 /// путь к нему, а не копия внутри сообщения. Без этого пробелы словаря
@@ -3872,6 +4361,95 @@ mod tests {
             assert_eq!(result.diagnostics[0]["code"], code);
             assert_eq!(result.diagnostics[0]["outcome"], outcome);
         }
+    }
+
+    /// #955, #1332: a staging failure names the violated precondition and
+    /// what to do next. Only a source the filesystem cannot read stays
+    /// `provider_unavailable`, refined to `source_unreadable`.
+    #[test]
+    fn staging_refusals_keep_their_kind_instead_of_an_absent_provider() {
+        use crate::infrastructure::native_operations::apply::{
+            ApplyPlanError, ApplyStagingError, ApplyStagingErrorKind,
+        };
+        for (kind, code, outcome, detail) in [
+            (
+                ApplyStagingErrorKind::Cancelled,
+                "cancelled",
+                "deadEnd",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Deadline,
+                "deadline_exceeded",
+                "retry",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ConcurrentRevision,
+                "stale_revision",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "containment_denied",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::AbsentChainOccupied,
+                "invalid_source",
+                "fixSource",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Invariant,
+                "invalid_state",
+                "needsHuman",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::UnsupportedProvider,
+                "provider_unavailable",
+                "fixSource",
+                Some("source_unreadable"),
+            ),
+        ] {
+            let error = ApplyPlanError::staging(
+                ApplyStagingError::new(kind, "staged replace preimage changed: Documents/A.xml"),
+                "ops[1].args.values.name",
+            );
+            let planned = super::apply_plan_error_result(&error);
+            let prepared =
+                super::apply_staging_refusal(Some("ops".to_string()), kind, "prepared".to_string());
+            for result in [&planned, &prepared] {
+                assert!(!result.ok, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["code"], code, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["outcome"], outcome, "{kind:?}");
+                assert_eq!(
+                    result.diagnostics[0]
+                        .get("detailCode")
+                        .and_then(|v| v.as_str()),
+                    detail,
+                    "{kind:?}"
+                );
+            }
+            assert_eq!(planned.at.as_deref(), Some("ops[1].args.values.name"));
+            let message = planned.diagnostics[0]["message"].as_str().unwrap();
+            assert!(
+                message.contains("staged replace preimage changed: Documents/A.xml"),
+                "{kind:?}: the cause was lost: {message}"
+            );
+            assert!(!message.contains("evidence is unavailable"), "{message}");
+        }
+        // Publication re-proves the plan's containment; a failure there is a
+        // physical change after the plan, answered like a stale plan.
+        assert_eq!(
+            super::apply_publication_error_code(
+                super::ApplyPublicationErrorKind::ContainmentIdentity
+            ),
+            crate::domain::refusal::RefusalCode::StaleRevision
+        );
     }
 
     fn provider_search_test_binding(role: ProviderRole, limit: usize) -> SearchCursorBinding {
@@ -4250,12 +4828,16 @@ mod tests {
              diagnostics baseline invalid_schema: baseline schema 7 is newer"
         );
 
-        // Без названной причины отказ остаётся прежним.
+        // Без названной причины отказ всё равно говорит, что делать.
         let mut unnamed = result(false, None);
         unnamed.providers[0].suppressions.clear();
         assert_eq!(
             super::bsl_incomplete_message(&unnamed),
-            super::BSL_INCOMPLETE_MESSAGE
+            format!(
+                "{}: {}",
+                super::BSL_INCOMPLETE_MESSAGE,
+                super::BSL_UNNAMED_INCOMPLETENESS
+            )
         );
     }
 
@@ -4314,6 +4896,8 @@ mod tests {
                 format!("{}: {safe}", super::BSL_INCOMPLETE_MESSAGE)
             );
         }
+        // A message that is not the closed formatter's whole output is never
+        // published; the closed code still names the cause in fixed words.
         let safe = StreamErrorKind::InvalidEvent.message(2);
         for (code, message) in [
             ("provider_failed", safe.clone()),
@@ -4324,10 +4908,145 @@ mod tests {
             ),
             ("diagnostics_invalid", safe.replace("line 2:", "line 02:")),
         ] {
+            let published = super::bsl_incomplete_message(&result(code, message));
             assert_eq!(
-                super::bsl_incomplete_message(&result(code, message)),
-                super::BSL_INCOMPLETE_MESSAGE
+                published,
+                format!(
+                    "{}: bsl-analyzer: {}",
+                    super::BSL_INCOMPLETE_MESSAGE,
+                    crate::application::diagnostics::public_diagnostic_error_message(code)
+                )
             );
+            assert!(!published.contains("line 2"), "{published}");
+            assert!(!published.contains("private"), "{published}");
+        }
+    }
+
+    /// A provider that did not run names which engine, what happened to it
+    /// and what restores it; the provider's own text is never the reason
+    /// (#1338).
+    #[test]
+    fn bsl_check_names_why_the_engine_gave_no_result_and_how_to_recover() {
+        use crate::domain::diagnostics::{
+            DiagnosticAction, DiagnosticError, DiagnosticProviderSection, DiagnosticProviderStatus,
+            DiagnosticResult, DiagnosticResultState, DiagnosticSelection,
+        };
+        let failed = |code: &str| DiagnosticResult {
+            ok: false,
+            action: DiagnosticAction::Analyze,
+            selection: DiagnosticSelection {
+                source_set: "erf".to_string(),
+                metadata_path: None,
+                target_kind: None,
+                providers: vec!["bsl-analyzer"],
+                filter: None,
+                limit: None,
+            },
+            state: DiagnosticResultState::Failed,
+            complete: false,
+            providers: vec![DiagnosticProviderSection {
+                id: "bsl-analyzer",
+                status: DiagnosticProviderStatus::Unavailable,
+                complete: false,
+                version: None,
+                capabilities: None,
+                readiness: None,
+                items_total: Some(0),
+                items_returned: Some(0),
+                resource_failures: Some(0),
+                truncated: Some(false),
+                suppressions: Vec::new(),
+                error: Some(DiagnosticError {
+                    code: code.to_string(),
+                    message: "private-token /private/engine stderr".to_string(),
+                    retryable: false,
+                }),
+            }],
+            items_total: Some(0),
+            items_returned: Some(0),
+            truncated: Some(false),
+            items: Vec::new(),
+        };
+        for (code, cause, recovery, absent) in [
+            (
+                "bundled_tool_missing",
+                "could not locate its plugin installation",
+                "Reinstall the Unica plugin",
+                true,
+            ),
+            (
+                "provider_install_invalid",
+                "failed verification",
+                "Reinstall the Unica plugin",
+                true,
+            ),
+            (
+                "provider_start_failed",
+                "could not be started",
+                "then repeat the call",
+                true,
+            ),
+            (
+                "provider_timeout",
+                "exceeded its time limit",
+                "raise the configured diagnostics time limit",
+                false,
+            ),
+            (
+                "provider_exited",
+                "exited with an error",
+                "Repeat the call",
+                false,
+            ),
+            (
+                "provider_unavailable",
+                "unclassified reason",
+                "Repeat the call",
+                false,
+            ),
+        ] {
+            let result = failed(code);
+            assert!(!super::bsl_result_proves_full_verdict(&result));
+            let message = super::bsl_incomplete_message(&result);
+            assert!(
+                message.starts_with(&format!(
+                    "{}: bsl-analyzer: ",
+                    super::BSL_INCOMPLETE_MESSAGE
+                )),
+                "{code}: {message}"
+            );
+            assert!(message.contains(cause), "{code}: {message}");
+            assert!(message.contains(recovery), "{code}: {message}");
+            assert!(!message.contains("private"), "{code}: {message}");
+            assert_eq!(super::bsl_provider_absent(&result), absent, "{code}");
+        }
+
+        // An absent engine described by its install mode keeps that next
+        // step; the expected path never reaches the answer.
+        for mode in [
+            crate::domain::engine::InstallMode::Source,
+            crate::domain::engine::InstallMode::Marketplace,
+        ] {
+            let missing = crate::domain::engine::MissingEngine::new(
+                "bsl-analyzer",
+                "win-x64",
+                "C:/private/engine/bsl-analyzer.exe",
+                None,
+                mode,
+            );
+            let mut result = failed("bundled_tool_missing");
+            result.providers[0].error.as_mut().unwrap().message =
+                crate::application::diagnostics::missing_engine_public_reason(&missing);
+            let message = super::bsl_incomplete_message(&result);
+            assert_eq!(
+                message,
+                format!(
+                    "{}: bsl-analyzer is not available for win-x64: its file is not on this machine; {}",
+                    super::BSL_INCOMPLETE_MESSAGE,
+                    missing.next_step
+                )
+            );
+            assert!(!message.contains("private"), "{message}");
         }
     }
 
@@ -4391,6 +5110,536 @@ mod tests {
         std::fs::write(workspace.path().join("src/Configuration.xml"),
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
         workspace
+    }
+
+    fn resolve_exact_workspace() -> tempfile::TempDir {
+        let workspace = role_search_workspace();
+        let source = workspace.path().join("src");
+        let descriptor = |kind: &str, name: &str, children: &str| {
+            let (uuid, extra) = match kind {
+                "Configuration" => ("f3317000-0000-4000-8000-000000000001", ""),
+                "CommonModule" => ("f3317000-0000-4000-8000-000000000002", "<Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse>"),
+                "Catalog" => ("f3317000-0000-4000-8000-000000000003", ""),
+                "Form" => ("f3317000-0000-4000-8000-000000000004", "<FormType>Managed</FormType>"),
+                "CommonForm" => ("f3317000-0000-4000-8000-000000000005", "<FormType>Managed</FormType>"),
+                _ => unreachable!(),
+            };
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="{uuid}"><Properties><Name>{name}</Name>{extra}</Properties><ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>"#
+            )
+        };
+        std::fs::write(source.join("Configuration.xml"), descriptor("Configuration", "Store", "<CommonModule>Probe</CommonModule><Catalog>Items</Catalog><CommonForm>Main</CommonForm>")).unwrap();
+        for directory in [
+            "CommonModules/Probe/Ext",
+            "Catalogs/Items/Ext",
+            "Catalogs/Items/Forms/Main/Ext",
+            "CommonForms/Main/Ext",
+        ] {
+            std::fs::create_dir_all(source.join(directory)).unwrap();
+        }
+        std::fs::write(
+            source.join("CommonModules/Probe.xml"),
+            descriptor("CommonModule", "Probe", ""),
+        )
+        .unwrap();
+        std::fs::write(source.join("Catalogs/Items.xml"), descriptor("Catalog", "Items", r#"<Form>Main</Form><Attribute><Properties><Name>Value</Name></Properties></Attribute><TabularSection><Properties><Name>Rows</Name></Properties><ChildObjects><Attribute><Properties><Name>Amount</Name></Properties></Attribute></ChildObjects></TabularSection>"#)).unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Forms/Main.xml"),
+            descriptor("Form", "Main", ""),
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("CommonForms/Main.xml"),
+            descriptor("CommonForm", "Main", ""),
+        )
+        .unwrap();
+        let form = r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems><InputField name="Value" id="1"/><UsualGroup name="Group" id="2"><ChildItems><InputField name="Inside" id="3"/></ChildItems></UsualGroup></ChildItems><Attributes><Attribute name="FormValue" id="1"/></Attributes></Form>"#;
+        for file in [
+            "Catalogs/Items/Forms/Main/Ext/Form.xml",
+            "CommonForms/Main/Ext/Form.xml",
+        ] {
+            std::fs::write(source.join(file), form).unwrap();
+        }
+        let body = "    Сообщить(\"probe\");\n".repeat(61);
+        let module = format!("#Область A\n#Область Inner\nПроцедура Ping() Экспорт\n{body}КонецПроцедуры\n#КонецОбласти\n#КонецОбласти\n#Область B\n#Область Inner\n// second\n#КонецОбласти\n#КонецОбласти\n");
+        for file in [
+            "CommonModules/Probe/Ext/Module.bsl",
+            "Catalogs/Items/Ext/ObjectModule.bsl",
+            "Catalogs/Items/Ext/ManagerModule.bsl",
+            "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            "CommonForms/Main/Ext/Form/Module.bsl",
+        ] {
+            let target = source.join(file);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, &module).unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(workspace.path())
+            .status()
+            .unwrap()
+            .success());
+        workspace
+    }
+
+    fn invoke_exact_read(
+        workspace: &std::path::Path,
+        tool: crate::application::invocation_store::ToolIdentity,
+        arguments: serde_json::Value,
+    ) -> crate::domain::invocation::DomainResult {
+        use crate::application::ports::TokioClock;
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(super::CanonicalV13ReadService::default()),
+            Arc::new(TokioClock),
+        );
+        runtime
+            .bind(
+                InvocationRequest::new(
+                    tool,
+                    arguments,
+                    std::fs::canonicalize(workspace).unwrap().to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .prepare()
+            .unwrap()
+            .execute(CancellationToken::new())
+            .unwrap()
+    }
+
+    #[test]
+    fn resolve_exact_bsl_nodes_across_module_roles() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        for (module, path) in [
+            ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
+            (
+                "Catalog.Items.Module.Object",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Catalog.Items.Module.Manager",
+                "Catalogs/Items/Ext/ManagerModule.bsl",
+            ),
+            (
+                "Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            ),
+            (
+                "CommonForm.Main.Module.Form",
+                "CommonForms/Main/Ext/Form/Module.bsl",
+            ),
+        ] {
+            for (suffix, kind, from, to) in [
+                (".Method.Ping", "Method", 3, 65),
+                (".Method.Ping.Body", "Body", 4, 64),
+                (".Body", "Body", 1, 72),
+                (".Region.A.Region.Inner", "Region", 2, 66),
+                (".Region.B.Region.Inner", "Region", 69, 71),
+            ] {
+                let at = format!("main:{module}{suffix}");
+                let result =
+                    invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+                assert!(result.ok, "{at}: {result:?}");
+                let data = result.data.as_ref().unwrap();
+                assert_eq!(data["at"], at);
+                assert_eq!(data["kind"], kind, "{result:?}");
+                assert_eq!(data["path"], path, "{result:?}");
+                assert_eq!(
+                    data["lines"],
+                    json!({"state":"range","from":from,"to":to}),
+                    "{result:?}"
+                );
+                assert!(result.rev.is_none());
+            }
+            for suffix in [
+                ".Method.Missing",
+                ".Method.Missing.Body",
+                ".Region.Missing",
+                ".Region.Missing.Region.A",
+                ".Region.A.Region.Missing",
+                ".Region.A.Region.Inner.Region.B",
+            ] {
+                let result = invoke_exact_read(
+                    workspace.path(),
+                    ToolIdentity::Resolve,
+                    json!({"at":format!("main:{module}{suffix}")}),
+                );
+                assert!(!result.ok, "{result:?}");
+                assert_eq!(
+                    serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                    "not_found",
+                    "{result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn view_nested_regions_never_substitutes_the_final_name() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        for prefix in ["CommonModule.Probe", "Catalog.Items.Module.Object"] {
+            for (suffix, ok) in [
+                (".Region.A.Region.Inner", true),
+                (".Region.B.Region.Inner", true),
+                (".Region.Missing.Region.A", false),
+                (".Region.A.Region.Inner.Region.B", false),
+            ] {
+                let at = format!("main:{prefix}{suffix}");
+                let result =
+                    invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+                assert_eq!(result.ok, ok, "{at}: {result:?}");
+                if !ok {
+                    assert_eq!(
+                        serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                        "not_found"
+                    );
+                }
+            }
+        }
+        // Уникальное имя вложенной области тоже не заменяет её полный адрес.
+        std::fs::write(
+            workspace
+                .path()
+                .join("src/CommonModules/Probe/Ext/Module.bsl"),
+            "#Область Outer\n#Область Uniq\n#КонецОбласти\n#КонецОбласти\n",
+        )
+        .unwrap();
+        for tool in [ToolIdentity::View, ToolIdentity::Resolve] {
+            for (suffix, ok) in [(".Region.Outer.Region.Uniq", true), (".Region.Uniq", false)] {
+                let at = format!("main:CommonModule.Probe{suffix}");
+                let result = invoke_exact_read(workspace.path(), tool, json!({"at":at}));
+                assert_eq!(result.ok, ok, "{tool:?} {at}: {result:?}");
+                if !ok {
+                    assert_eq!(
+                        serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                        "not_found"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_exact_tree_children_use_their_containing_xml() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        for (node, kind, path) in [
+            (
+                "CommonModule.Probe",
+                "CommonModule",
+                "CommonModules/Probe.xml",
+            ),
+            (
+                "Catalog.Items.Attribute.Value",
+                "Attribute",
+                "Catalogs/Items.xml",
+            ),
+            (
+                "Catalog.Items.TabularSection.Rows.Attribute.Amount",
+                "Attribute",
+                "Catalogs/Items.xml",
+            ),
+            (
+                "Catalog.Items.Form.Main.Item.Value",
+                "Item",
+                "Catalogs/Items/Forms/Main/Ext/Form.xml",
+            ),
+            (
+                "Catalog.Items.Form.Main.Item.Group.Item.Inside",
+                "Item",
+                "Catalogs/Items/Forms/Main/Ext/Form.xml",
+            ),
+            (
+                "Catalog.Items.Form.Main.Attribute.FormValue",
+                "Attribute",
+                "Catalogs/Items/Forms/Main/Ext/Form.xml",
+            ),
+            (
+                "CommonForm.Main.Item.Value",
+                "Item",
+                "CommonForms/Main/Ext/Form.xml",
+            ),
+        ] {
+            let at = format!("main:{node}");
+            let view = invoke_exact_read(workspace.path(), ToolIdentity::View, json!({"at":at}));
+            assert!(view.ok, "fixture must independently expose {at}: {view:?}");
+            let result =
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+            assert!(result.ok, "{at}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["at"], at);
+            assert_eq!(data["kind"], kind, "{result:?}");
+            assert_eq!(data["path"], path, "{result:?}");
+            assert_eq!(data["lines"], json!({"state":"notLineBased"}));
+            assert!(result.rev.is_none());
+        }
+        for node in [
+            "Catalog.Items.Attribute.Missing",
+            "Catalog.Items.TabularSection.Missing.Attribute.Amount",
+            "Catalog.Items.Form.Main.Item.Missing",
+            "Catalog.Items.Form.Main.Item.Missing.Item.Value",
+            "Catalog.Items.Form.Main.Attribute.Missing",
+            "CommonForm.Main.Item.Missing",
+            "Catalog.Missing.Attribute.Value",
+        ] {
+            let result = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Resolve,
+                json!({"at":format!("main:{node}")}),
+            );
+            assert!(!result.ok, "{result:?}");
+            assert_eq!(
+                serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                "not_found"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_exact_method_spans_annotations_through_its_closing_line() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        // Документация и пустая строка выше аннотаций методу не принадлежат.
+        let module = concat!(
+            "// Документация.\n\n&НаСервере\n&Перед(\"Ping\")\nПроцедура Annotated(\n",
+            "    Value) Экспорт\n    Сообщить(Value);\nКонецПроцедуры\n\n",
+            "Процедура Empty()\nКонецПроцедуры\nФункция Inline() Возврат 1; КонецФункции\n",
+            "Асинх\nПроцедура Waiting()\nКонецПроцедуры\n",
+            "Async\nProcedure Waiting2()\nEndProcedure\n",
+            "// Doc\n// Параметры:\n&НаСервере\nПроцедура Documented()\n    Сообщить(1);\nКонецПроцедуры\n",
+        );
+        for (prefix, path) in [
+            ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
+            (
+                "Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            ),
+        ] {
+            std::fs::write(workspace.path().join("src").join(path), module).unwrap();
+            for (suffix, kind, lines) in [
+                (
+                    ".Method.Annotated",
+                    "Method",
+                    json!({"state":"range","from":3,"to":8}),
+                ),
+                (
+                    ".Method.Annotated.Body",
+                    "Body",
+                    json!({"state":"range","from":7,"to":7}),
+                ),
+                (
+                    ".Method.Empty",
+                    "Method",
+                    json!({"state":"range","from":10,"to":11}),
+                ),
+                (
+                    ".Method.Empty.Body",
+                    "Body",
+                    json!({"state":"notLineBased"}),
+                ),
+                (
+                    ".Method.Inline",
+                    "Method",
+                    json!({"state":"range","from":12,"to":12}),
+                ),
+                (
+                    ".Method.Waiting",
+                    "Method",
+                    json!({"state":"range","from":13,"to":15}),
+                ),
+                (
+                    ".Method.Waiting2",
+                    "Method",
+                    json!({"state":"range","from":16,"to":18}),
+                ),
+                (
+                    ".Method.Documented",
+                    "Method",
+                    json!({"state":"range","from":21,"to":24}),
+                ),
+                (".Body", "Body", json!({"state":"range","from":1,"to":24})),
+            ] {
+                let at = format!("main:{prefix}{suffix}");
+                let result =
+                    invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+                assert!(result.ok, "{at}: {result:?}");
+                let data = result.data.as_ref().unwrap();
+                assert_eq!(data["kind"], kind, "{at}: {result:?}");
+                assert_eq!(data["path"], path, "{at}: {result:?}");
+                assert_eq!(data["lines"], lines, "{at}: {result:?}");
+            }
+            // View keeps naming the body lines of the method.
+            let view = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::View,
+                json!({"at":format!("main:{prefix}.Method.Annotated")}),
+            );
+            assert!(view.ok, "{view:?}");
+            let props = &view.data.as_ref().unwrap()["props"];
+            assert_eq!((&props["line"], &props["endLine"]), (&json!(7), &json!(7)));
+        }
+    }
+
+    #[test]
+    fn resolve_exact_module_body_numbers_lines_like_view() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        let file = workspace
+            .path()
+            .join("src/CommonModules/Probe/Ext/Module.bsl");
+        let at = json!({"at":"main:CommonModule.Probe.Body"});
+        for (source, expected) in [
+            ("", json!({"state":"notLineBased"})),
+            ("\u{feff}\u{feff}", json!({"state":"notLineBased"})),
+            ("\n", json!({"state":"range","from":1,"to":1})),
+            ("a", json!({"state":"range","from":1,"to":1})),
+            ("\u{feff}a\r\nb", json!({"state":"range","from":1,"to":2})),
+            ("a\r\n\r\nb\r\n", json!({"state":"range","from":1,"to":3})),
+        ] {
+            std::fs::write(&file, source).unwrap();
+            let view = invoke_exact_read(workspace.path(), ToolIdentity::View, at.clone());
+            assert!(view.ok, "{source:?}: {view:?}");
+            let items = view.data.as_ref().unwrap()["items"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let viewed = items.last().map_or(
+                json!({"state":"notLineBased"}),
+                |last| json!({"state":"range","from":1,"to":last["line"]}),
+            );
+            assert_eq!(viewed, expected, "view numbering of {source:?}");
+            let resolved = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, at.clone());
+            assert!(resolved.ok, "{source:?}: {resolved:?}");
+            assert_eq!(
+                resolved.data.unwrap()["lines"],
+                expected,
+                "resolve numbering of {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_exact_module_read_failures_are_never_successful_locations() {
+        use crate::application::invocation_store::ToolIdentity;
+        let workspace = resolve_exact_workspace();
+        for (prefix, path) in [
+            ("CommonModule.Probe", "CommonModules/Probe/Ext/Module.bsl"),
+            (
+                "Catalog.Items.Module.Object",
+                "Catalogs/Items/Ext/ObjectModule.bsl",
+            ),
+            (
+                "Catalog.Items.Form.Main.Module.Form",
+                "Catalogs/Items/Forms/Main/Ext/Form/Module.bsl",
+            ),
+        ] {
+            let file = workspace.path().join("src").join(path);
+            std::fs::write(&file, "").unwrap();
+            let empty = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Resolve,
+                json!({"at":format!("main:{prefix}.Body")}),
+            );
+            assert!(empty.ok, "{empty:?}");
+            assert_eq!(
+                empty.data.unwrap()["lines"],
+                json!({"state":"notLineBased"})
+            );
+            std::fs::remove_file(&file).unwrap();
+            let absent = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Resolve,
+                json!({"at":format!("main:{prefix}.Body")}),
+            );
+            assert!(
+                !absent.ok,
+                "an absent BSL file is not an empty body: {absent:?}"
+            );
+            assert_eq!(
+                serde_json::to_value(&absent).unwrap()["diagnostics"][0]["code"],
+                "not_found"
+            );
+            std::fs::write(&file, [0xff]).unwrap();
+            let unreadable = invoke_exact_read(
+                workspace.path(),
+                ToolIdentity::Resolve,
+                json!({"at":format!("main:{prefix}.Body")}),
+            );
+            assert!(!unreadable.ok, "{unreadable:?}");
+            assert_eq!(
+                serde_json::to_value(&unreadable).unwrap()["diagnostics"][0]["code"],
+                "provider_unavailable"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_exact_cancelled_read_never_claims_a_location() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::application::operation_descriptors::ExecutionClass;
+        use crate::application::ports::TokioClock;
+        use crate::domain::invocation::{DomainResult, InvocationFailure};
+        use crate::infrastructure::daemon::protocol::InvocationRequest;
+        use crate::infrastructure::daemon::server::V5CanonicalInvocationRuntime;
+        struct CancelRead(super::CanonicalV13ReadService);
+        impl super::CanonicalInvocationService for CancelRead {
+            fn prepare(
+                &self,
+                invocation: &super::ActorBoundInvocation,
+            ) -> Result<ExecutionClass, Box<DomainResult>> {
+                self.0.prepare(invocation)
+            }
+            fn execute(
+                &self,
+                execution: &super::ActorBoundExecution,
+                _: CancellationToken,
+            ) -> Result<DomainResult, InvocationFailure> {
+                // Cancel after actor admission, at the actual resolve read boundary.
+                let cancellation = CancellationToken::new();
+                cancellation.cancel();
+                self.0.execute(execution, cancellation)
+            }
+        }
+        let workspace = resolve_exact_workspace();
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(CancelRead(super::CanonicalV13ReadService::default())),
+            Arc::new(TokioClock),
+        );
+        let result = runtime
+            .bind(
+                InvocationRequest::new(
+                    ToolIdentity::Resolve,
+                    json!({"at":"main:CommonModule.Probe.Method.Ping"}),
+                    std::fs::canonicalize(workspace.path())
+                        .unwrap()
+                        .to_string_lossy(),
+                    7_000,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .prepare()
+            .unwrap()
+            .execute(CancellationToken::new())
+            .unwrap();
+        assert!(
+            !result.ok,
+            "cancelled resolution claimed a location: {result:?}"
+        );
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+            "cancelled"
+        );
+        assert!(
+            result.data.is_none(),
+            "cancelled read returned a location: {result:?}"
+        );
     }
 
     #[test]
@@ -5574,8 +6823,15 @@ mod tests {
             serde_json::to_vec(&result).unwrap().len()
                 <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
-        result.data =
-            Some(super::project_view_operation(&data, &json!(["items", "can"]), None).unwrap());
+        result.data = Some(
+            super::project_view_operation(
+                &data,
+                &json!(["items", "can"]),
+                None,
+                super::super::v13_read_modes::configuration_context(),
+            )
+            .unwrap(),
+        );
         assert!(
             serde_json::to_vec(&result).unwrap().len()
                 > crate::application::v13::view::PREFERRED_PAGE_BYTES

@@ -46,7 +46,7 @@ Two facts decide most reviews:
 ## Workflow
 
 1. Name the concurrency you are actually facing: two users on one object → this skill; two transactions on shared data → `transactions-locks`.
-2. Find every path that modifies the object with `unica.search` by the method and object names; a call graph is not on the v0.13 surface. A cooperative lock is only as good as the path that skips it.
+2. Find every path that modifies the object: `unica.view` at `<method>.Caller` lists the callers of a writing method, and `unica.search` by the method and object names finds literal mentions. A cooperative lock is only as good as the path that skips it.
 3. Choose the shape before writing code: fail loudly so the user learns who holds the object, or skip and retry on the next run for background work (std490).
 4. Decide the form id question. With a form id the lock follows the form's lifetime; without one it follows the session, the server call, or the transaction. Do not mix both for the same object — that combination raises.
 5. Inspect a non-standard editing form with `unica.view` on the form node and reproduce the standard behaviour with the form lock and unlock methods.

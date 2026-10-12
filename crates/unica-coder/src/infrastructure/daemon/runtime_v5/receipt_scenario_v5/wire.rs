@@ -313,6 +313,7 @@ pub(super) enum ScenarioFailureProbeReason {
     TaskCapacity,
     WorkspaceCapacity,
     WorkspaceRegistryFailed,
+    WorkspaceChanged,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -522,6 +523,7 @@ pub(super) enum ScenarioCrashPoint {
     AfterStagedTaskStoreTerminalReadbackBeforeLedgerCommit,
     BeforeTaskStoreCreate,
     AfterTaskStoreCreateBeforeTaskBound,
+    AfterTaskBoundBeforeHandoffReceiptCompletion,
     AfterCancelFlagBeforeTaskCreate,
     AfterTaskStoreCancelReadbackBeforeTaskBound,
     AfterWorkingReadbackBeforeReceiptBegun,

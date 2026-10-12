@@ -54,88 +54,94 @@ publication as a Unica MCP contract gap.
 These scaffolds are platform XML and are rejected for EDT external-project
 layouts.
 
-## Reading and changing an existing DCS
+## Composing and changing a DCS
 
-Open the template, then its `DataSet` and `Setting` collections. A variant
-need not be named `Основной`; use the name returned by the reader. Query and
-field operations address an existing dataset. Variant settings address an
-existing setting. The template itself can be read and checked but is not a
-DCS edit target.
+Find the template through `unica.view`, then read its properties, `DataSet`
+and `Setting` branches. Request `can` on the actual target and the contract
+of the operation you need. The DCS Template is a writable target for schema
+components; an existing dataset is the target for its fields and query;
+an existing setting is the target for its selection, filters and structure.
+Use names returned by the reader. A variant need not be named `Основной`.
 
-Read the complete query through `DataSet.<name>.Query`: join
-`data.items[].text` with newlines in page order. Query replacement takes text
-itself, not an `@file` path. Preserve the query fields required by the schema.
-A patch with `once:true` requires exactly one match; zero and multiple
-matches fail. An empty replacement deletes matching text. For the argument
-shape and literal-token restrictions, request the operation's contract.
+To create a schema, use the owner's `template.add` contract with
+`templateType:DataCompositionSchema`. Execute creation before addressing
+its new Template. The scaffold has a data source and a setting. Add its
+components through separate operations: a dataset, its fields, schema
+parameters, calculations, totals, and the variant's settings. Read the
+scaffold's source and setting names instead of supplying guessed defaults.
+
+Choose the dataset kind for the data actually supplied to the schema:
+
+- Query uses a named data source and query text. Add its fields explicitly;
+  field types derive from the query.
+- Object uses a named data source and `objectName`, the runtime object's
+  name. Its schema dataset name is a separate name. Describe its fields
+  and types explicitly.
+- Union combines datasets. Create the Union, then add each member at that
+  Union's address. Nested members are addressed by repeating
+  `DataSet.<name>` in the logical path.
+
+Links between datasets, calculated expressions and totals are separate
+schema components. A calculated expression derives a field; a total
+aggregates a field, optionally for a specified group. Adding or removing
+these components does not rewrite their references or variant settings.
+Plan those changes explicitly in the same batch.
+
+Read a query through `DataSet.<name>.Query`: join `data.items[].text` with
+newlines in page order. Query replacement takes literal text, not an
+`@file` path. A patch with `once:true` requires exactly one match; zero or
+multiple matches fail. An empty replacement deletes the matched text.
+Keep the fields needed by the schema in the query result.
+
+Adding a field does not select it for output. Configure selection separately
+at the required variant or named group. Field roles use a structured object,
+for example `{"dimension":true}`, rather than flags embedded in a string.
+Titles and literal values can contain brackets and `@` without becoming
+commands. Request the operation's contract for accepted type and role values.
+A formatted presentation does not change the field's underlying value.
+
+Schema parameters declare types, defaults, expressions and availability.
+Variant data parameters choose values and whether to use them. These are
+separate changes. Query references use `&Name`; expressions may use
+`ПараметрыДанных.Name`. Renaming a schema parameter changes its declaration;
+update the affected queries and expressions explicitly. StandardPeriod
+values represent a named period or a Custom period with dates; obtain the
+accepted value shape from `can`.
+
+Configure selection, filters, order, conditional appearance and output
+parameters through their own operations. Adding a filter does not clear
+existing filters. Setting a selected filter or data parameter patches the
+supplied properties and keeps unspecified settings. A `clear` operation
+clears its whole selected collection; use an individual removal operation
+when its contract is available and only one item should be removed.
 
 Read `Setting.<name>.Item` to see grouping structure in document order.
 Each row gives `index`, `parentIndex`, `axis`, `kind`, `name` and `groupBy`.
-Indices identify rows within this variant, not logical nodes. Names may be
-absent or repeated, and rows have no `at`. Table row/column and chart
-point/series axes remain visible. Patch only a real uniquely named group;
-an unknown or ambiguous name fails before any publication.
+Indices identify rows within that variant, not logical nodes. Names may be
+absent or repeated, and rows have no `at`. Use an exact, uniquely named
+item as a selector; unknown or ambiguous names fail before publication.
+`structure.patch` takes the item's `name` separately from its `groupBy`.
 
-Replacing structure removes the previous structure. Two fields in
-`groupBy` form one group by both fields, not two nested groups.
-`details:true` appends detail records under that group. An empty `groupBy`
-creates detail records even when `details:false`. Patching a named group
-preserves other groups; get its exact argument syntax from the contract.
+Compose nested structure by adding each named group, table or chart
+separately. Select its parent explicitly; a table's row/column or a chart's
+point/series axis selects where its grouping belongs. Two `groupBy` fields
+form one group by both fields, not two nested groups. `structure.set`
+replaces the variant's structure; with `details:true` it adds detail records
+under that group. Empty `groupBy` means detail records. Choose a targeted
+patch or addition when other structure should be preserved.
 
-Adding a field or calculated field can also add it to the variant's selected
-fields. Duplicate fields may be skipped; inspect the post-image instead of
-treating a successful response as proof of a change. Removing a dataset
-field also removes its selection entry. A calculated expression describes
-a derived field; a total describes aggregation. Current total arguments do
-not expose grouping associations.
+Preview the complete `ops` batch. Preview writes no sources; execute only
+its successful `data.executionToken`. If the response contains a Task,
+observe that Task to terminal state without repeating the mutation. Read
+the resulting fields, query and settings, then check the Template. A stale
+revision requires a new read and preview; a rejected plan must not publish
+partial changes.
 
-Schema parameters are distinct from a variant's data parameters. Query
-references use `&Name`; expressions referring to data parameters use
-`ПараметрыДанных.Name`. A schema parameter's default value, availability,
-and a variant's choice to use it are separate facts. Existing StandardPeriod
-setups may derive start/end dates, but the typed operations do not expose
-the old autoDates, hidden, value-list or available-values flags. Read existing
-parameters before changing them; changing a name does not automatically
-rename every query reference.
-
-A filter tests a field against a value. Clearing filters, selection,
-sorting or conditional appearance clears the whole corresponding
-collection. It is not a substitute for removing one item. Group filters,
-user-setting presentation, selection folders and per-group selection from
-the old DSL are not promised by the typed argument schema.
-
-For a DataSetObject, `name` identifies the dataset in the schema while
-`objectName` identifies the data supplied to the processor at runtime.
-Do not turn such a dataset into a query dataset to work around a missing
-operation. Field types and role values are validated against the platform
-format; read the operation contract for supported values. A formatted
-presentation does not change the underlying field value used for drilldown.
-
-Preview the complete `ops` batch first. The plan writes no sources; execute
-only its successful `data.executionToken`. If the response contains a Task,
-observe that same Task to terminal state without repeating the mutation.
-After execution, read the changed fields, query and grouping rows, then
-check the template. A stale revision requires a new read and preview;
-the rejected plan must not publish partial changes.
-
-## Creating a new DCS: current boundary
-
-`template.add` with `templateType:DataCompositionSchema` creates a scaffold
-with a data source and a setting, but no dataset. Apply that plan before
-reading its children. The existing setting can be configured; query and
-field operations cannot populate an absent dataset. Full JSON-DSL
-compilation and adding datasets/links are unavailable on the public
-surface. State the gap; do not promise a full report or write XML manually
-to bypass it.
-
-The old DSL also describes variant data parameters, sorting insertion,
-conditional appearance insertion, output parameters, parameter renaming
-and reordering, individual filter/total/calculated-field removal,
-group templates and drilldown. These are format concepts, not additional
-MCP operations. The format references below preserve that knowledge,
-including parameter lists, filter groups, selection folders, table/chart
-structure, output templates and bindings. Their JSON is not an input to
-`unica.apply`.
+The [platform XML reference](../specs/1c-dcs-spec.md) describes namespaces,
+types, order and schema concepts. It is format documentation. The accepted
+arguments and supported operations come from the target's `can` contract.
+Do not supply a whole-schema JSON definition or write XML manually to
+bypass a missing operation.
 
 This is a fragment to merge into an existing valid `v8project.yaml`; it does
 not replace required `workPath`, `builder`, or `infobase.connection`. Preserve
@@ -208,7 +214,6 @@ Observe a returned Task to terminal state without repeating the mutation.
 ## Related references
 
 - `../specs/1c-dcs-spec.md`
-- `../specs/dcs-dsl-spec.md`
 - `../specs/1c-spreadsheet-spec.md`
 - `../specs/mxl-dsl-spec.md`
 - `../specs/1c-epf-spec.md`

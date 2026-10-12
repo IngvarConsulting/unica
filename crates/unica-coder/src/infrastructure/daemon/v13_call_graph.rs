@@ -1,9 +1,9 @@
 //! Ветви `Caller` и `Callee` у узла метода.
 //!
 //! Граф вызовов живёт не в дереве исходников, а в индексе анализатора, поэтому
-//! он и не приходит из читателя: служба спрашивает его отдельно и по запросу —
-//! так же, как словарь `can`. Сводка по умолчанию не считается: на холодном
-//! пространстве к двум запросам добавилось бы построение индекса.
+//! он и не приходит из читателя. Узел метода только называет обе ветви, не
+//! спрашивая анализатор: на холодном пространстве к чтению метода добавилось бы
+//! построение индекса. Граф читается одним входом — адресом ветви.
 
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
@@ -12,9 +12,6 @@ use crate::domain::code_intelligence::{
 };
 use crate::domain::invocation::DomainResult;
 use serde_json::{json, Map, Value};
-
-/// Название секции, которой вызывающий просит сводку графа.
-pub(super) const CALL_GRAPH_SECTION: &str = "callGraph";
 
 pub(super) enum CallGraphFetchError {
     Provider(String),
@@ -41,30 +38,6 @@ pub(super) struct CallGraphSummary {
 }
 
 impl CallGraphSummary {
-    /// Сводное состояние двух направлений.
-    ///
-    /// Хуже из двух: если одно направление ещё строится, счёт второго верен, но
-    /// узел целиком назвать готовым нельзя — читатель принял бы неполную
-    /// картину за полную.
-    fn state(&self) -> CallGraphState {
-        match (self.callers.state, self.callees.state) {
-            (CallGraphState::Unavailable, _) | (_, CallGraphState::Unavailable) => {
-                CallGraphState::Unavailable
-            }
-            (CallGraphState::Indexing, _) | (_, CallGraphState::Indexing) => {
-                CallGraphState::Indexing
-            }
-            _ => CallGraphState::Ready,
-        }
-    }
-
-    fn total(&self, direction: CallGraphDirection) -> Option<u64> {
-        match direction {
-            CallGraphDirection::Callers => self.callers.total,
-            CallGraphDirection::Callees => self.callees.total,
-        }
-    }
-
     /// Есть ли в запрошенном направлении сосед, которого анализатор называет
     /// файлом: только ему нужна раскладка, чтобы получить адрес. Направление
     /// спрашивается именно потому, что страница отвечает за своё: сосед другого
@@ -154,55 +127,72 @@ pub(super) fn complete_branch<D, E>(
     Ok((full, full_directory.or(initial.1)))
 }
 
-/// Дополнить узел метода сводкой графа: счёт в `props`, направления в ветвях.
+/// Назвать у узла метода ветви `Caller` и `Callee`, не спрашивая анализатор.
 ///
-/// Состояние называется всегда, а счёт — только когда он известен. Опустить
-/// состояние и оставить один счёт значило бы сделать «не посчитано»
-/// неотличимым от «вызовов нет».
-pub(super) fn extend_method_node(
-    data: &mut Map<String, Value>,
-    at: &QualifiedAddress,
-    summary: &CallGraphSummary,
-) {
-    let state = summary.state();
-    let props = data
-        .entry("props".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if let Some(props) = props.as_object_mut() {
-        props.insert(
-            "callGraph".to_string(),
-            serde_json::to_value(state).unwrap_or(Value::Null),
-        );
-        for (direction, key) in [
-            (CallGraphDirection::Callers, "callers"),
-            (CallGraphDirection::Callees, "callees"),
-        ] {
-            if let Some(total) = summary.total(direction) {
-                props.insert(key.to_string(), json!(total));
-            }
-        }
+/// Ветвь объявляется без `count`: счёт и состояние графа знает только ответ
+/// самой ветви. Узел лишь сообщает, по какому адресу граф читается, чтобы
+/// агенту не приходилось угадывать адрес. Метод HTTP-сервиса и метод модуля
+/// роли, которую граф ещё не покрывает, ветвей не получают: их адрес ветви
+/// всё равно ответил бы отказом.
+pub(super) fn declare_method_branches(data: &mut Map<String, Value>) {
+    if data.get("kind").and_then(Value::as_str) != Some(NodeKind::Method.as_str()) {
+        return;
     }
-    // Ветвь объявляется только со счётом: объявить её без счёта значило бы
-    // пообещать страницу, длины которой никто не знает.
+    let Some(at) = data.get("at").and_then(Value::as_str).map(str::to_owned) else {
+        return;
+    };
+    if !method_has_call_graph(&at) {
+        return;
+    }
     let mut branches = data
         .get("branches")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for (direction, kind) in [
-        (CallGraphDirection::Callers, NodeKind::Caller),
-        (CallGraphDirection::Callees, NodeKind::Callee),
-    ] {
-        if let Some(total) = summary.total(direction) {
-            branches.push(json!({
-                "at": format!("{at}.{}", kind.as_str()),
-                "count": total,
-            }));
+    for kind in [NodeKind::Caller, NodeKind::Callee] {
+        let branch = format!("{at}.{}", kind.as_str());
+        if !branches
+            .iter()
+            .any(|declared| declared.get("at").and_then(Value::as_str) == Some(&branch))
+        {
+            branches.push(json!({ "at": branch }));
         }
     }
-    if !branches.is_empty() {
-        data.insert("branches".to_string(), Value::Array(branches));
+    data.insert("branches".to_string(), Value::Array(branches));
+}
+
+/// Есть ли у узла метода граф вызовов: метод BSL-модуля роли, которую
+/// анализатор называет. Модуль формы и команды он называет файлом — такой
+/// метод узнаётся по модулю `Form` или `Command` под формой или командой
+/// объекта. Ответ не спрашивает анализатор и не строит раскладку: им узел
+/// называет ветви, а ветвь отказывает до заказа поставки.
+pub(super) fn call_graph_support(at: &QualifiedAddress) -> Result<(), String> {
+    match CallGraphIdentity::from_address(at, None) {
+        Ok(_) => Ok(()),
+        Err(CallGraphIdentityError::PathRequired) => {
+            let segments = at.segments();
+            let module = segments
+                .len()
+                .checked_sub(2)
+                .and_then(|index| segments.get(index))
+                .filter(|segment| segment.kind() == NodeKind::Module);
+            match module.and_then(AddressSegment::name) {
+                Some("Form" | "Command") if segments.len() > 3 => Ok(()),
+                _ => Err("call graph answers for a BSL module method only".to_string()),
+            }
+        }
+        Err(CallGraphIdentityError::UnsupportedRole(role)) => Err(format!(
+            "call graph does not cover module role `{role}` yet"
+        )),
+        Err(CallGraphIdentityError::NotAMethod) => {
+            Err("call graph answers for a method node only".to_string())
+        }
+        Err(CallGraphIdentityError::Malformed(detail)) => Err(detail),
     }
+}
+
+fn method_has_call_graph(at: &str) -> bool {
+    QualifiedAddress::parse(at).is_ok_and(|address| call_graph_support(&address).is_ok())
 }
 
 /// Страница одной ветви: элементы показывают наружу.
@@ -258,6 +248,14 @@ pub(super) fn branch_collection(
     }
     if let Some(revision) = result.revision {
         props.insert("graphRevision".to_string(), json!(revision));
+    }
+    // Счёт соседей — от анализатора, а не длина страницы: он верен и при
+    // урезанной странице и включает соседей без адреса. Печатается только
+    // у готового графа, где ноль — доказанное отсутствие вызовов.
+    if result.state == CallGraphState::Ready {
+        if let Some(total) = result.total {
+            props.insert("total".to_string(), json!(total));
+        }
     }
     node.insert("props".to_string(), Value::Object(props));
     node.insert("items".to_string(), Value::Array(items));
@@ -444,9 +442,10 @@ fn unavailable() -> CallGraphResult {
 #[cfg(test)]
 mod tests {
     use super::{
-        branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
-        full_branch_matches, module_file_for_placed, placed_for_module_file,
-        required_full_branch_limit, unready_branch_result, CallGraphSummary, CompleteBranchError,
+        branch_collection, branch_direction, branch_owner, complete_branch,
+        declare_method_branches, full_branch_matches, module_file_for_placed,
+        placed_for_module_file, required_full_branch_limit, unready_branch_result,
+        CallGraphSummary, CompleteBranchError,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::code_intelligence::{
@@ -624,6 +623,12 @@ mod tests {
             .unwrap()
             .get("items")
             .is_none());
+        assert!(
+            not_ready_answer.data.as_ref().unwrap()["props"]
+                .get("total")
+                .is_none(),
+            "a graph that is not ready prints no total"
+        );
         assert!(not_ready_answer.page.is_none());
         assert!(not_ready_answer.cursor.is_none());
         assert!(not_ready_answer.rev.is_none());
@@ -657,86 +662,78 @@ mod tests {
         assert!(indexing_answer.page.is_none());
     }
 
-    /// Сводка кладётся в `props`, направления — в ветви со счётом.
+    /// Узел метода называет обе ветви графа без счёта и без состояния: их
+    /// знает только ответ ветви, а узел к анализатору не обращается.
     #[test]
-    fn the_method_node_carries_the_count_and_names_the_state() {
-        let at = address("main:CommonModule.Общий.Method.Утилита");
-        let summary = CallGraphSummary {
-            reason: None,
-            callers: ready(
-                2,
-                vec![edge(
-                    "method/object/Catalog/Валюты/ПриЗаписи",
-                    CallEdgeProvenance::Resolved,
-                )],
-            ),
-            callees: ready(0, Vec::new()),
-        };
+    fn the_method_node_names_both_branches_without_a_count() {
         let mut data = Map::new();
-        data.insert("at".to_string(), json!(at.to_string()));
-        extend_method_node(&mut data, &at, &summary);
+        data.insert("kind".to_string(), json!("Method"));
+        data.insert(
+            "at".to_string(),
+            json!("main:CommonModule.Общий.Method.Утилита"),
+        );
+        data.insert(
+            "branches".to_string(),
+            json!([{"at": "main:CommonModule.Общий.Method.Утилита.Body", "count": 3}]),
+        );
+        declare_method_branches(&mut data);
+        // Повтор не объявляет ветвь дважды.
+        declare_method_branches(&mut data);
 
-        assert_eq!(data["props"]["callGraph"], "ready");
-        assert_eq!(data["props"]["callers"], 2);
-        // Ноль — доказанный ответ и печатается: «никто не зовёт» это факт.
-        assert_eq!(data["props"]["callees"], 0);
         assert_eq!(
             data["branches"],
             json!([
-                {"at": "main:CommonModule.Общий.Method.Утилита.Caller", "count": 2},
-                {"at": "main:CommonModule.Общий.Method.Утилита.Callee", "count": 0}
+                {"at": "main:CommonModule.Общий.Method.Утилита.Body", "count": 3},
+                {"at": "main:CommonModule.Общий.Method.Утилита.Caller"},
+                {"at": "main:CommonModule.Общий.Method.Утилита.Callee"}
             ])
         );
-    }
-
-    /// Индекс ещё строится: состояние названо, счёт не печатается, и ветвь не
-    /// объявляется — иначе она пообещала бы страницу неизвестной длины.
-    #[test]
-    fn an_indexing_graph_names_itself_instead_of_printing_a_zero() {
-        let at = address("main:CommonModule.Общий.Method.Утилита");
-        let indexing = CallGraphResult {
-            state: CallGraphState::Indexing,
-            total: None,
-            edges: Vec::new(),
-            revision: None,
-            stale: None,
-            complete: false,
-        };
-        let summary = CallGraphSummary {
-            reason: None,
-            callers: indexing.clone(),
-            callees: indexing,
-        };
-        let mut data = Map::new();
-        extend_method_node(&mut data, &at, &summary);
-
-        assert_eq!(data["props"]["callGraph"], "indexing");
-        assert!(data["props"].get("callers").is_none());
-        assert!(data.get("branches").is_none());
-    }
-
-    /// Одно готовое направление не делает узел готовым: читатель принял бы
-    /// неполную картину за полную.
-    #[test]
-    fn one_unready_direction_decides_the_whole_state() {
-        let at = address("main:CommonModule.Общий.Method.Утилита");
-        let summary = CallGraphSummary {
-            reason: None,
-            callers: ready(1, Vec::new()),
-            callees: CallGraphResult {
-                state: CallGraphState::Unavailable,
-                total: None,
-                edges: Vec::new(),
-                revision: None,
-                stale: None,
-                complete: false,
-            },
-        };
-        let mut data = Map::new();
-        extend_method_node(&mut data, &at, &summary);
-        assert_eq!(data["props"]["callGraph"], "unavailable");
-        // Счёт известного направления остаётся: он замерен, а не выдуман.
-        assert_eq!(data["props"]["callers"], 1);
+        assert!(data.get("props").is_none(), "узел не несёт сводку графа");
+        // Модуль формы анализатор называет файлом, но граф у метода есть.
+        let mut form = Map::new();
+        form.insert("kind".to_string(), json!("Method"));
+        form.insert(
+            "at".to_string(),
+            json!("main:Catalog.Валюты.Form.Форма.Module.Form.Method.ПриОткрытии"),
+        );
+        declare_method_branches(&mut form);
+        assert_eq!(form["branches"].as_array().unwrap().len(), 2);
+        // Модуль общей формы и набора записей граф пока не покрывает.
+        for unsupported in [
+            "main:CommonForm.Форма.Module.Form.Method.ПриОткрытии",
+            "main:InformationRegister.Курсы.Module.RecordSet.Method.ПередЗаписью",
+        ] {
+            let mut node = Map::new();
+            node.insert("kind".to_string(), json!("Method"));
+            node.insert("at".to_string(), json!(unsupported));
+            declare_method_branches(&mut node);
+            assert!(node.get("branches").is_none(), "{unsupported}");
+        }
+        // Команда объекта, как и форма, названа файлом, и граф у неё есть.
+        let mut command = Map::new();
+        command.insert("kind".to_string(), json!("Method"));
+        command.insert(
+            "at".to_string(),
+            json!("main:Catalog.Валюты.Command.Обновить.Module.Command.Method.Обработка"),
+        );
+        declare_method_branches(&mut command);
+        assert_eq!(command["branches"].as_array().unwrap().len(), 2);
+        // Метод HTTP-сервиса — не метод BSL: ветвей графа у него нет.
+        let mut http = Map::new();
+        http.insert("kind".to_string(), json!("Method"));
+        http.insert(
+            "at".to_string(),
+            json!("main:HTTPService.ПроверкаСвязи.URLTemplate.ПринятьДанные.Method.POST"),
+        );
+        declare_method_branches(&mut http);
+        assert!(http.get("branches").is_none());
+        for branch in data["branches"].as_array().unwrap().iter().skip(1) {
+            let at = address(branch["at"].as_str().unwrap());
+            assert!(
+                branch_direction(&at).is_some(),
+                "объявлен адрес ветви графа"
+            );
+        }
     }
 
     /// Элемент ветви показывает наружу и несёт происхождение ребра.
@@ -781,6 +778,8 @@ mod tests {
         assert_eq!(page["kind"], "Caller");
         assert_eq!(page["props"]["callGraph"], "ready");
         assert_eq!(page["props"]["graphRevision"], 1);
+        // Счёт — от анализатора: в нём и сосед без адреса.
+        assert_eq!(page["props"]["total"], 3);
         assert_eq!(
             page["items"],
             json!([

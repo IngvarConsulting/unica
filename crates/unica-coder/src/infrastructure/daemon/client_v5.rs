@@ -92,12 +92,28 @@ impl fmt::Display for V5TransportError {
 
 /// Outcome classes of one Task operation, closed the same way as the v3
 /// exchange so the interface keeps one refusal mapping.
+///
+/// `Transport` covers a connection that never formed, broke before a complete
+/// frame arrived, or crossed the operation cutoff: an expired cutoff wins over
+/// whatever the frame contained. `MalformedResponse` is a complete frame read
+/// within the cutoff that does not decode under the strict protocol, for
+/// example a `completed` status without its result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum V5TaskExchangeError {
     Protocol(V5DaemonErrorCode),
     Transport,
     SessionPoisoned,
     UnexpectedResponse,
+    MalformedResponse,
+}
+
+/// Why one exchange produced no response, before the caller folds it into its
+/// own consequence: a receipt exchange treats a malformed frame as a lost
+/// response, a Task exchange reports it as a protocol violation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum V5ExchangeFailure {
+    Transport(V5TransportError),
+    MalformedResponse,
 }
 
 impl From<V5TransportError> for V5TaskExchangeError {
@@ -236,6 +252,23 @@ impl From<String> for ConnectionFailure {
     }
 }
 
+/// The exit of a spawned daemon before readiness, with the reason it
+/// recorded for the persisted state it refused and that state's directory.
+fn exited_before_readiness(
+    state: &DaemonStateDirectory,
+    pid: u32,
+    status: impl std::fmt::Display,
+) -> String {
+    let exited = format!("spawned protocol-v5 daemon {pid} exited before readiness with {status}");
+    match state.read_startup_failure(pid) {
+        Some(reason) => format!(
+            "{exited}; daemon refused to start: {reason}; state directory: {}",
+            state.path().display()
+        ),
+        None => exited,
+    }
+}
+
 impl V5DaemonProcessOwner {
     /// Connect to the exact production-v5 daemon under `state_root`, spawning
     /// the same binary in `--daemon` mode when no live endpoint answers.
@@ -296,6 +329,9 @@ impl V5DaemonProcessOwner {
         let startup_budget = remaining(deadline, "spawn")?;
         let cleanup_reserve = (startup_budget / 3).min(STARTUP_CLEANUP_TIMEOUT);
         let readiness_deadline = deadline - cleanup_reserve;
+        // Under the spawn lock no other frontend starts a daemon here: a reason
+        // left by an earlier process must not be reported for this child.
+        let _ = state.remove_startup_failure();
         let command =
             super::daemon_process_command(&executable, state_root, &core_identity, idle_grace);
         let mut child = ManagedStartupChild::spawn_configured_before(command, deadline)
@@ -328,9 +364,7 @@ impl V5DaemonProcessOwner {
                 Err(error) => break Err(error),
             };
             if let Some(status) = child_status {
-                break Err(format!(
-                    "spawned protocol-v5 daemon {expected_pid} exited before readiness with {status}"
-                ));
+                break Err(exited_before_readiness(state, expected_pid, status));
             }
             let record = match state.read_v5_endpoint_record() {
                 Ok(record) => record,
@@ -348,9 +382,7 @@ impl V5DaemonProcessOwner {
                         Err(error) => break Err(error),
                     };
                     if let Some(status) = child_status {
-                        break Err(format!(
-                            "spawned protocol-v5 daemon {expected_pid} exited before readiness with {status}"
-                        ));
+                        break Err(exited_before_readiness(state, expected_pid, status));
                     }
                     if endpoint.observe(&record) {
                         match Self::connect_classified_before(record, readiness_deadline) {
@@ -637,6 +669,20 @@ impl V5DaemonProcessOwner {
         )
     }
 
+    /// Fence one exact receipt key within `deadline`: a submission of it the
+    /// daemon has not reserved yet will never run in this daemon process.
+    pub(crate) fn fence_invocation_receipt_before(
+        &mut self,
+        receipt_key: ReceiptKey,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::FenceInvocationReceipt { receipt_key },
+            "fence invocation receipt",
+            deadline,
+        )
+    }
+
     pub(crate) fn acknowledge_invocation_receipt_before(
         &mut self,
         receipt_key: ReceiptKey,
@@ -703,14 +749,30 @@ impl V5DaemonProcessOwner {
         stage: &'static str,
         deadline: Instant,
     ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
-        match self.exchange_typed_before(request, stage, deadline) {
+        self.task_exchange_observed(request, stage, deadline, Instant::now)
+    }
+
+    /// `after_decode` reads the clock once the complete frame has been
+    /// decoded; production passes `Instant::now`, tests move it past the
+    /// cutoff to expire the operation while the frame was being parsed.
+    fn task_exchange_observed(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Instant,
+        after_decode: impl FnOnce() -> Instant,
+    ) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError> {
+        match self.exchange_classified(request, stage, Some(deadline), after_decode) {
             Ok(V5ServerResponse::Task { snapshot }) => Ok(snapshot),
             Ok(V5ServerResponse::Error { code }) => Err(V5TaskExchangeError::Protocol(code)),
             Ok(_) => {
                 self.poison();
                 Err(V5TaskExchangeError::UnexpectedResponse)
             }
-            Err(error) => Err(error.into()),
+            Err(V5ExchangeFailure::MalformedResponse) => {
+                Err(V5TaskExchangeError::MalformedResponse)
+            }
+            Err(V5ExchangeFailure::Transport(error)) => Err(error.into()),
         }
     }
 
@@ -827,37 +889,61 @@ impl V5DaemonProcessOwner {
         stage: &'static str,
         deadline: Option<Instant>,
     ) -> Result<V5ServerResponse, V5TransportError> {
+        // A receipt exchange cannot tell a malformed answer from a lost one:
+        // either may hide a receipt the daemon already reserved.
+        self.exchange_classified(request, stage, deadline, Instant::now)
+            .map_err(|failure| match failure {
+                V5ExchangeFailure::Transport(error) => error,
+                V5ExchangeFailure::MalformedResponse => V5TransportError::ResponseLost(format!(
+                    "protocol-v5 {stage} response is not strict"
+                )),
+            })
+    }
+
+    fn exchange_classified(
+        &mut self,
+        request: V5ClientRequest,
+        stage: &'static str,
+        deadline: Option<Instant>,
+        after_decode: impl FnOnce() -> Instant,
+    ) -> Result<V5ServerResponse, V5ExchangeFailure> {
         if self.poisoned {
-            return Err(V5TransportError::SessionPoisoned);
+            return Err(V5ExchangeFailure::Transport(
+                V5TransportError::SessionPoisoned,
+            ));
         }
         if let Err(error) = self.write_typed_with_deadline(&request, deadline, stage) {
             self.poison();
-            return Err(error);
+            return Err(V5ExchangeFailure::Transport(error));
         }
         let frame = match self.read_with_deadline(deadline, stage) {
             Ok(frame) => frame,
             Err(error) => {
                 self.poison();
-                return Err(V5TransportError::ResponseLost(error));
+                return Err(V5ExchangeFailure::Transport(
+                    V5TransportError::ResponseLost(error),
+                ));
             }
         };
-        let response = match decode_v5_server_response(&frame) {
-            Ok(response) => response,
-            Err(error) => {
-                self.poison();
-                return Err(V5TransportError::ResponseLost(error));
-            }
-        };
+        let decoded = decode_v5_server_response(&frame);
         // The checkpoint after parse wins over a payload that crossed the
-        // cutoff while it was being read or decoded: it is not published and
-        // the session does not survive it.
+        // cutoff while it was being read or decoded, valid or not: it is not
+        // published and the session does not survive it.
         if let Some(deadline) = deadline {
-            if let Err(error) = remaining(deadline, stage) {
+            if let Err(error) = remaining_at(deadline, after_decode(), stage) {
                 self.poison();
-                return Err(V5TransportError::ResponseLost(error));
+                return Err(V5ExchangeFailure::Transport(
+                    V5TransportError::ResponseLost(error),
+                ));
             }
         }
-        Ok(response)
+        match decoded {
+            Ok(response) => Ok(response),
+            Err(_) => {
+                self.poison();
+                Err(V5ExchangeFailure::MalformedResponse)
+            }
+        }
     }
 
     #[cfg(feature = "receipt-ledger-test-support")]
@@ -1028,8 +1114,12 @@ fn response_timeout_for_request(request: &V5ClientRequest) -> Duration {
 }
 
 fn remaining(deadline: Instant, stage: &'static str) -> Result<Duration, String> {
+    remaining_at(deadline, Instant::now(), stage)
+}
+
+fn remaining_at(deadline: Instant, now: Instant, stage: &'static str) -> Result<Duration, String> {
     deadline
-        .checked_duration_since(Instant::now())
+        .checked_duration_since(now)
         .filter(|remaining| !remaining.is_zero())
         .ok_or_else(|| format!("protocol-v5 deadline expired during {stage}"))
 }
@@ -1318,6 +1408,39 @@ mod tests {
     }
 
     #[test]
+    fn exit_before_readiness_reports_only_the_childs_own_startup_failure() {
+        use crate::infrastructure::platform::testing::line_printing_command;
+        let reason = "preexisting handoff Task has no exact prior link reservation";
+        for own_record in [true, false] {
+            let (_root, state) = state_directory();
+            let fixture = line_printing_command(false, &[]);
+            let mut command = std::process::Command::new(fixture.program);
+            command.args(fixture.args);
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut child =
+                ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
+            let pid = child.id();
+            // A record of another process is what a stale file looks like.
+            let recorded_pid = if own_record { pid } else { pid.wrapping_add(1) };
+            state.publish_startup_failure(recorded_pid, reason).unwrap();
+            let message = match V5DaemonProcessOwner::await_startup_before(
+                &mut child,
+                &state,
+                &CoreIdentity::production_v5(),
+                deadline - Duration::from_secs(5),
+                deadline,
+            ) {
+                Ok(_) => panic!("an exiting child cannot become ready"),
+                Err(message) => message,
+            };
+            assert!(message.contains("exited before readiness"), "{message}");
+            let state_path = state.path().display().to_string();
+            assert_eq!(message.contains(reason), own_record, "{message}");
+            assert_eq!(message.contains(&state_path), own_record, "{message}");
+        }
+    }
+
+    #[test]
     fn failed_readiness_kills_the_child_within_the_original_budget() {
         use crate::infrastructure::platform::testing::{
             long_running_command, wait_for_process_exit,
@@ -1402,5 +1525,159 @@ mod tests {
             None,
             "detach failure left the observed ready endpoint published"
         );
+    }
+
+    use crate::infrastructure::daemon::protocol_v5::task_frame_fixtures::{
+        completed_task_response as completed_snapshot_value, frame as frame_of,
+        malformed_task_frames,
+    };
+
+    /// The daemon side answers the first request with `frame`, then reports
+    /// whether the client sent anything more before closing the connection.
+    fn answer_once(mut peer: TcpStream, frame: Vec<u8>) -> thread::JoinHandle<Vec<u8>> {
+        thread::spawn(move || {
+            peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut reader = BufReader::new(peer.try_clone().unwrap());
+            reader.read_until(b'\n', &mut request).unwrap();
+            peer.write_all(&frame).unwrap();
+            peer.flush().unwrap();
+            let mut trailing = Vec::new();
+            let _ = reader.read_to_end(&mut trailing);
+            trailing
+        })
+    }
+
+    #[test]
+    fn task_exchange_reports_complete_malformed_frame_as_protocol_and_closes_the_session() {
+        let task_id = TaskId::new();
+        // Positive control: the same exchange accepts a strict snapshot.
+        let (mut owner, peer) = connected_owner();
+        let daemon = answer_once(peer, frame_of(&completed_snapshot_value(task_id)));
+        let accepted = owner
+            .get_task_before(task_id, Instant::now() + Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(accepted.task_id(), task_id);
+        drop(owner);
+        assert!(daemon.join().unwrap().is_empty());
+
+        for (case, frame) in malformed_task_frames(task_id) {
+            for operation in ["get", "wait", "cancel"] {
+                let (mut owner, peer) = connected_owner();
+                let daemon = answer_once(peer, frame.clone());
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let first = match operation {
+                    "get" => owner.get_task_before(task_id, deadline),
+                    "wait" => owner.wait_task_before(task_id, 0, deadline),
+                    _ => owner.cancel_task_before(task_id, deadline),
+                };
+                let reuse = owner.get_task_before(task_id, deadline);
+
+                assert_eq!(
+                    first,
+                    Err(V5TaskExchangeError::MalformedResponse),
+                    "{case} via {operation}"
+                );
+                assert_eq!(
+                    reuse,
+                    Err(V5TaskExchangeError::SessionPoisoned),
+                    "{case} via {operation}: the session survived a malformed frame"
+                );
+                // The client keeps its handle, yet the daemon side already sees
+                // the connection closed and no second request on it.
+                let trailing = daemon.join().unwrap();
+                assert!(
+                    trailing.is_empty(),
+                    "{case} via {operation}: poisoned session wrote {trailing:?}"
+                );
+                drop(owner);
+            }
+        }
+    }
+
+    #[test]
+    fn task_exchange_reports_connection_lost_before_a_complete_frame_as_transport() {
+        let task_id = TaskId::new();
+        let complete = frame_of(&completed_snapshot_value(task_id));
+        for cut in [0, complete.len() / 2, complete.len() - 1] {
+            let (mut owner, mut peer) = connected_owner();
+            let prefix = complete[..cut].to_vec();
+            let daemon = thread::spawn(move || {
+                let mut request = Vec::new();
+                BufReader::new(&peer)
+                    .read_until(b'\n', &mut request)
+                    .unwrap();
+                peer.write_all(&prefix).unwrap();
+                peer.shutdown(Shutdown::Both).unwrap();
+            });
+
+            let first = owner.get_task_before(task_id, Instant::now() + Duration::from_secs(5));
+            daemon.join().unwrap();
+            let reuse = owner.get_task_before(task_id, Instant::now() + Duration::from_secs(5));
+
+            assert_eq!(
+                first,
+                Err(V5TaskExchangeError::Transport),
+                "connection closed after {cut} response bytes"
+            );
+            assert_eq!(reuse, Err(V5TaskExchangeError::SessionPoisoned));
+        }
+    }
+
+    /// The controlled clock reports the cutoff as passed once the complete
+    /// frame has been decoded: the read itself finished well inside it.
+    #[test]
+    fn task_exchange_post_parse_expiry_wins_for_valid_and_malformed_frames() {
+        let task_id = TaskId::new();
+        let valid = frame_of(&completed_snapshot_value(task_id));
+        let mut cases = vec![("valid", valid)];
+        cases.extend(malformed_task_frames(task_id));
+        for (case, frame) in cases {
+            for expired in [false, true] {
+                let (mut owner, peer) = connected_owner();
+                let daemon = answer_once(peer, frame.clone());
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut clock_reads = 0;
+                let first = owner.task_exchange_observed(
+                    V5ClientRequest::GetTask { task_id },
+                    "get task",
+                    deadline,
+                    || {
+                        clock_reads += 1;
+                        if expired {
+                            deadline + Duration::from_millis(1)
+                        } else {
+                            Instant::now()
+                        }
+                    },
+                );
+
+                assert_eq!(clock_reads, 1, "{case}: one checkpoint after parse");
+                if !expired && case == "valid" {
+                    assert_eq!(first.unwrap().task_id(), task_id);
+                    drop(owner);
+                    assert!(daemon.join().unwrap().is_empty());
+                    continue;
+                }
+                let expected = if expired {
+                    // An expired cutoff wins over the frame, valid or not.
+                    V5TaskExchangeError::Transport
+                } else {
+                    V5TaskExchangeError::MalformedResponse
+                };
+                assert_eq!(first, Err(expected), "{case}, expired={expired}");
+                assert_eq!(
+                    owner.get_task_before(task_id, deadline),
+                    Err(V5TaskExchangeError::SessionPoisoned),
+                    "{case}, expired={expired}: the session survived"
+                );
+                let trailing = daemon.join().unwrap();
+                assert!(
+                    trailing.is_empty(),
+                    "{case}, expired={expired}: the connection was reused"
+                );
+                drop(owner);
+            }
+        }
     }
 }

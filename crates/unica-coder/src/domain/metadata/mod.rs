@@ -7,6 +7,7 @@ mod observed_types;
 mod operations;
 mod properties;
 mod results;
+mod schema;
 mod types;
 
 pub(crate) use diagnostics::*;
@@ -18,4 +19,5 @@ pub(crate) use observed_types::*;
 pub(crate) use operations::*;
 pub(crate) use properties::*;
 pub(crate) use results::*;
+pub(crate) use schema::*;
 pub(crate) use types::*;
