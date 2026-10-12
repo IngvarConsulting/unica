@@ -2980,6 +2980,10 @@ impl V5ReceiptRuntime {
         confirmed_task_bound: TaskBoundReceipt,
         deadline: Instant,
     ) -> Result<TaskBoundReceipt, ReceiptLedgerError> {
+        // Waiting for the key lock spends the caller's deadline. The Task is
+        // already materialized, so its completion gets the daemon's own
+        // durable step budget from now instead of an elapsed deadline.
+        let deadline = deadline.max(Instant::now() + DURABLE_STEP_BUDGET);
         self.receipt_ledger.complete_bound_task_handoff(
             key,
             expected_version,
@@ -3018,6 +3022,10 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<crate::application::receipt_ledger::TaskTerminalBoundReceipt, ReceiptLedgerError>
     {
+        // Waiting for the key lock spends the caller's deadline. The Task is
+        // already materialized, so its completion gets the daemon's own
+        // durable step budget from now instead of an elapsed deadline.
+        let deadline = deadline.max(Instant::now() + DURABLE_STEP_BUDGET);
         self.receipt_ledger.complete_staged_task_handoff(
             key,
             expected_version,
