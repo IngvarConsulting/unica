@@ -469,6 +469,7 @@ enum FailureProbeReason {
     TaskCapacity,
     WorkspaceCapacity,
     WorkspaceRegistryFailed,
+    WorkspaceChanged,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -1286,6 +1287,7 @@ enum V5SafeFailureReason {
     ResumeUnsupported,
     WorkspaceCapacity,
     WorkspaceRegistryFailed,
+    WorkspaceChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3327,7 +3329,8 @@ fn assert_terminal(terminal: &TerminalObservation) {
             | V5SafeFailureReason::PersistenceFailed
             | V5SafeFailureReason::ResumeUnsupported
             | V5SafeFailureReason::WorkspaceCapacity
-            | V5SafeFailureReason::WorkspaceRegistryFailed => {}
+            | V5SafeFailureReason::WorkspaceRegistryFailed
+            | V5SafeFailureReason::WorkspaceChanged => {}
         },
         TerminalObservation::Cancelled { .. } => {
             assert_eq!(payload, br#"{"status":"cancelled"}"#);
@@ -5562,13 +5565,13 @@ struct FailureProjectionCase {
     introduced_in_v5: bool,
 }
 
-const FAILURE_PROJECTION_CASES: [FailureProjectionCase; 9] = [
+const FAILURE_PROJECTION_CASES: [FailureProjectionCase; 10] = [
     FailureProjectionCase {
         probe: FailureProbeReason::InvocationFailed,
         reason: V5SafeFailureReason::InvocationFailed,
         suffix: "invocation-failed",
         code: "invocation_failed",
-        message: "daemon invocation failed",
+        message: "daemon invocation stopped without a result. Repeat the call; if the problem persists, report this reason.",
         introduced_in_v5: false,
     },
     FailureProjectionCase {
@@ -5633,6 +5636,14 @@ const FAILURE_PROJECTION_CASES: [FailureProjectionCase; 9] = [
         suffix: "workspace-registry-failed",
         code: "workspace_registry_failed",
         message: "workspace registry is unavailable",
+        introduced_in_v5: true,
+    },
+    FailureProjectionCase {
+        probe: FailureProbeReason::WorkspaceChanged,
+        reason: V5SafeFailureReason::WorkspaceChanged,
+        suffix: "workspace-changed",
+        code: "workspace_changed",
+        message: "the workspace changed while the call ran, so its result was not published. Repeat the call.",
         introduced_in_v5: true,
     },
 ];

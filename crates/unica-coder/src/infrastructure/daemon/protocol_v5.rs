@@ -1379,6 +1379,72 @@ fn validate_uuid_v4(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Task response frames shared by the client and MCP tests: one strict
+/// `completed` frame and complete frames the strict decoder must refuse.
+#[cfg(test)]
+pub(crate) mod task_frame_fixtures {
+    use super::{V5DaemonTaskSnapshot, V5ServerResponse};
+    use crate::domain::invocation::{DomainResult, InvocationId, TaskId};
+
+    /// Carried by the strict frame's result; it must never reach a caller
+    /// unless the whole frame is accepted.
+    pub(crate) const RESULT_MARKER: &str = "task-frame-secret";
+
+    pub(crate) fn completed_task_response(task_id: TaskId) -> serde_json::Value {
+        let snapshot = V5DaemonTaskSnapshot::Completed {
+            task_id,
+            invocation_id: InvocationId::new(),
+            receipt_key_digest: "07".repeat(32).parse().unwrap(),
+            created_at_epoch_ms: 1_777_012_345_678,
+            updated_at_epoch_ms: 1_777_012_346_789,
+            ttl_ms: 3_600_000,
+            poll_interval_ms: 250,
+            version: 2,
+            cancel_requested: false,
+            terminal_epoch_ms: 1_777_012_346_789,
+            terminal_digest: "09".repeat(32).parse().unwrap(),
+            result: Box::new(DomainResult::success(format!(
+                "/private/{RESULT_MARKER} bearer-{RESULT_MARKER}"
+            ))),
+        };
+        serde_json::to_value(V5ServerResponse::Task { snapshot }).unwrap()
+    }
+
+    pub(crate) fn frame(value: &serde_json::Value) -> Vec<u8> {
+        let mut bytes = serde_json::to_vec(value).unwrap();
+        bytes.push(b'\n');
+        bytes
+    }
+
+    /// Complete frames that violate the status/result/failure matrix, break
+    /// the JSON or carry an unknown response kind.
+    pub(crate) fn malformed_task_frames(task_id: TaskId) -> Vec<(&'static str, Vec<u8>)> {
+        let mut completed_without_result = completed_task_response(task_id);
+        completed_without_result["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("result");
+        let mut failed_with_result = completed_task_response(task_id);
+        failed_with_result["snapshot"]["status"] = "failed".into();
+        failed_with_result["snapshot"]["reason"] = "invocation_failed".into();
+        let mut working_with_result = completed_task_response(task_id);
+        working_with_result["snapshot"]["status"] = "working".into();
+        let mut broken_json = frame(&completed_task_response(task_id));
+        broken_json.truncate(broken_json.len() / 2);
+        broken_json.push(b'\n');
+        vec![
+            ("completed without result", frame(&completed_without_result)),
+            ("failed with result", frame(&failed_with_result)),
+            ("working with result", frame(&working_with_result)),
+            ("broken json", broken_json),
+            (
+                "unknown kind",
+                frame(&serde_json::json!({"kind": "mystery", "snapshot": {}})),
+            ),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

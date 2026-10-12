@@ -3787,8 +3787,8 @@ impl V5ReceiptRuntime {
                         Ok(result) => ReceiptTerminalOutcome::Completed {
                             result: Box::new(result),
                         },
-                        Err(_) => ReceiptTerminalOutcome::Failed {
-                            reason: V5SafeFailureReason::InvocationFailed,
+                        Err(failure) => ReceiptTerminalOutcome::Failed {
+                            reason: V5SafeFailureReason::of_execution_failure(&failure),
                         },
                     }
                 };
@@ -4097,8 +4097,8 @@ impl V5ReceiptRuntime {
                 Ok(result) => ReceiptTerminalOutcome::Completed {
                     result: Box::new(result),
                 },
-                Err(_) => ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::InvocationFailed,
+                Err(failure) => ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::of_execution_failure(&failure),
                 },
             }
         }
@@ -4607,8 +4607,8 @@ impl V5ReceiptRuntime {
                     Ok(result) => ReceiptTerminalOutcome::Completed {
                         result: Box::new(result),
                     },
-                    Err(_) => ReceiptTerminalOutcome::Failed {
-                        reason: V5SafeFailureReason::InvocationFailed,
+                    Err(failure) => ReceiptTerminalOutcome::Failed {
+                        reason: V5SafeFailureReason::of_execution_failure(&failure),
                     },
                 }
             };
@@ -4666,8 +4666,8 @@ impl V5ReceiptRuntime {
                 Ok(result) => ReceiptTerminalOutcome::Completed {
                     result: Box::new(result),
                 },
-                Err(_) => ReceiptTerminalOutcome::Failed {
-                    reason: V5SafeFailureReason::InvocationFailed,
+                Err(failure) => ReceiptTerminalOutcome::Failed {
+                    reason: V5SafeFailureReason::of_execution_failure(&failure),
                 },
             }
         };
@@ -4719,8 +4719,8 @@ impl V5ReceiptRuntime {
                         Ok(result) => ReceiptTerminalOutcome::Completed {
                             result: Box::new(result),
                         },
-                        Err(_) => ReceiptTerminalOutcome::Failed {
-                            reason: V5SafeFailureReason::InvocationFailed,
+                        Err(failure) => ReceiptTerminalOutcome::Failed {
+                            reason: V5SafeFailureReason::of_execution_failure(&failure),
                         },
                     }
                 };

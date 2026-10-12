@@ -697,7 +697,7 @@ pub(crate) fn form_validate_data_paths(
     }
 }
 
-const FORM_BINDING_PATH_PROPERTIES: [(&str, &str); 8] = [
+pub(crate) const FORM_BINDING_PATH_PROPERTIES: [(&str, &str); 8] = [
     ("path", "DataPath"),
     ("titleDataPath", "TitleDataPath"),
     ("footerDataPath", "FooterDataPath"),
