@@ -498,6 +498,24 @@ mod tests {
         }
 
         #[test]
+        fn the_six_outcomes_are_spelled_as_published_on_the_wire() {
+            assert_eq!(
+                Outcome::ALL_WIRE_NAMES,
+                [
+                    "retry",
+                    "fixCall",
+                    "fixSource",
+                    "needsHuman",
+                    "goElsewhere",
+                    "deadEnd"
+                ],
+            );
+            let result =
+                DomainResult::canonical_rejection(None, RefusalCode::DeadlineExceeded, "проба");
+            assert_eq!(result.diagnostics[0]["outcome"], "retry");
+        }
+
+        #[test]
         fn a_pending_dependency_retries_without_claiming_engine_delivery() {
             let result = DomainResult::canonical_rejection_detailed(
                 None,
