@@ -6,9 +6,9 @@ const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
 use super::v13_call_graph::{
-    branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
-    fetch_summary, module_file_for_placed, placed_for_module_file, unready_branch_result,
-    CallGraphFetchError, CallGraphSummary, CompleteBranchError, CALL_GRAPH_SECTION,
+    branch_collection, branch_direction, branch_owner, call_graph_support, complete_branch,
+    declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
+    unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
 use super::v13_read_modes::{filter_diff_data, project_view_operation, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
@@ -23,7 +23,9 @@ use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSo
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::OperationRegistry;
+use crate::domain::apply::{
+    OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, UNWRITABLE_SOURCE_MESSAGE,
+};
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -36,7 +38,8 @@ use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::native_operations::apply::{
-    ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
+    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingErrorKind,
+    PlannedApplyEffects, StagedChangeKind, StagedFileState,
 };
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
@@ -248,40 +251,18 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        for (index, operation) in request.ops().iter().enumerate() {
-            let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
-                return with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].op")),
-                        RefusalCode::UnsupportedOperation,
-                        format!(
-                            "apply operation `{}` is not in the canonical registry",
-                            operation.name()
-                        ),
-                    ),
-                    &operation.at().to_string(),
-                );
-            };
-            let target_kind = operation
-                .at()
-                .segments()
-                .last()
-                .expect("a parsed logical address has a terminal segment")
-                .kind();
-            if !descriptor.applies_to_operation_target(operation.at()) {
-                return with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].at")),
-                        RefusalCode::BadValue,
-                        format!(
-                            "apply operation `{}` does not apply to {}",
-                            operation.name(),
-                            target_kind.as_str()
-                        ),
-                    ),
-                    &operation.at().to_string(),
-                );
-            }
+        let traits = SourceSetTraits::of_source(
+            binding.source_kind(),
+            binding.source_format(),
+            binding.source_profile(),
+        );
+        let template_format = |template: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_template_format(
+                &admission, &binding, template,
+            )
+        };
+        if let Err(refusal) = preflight_apply_operations(&request, traits, &template_format) {
+            return *refusal;
         }
         admission.bind_request(&request);
         let operations = request
@@ -308,11 +289,13 @@ impl CanonicalV13ReadService {
                 )
             }
             Err(error) => {
-                return error_result(
-                    error.path().map(str::to_string),
-                    apply_plan_error_code(error.kind()),
-                    error.to_string(),
-                )
+                let refusal = apply_plan_error_result(&error);
+                let node_exists = |at: &QualifiedAddress| {
+                    crate::infrastructure::native_operations::apply_families::staged_node_existence(
+                        &admission, &binding, at,
+                    )
+                };
+                return with_missing_target_parent(refusal, &request, &error, &node_exists);
             }
             Ok(planned) => planned,
         };
@@ -341,14 +324,9 @@ impl CanonicalV13ReadService {
         let prepared = match admission.prepare_with_effects(staged, effects) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return error_result(
+                return apply_staging_refusal(
                     Some("ops".to_string()),
-                    match error.kind() {
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
-                        _ => RefusalCode::ProviderUnavailable,
-                    },
+                    error.kind(),
                     error.to_string(),
                 )
             }
@@ -534,6 +512,12 @@ impl CanonicalV13ReadService {
                     "call graph branch does not accept a filter",
                 );
             }
+            // Ветвь метода, у которого графа нет (метод HTTP-сервиса, модуль
+            // непокрытой роли), отказывает по адресу, до чтения владельца и заказа поставки: ни скачивание,
+            // ни наличие движка не меняют этого ответа.
+            if let Err(message) = call_graph_support(&owner) {
+                return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
+            }
             let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
             let owner_result = service.view(match ViewRequest::new(&owner.to_string()) {
                 Ok(request) => request,
@@ -554,6 +538,32 @@ impl CanonicalV13ReadService {
                     service.view_preloaded_collection(request, &owner, expected_revision, None),
                     at,
                 );
+            }
+            // Ветвь — единственный вход в граф, и анализатор, которого нет на
+            // машине, она поставляет этим же вызовом, как `check` и `search`:
+            // пока поставка идёт, ответ просит повтор, провал поставки — её
+            // типизированный отказ, а движок, которого и после поставки нет,
+            // — общий отказ «нет поставляемого движка» (#549), а не граф
+            // «недоступен».
+            // Тестовый поставщик графа заменяет анализатор: заказывать его
+            // поставку тогда незачем, и тест не зависит от окружения.
+            #[cfg(not(test))]
+            let analyzer_engine = true;
+            #[cfg(test)]
+            let analyzer_engine =
+                crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+                    .with(|slot| slot.borrow().is_none());
+            let cwd = &invocation.workspace_context().cwd;
+            if analyzer_engine {
+                if let Err(refusal) = acquire_engine(
+                    invocation,
+                    cwd,
+                    BSL_ANALYZER_ENGINE,
+                    Some(at.to_string()),
+                    cancellation,
+                ) {
+                    return *refusal;
+                }
             }
             return match self.call_graph_summary(
                 invocation,
@@ -589,6 +599,21 @@ impl CanonicalV13ReadService {
                             )
                         }
                     };
+                    // Анализатор не ответил на ветвь: движок, не прошедший
+                    // проверку поставки или не запустившийся, — тот же отказ
+                    // «нет движка», что на всех маршрутах (#549).
+                    if analyzer_engine
+                        && summary.result(direction).state == CallGraphState::Unavailable
+                    {
+                        if let Some(refusal) = engine_failure_refusal(
+                            cwd,
+                            BSL_ANALYZER_ENGINE,
+                            Some(at.to_string()),
+                            cancellation,
+                        ) {
+                            return refusal;
+                        }
+                    }
                     if summary.result(direction).state != CallGraphState::Ready {
                         return enforce_view_result_limit(
                             unready_branch_result(&address, direction, &summary),
@@ -644,11 +669,7 @@ impl CanonicalV13ReadService {
             .get("filter")
             .and_then(Value::as_object)
             .and_then(|filter| filter.get("sections"));
-        let call_graph_requested = sections.and_then(Value::as_array).is_some_and(|sections| {
-            sections
-                .iter()
-                .any(|section| section.as_str() == Some(CALL_GRAPH_SECTION))
-        });
+        let can_context = SourceSetTraits::read(source.source_kind(), authority.platform_profile());
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
         let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
             let mut data = data.clone();
@@ -670,55 +691,19 @@ impl CanonicalV13ReadService {
                 }
             }
             self.resolve_borrowed_parent(invocation, &address, &mut data, cancellation);
+            // Узел метода называет ветви графа, не спрашивая анализатор: граф
+            // читается только адресом ветви.
+            if let Some(node) = data.as_object_mut() {
+                declare_method_branches(node);
+            }
             if let Some(sections) = sections {
-                project_view_operation(&data, sections, can_operation.as_deref())
+                project_view_operation(&data, sections, can_operation.as_deref(), can_context)
                     .map_err(|error| ViewError::new(error.code(), error.to_string()))
             } else {
                 Ok(data)
             }
         };
-        let mut result = if call_graph_requested {
-            service.view(request)
-        } else {
-            service.view_projected(request, &enrich_and_project)
-        };
-        if call_graph_requested && result.ok {
-            let is_method = result
-                .data
-                .as_ref()
-                .and_then(|data| data.get("kind"))
-                .and_then(Value::as_str)
-                == Some(NodeKind::Method.as_str());
-            if !is_method {
-                return error_result(
-                    Some(at.to_string()),
-                    RefusalCode::UnsupportedSection,
-                    "view section `callGraph` is computed for a method node only",
-                );
-            }
-            match self.call_graph_summary(invocation, &address, CALL_GRAPH_PAGE_LIMIT, cancellation)
-            {
-                Ok((summary, _directory)) => {
-                    if let Some(reason) = summary.reason.clone() {
-                        result.warnings.push(json!({"callGraph": reason}));
-                    }
-                    if let Some(data) = result.data.as_mut().and_then(Value::as_object_mut) {
-                        extend_method_node(data, &address, &summary);
-                    }
-                }
-                Err(refusal) => return *refusal,
-            }
-        }
-        if result.ok && call_graph_requested {
-            if let (Some(data), Some(sections)) = (result.data.as_ref(), sections) {
-                match project_view_operation(data, sections, can_operation.as_deref()) {
-                    Ok(projected) => result.data = Some(projected),
-                    Err(error) => {
-                        return error_result(Some(at.to_string()), error.code(), error.to_string())
-                    }
-                }
-            }
-        }
+        let result = service.view_projected(request, &enrich_and_project);
         enforce_view_result_limit(result, at)
     }
 
@@ -794,16 +779,6 @@ impl CanonicalV13ReadService {
                 format!("operational config is unreadable: {diagnostic}"),
             ))
         })?;
-        // Граф вызовов знает только анализатор BSL: если его нет, вопрос
-        // `callGraph` не ответить, и отказ называет движок (#549), а не
-        // прячет его отсутствие за состоянием `unavailable`.
-        acquire_engine(
-            invocation,
-            &workspace.cwd,
-            CALL_GRAPH_ENGINE,
-            Some(method_at.to_string()),
-            cancellation,
-        )?;
         let summary = fetch_summary(
             self.ports.as_ref(),
             workspace,
@@ -827,16 +802,6 @@ impl CanonicalV13ReadService {
             };
             Box::new(error_result(Some(method_at.to_string()), code, message))
         })?;
-        if summary.state() == crate::domain::code_intelligence::CallGraphState::Unavailable {
-            if let Some(refusal) = engine_failure_refusal(
-                &workspace.cwd,
-                CALL_GRAPH_ENGINE,
-                Some(method_at.to_string()),
-                cancellation,
-            ) {
-                return Err(Box::new(refusal));
-            }
-        }
         Ok((summary, directory))
     }
 
@@ -2462,11 +2427,8 @@ fn engine_failure_refusal(
     Some(missing.refusal_with_cause(at, &cause))
 }
 
-/// Движок диагностик BSL и поиска символов.
+/// Движок диагностик BSL, поиска символов и графа вызовов.
 const BSL_ANALYZER_ENGINE: &str = "bsl-analyzer";
-
-/// Движок, который отвечает на вопрос `callGraph`.
-const CALL_GRAPH_ENGINE: &str = BSL_ANALYZER_ENGINE;
 
 fn selected_role_engine(role: ProviderRole) -> Option<&'static str> {
     match role {
@@ -3160,16 +3122,46 @@ fn name_search_interruption(
     None
 }
 
-fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
-    match kind {
+fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
+    let at = error.path().map(str::to_string);
+    let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
         ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
         ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,
         ApplyPlanErrorKind::InvalidSource => RefusalCode::InvalidSource,
-        ApplyPlanErrorKind::Staging(_) => RefusalCode::ProviderUnavailable,
+        ApplyPlanErrorKind::Staging(kind) => {
+            return apply_staging_refusal(at, kind, error.to_string())
+        }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
-    }
+    };
+    error_result(at, code, error.to_string())
+}
+
+/// Отказ подготовки staged-исходников называет нарушенное предусловие.
+///
+/// Прежде любой вид сводился к `provider_unavailable` с исходом `needsHuman`,
+/// и агент ждал поставщика там, где надо было создать файл, убрать ссылку
+/// из исходников или подготовить новый предпросмотр (#955, #1332). Поставщик
+/// здесь — файловая система набора: ошибка её чтения остаётся
+/// `provider_unavailable`, но с уточнением `source_unreadable`.
+fn apply_staging_refusal(
+    at: Option<String>,
+    kind: ApplyStagingErrorKind,
+    message: String,
+) -> DomainResult {
+    let code = match kind {
+        ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
+        ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
+        ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
+        ApplyStagingErrorKind::ContainmentIdentity => RefusalCode::ContainmentDenied,
+        ApplyStagingErrorKind::AbsentChainOccupied => RefusalCode::InvalidSource,
+        ApplyStagingErrorKind::Invariant => RefusalCode::InvalidState,
+        ApplyStagingErrorKind::UnsupportedProvider => {
+            return error_result_detailed(at, RefusalDetail::SourceUnreadable, message)
+        }
+    };
+    error_result(at, code, message)
 }
 
 fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
@@ -3198,7 +3190,12 @@ fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> RefusalCode 
         ApplyPublicationErrorKind::Cancelled => RefusalCode::Cancelled,
         ApplyPublicationErrorKind::Deadline => RefusalCode::DeadlineExceeded,
         ApplyPublicationErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::ProviderUnavailable,
+        // Publication re-proves the containment the plan established. A
+        // failure means the sources changed physically after the plan (a
+        // swapped directory, a link or alias that appeared, an occupied
+        // chain); a new preview names the precise cause. The static causes
+        // themselves are refused at planning by `apply_staging_refusal`.
+        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::StaleRevision,
         ApplyPublicationErrorKind::ProviderPostvalidation => RefusalCode::PostconditionFailed,
         ApplyPublicationErrorKind::SourceSelectionChanged => RefusalCode::SourceSelectionChanged,
         ApplyPublicationErrorKind::RollbackIncomplete => RefusalCode::RollbackIncomplete,
@@ -3891,6 +3888,209 @@ fn unreadable_target_format_refusal(
     ))
 }
 
+/// Предварительная проверка `apply`: каждая операция есть в реестре, набор
+/// исходников её семейство пишет, а сама она исполнима на своём узле.
+///
+/// Сначала читается таблица снятых аргументов: вызов, который называет
+/// подузел аргументом, получает `bad_value` с адресом подузла в `next` — а не
+/// вердикт «не тот узел» с тупиком к `can` того же узла. Затем проверяется
+/// применимость к месту; `next` неприменимой операции ведёт к `can`
+/// ближайшего узла, где она исполнима. Если такого узла нет, `next` ведёт к
+/// `can` того же узла, когда тот читается, иначе к корню набора, а текст
+/// называет форму нужного адреса. `template_format` читает формат макета-
+/// предка: `next` не уводит на макет другого формата.
+pub(super) fn preflight_apply_operations(
+    request: &crate::domain::apply::ApplyRequest,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+) -> Result<(), Box<DomainResult>> {
+    let registry = OperationRegistry::closed();
+    for (index, operation) in request.ops().iter().enumerate() {
+        let Some(descriptor) = registry.lookup(operation.name()) else {
+            return Err(Box::new(with_node_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].op")),
+                    RefusalCode::UnsupportedOperation,
+                    format!(
+                        "apply operation `{}` is not in the canonical registry",
+                        operation.name()
+                    ),
+                ),
+                &operation.at().to_string(),
+            )));
+        };
+        // Набор, который семейство не пишет, — свойство набора, а не «не тот
+        // узел»: тот же отказ даёт разбор планировщиком.
+        if !source.writes(descriptor.family()) {
+            return Err(Box::new(DomainResult::canonical_rejection_detailed(
+                Some(format!("ops[{index}].op")),
+                RefusalDetail::WrongSourceKind,
+                UNWRITABLE_SOURCE_MESSAGE,
+            )));
+        }
+        let target_kind = operation
+            .at()
+            .segments()
+            .last()
+            .expect("a parsed logical address has a terminal segment")
+            .kind();
+        let Some(site) = OperationSite::new(operation.at(), source) else {
+            return Err(Box::new(error_result(
+                Some(format!("ops[{index}].at")),
+                RefusalCode::NotFound,
+                format!(
+                    "logical address `{}` is not available in the platform profile",
+                    operation.at()
+                ),
+            )));
+        };
+        if let Some(redirect) =
+            registry.retired_argument_redirect(operation.name(), &site, operation.args())
+        {
+            return Err(Box::new(with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].args.{}", redirect.location)),
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; call it at `{}`",
+                        operation.name(),
+                        redirect.location,
+                        redirect.at
+                    ),
+                ),
+                &redirect.at.to_string(),
+                descriptor,
+            )));
+        }
+        if descriptor.applies_at(&site) {
+            continue;
+        }
+        let refused = format!(
+            "apply operation `{}` does not apply to {} `{}`",
+            operation.name(),
+            target_kind.as_str(),
+            operation.at()
+        );
+        let refusal = match descriptor.nearest_applicable_ancestor(&site, template_format) {
+            Some(target) => with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    format!("{refused}; it applies at `{target}`"),
+                ),
+                &target.to_string(),
+                descriptor,
+            ),
+            None => {
+                let message = format!("{refused}; it addresses {}", descriptor.address_shape());
+                let refusal = error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    message,
+                );
+                // Узел, который читается, показывает свой словарь; адрес,
+                // которого нет ни в одном дереве, ведёт к корню набора.
+                let readable = crate::infrastructure::logical_tree::route_logical_address(
+                    operation.at(),
+                    source.profile(),
+                )
+                .is_ok();
+                if readable {
+                    with_node_dictionary(refusal, &operation.at().to_string())
+                } else {
+                    with_node_dictionary(
+                        refusal,
+                        &format!("{}:Configuration", operation.at().source_set()),
+                    )
+                }
+            }
+        };
+        return Err(Box::new(refusal));
+    }
+    Ok(())
+}
+
+/// `next` к словарю узла, где операция исполнима. Подробный контракт
+/// операции запрашивается только там, где он вычисляется: иначе `view`
+/// ответил бы на сам переход отказом.
+fn with_operation_dictionary(
+    mut result: DomainResult,
+    at: &str,
+    descriptor: crate::domain::apply::OperationDescriptor,
+) -> DomainResult {
+    let mut filter = json!({"sections": ["can"]});
+    if descriptor.argument_contract().is_some() {
+        filter["can"] = json!({"op": descriptor.name()});
+    }
+    result.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": at, "filter": filter},
+        "reason": format!("где исполнима операция `{}`", descriptor.name()),
+    }));
+    result
+}
+
+/// Отказ планировщика «узел не найден» по адресу операции: узел создаёт
+/// операция родителя, поэтому `next` ведёт к словарю родителя, а не к адресу,
+/// который `view` тоже не найдёт. `node_exists` отличает отсутствующий узел
+/// от существующего, у которого нет присоединённого ресурса (`Rights.xml`
+/// роли, `Form.xml` формы): во втором случае создавать нечего, и `next` не
+/// добавляется.
+pub(super) fn with_missing_target_parent(
+    mut result: DomainResult,
+    request: &crate::domain::apply::ApplyRequest,
+    error: &crate::infrastructure::native_operations::apply::ApplyPlanError,
+    node_exists: &dyn Fn(&QualifiedAddress) -> Option<bool>,
+) -> DomainResult {
+    if error.kind() != ApplyPlanErrorKind::NotFound {
+        return result;
+    }
+    let Some((index, tail)) = error.path().and_then(|path| {
+        let rest = path.strip_prefix("ops[")?;
+        let (index, tail) = rest.split_once(']')?;
+        Some((index.parse::<usize>().ok()?, tail))
+    }) else {
+        return result;
+    };
+    let Some(operation) = request.ops().get(index) else {
+        return result;
+    };
+    // Отказ касается самого узла операции, когда он назван путём `at` или
+    // когда операция не несёт ничего, кроме адреса (`attribute.remove`):
+    // тогда «не найден» — это её узел, а не что-то из аргументов.
+    let address_only = OperationRegistry::closed()
+        .lookup(operation.name())
+        .is_some_and(|descriptor| descriptor.skeleton_key() == "at");
+    if !(matches!(tail, ".at" | ".args.at") || address_only) {
+        return result;
+    }
+    if node_exists(operation.at()) != Some(false) {
+        return result;
+    }
+    let segments = operation.at().segments();
+    let parent = if segments.len() > 1 {
+        QualifiedAddress {
+            source_set: operation.at().source_set().to_string(),
+            segments: segments[..segments.len() - 1].to_vec(),
+        }
+    } else {
+        match QualifiedAddress::parse(&format!("{}:Configuration", operation.at().source_set())) {
+            Ok(root)
+                if segments.first().map(|first| first.kind()) != Some(NodeKind::Configuration) =>
+            {
+                root
+            }
+            _ => return result,
+        }
+    };
+    result.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": parent.to_string(), "filter": {"sections": ["can"]}},
+        "reason": "узел создаёт операция родителя",
+    }));
+    result
+}
+
 /// Отказ по операции называет маршрут к словарю узла, а не перечисляет
 /// операции в тексте: перечень уже публикуется секцией `can`, и агенту нужен
 /// путь к нему, а не копия внутри сообщения. Без этого пробелы словаря
@@ -4118,6 +4318,95 @@ mod tests {
             assert_eq!(result.diagnostics[0]["code"], code);
             assert_eq!(result.diagnostics[0]["outcome"], outcome);
         }
+    }
+
+    /// #955, #1332: a staging failure names the violated precondition and
+    /// what to do next. Only a source the filesystem cannot read stays
+    /// `provider_unavailable`, refined to `source_unreadable`.
+    #[test]
+    fn staging_refusals_keep_their_kind_instead_of_an_absent_provider() {
+        use crate::infrastructure::native_operations::apply::{
+            ApplyPlanError, ApplyStagingError, ApplyStagingErrorKind,
+        };
+        for (kind, code, outcome, detail) in [
+            (
+                ApplyStagingErrorKind::Cancelled,
+                "cancelled",
+                "deadEnd",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Deadline,
+                "deadline_exceeded",
+                "retry",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ConcurrentRevision,
+                "stale_revision",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "containment_denied",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::AbsentChainOccupied,
+                "invalid_source",
+                "fixSource",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Invariant,
+                "invalid_state",
+                "needsHuman",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::UnsupportedProvider,
+                "provider_unavailable",
+                "fixSource",
+                Some("source_unreadable"),
+            ),
+        ] {
+            let error = ApplyPlanError::staging(
+                ApplyStagingError::new(kind, "staged replace preimage changed: Documents/A.xml"),
+                "ops[1].args.values.name",
+            );
+            let planned = super::apply_plan_error_result(&error);
+            let prepared =
+                super::apply_staging_refusal(Some("ops".to_string()), kind, "prepared".to_string());
+            for result in [&planned, &prepared] {
+                assert!(!result.ok, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["code"], code, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["outcome"], outcome, "{kind:?}");
+                assert_eq!(
+                    result.diagnostics[0]
+                        .get("detailCode")
+                        .and_then(|v| v.as_str()),
+                    detail,
+                    "{kind:?}"
+                );
+            }
+            assert_eq!(planned.at.as_deref(), Some("ops[1].args.values.name"));
+            let message = planned.diagnostics[0]["message"].as_str().unwrap();
+            assert!(
+                message.contains("staged replace preimage changed: Documents/A.xml"),
+                "{kind:?}: the cause was lost: {message}"
+            );
+            assert!(!message.contains("evidence is unavailable"), "{message}");
+        }
+        // Publication re-proves the plan's containment; a failure there is a
+        // physical change after the plan, answered like a stale plan.
+        assert_eq!(
+            super::apply_publication_error_code(
+                super::ApplyPublicationErrorKind::ContainmentIdentity
+            ),
+            crate::domain::refusal::RefusalCode::StaleRevision
+        );
     }
 
     fn provider_search_test_binding(role: ProviderRole, limit: usize) -> SearchCursorBinding {
@@ -6491,8 +6780,15 @@ mod tests {
             serde_json::to_vec(&result).unwrap().len()
                 <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
-        result.data =
-            Some(super::project_view_operation(&data, &json!(["items", "can"]), None).unwrap());
+        result.data = Some(
+            super::project_view_operation(
+                &data,
+                &json!(["items", "can"]),
+                None,
+                super::super::v13_read_modes::configuration_context(),
+            )
+            .unwrap(),
+        );
         assert!(
             serde_json::to_vec(&result).unwrap().len()
                 > crate::application::v13::view::PREFERRED_PAGE_BYTES

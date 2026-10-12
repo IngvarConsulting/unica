@@ -66,6 +66,9 @@
 		<ChildObjects>
 			<Language>Русский</Language>
 			<Role>ПР_ОсновнаяРоль</Role>
+			<CommonModule>ПР_Модуль</CommonModule>
+			<EventSubscription>ПР_ПередЗаписьюНастроек</EventSubscription>
+			<Catalog>ПР_НастройкиВалют</Catalog>
 		</ChildObjects>
 	</Configuration>
 </MetaDataObject>

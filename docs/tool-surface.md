@@ -159,7 +159,7 @@ Search one corpus for a query: BSL module text, or the names and synonyms of met
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
+| `corpus` | string | нет | Where to search: `text` matches BSL module content and answers scope, line, column, snippet and the proven module address at; a hit without one carries unaddressed and fileId instead; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`. |
 | `cursor` | string | нет | Continue a previous search page. Bound to the question, source sets and page limit. Text search reads live sources; indexed providers report freshness and the build generation when known. |
 | `kind` | string | нет | `names` corpus only: narrow the search to one logical node kind. |
 | `limit` | integer | нет | Maximum matches per page, from 1 to 50. Provider roles may stop after their first 200 retrieved matches and mark the search incomplete. |

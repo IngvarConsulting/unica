@@ -43,7 +43,7 @@ def stage_fault_producer(plugin: Path) -> dict:
 def place_checksum(plugin: Path, case: str, original: bytes) -> None:
     """The checksum case publishes a manifest whose digest the producer does not match.
 
-    The scenario (S391) relies on the analysis adapter verifying the digest
+    The scenario (S397) relies on the analysis adapter verifying the digest
     before it starts the producer: `check` itself does not hash the engine
     before the run, it names the `checksum` stage after the adapter refused.
     """
@@ -97,5 +97,31 @@ def fault_driver(plugin: Path, records: list):
                 return response
 
             server.call = observed_call
+        return None
+    return prepare
+
+
+def stage_missing_analyzer(plugin: Path) -> dict:
+    """A package that names the analyzer but has neither its binary nor a
+    runtime manifest: ordering it fails as a configuration delivery failure."""
+    lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())
+    target = host_target(lock, platform.system(), platform.machine())
+    relative = f"bin/{target}/" + ("bsl-analyzer.exe" if os.name == "nt" else "bsl-analyzer")
+    entry = {"name": "bsl-analyzer", "version": FIXTURE_VERSION,
+             "binaryPath": relative, "deliveredPath": relative, "sha256": "0" * 64}
+    manifest = {"schemaVersion": 2, "targetTriple": lock["targets"][target]["targetTriple"],
+                "tools": [entry], "testFixture": {
+                    "kind": "missing-analyzer-delivery-failure", "publishedArtifact": False}}
+    (plugin / "third-party").mkdir(parents=True)
+    (plugin / "third-party/manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    if (plugin / relative).exists() or (plugin / "runtime-manifest.json").exists():
+        raise ValueError("the delivery-failure package must not carry the analyzer or a manifest")
+    return manifest
+
+
+def delivery_failure_driver(plugin: Path):
+    def prepare(server, scenario):
+        if scenario.get("driver") != "analyzer-delivery-failure":
+            raise ValueError("delivery-failure run requires its closed driver")
         return None
     return prepare

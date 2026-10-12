@@ -813,7 +813,7 @@ impl ApplyAdmission {
         field(
             &mut hash,
             &stable_path_identity_bytes(&self.actor_identity.workspace_root).map_err(|error| {
-                ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+                ApplyStagingError::new(ApplyStagingErrorKind::UnsupportedProvider, error)
             })?,
         );
         field(&mut hash, self.actor_identity.provider_profile.as_bytes());
@@ -838,7 +838,7 @@ impl ApplyAdmission {
             hash.update((reads.len() as u64).to_be_bytes());
             for (path, bytes) in reads.iter() {
                 let path = stable_path_identity_bytes(path).map_err(|error| {
-                    ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
+                    ApplyStagingError::new(ApplyStagingErrorKind::UnsupportedProvider, error)
                 })?;
                 field(&mut hash, &path);
                 hash.update((bytes.len() as u64).to_be_bytes());

@@ -47,6 +47,12 @@ pub(crate) enum ObservedMetadataTypeVariant {
     CharacteristicTypes {
         metadata_path: MetadataAddress,
     },
+    /// A generated type named by its UUID (`v8:TypeId`). Designer writes an
+    /// extension's reference to a type of the extended configuration this
+    /// way; the identifier is kept verbatim and is outside the writer algebra.
+    TypeId {
+        type_id: String,
+    },
     Uuid,
 }
 
@@ -68,6 +74,7 @@ impl ObservedMetadataType {
             matches!(
                 variant,
                 ObservedMetadataTypeVariant::CharacteristicTypes { .. }
+                    | ObservedMetadataTypeVariant::TypeId { .. }
             )
         }) {
             // Read-only observation: the platform type is understood and
@@ -98,7 +105,8 @@ impl ObservedMetadataType {
             .iter()
             .cloned()
             .map(observed_variant_into_writer)
-            .collect::<Vec<_>>();
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| observed_type_error("observed platform type has no writer form"))?;
         MetadataType::new(writable_variants).map_err(|diagnostic| {
             observed_type_error(format!(
                 "observed platform type violates the format profile: {}",
@@ -182,13 +190,16 @@ impl TryFrom<ObservedMetadataType> for MetadataType {
             .variants
             .into_iter()
             .map(observed_variant_into_writer)
-            .collect::<Vec<_>>();
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| observed_type_error("observed platform type has no writer form"))?;
         MetadataType::new(variants)
     }
 }
 
-fn observed_variant_into_writer(variant: ObservedMetadataTypeVariant) -> MetadataTypeVariant {
-    match variant {
+fn observed_variant_into_writer(
+    variant: ObservedMetadataTypeVariant,
+) -> Option<MetadataTypeVariant> {
+    Some(match variant {
         ObservedMetadataTypeVariant::String {
             length,
             allowed_length,
@@ -226,8 +237,10 @@ fn observed_variant_into_writer(variant: ObservedMetadataTypeVariant) -> Metadat
         ObservedMetadataTypeVariant::CharacteristicTypes { metadata_path } => {
             MetadataTypeVariant::Reference { metadata_path }
         }
+        // A generated type known only by its UUID has no name to write.
+        ObservedMetadataTypeVariant::TypeId { .. } => return None,
         ObservedMetadataTypeVariant::Uuid => MetadataTypeVariant::Uuid,
-    }
+    })
 }
 
 #[cfg(test)]

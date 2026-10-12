@@ -9,6 +9,8 @@ pub(crate) mod state_collection;
 pub(crate) mod terminal_codec_v5;
 mod v13_artifact_build;
 mod v13_call_graph;
+#[cfg(test)]
+mod v13_can_honesty_tests;
 mod v13_client_run;
 mod v13_documentation;
 mod v13_extensions;

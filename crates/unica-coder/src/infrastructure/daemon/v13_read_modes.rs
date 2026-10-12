@@ -1,6 +1,7 @@
-use super::v13_call_graph::CALL_GRAPH_SECTION;
 use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::{OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+use crate::domain::apply::{
+    OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, IMPLEMENTED_APPLY_OPERATIONS,
+};
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use serde_json::{json, Map, Value};
@@ -82,36 +83,52 @@ impl SearchMatcher {
 }
 
 const VIEW_IDENTITY_SLOTS: &[&str] = &["at", "kind", "title"];
-const VIEW_SECTION_SLOTS: &[&str] = &[
-    "props",
-    "branches",
-    "can",
-    "limits",
-    "items",
-    // `callGraph` — не слот узла, а выключатель вычисления: слотов у узла семь,
-    // и восьмого не будет. Сводка графа ложится в `props`, направления — в
-    // `branches`, поэтому запрос этой секции удерживает оба слота.
-    "callGraph",
-];
+const VIEW_SECTION_SLOTS: &[&str] = &["props", "branches", "can", "limits", "items"];
+
+/// Where `can` of a read node is computed: the traits of its source set —
+/// the one owner of whether the source is written at all.
+pub(super) type CanContext = SourceSetTraits;
+
+#[cfg(test)]
+pub(super) fn configuration_context() -> CanContext {
+    SourceSetTraits::read(
+        crate::domain::project_sources::SourceSetKind::Configuration,
+        crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+    )
+}
+
+/// The node's address and template format, read from the projected node
+/// data. `None` means the dictionary is not computed for this node: the kind
+/// or the address is unknown to the grammar.
+fn node_site(
+    data: &Map<String, Value>,
+    context: CanContext,
+) -> Option<(QualifiedAddress, Option<TemplateFormat>)> {
+    NodeKind::parse(data.get("kind")?.as_str()?).ok()?;
+    let at = QualifiedAddress::parse(data.get("at")?.as_str()?).ok()?;
+    OperationSite::new(&at, context)?;
+    let format = data
+        .get("props")
+        .and_then(|props| props.get("format"))
+        .and_then(Value::as_str)
+        .map(TemplateFormat::parse);
+    Some((at, format))
+}
 
 /// The operation dictionary of a node, computed from the one closed registry
-/// that also validates `apply` calls: registry × applicability to the node
-/// kind. `None` means the dictionary is not computed for this kind yet — the
-/// caller answers `unsupported_section`, never a valid-looking empty node.
-/// The first phase covers the Configuration root and the metadata kinds.
-fn computed_can_entries(kind: &str, data: &Map<String, Value>) -> Option<Vec<Value>> {
-    // Every parseable node kind carries its dictionary: the applicability
-    // model covers all kinds, so the only uncomputable case is a kind the
-    // address grammar does not know.
-    let node_kind = NodeKind::parse(kind).ok()?;
+/// that also validates `apply` calls: registry × applicability to the node's
+/// site (source-set kind, route class and address shape) and, for a
+/// template, the format filter. `None` means the dictionary is not computed
+/// for this node — the caller answers `unsupported_section`, never a
+/// valid-looking empty node.
+fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Option<Vec<Value>> {
+    let (at, format) = node_site(data, context)?;
+    let site = OperationSite::new(&at, context)?;
     Some(
         OperationRegistry::closed()
             .descriptors()
             .iter()
-            .filter(|descriptor| {
-                descriptor.applies_to(node_kind)
-                    && template_family_applies(descriptor.family(), node_kind, data)
-            })
+            .filter(|descriptor| descriptor.applies_to_node(&site, format))
             .map(|descriptor| {
                 json!({
                     "op": descriptor.name(),
@@ -123,35 +140,10 @@ fn computed_can_entries(kind: &str, data: &Map<String, Value>) -> Option<Vec<Val
     )
 }
 
-fn template_family_applies(
-    family: crate::domain::apply::OperationFamily,
-    kind: NodeKind,
-    data: &Map<String, Value>,
-) -> bool {
-    use crate::domain::apply::OperationFamily;
-    if kind != NodeKind::Template {
-        return true;
-    }
-    match family {
-        OperationFamily::Dcs => {
-            data.get("props")
-                .and_then(|props| props.get("format"))
-                .and_then(Value::as_str)
-                == Some("DataCompositionSchema")
-        }
-        OperationFamily::Mxl => {
-            data.get("props")
-                .and_then(|props| props.get("format"))
-                .and_then(Value::as_str)
-                == Some("SpreadsheetDocument")
-        }
-        _ => true,
-    }
-}
-
 pub(super) fn project_view_sections(
     data: &Value,
     sections: &Value,
+    context: Option<CanContext>,
 ) -> Result<Value, ReadModeError> {
     let data = data
         .as_object()
@@ -174,14 +166,6 @@ pub(super) fn project_view_sections(
                 "unsupported view section `{section}`"
             )));
         }
-        if section == CALL_GRAPH_SECTION {
-            for implied in ["props", "branches"] {
-                if !selected.contains(&implied) {
-                    selected.push(implied);
-                }
-            }
-            continue;
-        }
         if !selected.contains(&section) {
             selected.push(section);
         }
@@ -195,7 +179,7 @@ pub(super) fn project_view_sections(
     }
     for slot in selected {
         match slot {
-            "can" => match computed_can_entries(kind, data) {
+            "can" => match context.and_then(|context| computed_can_entries(data, context)) {
                 Some(entries) => {
                     projected.insert(slot.to_string(), Value::Array(entries));
                 }
@@ -224,8 +208,9 @@ pub(super) fn project_view_operation(
     data: &Value,
     sections: &Value,
     operation: Option<&str>,
+    context: CanContext,
 ) -> Result<Value, ReadModeError> {
-    let mut projected = project_view_sections(data, sections)?;
+    let mut projected = project_view_sections(data, sections, Some(context))?;
     let Some(operation) = operation else {
         return Ok(projected);
     };
@@ -236,22 +221,18 @@ pub(super) fn project_view_operation(
                 "unknown operation `{operation}`; inspect the node can dictionary"
             ))
         })?;
-    let kind = projected["kind"]
-        .as_str()
-        .and_then(|kind| NodeKind::parse(kind).ok())
-        .ok_or_else(|| {
-            ReadModeError::unsupported_section("operation details require a known node kind")
-        })?;
-    if !descriptor.applies_to(kind)
-        || !template_family_applies(
-            descriptor.family(),
-            kind,
-            data.as_object().expect("view data is object"),
-        )
-    {
+    let data = data.as_object().expect("view data is object");
+    let (at, format) = node_site(data, context).ok_or_else(|| {
+        ReadModeError::unsupported_section("operation details require a known node kind")
+    })?;
+    let site = OperationSite::new(&at, context).expect("node_site proved the operation site");
+    if !descriptor.applies_to_node(&site, format) {
+        let kind = at
+            .segments()
+            .last()
+            .map_or("", |segment| segment.kind().as_str());
         return Err(ReadModeError::bad_value(format!(
-            "operation `{operation}` does not apply to {}",
-            kind.as_str()
+            "operation `{operation}` does not apply to {kind}"
         )));
     }
     let implemented = IMPLEMENTED_APPLY_OPERATIONS.contains(&operation);
@@ -276,7 +257,9 @@ mod call_graph_section_tests {
         use super::project_view_operation;
         use crate::domain::refusal::RefusalCode;
         let data = json!({"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data","kind":"DataSet","title":"F05Data"});
-        let brief = project_view_operation(&data, &json!(["can"]), None).unwrap();
+        let brief =
+            project_view_operation(&data, &json!(["can"]), None, super::configuration_context())
+                .unwrap();
         let query = brief["can"]
             .as_array()
             .unwrap()
@@ -287,7 +270,13 @@ mod call_graph_section_tests {
             query,
             &json!({"op":"query.set","args":"values","implemented":true})
         );
-        let detailed = project_view_operation(&data, &json!(["can"]), Some("query.set")).unwrap();
+        let detailed = project_view_operation(
+            &data,
+            &json!(["can"]),
+            Some("query.set"),
+            super::configuration_context(),
+        )
+        .unwrap();
         assert_eq!(detailed["can"].as_array().unwrap().len(), 1);
         assert_eq!(
             detailed["can"][0]["contract"]["argsSchema"]["properties"]["values"]["properties"]
@@ -297,9 +286,14 @@ mod call_graph_section_tests {
         assert!(serde_json::to_vec(&detailed).unwrap().len() < 64 * 1024);
         for op in ["dcs.set", "query.unknown", "enumValue.add"] {
             assert_eq!(
-                project_view_operation(&data, &json!(["can"]), Some(op))
-                    .unwrap_err()
-                    .code(),
+                project_view_operation(
+                    &data,
+                    &json!(["can"]),
+                    Some(op),
+                    super::configuration_context()
+                )
+                .unwrap_err()
+                .code(),
                 RefusalCode::BadValue
             );
         }
@@ -314,7 +308,9 @@ mod call_graph_section_tests {
             ("SpreadsheetDocument", "mxl.set", "dataSet.add"),
         ] {
             let data = json!({"at":"cf:Report.F05Report.Template.Layout","kind":"Template","title":"Layout","props":{"format":format}});
-            let listed = project_view_sections(&data, &json!(["can"])).unwrap();
+            let listed =
+                project_view_sections(&data, &json!(["can"]), Some(super::configuration_context()))
+                    .unwrap();
             assert!(
                 listed.get("props").is_none(),
                 "can-only reads need not publish properties"
@@ -329,39 +325,62 @@ mod call_graph_section_tests {
                 .unwrap()
                 .iter()
                 .any(|row| row["op"] == rejected));
-            project_view_operation(&data, &json!(["can"]), Some(accepted)).unwrap();
+            project_view_operation(
+                &data,
+                &json!(["can"]),
+                Some(accepted),
+                super::configuration_context(),
+            )
+            .unwrap();
             assert_eq!(
-                project_view_operation(&data, &json!(["can"]), Some(rejected))
-                    .unwrap_err()
-                    .code(),
+                project_view_operation(
+                    &data,
+                    &json!(["can"]),
+                    Some(rejected),
+                    super::configuration_context()
+                )
+                .unwrap_err()
+                .code(),
                 RefusalCode::BadValue
             );
         }
     }
 
-    /// `callGraph` — выключатель вычисления, а не восьмой слот узла.
-    ///
-    /// У узла ровно семь слотов, и запрос этой секции удерживает те два, в
-    /// которые сводка легла: `props` и `branches`.
+    /// Граф вызовов читается адресом ветви, а не секцией: `callGraph` не слот
+    /// узла и получает тот же отказ, что любая неизвестная секция.
     #[test]
-    fn the_call_graph_section_keeps_the_two_slots_it_fills() {
-        assert!(VIEW_SECTION_SLOTS.contains(&"callGraph"));
+    fn the_call_graph_is_not_a_view_section() {
+        assert!(!VIEW_SECTION_SLOTS.contains(&"callGraph"));
         let data = json!({
             "at": "main:CommonModule.Общий.Method.Утилита",
             "kind": "Method",
             "title": "Утилита",
-            "props": {"callGraph": "ready", "callers": 2},
-            "branches": [{"at": "main:CommonModule.Общий.Method.Утилита.Caller", "count": 2}],
-            "items": ["не просили"]
+            "branches": [{"at": "main:CommonModule.Общий.Method.Утилита.Caller"}]
         });
-        let projected =
-            project_view_sections(&data, &json!(["callGraph"])).expect("секция принимается");
-        assert_eq!(projected["props"]["callers"], 2);
-        assert_eq!(projected["branches"][0]["count"], 2);
-        // Слот, которого не просили, не приходит: секция удерживает ровно два.
-        assert!(projected.get("items").is_none());
-        // Личность узла остаётся всегда.
-        assert_eq!(projected["kind"], "Method");
+        let sections = |requested| {
+            project_view_sections(
+                &data,
+                &json!(requested),
+                Some(super::configuration_context()),
+            )
+        };
+        let error = sections(["callGraph"]).expect_err("секции callGraph нет");
+        assert_eq!(
+            error.code(),
+            crate::domain::refusal::RefusalCode::UnsupportedFilter
+        );
+        assert_eq!(
+            error.code(),
+            sections(["нетТакой"])
+                .expect_err("неизвестная секция")
+                .code()
+        );
+        // Ветви графа приходят обычным слотом `branches`.
+        let projected = sections(["branches"]).unwrap();
+        assert_eq!(
+            projected["branches"][0]["at"],
+            "main:CommonModule.Общий.Method.Утилита.Caller"
+        );
     }
 }
 
@@ -430,7 +449,7 @@ pub(super) fn filter_diff_data(data: &Value, filter: &Value) -> Result<Value, Re
                 computed.as_str().unwrap_or_default()
             )));
         }
-        return project_view_sections(data, sections);
+        return project_view_sections(data, sections, None);
     }
     let paths = filter
         .get("paths")
@@ -505,6 +524,7 @@ mod tests {
                 "branches": [{"at": "main:Catalog.Items.Attribute", "count": 2}]
             }),
             &json!(["props", "can"]),
+            Some(super::configuration_context()),
         )
         .unwrap();
 
@@ -531,10 +551,13 @@ mod tests {
             entry("attribute.add"),
             json!({"op": "attribute.add", "args": "items", "implemented": true})
         );
-        assert_eq!(
-            entry("object.create"),
-            json!({"op": "object.create", "args": "values", "implemented": true})
+        // A new object is created by its parent, the configuration root.
+        assert!(
+            can.iter().all(|entry| entry["op"] != "object.create"),
+            "object.create belongs to the root: {can:?}"
         );
+        // A metadata object's own attribute operations live on the attribute.
+        assert!(can.iter().all(|entry| entry["op"] != "attribute.set"));
         assert_eq!(
             entry("form.add"),
             json!({"op": "form.add", "args": "items", "implemented": true})
@@ -542,7 +565,9 @@ mod tests {
         let data_set = project_view_sections(
             &json!({"at":"main:Report.Sales.Template.Layout.DataSet.Main","kind":"DataSet","title":"Main","props":{}}),
             &json!(["can"]),
-        ).unwrap();
+            Some(super::configuration_context()),
+        )
+        .unwrap();
         let data_set_can = data_set["can"].as_array().expect("computed can entries");
         assert!(data_set_can.iter().all(|entry| entry["op"] != "dcs.set"));
         assert!(data_set_can
@@ -560,7 +585,12 @@ mod tests {
             can.iter().all(|entry| entry["op"] != "enumValue.add"),
             "a Catalog node must not advertise Enum-only operations: {can:?}"
         );
-        assert!(project_view_sections(&projected, &json!(["physicalPath"])).is_err());
+        assert!(project_view_sections(
+            &projected,
+            &json!(["physicalPath"]),
+            Some(super::configuration_context())
+        )
+        .is_err());
     }
 
     #[test]
@@ -570,7 +600,12 @@ mod tests {
             "kind": "Module",
             "title": "Common module Общий"
         });
-        let projected = project_view_sections(&module, &json!(["can"])).unwrap();
+        let projected = project_view_sections(
+            &module,
+            &json!(["can"]),
+            Some(super::configuration_context()),
+        )
+        .unwrap();
         let can = projected["can"].as_array().expect("module can entries");
         assert!(
             can.iter().any(|entry| entry["op"] == "code.insert"),
@@ -582,19 +617,34 @@ mod tests {
         );
 
         let unknown = json!({"at": "main:Mystery.X", "kind": "Mystery", "title": "X"});
-        let refusal = project_view_sections(&unknown, &json!(["can"])).unwrap_err();
+        let refusal = project_view_sections(
+            &unknown,
+            &json!(["can"]),
+            Some(super::configuration_context()),
+        )
+        .unwrap_err();
         assert_eq!(refusal.code().as_str(), "unsupported_section");
         assert!(refusal.to_string().contains("`can`"), "{refusal}");
 
-        let limits =
-            project_view_sections(&json!({"kind": "Catalog"}), &json!(["limits"])).unwrap_err();
+        let limits = project_view_sections(
+            &json!({"kind": "Catalog"}),
+            &json!(["limits"]),
+            Some(super::configuration_context()),
+        )
+        .unwrap_err();
         assert_eq!(limits.code().as_str(), "unsupported_section");
 
-        let configuration =
-            project_view_sections(&json!({"kind": "Configuration"}), &json!(["can"])).unwrap();
+        let configuration = project_view_sections(
+            &json!({"at": "main:Configuration", "kind": "Configuration"}),
+            &json!(["can"]),
+            Some(super::configuration_context()),
+        )
+        .unwrap();
         let can = configuration["can"].as_array().expect("root can entries");
         assert!(can.iter().any(|entry| entry["op"] == "subsystem.create"));
         assert!(can.iter().any(|entry| entry["op"] == "object.create"));
+        // A configuration root is not an extension: nothing to borrow into.
+        assert!(can.iter().all(|entry| entry["op"] != "object.borrow"));
     }
 
     #[test]

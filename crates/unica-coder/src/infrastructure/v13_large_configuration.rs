@@ -580,7 +580,7 @@ pub(super) fn read_configuration_root(
     Ok(StreamedConfigurationRoot { payload, counts })
 }
 
-pub(super) fn read_configuration_registration_index(
+pub(crate) fn read_configuration_registration_index(
     file: File,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RegistrationIndex, ViewError> {

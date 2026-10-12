@@ -18,8 +18,8 @@ check:
 # Отсутствие поставляемого движка — один типизированный отказ
 
 Если поставляемого движка нет, `unica.run` (раннер), `unica.search` с ролью
-(поставщик поиска), `unica.check` модуля (анализ BSL) и `unica.view` со
-сводкой `callGraph` или ветвью графа (анализатор) отвечают одним отказом:
+(поставщик поиска), `unica.check` модуля (анализ BSL) и `unica.view` ветви
+графа вызовов `Caller` или `Callee` (анализатор) отвечают одним отказом:
 `provider_unavailable` с уточнением `provider_absent`. В `data` отказ несёт
 `tool`, `path`, `target`, `pinnedVersion`, `stage` и `retryable: false`.
 Неизвестный путь или пин передаётся `null`.

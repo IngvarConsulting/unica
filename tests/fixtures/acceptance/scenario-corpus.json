@@ -2559,7 +2559,13 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `attribute.add` does not apply to Enum"
+     "refusal": "bad_value: apply operation `attribute.add` does not apply to Enum `main:Enum.ВажностьПроблемыУчета`; it addresses `Kind.Name` of a kind with attributes",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Enum.ВажностьПроблемыУчета"
+      }
+     ]
     }
    ],
    "id": "S094"
@@ -4677,12 +4683,12 @@
   },
   {
    "area": "Роли и права",
-   "task": "Создать новую роль МенеджерПродаж",
+   "task": "Создать новую роль МенеджерПродаж на корне конфигурации — узел создаёт операция родителя",
    "wire": [
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.МенеджерПродаж",
+      "at": "main:Configuration",
       "ops": [
        {
         "op": "role.create",
@@ -6514,7 +6520,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
+      "at": "main:Configuration",
       "ops": [
        {
         "op": "supportCapability.set",
@@ -7317,7 +7323,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "nosupport:Catalog.Валюты",
+      "at": "nosupport:Configuration",
       "ops": [
        {
         "op": "supportCapability.set",
@@ -7564,7 +7570,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
+      "at": "main:Configuration",
       "ops": [
        {
         "op": "supportCapability.set",
@@ -8488,9 +8494,62 @@
       ]
      },
      "expect": [
-      "gap"
+      "ok"
      ],
-     "gap": "Заимствование регистрирует общий модуль без каталога модуля, а первая запись модуля через `apply` его не создаёт: планировщик требует существующий каталог (`MissingParent`), и превью отвечает `provider_unavailable` «staged source evidence is unavailable» (#955, #1245)."
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src-ext/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src-ext/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.GoogleПереводчик.Method.ПриёмочнаяВставка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      }
+     ]
     }
    ]
   },
@@ -8584,7 +8643,13 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `subsystemOrder.set` does not apply to Interface"
+     "refusal": "bad_value: apply operation `subsystemOrder.set` does not apply to Interface `main:Subsystem.Администрирование.Interface`; it applies at `main:Configuration`",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Configuration"
+      }
+     ]
     }
    ]
   },
@@ -9840,7 +9905,7 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "bad_value: apply operation `query.set` does not apply to Template",
+     "refusal": "bad_value: apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D` or `.Query.Q`",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -9848,7 +9913,7 @@
         {
          "code": "bad_value",
          "outcome": "fixCall",
-         "message": "apply operation `query.set` does not apply to Template"
+         "message": "apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D` or `.Query.Q`"
         }
        ]
       }
@@ -12259,12 +12324,18 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: mxl.set addresses the spreadsheet template itself: `Owner.Name.Template.T`",
+     "refusal": "bad_value: apply operation `mxl.set` does not apply to Area `cf:Report.F06Report.Template.F06Template.Area.A`; it applies at `cf:Report.F06Report.Template.F06Template`",
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
        "eq": "$capture.before"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template"
       }
      ]
     }
@@ -15644,7 +15715,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: code.insert requires a module or its Body",
+     "refusal": "bad_value: apply operation `code.insert` does not apply to Method `main:CommonModule.Пример.Method.ОбработатьПример`; it applies at `main:CommonModule.Пример`",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -15696,6 +15767,12 @@
        "path": "src/ext/Languages/Русский.xml",
        "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
       }
+     ],
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:CommonModule.Пример"
+      }
      ]
     },
     {
@@ -15715,7 +15792,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: code.insert requires a module or its Body",
+     "refusal": "bad_value: apply operation `code.insert` does not apply to Body `main:CommonModule.Пример.Method.ОбработатьПример.Body`; it applies at `main:CommonModule.Пример`",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -15766,6 +15843,12 @@
        "kind": "sha256",
        "path": "src/ext/Languages/Русский.xml",
        "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:CommonModule.Пример"
       }
      ]
     },
@@ -32176,6 +32259,1075 @@
   },
   {
    "id": "S391",
+   "name": "batched-register-creation",
+   "issue": 1332,
+   "area": "Создание и удаление объектов",
+   "task": "Создать одним пакетом три регистра накопления, затем два регистра расчёта, затем регистр вместе с журналом документов при общем документе-регистраторе; каждый пакет проходит предпросмотр и публикацию, документ перечисляет все регистры в движениях",
+   "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Document",
+          "name": "Реализация"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "ChartOfCalculationTypes",
+          "name": "ВидыРасчётов"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/Documents/Реализация.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Продажи"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Остатки"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Обороты"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Продажи.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Остатки.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Обороты.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Configuration.xml",
+       "select": ".//{*}Configuration/{*}ChildObjects/{*}AccumulationRegister",
+       "eq": [
+        "Обороты",
+        "Остатки",
+        "Продажи"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Продажи.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Остатки.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Обороты.xml",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "CalculationRegister",
+          "name": "Начисления"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "CalculationRegister",
+          "name": "Премии"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Начисления.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Премии.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты",
+        "CalculationRegister.Начисления",
+        "CalculationRegister.Премии"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Configuration.xml",
+       "select": ".//{*}Configuration/{*}ChildObjects/{*}CalculationRegister",
+       "eq": [
+        "Начисления",
+        "Премии"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Начисления.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Премии.xml",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Резервы"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "DocumentJournal",
+          "name": "ЖурналПродаж"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/DocumentJournals/ЖурналПродаж.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты",
+        "CalculationRegister.Начисления",
+        "CalculationRegister.Премии",
+        "AccumulationRegister.Резервы"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/DocumentJournals/ЖурналПродаж.xml",
+       "eq": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S392",
+   "name": "text-search-hit-opens-its-module",
+   "issue": 1298,
+   "area": "Код BSL",
+   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку",
+   "workspace": "tests/fixtures/acceptance/workspace",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция ВалютаПоКоду",
+      "limit": 50
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/scope",
+       "eq": "main:Configuration"
+      },
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "main:Catalog.Валюты.Module.Manager"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/data/matches/0/line",
+       "eq": 13
+      }
+     ],
+     "captures": {
+      "moduleAt": {
+       "pointer": "/data/matches/0/at"
+      },
+      "hitLine": {
+       "pointer": "/data/matches/0/line"
+      },
+      "hitSnippet": {
+       "pointer": "/data/matches/0/snippet"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "$capture.moduleAt"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Module.Manager"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/12/line",
+       "eq": "$capture.hitLine"
+      },
+      {
+       "pointer": "/data/items/12/text",
+       "eq": "$capture.hitSnippet"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S393",
+   "name": "misplaced-element-add-routes-to-form-can",
+   "issue": 1351,
+   "area": "Формы",
+   "task": "element.add на адресе элемента формы отказывает без записи, next ведёт к can формы, а исправленный вызов на форме с into строит предпросмотр",
+   "workspace": "tests/fixtures/acceptance/workspace",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "element.remove",
+        "args": "at",
+        "implemented": true
+       }
+      }
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "path": "Объект.Наименование"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `element.add` does not apply to Item `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная`; it applies at `main:Catalog.Валюты.Form.Форм",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "filter": {
+       "sections": [
+        "can"
+       ]
+      }
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "element.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "path": "Объект.Наименование",
+           "into": "ГруппаСлужебная"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S394",
+   "issue": 1361,
+   "area": "Расширения конфигурации",
+   "task": "Проверить и изменить объекты расширения из штатной выгрузки, ссылающиеся на основную конфигурацию через v8:TypeId: реквизит справочника и Source подписки на события проходят проверку, тип реквизита и источник видны как readOnly, правки свойств и замена логических источников не теряют TypeId",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics/0",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"variants\":[{\"kind\":\"typeId\",\"typeId\":\"41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f\"}],\"mutationCapability\":\"readOnly\"}"
+      },
+      {
+       "pointer": "/data/props/incomplete",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "synonym": "Код"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/Catalogs/ПР_НастройкиВалют.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f",
+        "d7bc4697-f470-58f7-aca4-4e6bf45f9e69",
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f",
+        "d7bc4697-f470-58f7-aca4-4e6bf45f9e69",
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f"
+       ]
+      },
+      {
+       "path": "src-ext/Catalogs/ПР_НастройкиВалют.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "Код"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics/0",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Перед записью настроек"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "97a5ab75-0974-4551-8659-72579c7cef1e"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+       "eq": [
+        "cfg:CatalogObject.ПР_НастройкиВалют"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Comment",
+       "eq": [
+        "Перед записью настроек"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек.Relation"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "contains": {
+        "relation": "source",
+        "kind": "typeId",
+        "typeId": "97a5ab75-0974-4551-8659-72579c7cef1e",
+        "readOnly": true
+       }
+      },
+      {
+       "pointer": "/data/items",
+       "contains": {
+        "relation": "source",
+        "at": "ext:Catalog.ПР_НастройкиВалют",
+        "kind": "Catalog"
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек",
+      "ops": [
+       {
+        "op": "relation.replace",
+        "args": {
+         "values": {
+          "relation": "source",
+          "targets": [
+           {
+            "kind": "family",
+            "sourceClass": "catalogObject"
+           }
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "97a5ab75-0974-4551-8659-72579c7cef1e"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeSet",
+       "eq": [
+        "cfg:CatalogObject"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S395",
+   "name": "call-graph-is-a-branch-not-a-section",
+   "issue": 1373,
+   "area": "Код BSL",
+   "task": "Узел метода называет ветви графа вызовов без счёта, а секции callGraph у view нет",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст.Caller"
+       }
+      },
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст.Callee"
+       }
+      },
+      {
+       "pointer": "/data/props/callGraph",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст",
+      "filter": {
+       "sections": [
+        "callGraph"
+       ]
+      }
+     },
+     "expect": [
+      "unsupported"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "unsupported_filter"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "unsupported view section `callGraph`"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S396",
+   "name": "call-graph-branch-delivers-the-missing-analyzer",
+   "issue": 1373,
+   "area": "Код BSL",
+   "task": "Ветвь графа вызовов заказывает отсутствующий анализатор этим же вызовом, а провал поставки даёт типизированный отказ «нет движка»",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-delivery-failure",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+       }
+      },
+      {
+       "pointer": "/data/delivery",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/at",
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "provider_absent"
+      },
+      {
+       "pointer": "/data/delivery",
+       "eq": {
+        "artifact": "bsl-analyzer",
+        "status": "failed",
+        "failureClass": "configuration"
+       }
+      },
+      {
+       "pointer": "/data/tool",
+       "eq": "bsl-analyzer"
+      },
+      {
+       "pointer": "/data/stage",
+       "eq": "delivery"
+      },
+      {
+       "pointer": "/data/retryable",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример.Callee"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/at",
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример.Callee"
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "provider_absent"
+      },
+      {
+       "pointer": "/data/delivery",
+       "eq": {
+        "artifact": "bsl-analyzer",
+        "status": "failed",
+        "failureClass": "configuration"
+       }
+      },
+      {
+       "pointer": "/data/tool",
+       "eq": "bsl-analyzer"
+      },
+      {
+       "pointer": "/data/stage",
+       "eq": "delivery"
+      },
+      {
+       "pointer": "/data/retryable",
+       "eq": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S397",
    "name": "diagnostics-engine-checksum-mismatch",
    "issue": 549,
    "area": "Код BSL",

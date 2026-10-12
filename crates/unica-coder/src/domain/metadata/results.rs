@@ -172,6 +172,10 @@ pub(crate) struct MetaRelationsData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) data_lock_fields: Option<Option<Vec<MetaRelationTargetData>>>,
     pub(crate) source: Vec<MetaEventSource>,
+    /// `v8:TypeId` members of an extension's Source: generated types of the
+    /// extended configuration named by UUID. Read-only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) source_type_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
