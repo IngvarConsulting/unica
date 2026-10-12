@@ -653,6 +653,7 @@ pub(crate) mod tests {
                     input_by_string: Vec::new(),
                     data_lock_fields: None,
                     source: Vec::new(),
+                    source_type_ids: Vec::new(),
                 },
                 collections: crate::domain::metadata::MetaCollectionsData {
                     attributes: Vec::new(),

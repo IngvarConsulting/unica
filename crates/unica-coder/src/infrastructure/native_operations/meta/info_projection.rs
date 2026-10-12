@@ -168,6 +168,7 @@ fn parse_observed_metadata_type_contents_node(
     let allowed_type_children = [
         "Type",
         "TypeSet",
+        "TypeId",
         "StringQualifiers",
         "NumberQualifiers",
         "DateQualifiers",
@@ -248,7 +249,7 @@ fn parse_observed_metadata_type_contents_node(
     for node in type_container.children().filter(|node| {
         node.is_element()
             && node.tag_name().namespace() == Some(DATA_CORE_NAMESPACE)
-            && matches!(node.tag_name().name(), "Type" | "TypeSet")
+            && matches!(node.tag_name().name(), "Type" | "TypeSet" | "TypeId")
     }) {
         if node.attributes().len() != 0 || node.children().any(|child| child.is_element()) {
             return Err(invalid_observed_type(
@@ -256,6 +257,28 @@ fn parse_observed_metadata_type_contents_node(
             ));
         }
         let value = direct_text_content(node);
+        if node.tag_name().name() == "TypeId" {
+            // An extension names a type of the extended configuration by the
+            // UUID of its generated type (#1361); keep it verbatim.
+            let type_id = value.trim();
+            if !super::validation::is_guid(type_id) {
+                return Err(invalid_observed_type(
+                    "existing metadata type identifier is not a UUID",
+                ));
+            }
+            if variants.iter().any(|variant| {
+                matches!(variant, ObservedMetadataTypeVariant::TypeId { type_id: seen }
+                    if seen.eq_ignore_ascii_case(type_id))
+            }) {
+                return Err(invalid_observed_type(
+                    "existing metadata type identifier is duplicated",
+                ));
+            }
+            variants.push(ObservedMetadataTypeVariant::TypeId {
+                type_id: type_id.to_string(),
+            });
+            continue;
+        }
         let (namespace, local_name) = expand_observed_type_qname(node, value.trim())?;
         match (namespace.as_str(), local_name.as_str()) {
             (XML_SCHEMA_NAMESPACE, "string") => {

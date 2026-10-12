@@ -1225,9 +1225,9 @@ pub(super) fn typed_relations(
                     .with_metadata_path(target.clone())
                     .with_field("relations.source"),
             );
-            Vec::new()
+            Default::default()
         }
-        Err(_) => Vec::new(),
+        Err(_) => Default::default(),
     };
     MetaRelationsData {
         owners,
@@ -1235,7 +1235,8 @@ pub(super) fn typed_relations(
         based_on,
         input_by_string,
         data_lock_fields,
-        source,
+        source: source.sources,
+        source_type_ids: source.type_ids,
     }
 }
 
