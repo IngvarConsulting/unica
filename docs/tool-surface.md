@@ -70,12 +70,11 @@ Compare two readable logical nodes of the same kind without changing files.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `filter` | object | нет | Optional projection applied before comparison. |
 | `left` | string | да | Qualified logical address of the left node. |
 | `limit` | integer | нет | Maximum differences to return, from 1 to 1000; omit for 100. A truncated answer has no continuation: compare smaller nodes or raise limit. |
 | `right` | string | да | Qualified logical address of the right node. |
 
-**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников; закрытые `paths`/`sections` фильтры поддержаны. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit` (отвечают типизированным `data`)
+**Результат сейчас:** Сравнивает два узла одного логического вида и возвращает bounded JSON changes без общей ревизии исходников и без вычисляемого словаря `can`; сравнение сужается адресами узлов, фильтра нет. Курсора нет: усечённый ответ (`truncated: true`) называет усечение и советует сравнить узлы поменьше или поднять `limit` (отвечают типизированным `data`)
 
 **Целевой контракт:** Добавить предметные diff-проекции и продолжение сохранённого сравнения
 
@@ -236,14 +235,13 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 
 | Аргумент | Тип | Обяз. | Описание |
 | --- | --- | --- | --- |
-| `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. Omit only for workspace bootstrap where allowed. |
+| `at` | string | нет | Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. A node answer lists its operations in can; append .Can.<op> for one operation's argument contract. Omit for the workspace. |
 | `cursor` | string | нет | Continuation cursor from an earlier addressed view. |
-| `filter` | object | нет | Optional projection; valid only with at. sections:["can"] lists operation summaries; add can:{op:"query.set"} for one detailed supported argument contract. |
 | `limit` | integer | нет | Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole. |
 
-**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) с целевым размером страницы 64 КиБ; неделимый элемент возвращается целиком до технического предела результата, `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает сохранённый снимок; ветвь графа вызовов сохраняет полученные связи для продолжения; с квалифицированным `at` узел содержит закрытые секции `props`/`branches`/`can`/`limits`/`items` (отвечают типизированным `data`)
+**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) с целевым размером страницы 64 КиБ; неделимый элемент возвращается целиком до технического предела результата, `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает сохранённый снимок; ветвь графа вызовов сохраняет полученные связи для продолжения; с квалифицированным `at` узел содержит `props`/`branches`/`items` и словарь операций `can`, а адрес `<узел>.Can.<op>` отдаёт контракт аргументов одной операции (отвечают типизированным `data`)
 
-**Целевой контракт:** Расширять проекции через закрытые `filter`, не возвращая физические пути
+**Целевой контракт:** Расширять проекции новыми адресуемыми узлами, не возвращая физические пути
 
 **Сценарии:**
 

@@ -268,8 +268,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     description: "Inspect the workspace with no arguments, or read one logical 1C node by address.",
                     input_schema: schema(
                         json!({
-                            "at": logical_address(),
-                            "filter": data_object("Optional projection; valid only with at. sections:[\"can\"] lists operation summaries; add can:{op:\"query.set\"} for one detailed supported argument contract."),
+                            "at": logical_address_with("Qualified logical address: <sourceSet>:<Kind>[.<Name>...]. A node answer lists its operations in can; append .Can.<op> for one operation's argument contract. Omit for the workspace."),
                             // No schema `default` (#1210): form clients send it, and
                             // limit without at is refused.
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50,
@@ -354,7 +353,6 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                         json!({
                             "left": logical_address_with("Qualified logical address of the left node."),
                             "right": logical_address_with("Qualified logical address of the right node."),
-                            "filter": data_object("Optional projection applied before comparison."),
                             // No `cursor` until continuation is wired (#1217): a truncated
                             // answer says so and asks for a narrower comparison instead.
                             "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Maximum differences to return, from 1 to 1000; omit for 100. A truncated answer has no continuation: compare smaller nodes or raise limit."},
@@ -754,7 +752,7 @@ mod tests {
             &catalog.tools,
             "view",
             json!([]),
-            &["at", "filter", "limit", "cursor"],
+            &["at", "limit", "cursor"],
         );
         assert_schema(
             &catalog.tools,
@@ -791,7 +789,7 @@ mod tests {
             &catalog.tools,
             "diff",
             json!(["left", "right"]),
-            &["left", "right", "filter", "limit"],
+            &["left", "right", "limit"],
         );
         assert_schema(
             &catalog.tools,
@@ -823,12 +821,7 @@ mod tests {
         ] {
             assert_field_type(&catalog.tools, tool, field, "string");
         }
-        for (tool, field) in [
-            ("view", "filter"),
-            ("apply", "ops"),
-            ("diff", "filter"),
-            ("run", "args"),
-        ] {
+        for (tool, field) in [("apply", "ops"), ("run", "args")] {
             assert_field_type(
                 &catalog.tools,
                 tool,
@@ -866,14 +859,6 @@ mod tests {
             50
         );
         assert_field_type(&catalog.tools, "view", "cursor", "string");
-        assert_data_object(
-            input_field(&catalog.tools, "view", "filter"),
-            "unica.view.filter",
-        );
-        assert_data_object(
-            input_field(&catalog.tools, "diff", "filter"),
-            "unica.diff.filter",
-        );
         assert_data_object(input_field(&catalog.tools, "run", "args"), "unica.run.args");
         assert_eq!(
             input_field(&catalog.tools, "run", "dryRun")["type"],
