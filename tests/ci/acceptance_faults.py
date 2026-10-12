@@ -14,9 +14,13 @@ FIXTURE_VERSION = "0.0.0-test-fixture"
 PRIVATE_MARKERS = ("private-severity-token-1064", "/private/fault-source-1064")
 
 
-def stage_fault_producer(plugin: Path) -> dict:
+def analyzer_lock_and_target() -> tuple[dict, str]:
     lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())
-    target = host_target(lock, platform.system(), platform.machine())
+    return lock, host_target(lock, platform.system(), platform.machine())
+
+
+def stage_fault_producer(plugin: Path) -> dict:
+    lock, target = analyzer_lock_and_target()
     source = REPO / "tests/fixtures/analyzer/jsonl-fault-producer.rs"
     binary = plugin / "bin" / target / ("bsl-analyzer.exe" if os.name == "nt" else "bsl-analyzer")
     binary.parent.mkdir(parents=True)
@@ -37,9 +41,7 @@ def stage_fault_producer(plugin: Path) -> dict:
 
 
 def analyzer_binary(plugin: Path) -> Path:
-    lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())
-    target = host_target(lock, platform.system(), platform.machine())
-    return plugin / "bin" / target / ("bsl-analyzer.exe" if os.name == "nt" else "bsl-analyzer")
+    return plugin / "bin" / analyzer_lock_and_target()[1] / ("bsl-analyzer.exe" if os.name == "nt" else "bsl-analyzer")
 
 
 def place_engine(plugin: Path, present: bool) -> None:

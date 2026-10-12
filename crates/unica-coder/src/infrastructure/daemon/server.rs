@@ -10233,24 +10233,24 @@ struct ActorLogicalReadLease {"#,
             let checked = service.execute(&check, cancellation.clone()).unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
                 .with(|slot| *slot.borrow_mut() = None);
-            assert!(!checked.ok, "{kind:?}: {checked:?}");
-            assert_eq!(checked.diagnostics.len(), 1, "{kind:?}: {checked:?}");
+            assert!(!checked.ok, "{kind:?}");
+            assert_eq!(checked.diagnostics.len(), 1, "{kind:?}");
             let diagnostic = &checked.diagnostics[0];
             assert_eq!(diagnostic["code"], "provider_unavailable", "{kind:?}");
             assert_eq!(
                 diagnostic.get("detailCode").and_then(serde_json::Value::as_str),
                 detail,
-                "{kind:?}: {diagnostic}"
+                "{kind:?}"
             );
             let message = diagnostic["message"].as_str().unwrap();
             assert!(
                 message.starts_with(
                     "BSL analysis did not complete, so the module is unproven: bsl-analyzer"
                 ),
-                "{kind:?}: {message}"
+                "{kind:?}"
             );
-            assert!(message.contains(cause), "{kind:?}: {message}");
-            assert!(!checked_text_leaks(&checked), "{kind:?}: {checked:?}");
+            assert!(message.contains(cause), "{kind:?}");
+            assert!(!checked_text_leaks(&checked), "{kind:?}");
         }
     }
 
