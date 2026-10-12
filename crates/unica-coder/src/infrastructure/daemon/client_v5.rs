@@ -252,6 +252,23 @@ impl From<String> for ConnectionFailure {
     }
 }
 
+/// The exit of a spawned daemon before readiness, with the reason it
+/// recorded for the persisted state it refused and that state's directory.
+fn exited_before_readiness(
+    state: &DaemonStateDirectory,
+    pid: u32,
+    status: impl std::fmt::Display,
+) -> String {
+    let exited = format!("spawned protocol-v5 daemon {pid} exited before readiness with {status}");
+    match state.read_startup_failure(pid) {
+        Some(reason) => format!(
+            "{exited}; daemon refused to start: {reason}; state directory: {}",
+            state.path().display()
+        ),
+        None => exited,
+    }
+}
+
 impl V5DaemonProcessOwner {
     /// Connect to the exact production-v5 daemon under `state_root`, spawning
     /// the same binary in `--daemon` mode when no live endpoint answers.
@@ -312,6 +329,9 @@ impl V5DaemonProcessOwner {
         let startup_budget = remaining(deadline, "spawn")?;
         let cleanup_reserve = (startup_budget / 3).min(STARTUP_CLEANUP_TIMEOUT);
         let readiness_deadline = deadline - cleanup_reserve;
+        // Under the spawn lock no other frontend starts a daemon here: a reason
+        // left by an earlier process must not be reported for this child.
+        let _ = state.remove_startup_failure();
         let command =
             super::daemon_process_command(&executable, state_root, &core_identity, idle_grace);
         let mut child = ManagedStartupChild::spawn_configured_before(command, deadline)
@@ -344,9 +364,7 @@ impl V5DaemonProcessOwner {
                 Err(error) => break Err(error),
             };
             if let Some(status) = child_status {
-                break Err(format!(
-                    "spawned protocol-v5 daemon {expected_pid} exited before readiness with {status}"
-                ));
+                break Err(exited_before_readiness(state, expected_pid, status));
             }
             let record = match state.read_v5_endpoint_record() {
                 Ok(record) => record,
@@ -364,9 +382,7 @@ impl V5DaemonProcessOwner {
                         Err(error) => break Err(error),
                     };
                     if let Some(status) = child_status {
-                        break Err(format!(
-                            "spawned protocol-v5 daemon {expected_pid} exited before readiness with {status}"
-                        ));
+                        break Err(exited_before_readiness(state, expected_pid, status));
                     }
                     if endpoint.observe(&record) {
                         match Self::connect_classified_before(record, readiness_deadline) {
@@ -1375,6 +1391,39 @@ mod tests {
             Some(successor),
             "cleanup adopted and removed the same-PID successor"
         );
+    }
+
+    #[test]
+    fn exit_before_readiness_reports_only_the_childs_own_startup_failure() {
+        use crate::infrastructure::platform::testing::line_printing_command;
+        let reason = "preexisting handoff Task has no exact prior link reservation";
+        for own_record in [true, false] {
+            let (_root, state) = state_directory();
+            let fixture = line_printing_command(false, &[]);
+            let mut command = std::process::Command::new(fixture.program);
+            command.args(fixture.args);
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut child =
+                ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
+            let pid = child.id();
+            // A record of another process is what a stale file looks like.
+            let recorded_pid = if own_record { pid } else { pid.wrapping_add(1) };
+            state.publish_startup_failure(recorded_pid, reason).unwrap();
+            let message = match V5DaemonProcessOwner::await_startup_before(
+                &mut child,
+                &state,
+                &CoreIdentity::production_v5(),
+                deadline - Duration::from_secs(5),
+                deadline,
+            ) {
+                Ok(_) => panic!("an exiting child cannot become ready"),
+                Err(message) => message,
+            };
+            assert!(message.contains("exited before readiness"), "{message}");
+            let state_path = state.path().display().to_string();
+            assert_eq!(message.contains(reason), own_record, "{message}");
+            assert_eq!(message.contains(&state_path), own_record, "{message}");
+        }
     }
 
     #[test]

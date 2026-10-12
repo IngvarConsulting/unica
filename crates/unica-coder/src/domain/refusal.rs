@@ -331,6 +331,12 @@ pub enum RefusalDetail {
     /// Внутренний кэш отравлен: поток запаниковал под замком, и до
     /// перезапуска процесса замок не отдаётся.
     CachePoisoned,
+    /// Учётные данные отвергнуты: агент конфигуратора не принял пользователя
+    /// ИБ. Повтор с теми же настройками не пройдёт.
+    CredentialsRejected,
+    /// Точка входа, к которой обращается поставщик, не ответила или назвалась
+    /// чужим ключом.
+    EndpointUnreachable,
     /// Демон занят: очередь, ёмкость рабочего пространства или владельца.
     BackendBusy,
     /// Демон несовместим: протокол, ядро, права.
@@ -350,6 +356,8 @@ impl RefusalDetail {
             Self::DependencyPending => "dependency_pending",
             Self::WrongSourceKind => "wrong_source_kind",
             Self::CachePoisoned => "cache_poisoned",
+            Self::CredentialsRejected => "credentials_rejected",
+            Self::EndpointUnreachable => "endpoint_unreachable",
             Self::BackendBusy => "backend_busy",
             Self::BackendIncompatible => "backend_incompatible",
             Self::BackendBroken => "backend_broken",
@@ -364,7 +372,9 @@ impl RefusalDetail {
             | Self::DeliveryInProgress
             | Self::DependencyPending
             | Self::WrongSourceKind
-            | Self::CachePoisoned => RefusalCode::ProviderUnavailable,
+            | Self::CachePoisoned
+            | Self::CredentialsRejected
+            | Self::EndpointUnreachable => RefusalCode::ProviderUnavailable,
             Self::BackendBusy | Self::BackendIncompatible | Self::BackendBroken => {
                 RefusalCode::TaskBackendFailed
             }
@@ -376,6 +386,9 @@ impl RefusalDetail {
         match self {
             Self::SourceUnreadable => Outcome::FixSource,
             Self::ProviderAbsent | Self::BackendIncompatible => Outcome::NeedsHuman,
+            // Настройку подключения правит человек: ни повтор, ни правка
+            // аргументов вызова её не меняют.
+            Self::CredentialsRejected | Self::EndpointUnreachable => Outcome::NeedsHuman,
             Self::DeliveryInProgress | Self::DependencyPending => Outcome::RetryAsIs,
             Self::WrongSourceKind => Outcome::FixCall,
             Self::BackendBusy => Outcome::RetryAsIs,
@@ -390,13 +403,15 @@ impl RefusalDetail {
     }
 
     /// Все уточнения — для проверок полноты.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::SourceUnreadable,
         Self::ProviderAbsent,
         Self::DeliveryInProgress,
         Self::DependencyPending,
         Self::WrongSourceKind,
         Self::CachePoisoned,
+        Self::CredentialsRejected,
+        Self::EndpointUnreachable,
         Self::BackendBusy,
         Self::BackendIncompatible,
         Self::BackendBroken,

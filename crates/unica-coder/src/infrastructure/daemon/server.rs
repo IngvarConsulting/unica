@@ -410,11 +410,14 @@ impl RunEngineDelivery {
             );
         }
         let progress = crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
-        let state = crate::infrastructure::plugin_runtime::find_plugin_root(&self.workspace_hint)
+        let plugin_root =
+            crate::infrastructure::plugin_runtime::find_plugin_root(&self.workspace_hint);
+        let state = plugin_root
+            .as_deref()
             .map(|plugin_root| {
                 crate::infrastructure::engine_delivery::deliver_if_missing(
                     &self.desk,
-                    &plugin_root,
+                    plugin_root,
                     "v8-runner",
                     &cancellation,
                     &progress,
@@ -428,7 +431,20 @@ impl RunEngineDelivery {
                 "run cancelled while waiting for engine delivery",
             );
         }
-        match crate::infrastructure::engine_delivery::canonical_delivery_result(state, &progress) {
+        let delivery = match plugin_root.as_deref() {
+            Some(plugin_root) => {
+                crate::infrastructure::engine_delivery::canonical_engine_delivery_result(
+                    state,
+                    &progress,
+                    plugin_root,
+                    "v8-runner",
+                )
+            }
+            None => {
+                crate::infrastructure::engine_delivery::canonical_delivery_result(state, &progress)
+            }
+        };
+        match delivery {
             Some(result) => result,
             None => run(cancellation),
         }
@@ -2940,6 +2956,72 @@ pub(crate) mod actor_capacity_tests {
                     "{role}: {result:?}"
                 );
             }
+            // Ветвь графа — единственный вход в граф вызовов: недостающий
+            // анализатор она заказывает этим же вызовом, и провал поставки
+            // приходит её типизированным отказом. Обычное чтение метода
+            // поставку не заказывает.
+            let method = "main:CommonModule.Probe.Method.Ping";
+            let plain = submit_canonical(
+                &runtime,
+                &workspace,
+                ToolIdentity::View,
+                serde_json::json!({"at": method}),
+            );
+            assert!(plain.ok, "{plain:?}");
+            assert!(plain.data.as_ref().unwrap().get("delivery").is_none());
+            for kind in ["Caller", "Callee"] {
+                let branch = format!("{method}.{kind}");
+                let result = submit_canonical(
+                    &runtime,
+                    &workspace,
+                    ToolIdentity::View,
+                    serde_json::json!({"at": branch}),
+                );
+                assert!(!result.ok, "{kind}: {result:?}");
+                assert_eq!(result.at.as_deref(), Some(branch.as_str()));
+                assert_eq!(
+                    result.data.as_ref().unwrap()["delivery"],
+                    serde_json::json!({
+                        "artifact": "bsl-analyzer",
+                        "status": "failed",
+                        "failureClass": "configuration",
+                    }),
+                    "{kind}: {result:?}"
+                );
+                assert_eq!(
+                    serde_json::to_value(&result).unwrap()["diagnostics"][0]["detailCode"],
+                    "provider_absent",
+                    "{kind}: {result:?}"
+                );
+            }
+            // Ветвь метода без графа отказывает по адресу и поставку не
+            // заказывает, хотя здесь заказ был бы возможен.
+            for branch in [
+                "main:HTTPService.Связь.URLTemplate.Шаблон.Method.POST.Caller",
+                "main:CommonForm.Форма.Module.Form.Method.ПриОткрытии.Callee",
+                "main:InformationRegister.Курсы.Module.RecordSet.Method.ПередЗаписью.Caller",
+            ] {
+                let result = submit_canonical(
+                    &runtime,
+                    &workspace,
+                    ToolIdentity::View,
+                    serde_json::json!({"at": branch}),
+                );
+                assert!(!result.ok, "a branch without a call graph is refused");
+                assert_eq!(
+                    serde_json::to_value(&result).unwrap()["diagnostics"][0]["code"],
+                    "bad_value",
+                    "a branch without a call graph is refused by its address"
+                );
+                assert!(
+                    result
+                        .data
+                        .as_ref()
+                        .and_then(|data| data.get("delivery"))
+                        .is_none(),
+                    "a branch without a call graph never orders the analyzer"
+                );
+            }
             for arguments in [
                 serde_json::json!({"query":"Needle","role":"lexical"}),
                 serde_json::json!({"query":"Needle"}),
@@ -2967,7 +3049,14 @@ pub(crate) mod actor_capacity_tests {
         std::fs::create_dir_all(plugin.join("third-party")).unwrap();
         std::fs::create_dir_all(workspace.join("src")).unwrap();
         std::fs::write(workspace.join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\ninfobase:\n  connection: 'File=base'\n").unwrap();
-        std::fs::write(workspace.join("src/Configuration.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#).unwrap();
+        std::fs::write(workspace.join("src/Configuration.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><CommonModule>Probe</CommonModule></ChildObjects></Configuration></MetaDataObject>"#).unwrap();
+        std::fs::create_dir_all(workspace.join("src/CommonModules/Probe/Ext")).unwrap();
+        std::fs::write(workspace.join("src/CommonModules/Probe.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Probe</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>false</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#).unwrap();
+        std::fs::write(
+            workspace.join("src/CommonModules/Probe/Ext/Module.bsl"),
+            "Процедура Ping() Экспорт\nКонецПроцедуры\n",
+        )
+        .unwrap();
         let target = crate::infrastructure::platform::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         std::fs::write(
@@ -3010,6 +3099,229 @@ pub(crate) mod actor_capacity_tests {
             .env("UNICA_PLUGIN_ROOT", &plugin)
             .env("UNICA_ARTIFACT_CACHE", root.path().join("cache"))
             .env("UNICA_RUNTIME_MANIFEST", root.path().join("missing-release.json"))
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("running 1 test"), "{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+    }
+
+    /// #549: «нет поставляемого движка» — один отказ на всех четырёх
+    /// маршрутах. `run` (раннер), `search` с ролью (поставщик поиска), `check`
+    /// модуля (анализ BSL) и `view` со сводкой графа (анализатор) отвечают
+    /// `provider_unavailable` с уточнением `provider_absent` и одинаковыми
+    /// полями движка в `data` — и когда файла нет, и когда его контрольная
+    /// сумма не совпала с манифестом.
+    #[test]
+    fn every_route_refuses_a_missing_engine_with_one_typed_refusal() {
+        const CHILD: &str = "UNICA_MISSING_ENGINE_ROUTES_CHILD";
+        const ROOT: &str = "UNICA_MISSING_ENGINE_ROUTES_ROOT";
+        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let exe = std::env::consts::EXE_SUFFIX;
+        if std::env::var_os(CHILD).is_some() {
+            let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let workspace = root.join("workspace");
+            let plugin = root.join("plugin");
+            let runtime = bootstrap_runtime();
+            let call = |tool: ToolIdentity, arguments: serde_json::Value| -> DomainResult {
+                let request = InvocationRequest::new(
+                    tool,
+                    arguments,
+                    std::fs::canonicalize(&workspace).unwrap().to_string_lossy(),
+                    7_000,
+                )
+                .unwrap();
+                match runtime.bind(request) {
+                    Ok(bound) => match bound.prepare() {
+                        Ok(prepared) => prepared.execute(CancellationToken::new()).unwrap(),
+                        Err(result) => *result,
+                    },
+                    Err(V5CanonicalPrepareError::Direct(result))
+                    | Err(V5CanonicalPrepareError::Rejected(result)) => *result,
+                    Err(error) => panic!("{error:?}"),
+                }
+            };
+            // `view` спрашивает граф адресом ветви метода: это единственный
+            // вход в граф вызовов.
+            let view_arguments = serde_json::json!({
+                "at": "main:CommonModule.Пример.Method.ОбработатьПример.Caller",
+            });
+            let routes = [
+                (
+                    "run",
+                    "v8-runner",
+                    ToolIdentity::Run,
+                    serde_json::json!({"op":"extensions.list","args":{},"dryRun":true}),
+                ),
+                (
+                    "search",
+                    "bsl-analyzer",
+                    ToolIdentity::Search,
+                    serde_json::json!({"query":"ОбработатьПример","role":"symbol"}),
+                ),
+                (
+                    "check",
+                    "bsl-analyzer",
+                    ToolIdentity::Check,
+                    serde_json::json!({"at":"main:CommonModule.Пример"}),
+                ),
+                ("view", "bsl-analyzer", ToolIdentity::View, view_arguments),
+            ];
+            let binary = |tool: &str| plugin.join(format!("bin/{target}/{tool}{exe}"));
+            let flat = |sha: &dyn Fn(&str) -> String| {
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "tools": (["v8-runner", "bsl-analyzer"].map(|tool| serde_json::json!({
+                        "name": tool,
+                        "version": if tool == "v8-runner" { RUNNER_VERSION } else { "0.2.86" },
+                        "binaryPath": format!("bin/{target}/{tool}{exe}"),
+                        "sha256": sha(tool),
+                    }))),
+                })
+            };
+            let write_manifest = |manifest: serde_json::Value| {
+                std::fs::write(
+                    plugin.join("third-party/manifest.json"),
+                    manifest.to_string(),
+                )
+                .unwrap();
+            };
+            // Файл, который ОС не может запустить: без права исполнения на
+            // Unix (иначе ОС отдала бы его оболочке как сценарий) и не образ
+            // программы на Windows.
+            let unstartable = b"not the published engine";
+            let unstartable_sha = {
+                use sha2::Digest;
+                format!("{:x}", sha2::Sha256::digest(unstartable))
+            };
+            for stage in ["manifest", "target", "delivery", "checksum", "start"] {
+                match stage {
+                    "manifest" => write_manifest(serde_json::json!({
+                        "schemaVersion": 2,
+                        "tools": [],
+                    })),
+                    "target" => write_manifest(serde_json::json!({
+                        "schemaVersion": 2,
+                        "tools": (["v8-runner", "bsl-analyzer"].map(|tool| serde_json::json!({
+                            "name": tool,
+                            "version": "0.0.1",
+                            "binaries": {"plan9-mips": {
+                                "binaryPath": format!("bin/plan9-mips/{tool}"),
+                                "sha256": "0".repeat(64),
+                            }},
+                        }))),
+                    })),
+                    "delivery" => write_manifest(flat(&|_| "0".repeat(64))),
+                    "checksum" => {
+                        std::fs::create_dir_all(plugin.join(format!("bin/{target}"))).unwrap();
+                        for tool in ["v8-runner", "bsl-analyzer"] {
+                            std::fs::write(binary(tool), unstartable).unwrap();
+                            crate::infrastructure::platform::testing::clear_execute_permission_for_test(
+                                &binary(tool),
+                            )
+                            .unwrap();
+                        }
+                    }
+                    _ => write_manifest(flat(&|_| unstartable_sha.clone())),
+                }
+                for (route, tool, identity, arguments) in &routes {
+                    let result = call(*identity, arguments.clone());
+                    let case = format!("{route} at {stage}");
+                    assert!(!result.ok, "{case}");
+                    assert_eq!(result.diagnostics.len(), 1, "{case}");
+                    let diagnostic = &result.diagnostics[0];
+                    assert_eq!(diagnostic["code"], "provider_unavailable", "{case}");
+                    assert_eq!(diagnostic["detailCode"], "provider_absent", "{case}");
+                    assert_eq!(diagnostic["outcome"], "needsHuman", "{case}");
+                    let message = diagnostic["message"].as_str().unwrap();
+                    assert!(
+                        message.starts_with(&format!(
+                            "bundled_tool_missing: {tool} is not available for "
+                        )),
+                        "одна формулировка на всех маршрутах: {case}"
+                    );
+                    let data = result.data.as_ref().expect("поля движка в data");
+                    assert_eq!(data["tool"], *tool, "{case}");
+                    assert_eq!(data["target"], target, "{case}");
+                    assert_eq!(data["stage"], stage, "{case}");
+                    assert_eq!(data["retryable"], false, "{case}");
+                    if matches!(stage, "delivery" | "checksum" | "start") {
+                        assert_eq!(
+                            *data,
+                            serde_json::json!({
+                                "tool": tool,
+                                "path": binary(tool).display().to_string(),
+                                "target": target,
+                                "pinnedVersion": if *tool == "v8-runner" { RUNNER_VERSION } else { "0.2.86" },
+                                "stage": stage,
+                                "retryable": false,
+                            }),
+                            "{case}"
+                        );
+                    }
+                }
+            }
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let plugin = root.path().join("plugin");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-diagnostics");
+        for relative in [
+            "v8project.yaml",
+            "src/Configuration.xml",
+            "src/Languages/Русский.xml",
+            "src/CommonModules/Пример.xml",
+            "src/CommonModules/Пример/Ext/Module.bsl",
+        ] {
+            let destination = workspace.join(relative);
+            std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            std::fs::copy(fixture.join(relative), destination).unwrap();
+        }
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(workspace.join("v8project.yaml"))
+            .and_then(|mut file| {
+                std::io::Write::write_all(&mut file, b"infobase:\n  connection: 'File=base'\n")
+            })
+            .unwrap();
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        std::fs::write(
+            plugin.join("third-party/manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 2,
+                "tools": [
+                    {
+                        "name": "v8-runner",
+                        "version": RUNNER_VERSION,
+                        "binaryPath": format!("bin/{target}/v8-runner{exe}"),
+                        "sha256": "0".repeat(64),
+                    },
+                    {
+                        "name": "bsl-analyzer",
+                        "version": "0.2.86",
+                        "binaryPath": format!("bin/{target}/bsl-analyzer{exe}"),
+                        "sha256": "0".repeat(64),
+                    },
+                ],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::server::actor_capacity_tests::every_route_refuses_a_missing_engine_with_one_typed_refusal",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env(ROOT, root.path())
+            .env("UNICA_PLUGIN_ROOT", &plugin)
+            .env_remove("UNICA_ARTIFACT_CACHE")
+            .env_remove("UNICA_RUNTIME_MANIFEST")
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -10189,7 +10501,7 @@ struct ActorLogicalReadLease {"#,
             (
                 AnalyzerRunFailureKind::EngineMissing,
                 Some("provider_absent"),
-                "bsl-analyzer is not installed on this machine for darwin-arm64; build it from third-party/tools.lock.json",
+                "bsl-analyzer is not available for darwin-arm64: its file is not on this machine; build it from third-party/tools.lock.json",
             ),
             (
                 AnalyzerRunFailureKind::StartFailed,
@@ -10455,6 +10767,389 @@ struct ActorLogicalReadLease {"#,
     fn checked_text_leaks(result: &crate::domain::invocation::DomainResult) -> bool {
         let text = serde_json::to_string(result).unwrap();
         text.contains("private-token") || text.contains("/private/engine")
+    }
+
+    /// Граф вызовов читается только адресом ветви. Обычное чтение метода
+    /// называет ветви `Caller` и `Callee` без счёта и анализатор не спрашивает;
+    /// секции `callGraph` нет; чтение ветви спрашивает граф в обоих направлениях.
+    #[test]
+    fn method_view_names_call_graph_branches_without_asking_the_analyzer() {
+        use crate::domain::code_intelligence::{
+            CallEdgeProvenance, CallGraphDirection, CallGraphEdge, CallGraphResult, CallGraphState,
+            CodeIntelligenceContext, CodeIntelligenceProvider, CodeIntelligenceReadData,
+            CodeIntelligenceReadRequest, ProviderCapability, ProviderDeadline, ProviderIdentity,
+            ProviderReadOutcome, ProviderRole, ProviderSearchSection, SearchRequest,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingCallGraph(AtomicUsize);
+        impl CodeIntelligenceProvider for CountingCallGraph {
+            fn identity(&self) -> ProviderIdentity {
+                ProviderIdentity::new(ProviderRole::Symbol, "counting-call-graph")
+            }
+            fn capabilities(&self) -> &[ProviderCapability] {
+                &[ProviderCapability::CallGraph]
+            }
+            fn search(
+                &self,
+                _request: &SearchRequest,
+                _context: &CodeIntelligenceContext,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> ProviderSearchSection {
+                unreachable!("the call graph test never searches")
+            }
+            fn read(
+                &self,
+                request: &CodeIntelligenceReadRequest,
+                _context: &CodeIntelligenceContext,
+                _deadline: ProviderDeadline,
+                _cancellation: &CancellationToken,
+            ) -> Result<ProviderReadOutcome, String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                let CodeIntelligenceReadRequest::CallGraph { id, direction, .. } = request else {
+                    return Err("only the call graph is read".to_string());
+                };
+                assert_eq!(id, "method/common/Handlers/Run");
+                let edges = match direction {
+                    CallGraphDirection::Callers => vec![CallGraphEdge {
+                        id: "method/common/Handlers/Run".to_string(),
+                        provenance: CallEdgeProvenance::Resolved,
+                    }],
+                    CallGraphDirection::Callees => Vec::new(),
+                };
+                Ok(ProviderReadOutcome {
+                    provider: self.identity(),
+                    ok: true,
+                    summary: "call graph".to_string(),
+                    warnings: Vec::new(),
+                    errors: Vec::new(),
+                    artifacts: Vec::new(),
+                    stdout: None,
+                    stderr: None,
+                    data: Some(CodeIntelligenceReadData::CallGraph(CallGraphResult {
+                        state: CallGraphState::Ready,
+                        total: Some(edges.len() as u64),
+                        edges,
+                        revision: Some(7),
+                        stale: Some(false),
+                        complete: true,
+                    })),
+                })
+            }
+        }
+
+        let workspace =
+            scheduled_handler_workspace("CONFIGURATION", "Procedure Run() Export\nEndProcedure\n");
+        let runtime = bootstrap_runtime();
+        let service =
+            crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+        let cancellation = CancellationToken::new();
+        let provider = Arc::new(CountingCallGraph(AtomicUsize::new(0)));
+        // Сбрасывает подмену на любом выходе из теста, в том числе при панике.
+        struct ResetOverride;
+        impl Drop for ResetOverride {
+            fn drop(&mut self) {
+                crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+                    .with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let _reset_override = ResetOverride;
+        crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+            .with(|slot| *slot.borrow_mut() = Some(vec![provider.clone()]));
+        let view = |arguments: serde_json::Value| {
+            let request = InvocationRequest::new(
+                ToolIdentity::View,
+                arguments,
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let execution = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            let result = service.execute(&execution, cancellation.clone()).unwrap();
+            execution
+                .publish(Ok(result), &cancellation)
+                .unwrap()
+                .unwrap()
+        };
+        let method = "main:CommonModule.Handlers.Method.Run";
+
+        let plain = view(serde_json::json!({"at": method}));
+        assert!(plain.ok, "a plain method view succeeds");
+        let data = plain.data.as_ref().unwrap();
+        assert!(
+            data["props"].get("callGraph").is_none(),
+            "the method node carries no call graph summary"
+        );
+        let branches = data["branches"].as_array().unwrap();
+        for kind in ["Caller", "Callee"] {
+            let branch = format!("{method}.{kind}");
+            assert!(
+                branches
+                    .iter()
+                    .any(|declared| *declared == serde_json::json!({"at": branch})),
+                "{kind} is named without a count"
+            );
+        }
+        assert_eq!(
+            provider.0.load(Ordering::SeqCst),
+            0,
+            "a plain method view asked the analyzer"
+        );
+
+        let section =
+            view(serde_json::json!({"at": method, "filter": {"sections": ["callGraph"]}}));
+        assert!(!section.ok, "the callGraph section is refused");
+        assert_eq!(
+            serde_json::to_value(&section).unwrap()["diagnostics"][0]["code"],
+            "unsupported_filter"
+        );
+        let only_branches =
+            view(serde_json::json!({"at": method, "filter": {"sections": ["branches"]}}));
+        assert!(only_branches.ok, "the branches section succeeds");
+        assert!(only_branches.data.as_ref().unwrap()["branches"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!({"at": format!("{method}.Caller")})));
+        assert_eq!(provider.0.load(Ordering::SeqCst), 0);
+
+        let caller = view(serde_json::json!({"at": format!("{method}.Caller")}));
+        assert!(caller.ok, "the Caller branch is read");
+        let page = caller.data.as_ref().unwrap();
+        assert_eq!(page["kind"], "Caller");
+        assert_eq!(page["props"]["callGraph"], "ready");
+        assert_eq!(page["props"]["total"], 1, "the branch carries its total");
+        assert_eq!(
+            page["items"][0]["at"], method,
+            "the recursive call is its own caller"
+        );
+        let callee = view(serde_json::json!({"at": format!("{method}.Callee")}));
+        assert!(callee.ok, "the Callee branch is read");
+        assert_eq!(
+            callee.data.as_ref().unwrap()["props"]["total"],
+            0,
+            "a ready empty branch proves the absence of calls"
+        );
+        assert_eq!(
+            provider.0.load(Ordering::SeqCst),
+            4,
+            "each branch read asks both directions"
+        );
+    }
+
+    /// #1373: ветвь графа вызовов, чей анализатор ещё поставляется, отвечает
+    /// через настоящую службу вызова повторяемым состоянием поставки
+    /// `working`, а не графом. Поставка уже идёт, поэтому чтение ветви
+    /// присоединяется к ней ведомым и возвращается сразу.
+    #[test]
+    fn call_graph_branch_answers_working_while_the_analyzer_is_being_delivered() {
+        const CHILD: &str = "UNICA_CALL_GRAPH_DELIVERY_WORKING_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            use unica_bootstrap::{BootstrapError, DownloadObserver, Downloader};
+
+            /// Holds the only download until the test releases it, so the
+            /// delivery stays in flight while the branch view runs.
+            struct HeldDownload {
+                entered: Mutex<mpsc::Sender<()>>,
+                release: Mutex<mpsc::Receiver<()>>,
+            }
+            impl Downloader for HeldDownload {
+                fn download(
+                    &self,
+                    _url: &str,
+                    _destination: &std::path::Path,
+                    _observer: &dyn DownloadObserver,
+                ) -> Result<(), BootstrapError> {
+                    let _ = self.entered.lock().unwrap().send(());
+                    let _ = self
+                        .release
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(30));
+                    Err(std::io::Error::other("held download released").into())
+                }
+            }
+
+            let (entered, entered_wait) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let runtime =
+                bootstrap_runtime().with_delivery_downloader_for_test(Arc::new(HeldDownload {
+                    entered: Mutex::new(entered),
+                    release: Mutex::new(released),
+                }));
+            let plugin = std::path::PathBuf::from(std::env::var_os("UNICA_PLUGIN_ROOT").unwrap());
+            let owner = {
+                let deliveries = Arc::clone(&runtime.deliveries);
+                thread::spawn(move || {
+                    crate::infrastructure::engine_delivery::deliver_if_missing(
+                        &deliveries,
+                        &plugin,
+                        "bsl-analyzer",
+                        &CancellationToken::new(),
+                        &crate::domain::progress::NoopProgressSink,
+                    )
+                })
+            };
+            entered_wait
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the analyzer delivery is in flight");
+
+            let workspace = scheduled_handler_workspace(
+                "CONFIGURATION",
+                "Procedure Run() Export\nEndProcedure\n",
+            );
+            let service =
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+            let cancellation = CancellationToken::new();
+            let branch = "main:CommonModule.Handlers.Method.Run.Caller";
+            let request = InvocationRequest::new(
+                ToolIdentity::View,
+                serde_json::json!({"at": branch}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let view = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            assert!(
+                crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+                    .with(|slot| slot.borrow().is_none()),
+                "the branch must reach the real analyzer registry"
+            );
+            let viewed = service.execute(&view, cancellation.clone()).unwrap();
+
+            release.send(()).unwrap();
+            assert!(
+                !matches!(
+                    owner.join().unwrap(),
+                    crate::application::shared_work::EngineDeliveryState::Ready(_)
+                ),
+                "the held download never produces the analyzer"
+            );
+
+            assert!(
+                !viewed.ok,
+                "the branch must not answer a graph while the analyzer is delivered"
+            );
+            assert_eq!(
+                viewed.diagnostics.len(),
+                1,
+                "the branch names exactly one delivery refusal"
+            );
+            let diagnostic = &viewed.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable");
+            assert_eq!(diagnostic["detailCode"], "delivery_in_progress");
+            assert_eq!(diagnostic["outcome"], "retry");
+            assert_eq!(viewed.at.as_deref(), Some(branch));
+            let delivery = &viewed.data.as_ref().expect("delivery state")["delivery"];
+            assert_eq!(delivery["artifact"], "bsl-analyzer");
+            assert_eq!(delivery["status"], "working");
+            assert!(delivery["retryAfterMs"].as_u64().is_some());
+            return;
+        }
+
+        // A one-test child owns the delivery environment, as in
+        // `canonical_selected_engine_routes_request_delivery_before_provider_start`.
+        let root = tempfile::tempdir().unwrap();
+        let plugin = root.path().join("plugin");
+        std::fs::create_dir_all(plugin.join("third-party")).unwrap();
+        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let exe = std::env::consts::EXE_SUFFIX;
+        std::fs::write(
+            plugin.join("third-party/manifest.json"),
+            serde_json::json!({
+                "schemaVersion": 2,
+                "tools": [{
+                    "name": "bsl-analyzer",
+                    "version": "0.2.67",
+                    "binaryPath": format!("bin/{target}/bsl-analyzer{exe}"),
+                    "sha256": "0".repeat(64),
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let version = env!("CARGO_PKG_VERSION");
+        let mut core_targets = serde_json::Map::new();
+        let mut analyzer_targets = serde_json::Map::new();
+        for host in unica_bootstrap::HostTarget::ALL {
+            let host = host.as_str();
+            let suffix = if host == "win-x64" { ".exe" } else { "" };
+            let core_asset = format!("unica-runtime-{host}.tar.gz");
+            let core_path = format!("bin/{host}/unica{suffix}");
+            core_targets.insert(host.to_owned(), serde_json::json!({
+                "asset": {"name": core_asset, "url": format!("https://github.com/IngvarConsulting/unica/releases/download/v{version}/{core_asset}"), "mediaType": "application/gzip", "sha256": "1".repeat(64)},
+                "files": [{"path": core_path, "sha256": "1".repeat(64), "executable": true}],
+                "entrypoint": core_path,
+            }));
+            let asset = format!("bsl-analyzer-{host}{suffix}");
+            analyzer_targets.insert(host.to_owned(), serde_json::json!({
+                "asset": {"name": asset, "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/bsl-analyzer-v0.2.67-build.1/{asset}"), "mediaType": "application/octet-stream", "sha256": "2".repeat(64)},
+                "files": [{"path": format!("bin/{host}/bsl-analyzer{suffix}"), "sha256": "2".repeat(64), "executable": true}],
+            }));
+        }
+        let release = root.path().join("runtime-manifest.json");
+        std::fs::write(
+            &release,
+            serde_json::json!({
+                "schemaVersion": 2,
+                "pluginVersion": version,
+                "source": {"repository": "https://github.com/IngvarConsulting/unica", "commit": "0".repeat(40)},
+                "release": {"repository": "https://github.com/IngvarConsulting/unica", "tag": format!("v{version}")},
+                "artifacts": {
+                    "unica": {"version": version, "role": "core", "targets": core_targets},
+                    "bsl-analyzer": {"version": "0.2.67", "role": "engine", "targets": analyzer_targets},
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infrastructure::daemon::server::actor_capacity_tests::call_graph_branch_answers_working_while_the_analyzer_is_being_delivered",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("UNICA_PLUGIN_ROOT", &plugin)
+            .env("UNICA_ARTIFACT_CACHE", root.path().join("cache"))
+            .env("UNICA_RUNTIME_MANIFEST", &release)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("running 1 test"),
+            "the child must run exactly the call graph delivery test"
+        );
+        assert!(
+            output.status.success(),
+            "the child call graph delivery test failed; rerun it with its environment"
+        );
     }
 
     struct ManualInvocationClock(Mutex<Instant>);

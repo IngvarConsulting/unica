@@ -2366,44 +2366,45 @@ fn common_module_properties(
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
             .extends
             .is_some_and(|id| uuid::Uuid::parse_str(&id).is_ok());
-    let boolean = |name| -> Result<bool, ViewError> {
-        let raw = xml_descendant_text(root, name).ok_or_else(|| {
-            ViewError::detailed(
+    // Платформа 8.3.27 принимает и выгружает заимствованный общий модуль без
+    // любого из этих свойств и не переносит в него значения родителя.
+    // Отсутствие у заимствованного модуля читается как неизвестное (`None`),
+    // у обычного остаётся ошибкой источника. Записанное значение проверяется
+    // одинаково.
+    let property = |name: &str| -> Result<Option<roxmltree::Node<'_, '_>>, ViewError> {
+        match root
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name() == name)
+        {
+            None if borrowed => Ok(None),
+            None => Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
                 format!("common module descriptor has no {name} property"),
-            )
-        })?;
-        match raw {
-            "true" => Ok(true),
-            "false" => Ok(false),
+            )),
+            Some(node) => Ok(Some(node)),
+        }
+    };
+    let boolean = |name: &str| -> Result<Option<bool>, ViewError> {
+        property(name)?
+            .map(|node| match node.text().map(str::trim) {
+                Some("true") => Ok(true),
+                Some("false") => Ok(false),
+                _ => Err(ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    format!("common module {name} property is not boolean"),
+                )),
+            })
+            .transpose()
+    };
+    let return_values_reuse = property("ReturnValuesReuse")?
+        .map(|node| match node.text().map(str::trim) {
+            Some(value) if !value.is_empty() => Ok(value.to_string()),
             _ => Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
-                format!("common module {name} property is not boolean"),
+                "common module ReturnValuesReuse property is empty",
             )),
-        }
-    };
-    let privileged = match root
-        .descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == "Privileged")
-    {
-        None if borrowed => None,
-        None => {
-            return Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                "common module descriptor has no Privileged property",
-            ));
-        }
-        Some(node) => match node.text().map(str::trim) {
-            Some("true") => Some(true),
-            Some("false") => Some(false),
-            _ => {
-                return Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "common module Privileged property is not boolean",
-                ));
-            }
-        },
-    };
+        })
+        .transpose()?;
     Ok(CommonModuleProperties {
         global: boolean("Global")?,
         client_managed_application: boolean("ClientManagedApplication")?,
@@ -2411,23 +2412,9 @@ fn common_module_properties(
         external_connection: boolean("ExternalConnection")?,
         client_ordinary_application: boolean("ClientOrdinaryApplication")?,
         server_call: boolean("ServerCall")?,
-        privileged,
-        return_values_reuse: xml_descendant_text(root, "ReturnValuesReuse")
-            .ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "common module descriptor has no ReturnValuesReuse property",
-                )
-            })?
-            .to_string(),
+        privileged: boolean("Privileged")?,
+        return_values_reuse,
     })
-}
-
-fn xml_descendant_text<'a>(root: roxmltree::Node<'a, 'a>, name: &str) -> Option<&'a str> {
-    root.descendants()
-        .find(|node| node.is_element() && node.tag_name().name() == name)
-        .and_then(|node| node.text())
-        .map(str::trim)
 }
 
 fn module_title(at: &QualifiedAddress, capability: ModuleCapability) -> String {
@@ -2455,6 +2442,21 @@ fn module_projection_view(
     filter: &ModuleViewFilter,
 ) -> Result<NodeViewData, ViewError> {
     let suffix = &requested.segments()[prefix_len..];
+    if filter.context.is_some()
+        && projections
+            .summary()
+            .props
+            .common_module
+            .as_ref()
+            .is_some_and(|common| !common.execution_environment_known())
+    {
+        // Без флагов среды фильтр не может ни включить, ни исключить метод:
+        // ответ по нему выдумал бы контексты заимствованного модуля.
+        return Err(ViewError::new(
+            RefusalCode::UnsupportedFilter,
+            "module filter.context needs compilation contexts, but this borrowed common module does not state its execution environment; read the parent module from props.extends when the parent is resolved",
+        ));
+    }
     if suffix.is_empty() {
         let summary = projections.summary();
         let props = serde_json::to_value(&summary.props)
@@ -2649,6 +2651,7 @@ fn module_method_matches_filter(method: &MethodProjection, filter: &ModuleViewFi
                 .compile
                 .contexts
                 .iter()
+                .flatten()
                 .any(|candidate| module_context_matches(context, candidate))
         })
 }
@@ -2682,6 +2685,7 @@ fn module_body_line_matches_filter(
                 .compile
                 .contexts
                 .iter()
+                .flatten()
                 .any(|candidate| module_context_matches(context, candidate))
             && projections
                 .compilation()
@@ -2691,6 +2695,7 @@ fn module_body_line_matches_filter(
                     range
                         .contexts
                         .iter()
+                        .flatten()
                         .any(|candidate| module_context_matches(context, candidate))
                 })
     })

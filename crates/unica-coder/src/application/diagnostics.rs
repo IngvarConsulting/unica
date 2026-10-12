@@ -797,25 +797,24 @@ pub(crate) fn public_diagnostic_error_message(code: &str) -> &'static str {
     }
 }
 
-const MISSING_ENGINE_REASON_MIDDLE: &str = " is not installed on this machine for ";
+const MISSING_ENGINE_REASON_MIDDLE: &str = " is not available for ";
 
-/// The public reason of an absent engine: tool, target and the next step its
-/// install mode chooses. The expected path stays out: it names the user's
-/// directories (#1338).
+/// The public reason of an absent engine: tool, target, the stage where it is
+/// missing and the next step its install mode chooses — the same words every
+/// route uses for the missing-engine refusal (#549). The expected path stays
+/// out: it names the user's directories (#1338).
 pub(crate) fn missing_engine_public_reason(
     missing: &crate::domain::engine::MissingEngine,
 ) -> String {
-    format!(
-        "{}{MISSING_ENGINE_REASON_MIDDLE}{}; {}",
-        missing.tool, missing.target, missing.next_step
-    )
+    missing.public_reason()
 }
 
 /// Accepts a `bundled_tool_missing` message only when it is exactly what
-/// [`missing_engine_public_reason`] builds for a plain tool and target name in
-/// one of the install modes; anything else is not published.
+/// [`missing_engine_public_reason`] builds for a plain tool and target name at
+/// one of the stages in one of the install modes; anything else is not
+/// published.
 pub(crate) fn canonical_missing_engine_reason(message: &str) -> Option<String> {
-    use crate::domain::engine::{InstallMode, MissingEngine};
+    use crate::domain::engine::{EngineStage, InstallMode, MissingEngine};
     let plain = |value: &str| {
         !value.is_empty()
             && value
@@ -823,13 +822,20 @@ pub(crate) fn canonical_missing_engine_reason(message: &str) -> Option<String> {
                 .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
     };
     let (tool, rest) = message.split_once(MISSING_ENGINE_REASON_MIDDLE)?;
-    let (target, _) = rest.split_once("; ")?;
+    let (target, _) = rest.split_once(": ")?;
     if !plain(tool) || !plain(target) {
         return None;
     }
-    [InstallMode::Source, InstallMode::Marketplace]
+    EngineStage::ALL
         .into_iter()
-        .map(|mode| missing_engine_public_reason(&MissingEngine::new(tool, target, "", None, mode)))
+        .flat_map(|stage| {
+            [InstallMode::Source, InstallMode::Marketplace].map(move |mode| (stage, mode))
+        })
+        .map(|(stage, mode)| {
+            missing_engine_public_reason(
+                &MissingEngine::new(tool, target, "", None, mode).at_stage(stage),
+            )
+        })
         .find(|reason| reason == message)
 }
 
@@ -3207,15 +3213,22 @@ mod tests {
         use crate::application::diagnostics::{
             canonical_missing_engine_reason, missing_engine_public_reason,
         };
-        use crate::domain::engine::{InstallMode, MissingEngine};
-        for mode in [InstallMode::Source, InstallMode::Marketplace] {
-            let reason = missing_engine_public_reason(&MissingEngine::new(
+        use crate::domain::engine::{EngineStage, InstallMode, MissingEngine};
+        for (stage, mode) in EngineStage::ALL.into_iter().flat_map(|stage| {
+            [InstallMode::Source, InstallMode::Marketplace].map(move |mode| (stage, mode))
+        }) {
+            let missing = MissingEngine::new(
                 "bsl-analyzer",
                 "linux-x64",
                 "/private/home/engine",
                 None,
                 mode,
-            ));
+            )
+            .at_stage(stage);
+            let reason = missing_engine_public_reason(&missing);
+            // One text on every route: the refusal's message is this reason
+            // behind the closed code (#549).
+            assert_eq!(missing.message(), format!("bundled_tool_missing: {reason}"));
             assert!(!reason.contains("/private"));
             assert_eq!(
                 canonical_missing_engine_reason(&reason).as_deref(),

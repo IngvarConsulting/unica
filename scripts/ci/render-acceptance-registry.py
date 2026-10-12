@@ -185,6 +185,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         "`tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную "
         "`tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. "
         "СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; "
+        "заимствованный общий модуль без свойств из выгрузки платформы — на `workspace-borrowed/`; "
         "агентные сценарии выбираются большим набором `tests/agent_evaluation/`. "
         "Источник истины — JSON корпуса; этот документ — его "
         "рендер для людей, и проверка на расхождение входит в тот же тест."
@@ -193,13 +194,15 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     source_count = sum(s.get("profile", "source") == "source" for s in scenarios)
     delivery_count = sum(s.get("profile") == "delivery" for s in scenarios)
     agent_count = sum(s.get("profile") == "agent-evaluation" for s in scenarios)
-    fault_count = sum(s.get("profile") == "fault-injection" for s in scenarios)
-    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}. "
+    fault_count = sum(s.get("driver") == "analyzer-jsonl-fault" for s in scenarios)
+    delivery_failure_count = sum(s.get("driver") == "analyzer-delivery-failure" for s in scenarios)
+    out(f"Профили исполнения: `source` — {source_count} сценария; `delivery/bsl-analyzer` — {delivery_count}; `agent-evaluation/codex` — {agent_count}; `fault-injection/analyzer-jsonl-fault` — {fault_count}; `fault-injection/analyzer-delivery-failure` — {delivery_failure_count}. "
         "Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной "
         "синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. "
         "Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, "
         "проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. "
-        "Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. "
+        "Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. "
+        "Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. "
         "Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.")
     out("")
     out("## Классы ответа шага")

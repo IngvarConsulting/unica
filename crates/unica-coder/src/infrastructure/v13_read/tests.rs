@@ -117,6 +117,280 @@ fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_cont
     assert!(data["branches"].is_array());
 }
 
+const COMMON_MODULE_PROPERTY_KEYS: [&str; 8] = [
+    "global",
+    "clientManagedApplication",
+    "server",
+    "externalConnection",
+    "clientOrdinaryApplication",
+    "serverCall",
+    "privileged",
+    "returnValuesReuse",
+];
+
+/// #1304: платформа 8.3.27 выгружает заимствованный общий модуль без любого
+/// из восьми свойств. Отсутствие читается как неизвестное, не как значение
+/// по умолчанию; у обычного модуля и у собственного модуля расширения оно
+/// остаётся ошибкой источника, записанное некорректное значение — тоже.
+#[test]
+fn borrowed_common_module_reads_platform_absent_properties_as_unknown() {
+    let inherited =
+        fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-inherited.xml");
+    let props = super::common_module_properties(inherited.as_bytes(), SourceSetKind::Extension)
+        .expect("platform borrowed CommonModule without properties");
+    let serialized = serde_json::to_value(&props).unwrap();
+    for key in COMMON_MODULE_PROPERTY_KEYS {
+        assert_eq!(serialized[key], serde_json::Value::Null, "{key}");
+    }
+    assert!(!props.execution_environment_known());
+
+    let environment =
+        fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-environment-only.xml");
+    let props = super::common_module_properties(environment.as_bytes(), SourceSetKind::Extension)
+        .expect("platform borrowed CommonModule without ReturnValuesReuse");
+    assert_eq!(props.global, Some(false));
+    assert_eq!(props.client_managed_application, Some(false));
+    assert_eq!(props.server, Some(true));
+    assert_eq!(props.external_connection, Some(true));
+    assert_eq!(props.client_ordinary_application, Some(false));
+    assert_eq!(props.server_call, Some(true));
+    assert_eq!(props.privileged, None);
+    assert_eq!(props.return_values_reuse, None);
+    assert!(props.execution_environment_known());
+
+    let parent = fixture_text("platform_8_3_27/cfe_borrow/parent-common-module-cache.xml");
+    let props =
+        super::common_module_properties(parent.as_bytes(), SourceSetKind::Configuration).unwrap();
+    assert_eq!(props.return_values_reuse.as_deref(), Some("DuringRequest"));
+    assert_eq!(props.privileged, Some(true));
+    for (tag, value) in [
+        ("ReturnValuesReuse", "DuringRequest"),
+        ("Global", "false"),
+        ("Server", "true"),
+    ] {
+        let missing = parent.replace(&format!("<{tag}>{value}</{tag}>"), "");
+        assert_ne!(missing, parent, "{tag}");
+        let error =
+            super::common_module_properties(missing.as_bytes(), SourceSetKind::Configuration)
+                .unwrap_err();
+        assert_eq!(error.code(), RefusalCode::ProviderUnavailable, "{tag}");
+        assert!(error.to_string().contains(tag), "{tag}: {error}");
+    }
+    assert!(
+        super::common_module_properties(inherited.as_bytes(), SourceSetKind::Configuration)
+            .is_err(),
+        "outside an extension the borrowing marker proves nothing",
+    );
+    let own_extension = inherited.replace(
+        "<ExtendedConfigurationObject>3f6c2a10-5b7e-4c1d-9e2f-0a1b2c3d4e51</ExtendedConfigurationObject>",
+        "",
+    );
+    assert_ne!(own_extension, inherited);
+    assert!(
+        super::common_module_properties(own_extension.as_bytes(), SourceSetKind::Extension)
+            .is_err(),
+        "an extension's own CommonModule still requires every property",
+    );
+    for (tag, original, invalid) in [
+        (
+            "ReturnValuesReuse",
+            "<ServerCall>true</ServerCall>",
+            "<ServerCall>true</ServerCall><ReturnValuesReuse></ReturnValuesReuse>",
+        ),
+        ("Global", "<Global>false</Global>", "<Global>maybe</Global>"),
+        ("Server", "<Server>true</Server>", "<Server></Server>"),
+    ] {
+        let invalid = environment.replace(original, invalid);
+        assert_ne!(invalid, environment, "{tag}");
+        assert!(
+            super::common_module_properties(invalid.as_bytes(), SourceSetKind::Extension).is_err(),
+            "explicit invalid {tag} must not become null",
+        );
+    }
+}
+
+/// #1304: заимствованный модуль без свойств читается, его методы доступны.
+/// Контексты без флагов среды неизвестны и сериализуются `null`, фильтр по
+/// контексту отказывает типизированно; при записанных флагах контексты
+/// вычисляются как прежде, а неизвестные свойства остаются `null`.
+#[test]
+fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+    write(
+        &fixture.source.join("Configuration.xml"),
+        &configuration.replace(
+            "</ChildObjects>",
+            "<CommonModule>КешЗначений</CommonModule><CommonModule>СерверныеФункции</CommonModule></ChildObjects>",
+        ),
+    );
+    for (name, descriptor) in [
+        ("КешЗначений", "extension-common-module-inherited.xml"),
+        (
+            "СерверныеФункции",
+            "extension-common-module-environment-only.xml",
+        ),
+    ] {
+        write(
+            &fixture.source.join(format!("CommonModules/{name}.xml")),
+            &fixture_text(&format!("platform_8_3_27/cfe_borrow/{descriptor}")),
+        );
+        write(
+            &fixture
+                .source
+                .join(format!("CommonModules/{name}/Ext/Module.bsl")),
+            "Функция ПР_Удвоенное() Экспорт\n\tВозврат 2;\nКонецФункции\n",
+        );
+    }
+    let service = fixture.extension_view_service();
+
+    let view = service.view(ViewRequest::new("main:CommonModule.КешЗначений").unwrap());
+    assert!(view.ok, "view must succeed");
+    let data = view.data.unwrap();
+    for key in COMMON_MODULE_PROPERTY_KEYS {
+        assert_eq!(
+            data["props"]["commonModule"][key],
+            serde_json::Value::Null,
+            "{key}"
+        );
+    }
+    let method = service
+        .view(ViewRequest::new("main:CommonModule.КешЗначений.Method.ПР_Удвоенное").unwrap());
+    assert!(method.ok, "method must succeed");
+    let method = method.data.unwrap();
+    assert_eq!(method["kind"], "Method");
+    assert_eq!(method["props"]["export"], true);
+    assert_eq!(
+        method["props"]["compile"]["contexts"],
+        serde_json::Value::Null,
+        "contexts of a borrowed module without environment flags are unknown"
+    );
+    let body = service
+        .view(ViewRequest::new("main:CommonModule.КешЗначений.Method.ПР_Удвоенное.Body").unwrap());
+    assert!(body.ok, "body must succeed");
+    let filtered = service.view(
+        ViewRequest::new("main:CommonModule.КешЗначений.Method")
+            .unwrap()
+            .with_filter(serde_json::Map::from_iter([(
+                "context".to_string(),
+                json!("server"),
+            )])),
+    );
+    assert!(!filtered.ok, "an unknown context must not filter methods");
+    assert_eq!(
+        filtered.diagnostics[0]["code"], "unsupported_filter",
+        "an unknown context refuses the filter"
+    );
+
+    let view = service.view(ViewRequest::new("main:CommonModule.СерверныеФункции").unwrap());
+    assert!(view.ok, "view must succeed");
+    let common = &view.data.as_ref().unwrap()["props"]["commonModule"];
+    assert_eq!(common["server"], true);
+    assert_eq!(common["externalConnection"], true);
+    assert_eq!(common["returnValuesReuse"], serde_json::Value::Null);
+    assert_eq!(common["privileged"], serde_json::Value::Null);
+    let method = service
+        .view(ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Удвоенное").unwrap());
+    assert!(method.ok, "method must succeed");
+    assert_eq!(
+        method.data.unwrap()["props"]["compile"]["contexts"],
+        json!([
+            "server",
+            "mobileAppServer",
+            "mobileStandaloneServer",
+            "externalConnection"
+        ])
+    );
+    let filtered = service.view(
+        ViewRequest::new("main:CommonModule.СерверныеФункции.Method")
+            .unwrap()
+            .with_filter(serde_json::Map::from_iter([(
+                "context".to_string(),
+                json!("server"),
+            )])),
+    );
+    assert!(filtered.ok, "filtered must succeed");
+}
+
+/// #1304: контексты известны только при всех четырёх флагах среды.
+/// Без любого одного из них контексты метода — `null`, фильтр отказывает,
+/// а остальные записанные флаги читаются как есть.
+#[test]
+fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contexts() {
+    let environment =
+        fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-environment-only.xml");
+    for (flag, element) in [
+        (
+            "clientManagedApplication",
+            "<ClientManagedApplication>false</ClientManagedApplication>",
+        ),
+        (
+            "clientOrdinaryApplication",
+            "<ClientOrdinaryApplication>false</ClientOrdinaryApplication>",
+        ),
+        ("server", "<Server>true</Server>"),
+        (
+            "externalConnection",
+            "<ExternalConnection>true</ExternalConnection>",
+        ),
+    ] {
+        let descriptor = environment.replace(element, "");
+        assert_ne!(descriptor, environment, "{flag}");
+        let props =
+            super::common_module_properties(descriptor.as_bytes(), SourceSetKind::Extension)
+                .unwrap();
+        assert!(!props.execution_environment_known(), "{flag}");
+
+        let fixture = RealReaderFixture::new();
+        let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+        write(
+            &fixture.source.join("Configuration.xml"),
+            &configuration.replace(
+                "</ChildObjects>",
+                "<CommonModule>СерверныеФункции</CommonModule></ChildObjects>",
+            ),
+        );
+        write(
+            &fixture.source.join("CommonModules/СерверныеФункции.xml"),
+            &descriptor,
+        );
+        write(
+            &fixture
+                .source
+                .join("CommonModules/СерверныеФункции/Ext/Module.bsl"),
+            "Функция ПР_Разность(А, Б) Экспорт\n\tВозврат А - Б;\nКонецФункции\n",
+        );
+        let service = fixture.extension_view_service();
+        let module = service.view(ViewRequest::new("main:CommonModule.СерверныеФункции").unwrap());
+        assert!(module.ok, "{flag}: module view must succeed");
+        let common = &module.data.as_ref().unwrap()["props"]["commonModule"];
+        assert_eq!(common[flag], serde_json::Value::Null, "{flag}");
+        assert_eq!(common["serverCall"], true, "{flag}");
+        let method = service.view(
+            ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Разность").unwrap(),
+        );
+        assert!(method.ok, "{flag}: method view must succeed");
+        assert_eq!(
+            method.data.unwrap()["props"]["compile"]["contexts"],
+            serde_json::Value::Null,
+            "{flag}"
+        );
+        let filtered = service.view(
+            ViewRequest::new("main:CommonModule.СерверныеФункции.Method")
+                .unwrap()
+                .with_filter(serde_json::Map::from_iter([(
+                    "context".to_string(),
+                    json!("server"),
+                )])),
+        );
+        assert!(!filtered.ok, "{flag}");
+        assert_eq!(
+            filtered.diagnostics[0]["code"], "unsupported_filter",
+            "{flag}: an unknown context refuses the filter"
+        );
+    }
+}
+
 fn configuration_payload(
     reader: &ProviderReadAuthority,
 ) -> Result<serde_json::Value, crate::application::v13::view::ViewError> {

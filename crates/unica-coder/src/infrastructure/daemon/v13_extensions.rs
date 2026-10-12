@@ -285,7 +285,7 @@ impl PreparedExtensions {
             args.push("--dry-run".into());
         }
         let output = runner
-            .run(&ProcessCommand {
+            .run_staged(&ProcessCommand {
                 program: tool.program.clone(),
                 args,
                 cwd: self.context.workspace_root.clone(),
@@ -301,7 +301,9 @@ impl PreparedExtensions {
                     cancellation.protect_process_on_spawn()
                 },
             })
-            .map_err(|error| runner_start_rejection(Some(self.operation.name().into()), &error))?;
+            .map_err(|error| {
+                runner_start_rejection(Some(self.operation.name().into()), &error, &tool.program)
+            })?;
         if output.cancelled {
             return Err(self.fail(RefusalCode::Cancelled, "v8-runner was cancelled"));
         }

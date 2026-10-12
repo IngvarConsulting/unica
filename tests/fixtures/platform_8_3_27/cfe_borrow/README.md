@@ -52,3 +52,30 @@ The canonical protocol probe also checked write-free preview, rejection of a
 revision made stale by a parent edit, and byte- and file-identity-preserving
 repeat apply with the committed combined revision. This execution supplements
 the fixture evidence; its refreshed descriptors are not the files in this folder.
+
+## Adopted CommonModule without properties (#1304)
+
+A separate run with the same binary and the same six commands imported a
+parent with `CommonModule.КешЗначений` (`Privileged=true`,
+`ReturnValuesReuse=DuringRequest`) and `CommonModule.СерверныеФункции`, and an
+extension that adopts both with BSL in their modules. The first adopted
+descriptor carried only `ObjectBelonging`, `Name`, `Comment` and
+`ExtendedConfigurationObject`; the second also carried the six environment
+flags, but neither `Privileged` nor `ReturnValuesReuse`. Import, `check` and
+`apply` succeeded; the export kept exactly those property sets and added only
+`PropertyState Module/Extended`. A second cycle through an independently created
+infobase reproduced both descriptors byte for byte.
+
+Both extension input descriptors were written by hand, not produced by the
+Configurator's "add to extension" command. The experiment therefore proves that
+the platform accepts these shapes and preserves them unchanged through
+import/export; it does not show what the Configurator writes when it adopts a
+module itself.
+
+`extension-common-module-inherited.xml` and
+`extension-common-module-environment-only.xml` are those exports;
+`parent-common-module-cache.xml` is the parent of the first one. They prove that
+any of the eight CommonModule properties may be absent from an adopted
+descriptor, and that absence is not the parent's value copied or a default:
+the parent's `DuringRequest` was not written. The complete trees are the
+`workspace-borrowed` acceptance fixture.
