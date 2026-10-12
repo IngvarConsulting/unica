@@ -526,8 +526,8 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         scenarios = self.corpus["scenarios"]
         self.assertEqual(len(scenarios), 393)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 936,
-            "a wire step went missing: the corpus freezes 936 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 939,
+            "a wire step went missing: the corpus freezes 939 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
         self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 394)])
@@ -650,10 +650,10 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         ]
         # Every documented gap names a reproduced surface defect in its text.
         # The rendered registry lists them; the ceiling from the fixture README
-        # (three) is a ratchet against silent growth, not a target.
+        # (two) is a ratchet against silent growth, not a target.
         self.assertLessEqual(
             len(gap_steps),
-            3,
+            2,
             "documented gaps grew: either fix the surface or re-approve the corpus",
         )
 
