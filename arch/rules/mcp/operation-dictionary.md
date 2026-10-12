@@ -10,6 +10,7 @@ check:
   - crates/unica-coder/src/application/v13/diff.rs::diff_ignores_computed_view_sections
   - crates/unica-coder/src/domain/address.rs::a_can_segment_takes_the_rest_of_the_address_as_the_operation_name
   - crates/unica-coder/src/infrastructure/daemon/server.rs::a_retired_read_filter_routes_next_to_the_address_that_replaced_it
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::an_operation_address_outside_view_routes_next_to_view
   - crates/unica-coder/src/domain/apply.rs::applicability_follows_the_route_not_the_terminal_kind
   - crates/unica-coder/src/domain/apply.rs::a_misplaced_operation_names_the_nearest_node_where_it_applies
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_the_main_corpus_workspace
@@ -52,7 +53,10 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 ответ узла не содержит `can`, а адрес его операции даёт `unsupported_section`;
 тот же отказ получает реализованная операция, подробный контракт которой
 ещё не опубликован. Вычисленный словарь может быть пустым: на узле ничего
-не применимо.
+не применимо. Адрес операции читает только `view`: `check` и `resolve`
+(`at`), `apply` (`at` вызова, `at` операции и `args.at` операции) и `search`
+(`scope`) отвечают на него `bad_value` с исходом `fixCall`, сообщением, что это
+адрес словаря операций, и `next` к `unica.view` с тем же адресом.
 Аргумента `filter` у `view` и `diff` нет: вызов с ним получает отказ
 неизвестного аргумента, и `next` называет адрес, который заменил фильтр.
 

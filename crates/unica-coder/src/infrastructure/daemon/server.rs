@@ -265,6 +265,64 @@ fn retired_read_filter(request: &InvocationRequest) -> Option<DomainResult> {
     Some(result)
 }
 
+/// Адрес `<узел>.Can.<op>` называет операцию словаря узла, а не узел
+/// исходников: его читает только `unica.view`. Остальные инструменты
+/// отвечают на него одним отказом с переходом к этому чтению, а не тем,
+/// что маршрутизация скажет о несуществующем узле. `diff` отказывает сам:
+/// у него свой код (`target_kind_unsupported`).
+fn operation_address_outside_view(request: &InvocationRequest) -> Option<DomainResult> {
+    use crate::application::invocation_store::ToolIdentity;
+    let arguments = request.arguments();
+    let text = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let mut candidates: Vec<(String, Option<String>)> = Vec::new();
+    match request.tool() {
+        ToolIdentity::Check | ToolIdentity::Resolve => {
+            candidates.push(("at".to_string(), text(arguments.get("at"))));
+        }
+        ToolIdentity::Search => {
+            candidates.push(("scope".to_string(), text(arguments.get("scope"))));
+        }
+        ToolIdentity::Apply => {
+            candidates.push(("at".to_string(), text(arguments.get("at"))));
+            for (index, operation) in arguments
+                .get("ops")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                candidates.push((format!("ops[{index}].at"), text(operation.get("at"))));
+                candidates.push((
+                    format!("ops[{index}].args.at"),
+                    text(operation.get("args").and_then(|args| args.get("at"))),
+                ));
+            }
+        }
+        _ => return None,
+    }
+    let (location, address) = candidates.into_iter().find_map(|(location, raw)| {
+        let raw = raw?;
+        let parsed = crate::domain::address::QualifiedAddress::parse(&raw).ok()?;
+        parsed.operation_query()?;
+        Some((location, raw))
+    })?;
+    let mut result = DomainResult::canonical_rejection(
+        Some(location),
+        RefusalCode::BadValue,
+        format!("`{address}` is an operation-dictionary address; only unica.view reads it"),
+    );
+    result.next.push(serde_json::json!({
+        "tool": "unica.view",
+        "args": {"at": address},
+        "reason": "контракт операции читает view",
+    }));
+    Some(result)
+}
+
 fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String> {
     if request.tool() == crate::application::invocation_store::ToolIdentity::Apply {
         let arguments = request.arguments();
@@ -720,6 +778,9 @@ impl V5CanonicalInvocationRuntime {
             return Err(V5CanonicalPrepareError::Rejected(Box::new(
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),
             )));
+        }
+        if let Some(refusal) = operation_address_outside_view(&request) {
+            return Err(V5CanonicalPrepareError::Rejected(Box::new(refusal)));
         }
         match super::v13_workspace_bootstrap::prepare(
             &request,
@@ -7580,6 +7641,81 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
+    /// Адрес операции словаря читает только `view`: `check`, `resolve`,
+    /// `apply` (в том числе адрес внутри операции) и область `search`
+    /// отвечают одним отказом с переходом к этому чтению.
+    #[test]
+    fn an_operation_address_outside_view_routes_next_to_view() {
+        let can = "main:Catalog.Валюты.Can.attribute.add";
+        let request =
+            |tool, arguments| InvocationRequest::new(tool, arguments, "/workspace", 7_000).unwrap();
+        for (tool, arguments, location) in [
+            (ToolIdentity::Check, serde_json::json!({"at": can}), "at"),
+            (ToolIdentity::Resolve, serde_json::json!({"at": can}), "at"),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({"query": "x", "scope": can}),
+                "scope",
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({"at": can, "ops": [{"op": "props.set"}]}),
+                "at",
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({"at": "main:Catalog.Валюты", "ops": [
+                    {"op": "props.set", "args": {"values": {}}},
+                    {"op": "attribute.add", "args": {"at": can, "items": []}}
+                ]}),
+                "ops[1].args.at",
+            ),
+        ] {
+            let name = tool.catalog_name();
+            let refused = super::operation_address_outside_view(&request(tool, arguments))
+                .unwrap_or_else(|| panic!("{name}: a Can address is refused"));
+            assert!(!refused.ok, "{name}");
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{name}");
+            assert_eq!(refused.diagnostics[0]["outcome"], "fixCall", "{name}");
+            assert_eq!(refused.at.as_deref(), Some(location), "{name}");
+            assert_eq!(
+                refused.diagnostics[0]["message"],
+                format!("`{can}` is an operation-dictionary address; only unica.view reads it"),
+                "{name}"
+            );
+            assert_eq!(
+                refused.next,
+                vec![serde_json::json!({
+                    "tool": "unica.view",
+                    "args": {"at": can},
+                    "reason": "контракт операции читает view",
+                })],
+                "{name}"
+            );
+        }
+        for (tool, arguments) in [
+            (
+                ToolIdentity::Check,
+                serde_json::json!({"at": "main:Catalog.Валюты"}),
+            ),
+            (
+                ToolIdentity::Check,
+                serde_json::json!({"at": "main:Catalog.Can"}),
+            ),
+            (ToolIdentity::View, serde_json::json!({"at": can})),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({"left": can, "right": can}),
+            ),
+        ] {
+            assert!(
+                super::operation_address_outside_view(&request(tool, arguments)).is_none(),
+                "{}: not refused here",
+                tool.catalog_name()
+            );
+        }
+    }
+
     /// INV.WIRE.V13-REFUSAL-CHANNEL: every canonical refusal answers through
     /// `diagnostics[0]` with a code from the closed set and a message; a stale
     /// saved apply plan has its own conflict code instead of `provider_unavailable`;
@@ -7872,6 +8008,49 @@ struct ActorLogicalReadLease {"#,
                 refused.next.first().map(|entry| entry["args"].clone()),
                 Some(serde_json::json!({"at": "main:Catalog.Bare"})),
                 "{at}"
+            );
+        }
+
+        // Адрес операции читает только `view`: остальные инструменты на
+        // проводе отвечают одним отказом с переходом к нему.
+        let can = "main:Catalog.Bare.Can.attribute.add";
+        for (tool, arguments) in [
+            (ToolIdentity::Check, serde_json::json!({"at": can})),
+            (ToolIdentity::Resolve, serde_json::json!({"at": can})),
+            (
+                ToolIdentity::Search,
+                serde_json::json!({"query": "needle", "scope": can}),
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({"at": can, "ops": [{"op": "props.set", "args": {"values": {}}}]}),
+            ),
+            (
+                ToolIdentity::Apply,
+                serde_json::json!({"at": "main:Catalog.Bare", "ops": [
+                    {"op": "attribute.add", "args": {"at": can, "items": []}}
+                ]}),
+            ),
+        ] {
+            let name = tool.catalog_name();
+            let refused = call(tool, arguments);
+            assert!(!refused.ok, "{name}");
+            assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{name}");
+            assert!(
+                refused.diagnostics[0]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("operation-dictionary address")),
+                "{name}"
+            );
+            assert_eq!(
+                refused.next.first().map(|entry| entry["args"].clone()),
+                Some(serde_json::json!({"at": can})),
+                "{name}"
+            );
+            assert_eq!(
+                refused.next.first().map(|entry| entry["tool"].clone()),
+                Some(serde_json::json!("unica.view")),
+                "{name}"
             );
         }
 

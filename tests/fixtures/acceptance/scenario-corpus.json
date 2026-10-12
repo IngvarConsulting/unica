@@ -34427,7 +34427,7 @@
    "name": "retired-view-filter-routes-to-addresses",
    "issue": 1374,
    "area": "Навигация и чтение",
-   "task": "Вызов view или diff с прежним filter получает отказ неизвестного аргумента и next к адресу, который его заменил; Can без операции и неприменимая операция отказывают с next к словарю узла",
+   "task": "Вызов view или diff с прежним filter получает отказ неизвестного аргумента и next к адресу, который его заменил; Can без операции и неприменимая операция отказывают с next к словарю узла; check, resolve, search и apply на адресе операции отказывают и ведут к его чтению через view",
    "wire": [
     {
      "tool": "unica.view",
@@ -34515,6 +34515,96 @@
       {
        "pointer": "/next/0/args/at",
        "eq": "main:Catalog.Валюты"
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Can.attribute.add"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `main:Catalog.Валюты.Can.attribute.add` is an operation-dictionary address; only unica.view reads it",
+     "assertions": [
+      {
+       "pointer": "/next/0/tool",
+       "eq": "unica.view"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Can.attribute.add"
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Валюты.Can.attribute.add"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `main:Catalog.Валюты.Can.attribute.add` is an operation-dictionary address; only unica.view reads it",
+     "assertions": [
+      {
+       "pointer": "/next/0/tool",
+       "eq": "unica.view"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Can.attribute.add"
+      }
+     ]
+    },
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Валюты",
+      "scope": "main:Catalog.Валюты.Can.attribute.add"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `main:Catalog.Валюты.Can.attribute.add` is an operation-dictionary address; only unica.view reads it",
+     "assertions": [
+      {
+       "pointer": "/next/0/tool",
+       "eq": "unica.view"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Can.attribute.add"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "at": "main:Catalog.Валюты.Can.attribute.add",
+         "items": []
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `main:Catalog.Валюты.Can.attribute.add` is an operation-dictionary address; only unica.view reads it",
+     "assertions": [
+      {
+       "pointer": "/next/0/tool",
+       "eq": "unica.view"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Can.attribute.add"
       }
      ]
     }
