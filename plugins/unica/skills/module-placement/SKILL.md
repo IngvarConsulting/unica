@@ -52,7 +52,7 @@ Then pick exactly one of the four common module contexts (std469) and name it by
 
 1. Answer the three std486 questions before opening any module. The answer, not convenience, picks the host.
 2. Map the neighbourhood with `unica.view {}` and `unica.view` on the subsystem node: an existing module for the same subsystem or purpose is a reason to extend rather than add.
-3. Find the callers with `unica.search` by the method name before moving anything (a call graph is not on the v0.13 surface) — a move that changes the module context changes what the callers may pass.
+3. Find the callers with `unica.view` at `<method>.Caller` before moving anything (`unica.search` by the method name adds literal mentions) — a move that changes the module context changes what the callers may pass.
 4. When adding a common module, choose the context row first, then `unica.apply` with the matching flags and postfix.
 5. Set `Вызов сервера` only for API genuinely called from the client, and state what it exposes.
 6. Apply code with `unica.apply`, one verifiable step at a time.

@@ -6,9 +6,9 @@ const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
 use super::v13_call_graph::{
-    branch_collection, branch_direction, branch_owner, complete_branch, extend_method_node,
-    fetch_summary, module_file_for_placed, placed_for_module_file, unready_branch_result,
-    CallGraphFetchError, CallGraphSummary, CompleteBranchError, CALL_GRAPH_SECTION,
+    branch_collection, branch_direction, branch_owner, call_graph_support, complete_branch,
+    declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
+    unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
 use super::v13_read_modes::{filter_diff_data, project_view_operation, search_scope_prefix};
 use crate::application::invocation_store::ToolIdentity;
@@ -512,6 +512,12 @@ impl CanonicalV13ReadService {
                     "call graph branch does not accept a filter",
                 );
             }
+            // Ветвь метода, у которого графа нет (метод HTTP-сервиса, модуль
+            // непокрытой роли), отказывает по адресу, до чтения владельца и заказа поставки: ни скачивание,
+            // ни наличие движка не меняют этого ответа.
+            if let Err(message) = call_graph_support(&owner) {
+                return error_result(Some(at.to_string()), RefusalCode::BadValue, message);
+            }
             let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
             let owner_result = service.view(match ViewRequest::new(&owner.to_string()) {
                 Ok(request) => request,
@@ -532,6 +538,29 @@ impl CanonicalV13ReadService {
                     service.view_preloaded_collection(request, &owner, expected_revision, None),
                     at,
                 );
+            }
+            // Ветвь — единственный вход в граф, и анализатор, которого нет на
+            // машине, она поставляет этим же вызовом, как `check` и `search`:
+            // пока поставка идёт, ответ просит повтор, провал поставки — её
+            // типизированный отказ, а не граф «недоступен».
+            // Тестовый поставщик графа заменяет анализатор: заказывать его
+            // поставку тогда незачем, и тест не зависит от окружения.
+            #[cfg(not(test))]
+            let order_delivery = true;
+            #[cfg(test)]
+            let order_delivery =
+                crate::infrastructure::application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+                    .with(|slot| slot.borrow().is_none());
+            if order_delivery {
+                if let Some(mut result) = deliver_missing_engine(
+                    invocation,
+                    BSL_ANALYZER_ENGINE,
+                    cancellation,
+                    "call graph branch cancelled",
+                ) {
+                    result.at = Some(at.to_string());
+                    return result;
+                }
             }
             return match self.call_graph_summary(
                 invocation,
@@ -622,11 +651,6 @@ impl CanonicalV13ReadService {
             .get("filter")
             .and_then(Value::as_object)
             .and_then(|filter| filter.get("sections"));
-        let call_graph_requested = sections.and_then(Value::as_array).is_some_and(|sections| {
-            sections
-                .iter()
-                .any(|section| section.as_str() == Some(CALL_GRAPH_SECTION))
-        });
         let can_context = SourceSetTraits::read(source.source_kind(), authority.platform_profile());
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
         let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
@@ -649,6 +673,11 @@ impl CanonicalV13ReadService {
                 }
             }
             self.resolve_borrowed_parent(invocation, &address, &mut data, cancellation);
+            // Узел метода называет ветви графа, не спрашивая анализатор: граф
+            // читается только адресом ветви.
+            if let Some(node) = data.as_object_mut() {
+                declare_method_branches(node);
+            }
             if let Some(sections) = sections {
                 project_view_operation(&data, sections, can_operation.as_deref(), can_context)
                     .map_err(|error| ViewError::new(error.code(), error.to_string()))
@@ -656,49 +685,7 @@ impl CanonicalV13ReadService {
                 Ok(data)
             }
         };
-        let mut result = if call_graph_requested {
-            service.view(request)
-        } else {
-            service.view_projected(request, &enrich_and_project)
-        };
-        if call_graph_requested && result.ok {
-            let is_method = result
-                .data
-                .as_ref()
-                .and_then(|data| data.get("kind"))
-                .and_then(Value::as_str)
-                == Some(NodeKind::Method.as_str());
-            if !is_method {
-                return error_result(
-                    Some(at.to_string()),
-                    RefusalCode::UnsupportedSection,
-                    "view section `callGraph` is computed for a method node only",
-                );
-            }
-            match self.call_graph_summary(invocation, &address, CALL_GRAPH_PAGE_LIMIT, cancellation)
-            {
-                Ok((summary, _directory)) => {
-                    if let Some(reason) = summary.reason.clone() {
-                        result.warnings.push(json!({"callGraph": reason}));
-                    }
-                    if let Some(data) = result.data.as_mut().and_then(Value::as_object_mut) {
-                        extend_method_node(data, &address, &summary);
-                    }
-                }
-                Err(refusal) => return *refusal,
-            }
-        }
-        if result.ok && call_graph_requested {
-            if let (Some(data), Some(sections)) = (result.data.as_ref(), sections) {
-                match project_view_operation(data, sections, can_operation.as_deref(), can_context)
-                {
-                    Ok(projected) => result.data = Some(projected),
-                    Err(error) => {
-                        return error_result(Some(at.to_string()), error.code(), error.to_string())
-                    }
-                }
-            }
-        }
+        let result = service.view_projected(request, &enrich_and_project);
         enforce_view_result_limit(result, at)
     }
 

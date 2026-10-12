@@ -1,4 +1,3 @@
-use super::v13_call_graph::CALL_GRAPH_SECTION;
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{
     OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, IMPLEMENTED_APPLY_OPERATIONS,
@@ -84,17 +83,7 @@ impl SearchMatcher {
 }
 
 const VIEW_IDENTITY_SLOTS: &[&str] = &["at", "kind", "title"];
-const VIEW_SECTION_SLOTS: &[&str] = &[
-    "props",
-    "branches",
-    "can",
-    "limits",
-    "items",
-    // `callGraph` — не слот узла, а выключатель вычисления: слотов у узла семь,
-    // и восьмого не будет. Сводка графа ложится в `props`, направления — в
-    // `branches`, поэтому запрос этой секции удерживает оба слота.
-    "callGraph",
-];
+const VIEW_SECTION_SLOTS: &[&str] = &["props", "branches", "can", "limits", "items"];
 
 /// Where `can` of a read node is computed: the traits of its source set —
 /// the one owner of whether the source is written at all.
@@ -176,14 +165,6 @@ pub(super) fn project_view_sections(
             return Err(ReadModeError::unsupported_filter(format!(
                 "unsupported view section `{section}`"
             )));
-        }
-        if section == CALL_GRAPH_SECTION {
-            for implied in ["props", "branches"] {
-                if !selected.contains(&implied) {
-                    selected.push(implied);
-                }
-            }
-            continue;
         }
         if !selected.contains(&section) {
             selected.push(section);
@@ -365,33 +346,41 @@ mod call_graph_section_tests {
         }
     }
 
-    /// `callGraph` — выключатель вычисления, а не восьмой слот узла.
-    ///
-    /// У узла ровно семь слотов, и запрос этой секции удерживает те два, в
-    /// которые сводка легла: `props` и `branches`.
+    /// Граф вызовов читается адресом ветви, а не секцией: `callGraph` не слот
+    /// узла и получает тот же отказ, что любая неизвестная секция.
     #[test]
-    fn the_call_graph_section_keeps_the_two_slots_it_fills() {
-        assert!(VIEW_SECTION_SLOTS.contains(&"callGraph"));
+    fn the_call_graph_is_not_a_view_section() {
+        assert!(!VIEW_SECTION_SLOTS.contains(&"callGraph"));
         let data = json!({
             "at": "main:CommonModule.Общий.Method.Утилита",
             "kind": "Method",
             "title": "Утилита",
-            "props": {"callGraph": "ready", "callers": 2},
-            "branches": [{"at": "main:CommonModule.Общий.Method.Утилита.Caller", "count": 2}],
-            "items": ["не просили"]
+            "branches": [{"at": "main:CommonModule.Общий.Method.Утилита.Caller"}]
         });
-        let projected = project_view_sections(
-            &data,
-            &json!(["callGraph"]),
-            Some(super::configuration_context()),
-        )
-        .expect("секция принимается");
-        assert_eq!(projected["props"]["callers"], 2);
-        assert_eq!(projected["branches"][0]["count"], 2);
-        // Слот, которого не просили, не приходит: секция удерживает ровно два.
-        assert!(projected.get("items").is_none());
-        // Личность узла остаётся всегда.
-        assert_eq!(projected["kind"], "Method");
+        let sections = |requested| {
+            project_view_sections(
+                &data,
+                &json!(requested),
+                Some(super::configuration_context()),
+            )
+        };
+        let error = sections(["callGraph"]).expect_err("секции callGraph нет");
+        assert_eq!(
+            error.code(),
+            crate::domain::refusal::RefusalCode::UnsupportedFilter
+        );
+        assert_eq!(
+            error.code(),
+            sections(["нетТакой"])
+                .expect_err("неизвестная секция")
+                .code()
+        );
+        // Ветви графа приходят обычным слотом `branches`.
+        let projected = sections(["branches"]).unwrap();
+        assert_eq!(
+            projected["branches"][0]["at"],
+            "main:CommonModule.Общий.Method.Утилита.Caller"
+        );
     }
 }
 

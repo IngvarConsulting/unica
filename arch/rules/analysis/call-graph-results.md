@@ -2,9 +2,7 @@
 id: INV.SOURCE.CALL-GRAPH-STATE-IS-NAMED
 check:
   - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::the_branch_points_outward_and_names_what_it_could_not_address
-  - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::the_method_node_carries_the_count_and_names_the_state
-  - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::an_indexing_graph_names_itself_instead_of_printing_a_zero
-  - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::one_unready_direction_decides_the_whole_state
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::method_view_names_call_graph_branches_without_asking_the_analyzer
   - crates/unica-coder/src/infrastructure/code_intelligence.rs::call_graph_distinguishes_a_recursive_call_from_a_capped_answer
   - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::a_capped_graph_requires_a_complete_same_revision_snapshot_before_paging
   - crates/unica-coder/src/infrastructure/daemon/v13_call_graph.rs::capped_graph_refetches_exact_total_before_publishing_a_branch
@@ -13,11 +11,13 @@ check:
 
 # Граф вызовов показывает готовность и неполноту результата
 
-Узел метода со сводкой графа содержит `props.callGraph`: `ready`, `indexing`
-или `unavailable`. Состояние узла учитывает оба направления; готовность
-одного не скрывает недоступность другого. Счётчик выводится только когда
-известен, и ветвь `Caller` или `Callee` объявляется только с этим счётчиком.
-Ноль означает известное отсутствие вызовов, а не ожидание индекса.
+Состояние графа, счёт и соседей сообщает только ответ ветви `Caller` или
+`Callee`; узел метода сводки графа не несёт. Ответ ветви содержит
+`props.callGraph`: `ready`, `indexing` или `unavailable` — состояние своего
+направления. Страница и счёт `props.total` выдаются только для `ready`.
+Счёт приходит от анализатора, а не из длины страницы, и может включать
+соседей, которым нельзя дать логический адрес. Ноль означает известное
+отсутствие вызовов, а не ожидание индекса.
 
 Элемент ветви содержит логический адрес соседнего метода и происхождение
 связи: `resolved` или `inferred`. Если адрес соседа определить нельзя,

@@ -50,6 +50,10 @@ thread_local! {
     /// the thread that resolves the registry.
     pub(crate) static DIAGNOSTIC_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn DiagnosticProvider>>> =
         const { std::cell::RefCell::new(None) };
+    /// A test's code intelligence providers in place of the bundled ones, read
+    /// on the thread that resolves the registry.
+    pub(crate) static CODE_INTELLIGENCE_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Vec<Arc<dyn CodeIntelligenceProvider>>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
@@ -312,6 +316,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
     }
 
     fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {
+        #[cfg(test)]
+        if let Some(providers) =
+            CODE_INTELLIGENCE_PROVIDER_OVERRIDE.with(|slot| slot.borrow().clone())
+        {
+            return CodeIntelligenceRegistry::new(providers);
+        }
         let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
             Arc::new(RlmProvider::new()),
             Arc::new(BslAnalyzerProvider::new()),

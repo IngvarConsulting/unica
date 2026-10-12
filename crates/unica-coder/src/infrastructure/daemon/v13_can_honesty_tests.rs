@@ -337,6 +337,15 @@ fn walk(workspace: &Path, root: &str) -> Vec<String> {
         let Ok(address) = QualifiedAddress::parse(&at) else {
             continue;
         };
+        // Ветви графа вызовов `Caller` и `Callee` — коллекция анализатора, а
+        // не узлы набора исходников: словаря `can` и фильтра у них нет.
+        if address
+            .segments()
+            .last()
+            .is_some_and(|segment| matches!(segment.kind(), NodeKind::Caller | NodeKind::Callee))
+        {
+            continue;
+        }
         let count = shapes.entry(shape_key(&address)).or_default();
         if *count >= PER_SHAPE {
             continue;
@@ -900,11 +909,12 @@ fn check_written_paths(
     // Модуль самой конфигурации не имеет каталога объекта: его текст лежит
     // в `Ext/` корня набора, и запись за его пределы — ошибка.
     if owner.kind() == NodeKind::Module {
+        let expected = owner.name().map(|role| format!("Ext/{role}Module.bsl"));
         for path in paths {
             let path = path.to_string_lossy().replace('\\', "/");
-            if !(path.starts_with("Ext/") && path.ends_with(".bsl")) {
+            if expected.as_deref() != Some(path.as_str()) {
                 mismatches.push(format!(
-                    "{at}: `{op}` writes `{path}` outside the configuration module"
+                    "{at}: `{op}` writes `{path}` instead of its own configuration module file"
                 ));
             }
         }
