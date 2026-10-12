@@ -83,7 +83,7 @@ pub(crate) fn parse_metadata_plan_operation(
     op_index: usize,
     binding: &ProviderRootBinding,
 ) -> Result<MetadataPlanOperation, ApplyPlanError> {
-    validate_platform_xml_binding(binding, op_index)?;
+    validate_platform_xml_binding(binding, operation, op_index)?;
     let object = args.as_object().ok_or_else(|| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,

@@ -5,7 +5,7 @@ pub(crate) mod metadata;
 mod request;
 
 use crate::domain::apply::{ApplyRequest, OperationFamily};
-use crate::domain::project_sources::{SourceFormat, SourceSetKind};
+use crate::domain::project_sources::SourceSetKind;
 use crate::infrastructure::native_operations::apply::{
     hidden_apply_family_unimplemented, ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
     PlannedApplyEffects,
@@ -408,25 +408,271 @@ fn batch_effects_as_provisional(
         .collect()
 }
 
+/// Пишет ли семейство операции в допущенный набор — ответ единственного
+/// владельца признака (`SourceSetTraits::writes`), общий с предварительной
+/// проверкой `apply` и словарём `can`.
 fn validate_platform_xml_binding(
     binding: &ProviderRootBinding,
+    operation: &str,
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
-    if binding.source_format() != SourceFormat::PlatformXml
-        || !matches!(
-            binding.source_kind(),
-            SourceSetKind::Configuration | SourceSetKind::Extension
-        )
-        || binding.source_profile().platform_profile().is_none()
-        || binding.source_profile().serialization_format().is_none()
-    {
+    let traits = crate::domain::apply::SourceSetTraits::of_source(
+        binding.source_kind(),
+        binding.source_format(),
+        binding.source_profile(),
+    );
+    let writes = crate::application::v13::apply::dispatch_family(operation)
+        .is_none_or(|family| traits.writes(family));
+    if !writes {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::ProviderUnavailable,
-            "admitted source has no writable exact Platform XML profile",
+            crate::domain::apply::UNWRITABLE_SOURCE_MESSAGE,
         )
         .at_path(format!("ops[{op_index}].op")));
     }
     Ok(())
+}
+
+/// Применимость операции к своему узлу решает реестр (`domain::apply`), а не
+/// разбор цели семейства: тот лишь извлекает части адреса. Проверка здесь
+/// повторяет предварительную проверку `apply` для вызовов, которые доходят до
+/// планировщика иначе, — чтобы ни одна операция не написала в другой узел.
+/// Запись в набор проверяет `validate_platform_xml_binding` тем же владельцем.
+fn refuse_misplaced_operation(
+    op_index: usize,
+    operation: &crate::domain::apply::ApplyOp,
+    binding: &ProviderRootBinding,
+) -> Result<(), ApplyPlanError> {
+    use crate::domain::apply::{OperationRegistry, OperationSite, SourceSetTraits};
+    let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
+        return Ok(());
+    };
+    validate_platform_xml_binding(binding, operation.name(), op_index)?;
+    let traits = SourceSetTraits::of_source(
+        binding.source_kind(),
+        binding.source_format(),
+        binding.source_profile(),
+    );
+    let applies =
+        OperationSite::new(operation.at(), traits).is_some_and(|site| descriptor.applies_at(&site));
+    if applies {
+        return Ok(());
+    }
+    let kind = operation
+        .at()
+        .segments()
+        .last()
+        .map_or("", |segment| segment.kind().as_str());
+    Err(ApplyPlanError::new(
+        ApplyPlanErrorKind::BadValue,
+        format!(
+            "apply operation `{}` does not apply to {kind} `{}`",
+            operation.name(),
+            operation.at()
+        ),
+    )
+    .at_path(format!("ops[{op_index}].args.at")))
+}
+
+/// Разбор одной операции планировщиком её семейства, без стадирования.
+fn parse_apply_operation(
+    op_index: usize,
+    operation: &crate::domain::apply::ApplyOp,
+    binding: &ProviderRootBinding,
+) -> Result<ParsedApplyOperation, ApplyPlanError> {
+    if crate::application::v13::apply::dispatch_family(operation.name()).is_none() {
+        return Err(hidden_apply_family_unimplemented(op_index));
+    }
+    refuse_misplaced_operation(op_index, operation, binding)?;
+    parse_family_operation(op_index, operation, binding)
+}
+
+/// Разбор операции семейством: извлечение частей адреса и аргументов. О
+/// применимости он не спрашивает — это сделал `refuse_misplaced_operation`.
+fn parse_family_operation(
+    op_index: usize,
+    operation: &crate::domain::apply::ApplyOp,
+    binding: &ProviderRootBinding,
+) -> Result<ParsedApplyOperation, ApplyPlanError> {
+    let Some(family) = crate::application::v13::apply::dispatch_family(operation.name()) else {
+        return Err(hidden_apply_family_unimplemented(op_index));
+    };
+    let args = serde_json::Value::Object(operation.args().clone());
+    if operation.name() == "object.borrow" {
+        return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
+    }
+    let parsed = match family {
+        OperationFamily::Metadata | OperationFamily::Properties => {
+            let parsed = metadata::parse_metadata_plan_operation(
+                operation.name(),
+                &args,
+                op_index,
+                binding,
+            )?;
+            ParsedApplyOperation::Metadata(IndexedPlanOperation::new(op_index, parsed))
+        }
+        // Командный интерфейс — присоединённый ресурс подсистемы,
+        // как `Rights.xml` у роли: тот же планировщик, тот же способ
+        // стадирования.
+        OperationFamily::Form
+        | OperationFamily::Role
+        | OperationFamily::Subsystem
+        | OperationFamily::Interface
+        | OperationFamily::Support => {
+            let parsed = form_resource::parse_form_resource_plan_operation(
+                operation.name(),
+                &args,
+                op_index,
+                binding,
+            )?;
+            ParsedApplyOperation::FormResource(IndexedPlanOperation::new(op_index, parsed))
+        }
+        OperationFamily::Dcs | OperationFamily::Mxl => {
+            let parsed =
+                dcs_mxl::parse_dcs_mxl_plan_operation(operation.name(), &args, op_index, binding)?;
+            ParsedApplyOperation::DcsMxl(IndexedPlanOperation::new(op_index, parsed))
+        }
+        OperationFamily::Code => {
+            let parsed = crate::infrastructure::native_operations::code::parse_code_plan_operation(
+                operation.name(),
+                &args,
+                op_index,
+                binding,
+            )?;
+            ParsedApplyOperation::Code(IndexedPlanOperation::new(op_index, parsed))
+        }
+        OperationFamily::Xdto => {
+            let parsed = crate::infrastructure::native_operations::xdto::parse_xdto_plan_operation(
+                operation.name(),
+                &args,
+                op_index,
+                binding,
+            )?;
+            ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
+        }
+        OperationFamily::Event => {
+            let args = canonical_event_args(args);
+            let parsed =
+                crate::infrastructure::native_operations::event::parse_event_implement_args(
+                    &args,
+                    &format!("ops[{op_index}].args"),
+                )
+                .map_err(event_plan_error_to_apply)?;
+            ParsedApplyOperation::Event(IndexedPlanOperation::new(op_index, parsed))
+        }
+    };
+    Ok(parsed)
+}
+
+/// Разбор операции планировщиком без стадирования: проверка, что разбор цели
+/// и аргументов семейства принимает вызов. Им двусторонняя проверка `can`
+/// сверяет словарь узла с планировщиком.
+/// Разбор семейством в обход реестра: двусторонняя проверка ищет адреса,
+/// которые семейство приняло бы, а реестр — нет.
+#[cfg(test)]
+pub(crate) fn parse_family_operation_for_test(
+    op_index: usize,
+    operation: &crate::domain::apply::ApplyOp,
+    binding: &ProviderRootBinding,
+) -> Result<(), ApplyPlanError> {
+    parse_family_operation(op_index, operation, binding).map(|_| ())
+}
+
+#[cfg(test)]
+pub(crate) fn parse_apply_operation_for_test(
+    op_index: usize,
+    operation: &crate::domain::apply::ApplyOp,
+    binding: &ProviderRootBinding,
+) -> Result<(), ApplyPlanError> {
+    parse_apply_operation(op_index, operation, binding).map(|_| ())
+}
+
+/// Описание узла с собственным файлом: объект `Kind.Name` или его форма или
+/// макет `Kind.Name.Form.F` / `Kind.Name.Template.T`, и число сегментов
+/// адреса, которые это описание покрывает.
+fn descriptor_node(
+    at: &crate::domain::address::QualifiedAddress,
+) -> Option<(crate::domain::source_target::MetadataAddress, usize)> {
+    use crate::domain::address::NodeKind;
+    use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    let segments = at.segments();
+    let owner = segments.first()?;
+    let owner_path = format!("{}.{}", owner.kind().as_str(), owner.name()?);
+    match segments.get(1) {
+        Some(nested)
+            if matches!(nested.kind(), NodeKind::Form | NodeKind::Template)
+                && nested.name().is_some() =>
+        {
+            let path = format!("{owner_path}.{}.{}", nested.kind().as_str(), nested.name()?);
+            Some((
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &path).ok()?,
+                2,
+            ))
+        }
+        _ => Some((
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_path).ok()?,
+            1,
+        )),
+    }
+}
+
+/// Формат макета по его описанию в стадированном состоянии допуска.
+pub(crate) fn staged_template_format(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    template: &crate::domain::address::QualifiedAddress,
+) -> Option<crate::domain::apply::TemplateFormat> {
+    let (address, covered) = descriptor_node(template)?;
+    if covered != template.segments().len() {
+        return None;
+    }
+    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+        &address,
+        binding.source_kind(),
+    )
+    .ok()?;
+    let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
+    dcs_mxl::template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw))
+}
+
+/// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
+/// описанием есть, когда есть его файл; член объекта метаданных (реквизит,
+/// табличная часть) при существующем описании владельца считается
+/// отсутствующим — отказ «не найден» по адресу операции говорит о нём.
+/// `None` — по описаниям этого не установить.
+pub(crate) fn staged_node_existence(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    at: &crate::domain::address::QualifiedAddress,
+) -> Option<bool> {
+    let (address, covered) = descriptor_node(at)?;
+    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+        &address,
+        binding.source_kind(),
+    )
+    .ok()?;
+    if admission
+        .staged_state()
+        .ok()?
+        .read(&relative)
+        .ok()?
+        .is_none()
+    {
+        return Some(false);
+    }
+    if covered == at.segments().len() {
+        // Описание есть: «не найден» касается присоединённого ресурса
+        // (`Rights.xml`, `Form.xml`), а не узла.
+        return Some(true);
+    }
+    let route = crate::domain::logical_route::classify_route(
+        at,
+        binding
+            .source_profile()
+            .platform_profile()
+            .unwrap_or_else(crate::domain::platform_profile::PlatformProfile::v8_3_27),
+    )?;
+    (route == crate::domain::logical_route::RouteClass::Metadata).then_some(false)
 }
 
 pub(crate) fn plan_hidden_v13_apply(
@@ -438,83 +684,7 @@ pub(crate) fn plan_hidden_v13_apply(
         .ops()
         .iter()
         .enumerate()
-        .map(|(op_index, operation)| {
-            let Some(family) = crate::application::v13::apply::dispatch_family(operation.name())
-            else {
-                return Err(hidden_apply_family_unimplemented(op_index));
-            };
-            let args = serde_json::Value::Object(operation.args().clone());
-            if operation.name() == "object.borrow" {
-                return borrow::parse(&args, op_index, binding).map(ParsedApplyOperation::Borrow);
-            }
-            let parsed = match family {
-                OperationFamily::Metadata | OperationFamily::Properties => {
-                    let parsed = metadata::parse_metadata_plan_operation(
-                        operation.name(),
-                        &args,
-                        op_index,
-                        binding,
-                    )?;
-                    ParsedApplyOperation::Metadata(IndexedPlanOperation::new(op_index, parsed))
-                }
-                // Командный интерфейс — присоединённый ресурс подсистемы,
-                // как `Rights.xml` у роли: тот же планировщик, тот же способ
-                // стадирования.
-                OperationFamily::Form
-                | OperationFamily::Role
-                | OperationFamily::Subsystem
-                | OperationFamily::Interface
-                | OperationFamily::Support => {
-                    let parsed = form_resource::parse_form_resource_plan_operation(
-                        operation.name(),
-                        &args,
-                        op_index,
-                        binding,
-                    )?;
-                    ParsedApplyOperation::FormResource(IndexedPlanOperation::new(op_index, parsed))
-                }
-                OperationFamily::Dcs | OperationFamily::Mxl => {
-                    let parsed = dcs_mxl::parse_dcs_mxl_plan_operation(
-                        operation.name(),
-                        &args,
-                        op_index,
-                        binding,
-                    )?;
-                    ParsedApplyOperation::DcsMxl(IndexedPlanOperation::new(op_index, parsed))
-                }
-                OperationFamily::Code => {
-                    let parsed =
-                        crate::infrastructure::native_operations::code::parse_code_plan_operation(
-                            operation.name(),
-                            &args,
-                            op_index,
-                            binding,
-                        )?;
-                    ParsedApplyOperation::Code(IndexedPlanOperation::new(op_index, parsed))
-                }
-                OperationFamily::Xdto => {
-                    let parsed =
-                        crate::infrastructure::native_operations::xdto::parse_xdto_plan_operation(
-                            operation.name(),
-                            &args,
-                            op_index,
-                            binding,
-                        )?;
-                    ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
-                }
-                OperationFamily::Event => {
-                    let args = canonical_event_args(args);
-                    let parsed =
-                        crate::infrastructure::native_operations::event::parse_event_implement_args(
-                            &args,
-                            &format!("ops[{op_index}].args"),
-                        )
-                        .map_err(event_plan_error_to_apply)?;
-                    ParsedApplyOperation::Event(IndexedPlanOperation::new(op_index, parsed))
-                }
-            };
-            Ok(parsed)
-        })
+        .map(|(op_index, operation)| parse_apply_operation(op_index, operation, binding))
         .collect::<Result<Vec<_>, ApplyPlanError>>()?;
 
     let mut staged = admission
@@ -808,6 +978,125 @@ mod tests {
         ApplyRequest::parse(input.as_object().unwrap(), &["main"]).unwrap()
     }
 
+    /// Формат макета — фильтр реестра, и планировщик применяет его к
+    /// промежуточному состоянию пакета: макет, добавленный раньше в том же
+    /// вызове, уже имеет формат, и `mxl.set` принимается только для
+    /// табличного документа.
+    #[test]
+    fn template_format_filter_reads_the_template_added_in_the_same_request() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let request = |template_type: &str| {
+            ApplyRequest::parse(
+                serde_json::json!({
+                    "at": "main:Document.First",
+                    "ops": [
+                        {"op": "template.add", "args": {"items": [{"name": "Print", "templateType": template_type}]}},
+                        {"op": "mxl.set", "args": {"at": "main:Document.First.Template.Print", "values": {"area": "Header", "cells": {"R1C1": "Total"}}}}
+                    ],
+                    "dryRun": true,
+                })
+                .as_object()
+                .unwrap(),
+                &["main"],
+            )
+            .unwrap()
+        };
+        plan_hidden_v13_apply(
+            &request("SpreadsheetDocument"),
+            &fixture.binding,
+            &admission,
+        )
+        .unwrap_or_else(|error| panic!("a spreadsheet added earlier accepts cells: {error}"));
+        let Err(refused) = plan_hidden_v13_apply(
+            &request("DataCompositionSchema"),
+            &fixture.binding,
+            &admission,
+        ) else {
+            panic!("cells never go into a data composition schema");
+        };
+        assert_eq!(refused.kind(), ApplyPlanErrorKind::BadValue, "{refused}");
+        assert_eq!(refused.path(), Some("ops[1].args.at"));
+        assert!(
+            refused.to_string().contains("DataCompositionSchema"),
+            "{refused}"
+        );
+    }
+
+    /// Операция, исполнимая не на своём узле, отказывает в разборе цели,
+    /// а не пишет молча в форму или во владельца.
+    #[test]
+    fn misplaced_form_operations_refuse_instead_of_writing_elsewhere() {
+        let fixture = ApplySeamFixture::new();
+        for (at, op, args) in [
+            (
+                "main:Document.First.Form.Main.Item.Header",
+                "element.add",
+                serde_json::json!({"items": [{"name": "Comment"}]}),
+            ),
+            (
+                "main:Document.First.Form.Main.Item.Header",
+                "formAttribute.add",
+                serde_json::json!({"items": [{"name": "Comment"}]}),
+            ),
+            (
+                "main:Document.First.Form.Main.Item.Header",
+                "form.remove",
+                serde_json::json!({}),
+            ),
+            (
+                "main:Document.First.Form.Main",
+                "form.set",
+                serde_json::json!({"values": {"defaultObjectForm": "Main"}}),
+            ),
+        ] {
+            let request = seam_request(at, op, args);
+            let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
+                .err()
+                .unwrap_or_else(|| panic!("{op} at {at} must refuse"));
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op}: {error}");
+            assert_eq!(error.path(), Some("ops[0].args.at"), "{op}: {error}");
+        }
+        // Неизвестное свойство элемента — отказ, а не молча потерянный ключ.
+        let request = seam_request(
+            "main:Document.First.Form.Main",
+            "element.add",
+            serde_json::json!({"items": [{"name": "Comment", "titel": "typo"}]}),
+        );
+        let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
+            .err()
+            .expect("an unknown element property refuses");
+        assert_eq!(error.path(), Some("ops[0].args.items[0].titel"), "{error}");
+        // Путь привязки, который генератор знает, проходит разбор: его
+        // предметный отказ (`headerDataPath` у обычной группы) даёт генератор.
+        let request = seam_request(
+            "main:Document.First.Form.Main",
+            "element.add",
+            serde_json::json!({"items": [{"name": "Header", "type": "Group", "headerDataPath": "Object.Ref"}]}),
+        );
+        assert!(super::parse_apply_operation(0, &request.ops()[0], &fixture.binding).is_ok());
+        // Элемент назван адресом: перенаправить событие или удаление на другой
+        // элемент аргументом нельзя.
+        for (op, args, path) in [
+            (
+                "event.bind",
+                serde_json::json!({"values": {"event": "OnChange", "handler": "H", "element": "Other"}}),
+                "ops[0].args.values.element",
+            ),
+            (
+                "element.remove",
+                serde_json::json!({"items": ["Other"]}),
+                "ops[0].args.items",
+            ),
+        ] {
+            let request = seam_request("main:Document.First.Form.Main.Item.Header", op, args);
+            let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
+                .err()
+                .unwrap_or_else(|| panic!("{op} must not redirect to another element"));
+            assert_eq!(error.path(), Some(path), "{op}: {error}");
+        }
+    }
+
     /// The vendor-support gate of the canonical path: a locked vendor object
     /// refuses every family before a byte is staged, the support operations
     /// stay the way out of the lock, and a source without the marker is not
@@ -961,11 +1250,14 @@ mod tests {
                 serde_json::json!({"enabled": true}),
             ),
         ] {
-            let unlock = seam_request(
-                "main:Document.First",
-                operation,
-                serde_json::json!({"values": values}),
-            );
+            // Возможность изменения — свойство всей конфигурации, правило —
+            // объекта.
+            let target = if operation == "supportCapability.set" {
+                "main:Configuration"
+            } else {
+                "main:Document.First"
+            };
+            let unlock = seam_request(target, operation, serde_json::json!({"values": values}));
             plan_hidden_v13_apply(&unlock, &fixture.binding, &admission)
                 .unwrap_or_else(|error| panic!("{operation} must plan on a locked owner: {error}"));
         }

@@ -23,7 +23,9 @@ use crate::application::v13::resolve::{ResolveRequest, ResolvedLines, ResolvedSo
 use crate::application::v13::tool_catalog::catalog_for;
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewRequest, ViewService};
 use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::OperationRegistry;
+use crate::domain::apply::{
+    OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, UNWRITABLE_SOURCE_MESSAGE,
+};
 use crate::domain::call_graph_identity::{CallGraphIdentity, CallGraphIdentityError};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::{
@@ -248,40 +250,18 @@ impl CanonicalV13ReadService {
                 )
             }
         };
-        for (index, operation) in request.ops().iter().enumerate() {
-            let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
-                return with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].op")),
-                        RefusalCode::UnsupportedOperation,
-                        format!(
-                            "apply operation `{}` is not in the canonical registry",
-                            operation.name()
-                        ),
-                    ),
-                    &operation.at().to_string(),
-                );
-            };
-            let target_kind = operation
-                .at()
-                .segments()
-                .last()
-                .expect("a parsed logical address has a terminal segment")
-                .kind();
-            if !descriptor.applies_to_operation_target(operation.at()) {
-                return with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].at")),
-                        RefusalCode::BadValue,
-                        format!(
-                            "apply operation `{}` does not apply to {}",
-                            operation.name(),
-                            target_kind.as_str()
-                        ),
-                    ),
-                    &operation.at().to_string(),
-                );
-            }
+        let traits = SourceSetTraits::of_source(
+            binding.source_kind(),
+            binding.source_format(),
+            binding.source_profile(),
+        );
+        let template_format = |template: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_template_format(
+                &admission, &binding, template,
+            )
+        };
+        if let Err(refusal) = preflight_apply_operations(&request, traits, &template_format) {
+            return *refusal;
         }
         admission.bind_request(&request);
         let operations = request
@@ -308,11 +288,17 @@ impl CanonicalV13ReadService {
                 )
             }
             Err(error) => {
-                return error_result(
+                let refusal = error_result(
                     error.path().map(str::to_string),
                     apply_plan_error_code(error.kind()),
                     error.to_string(),
-                )
+                );
+                let node_exists = |at: &QualifiedAddress| {
+                    crate::infrastructure::native_operations::apply_families::staged_node_existence(
+                        &admission, &binding, at,
+                    )
+                };
+                return with_missing_target_parent(refusal, &request, &error, &node_exists);
             }
             Ok(planned) => planned,
         };
@@ -649,6 +635,7 @@ impl CanonicalV13ReadService {
                 .iter()
                 .any(|section| section.as_str() == Some(CALL_GRAPH_SECTION))
         });
+        let can_context = SourceSetTraits::read(source.source_kind(), authority.platform_profile());
         let service = ViewService::with_shared_cursors(authority, Arc::clone(&self.cursors));
         let enrich_and_project = |data: &Value| -> Result<Value, ViewError> {
             let mut data = data.clone();
@@ -671,7 +658,7 @@ impl CanonicalV13ReadService {
             }
             self.resolve_borrowed_parent(invocation, &address, &mut data, cancellation);
             if let Some(sections) = sections {
-                project_view_operation(&data, sections, can_operation.as_deref())
+                project_view_operation(&data, sections, can_operation.as_deref(), can_context)
                     .map_err(|error| ViewError::new(error.code(), error.to_string()))
             } else {
                 Ok(data)
@@ -711,7 +698,8 @@ impl CanonicalV13ReadService {
         }
         if result.ok && call_graph_requested {
             if let (Some(data), Some(sections)) = (result.data.as_ref(), sections) {
-                match project_view_operation(data, sections, can_operation.as_deref()) {
+                match project_view_operation(data, sections, can_operation.as_deref(), can_context)
+                {
                     Ok(projected) => result.data = Some(projected),
                     Err(error) => {
                         return error_result(Some(at.to_string()), error.code(), error.to_string())
@@ -3649,6 +3637,209 @@ fn unreadable_target_format_refusal(
     ))
 }
 
+/// Предварительная проверка `apply`: каждая операция есть в реестре, набор
+/// исходников её семейство пишет, а сама она исполнима на своём узле.
+///
+/// Сначала читается таблица снятых аргументов: вызов, который называет
+/// подузел аргументом, получает `bad_value` с адресом подузла в `next` — а не
+/// вердикт «не тот узел» с тупиком к `can` того же узла. Затем проверяется
+/// применимость к месту; `next` неприменимой операции ведёт к `can`
+/// ближайшего узла, где она исполнима. Если такого узла нет, `next` ведёт к
+/// `can` того же узла, когда тот читается, иначе к корню набора, а текст
+/// называет форму нужного адреса. `template_format` читает формат макета-
+/// предка: `next` не уводит на макет другого формата.
+pub(super) fn preflight_apply_operations(
+    request: &crate::domain::apply::ApplyRequest,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+) -> Result<(), Box<DomainResult>> {
+    let registry = OperationRegistry::closed();
+    for (index, operation) in request.ops().iter().enumerate() {
+        let Some(descriptor) = registry.lookup(operation.name()) else {
+            return Err(Box::new(with_node_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].op")),
+                    RefusalCode::UnsupportedOperation,
+                    format!(
+                        "apply operation `{}` is not in the canonical registry",
+                        operation.name()
+                    ),
+                ),
+                &operation.at().to_string(),
+            )));
+        };
+        // Набор, который семейство не пишет, — свойство набора, а не «не тот
+        // узел»: тот же отказ даёт разбор планировщиком.
+        if !source.writes(descriptor.family()) {
+            return Err(Box::new(DomainResult::canonical_rejection_detailed(
+                Some(format!("ops[{index}].op")),
+                RefusalDetail::WrongSourceKind,
+                UNWRITABLE_SOURCE_MESSAGE,
+            )));
+        }
+        let target_kind = operation
+            .at()
+            .segments()
+            .last()
+            .expect("a parsed logical address has a terminal segment")
+            .kind();
+        let Some(site) = OperationSite::new(operation.at(), source) else {
+            return Err(Box::new(error_result(
+                Some(format!("ops[{index}].at")),
+                RefusalCode::NotFound,
+                format!(
+                    "logical address `{}` is not available in the platform profile",
+                    operation.at()
+                ),
+            )));
+        };
+        if let Some(redirect) =
+            registry.retired_argument_redirect(operation.name(), &site, operation.args())
+        {
+            return Err(Box::new(with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].args.{}", redirect.location)),
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; call it at `{}`",
+                        operation.name(),
+                        redirect.location,
+                        redirect.at
+                    ),
+                ),
+                &redirect.at.to_string(),
+                descriptor,
+            )));
+        }
+        if descriptor.applies_at(&site) {
+            continue;
+        }
+        let refused = format!(
+            "apply operation `{}` does not apply to {} `{}`",
+            operation.name(),
+            target_kind.as_str(),
+            operation.at()
+        );
+        let refusal = match descriptor.nearest_applicable_ancestor(&site, template_format) {
+            Some(target) => with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    format!("{refused}; it applies at `{target}`"),
+                ),
+                &target.to_string(),
+                descriptor,
+            ),
+            None => {
+                let message = format!("{refused}; it addresses {}", descriptor.address_shape());
+                let refusal = error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    message,
+                );
+                // Узел, который читается, показывает свой словарь; адрес,
+                // которого нет ни в одном дереве, ведёт к корню набора.
+                let readable = crate::infrastructure::logical_tree::route_logical_address(
+                    operation.at(),
+                    source.profile(),
+                )
+                .is_ok();
+                if readable {
+                    with_node_dictionary(refusal, &operation.at().to_string())
+                } else {
+                    with_node_dictionary(
+                        refusal,
+                        &format!("{}:Configuration", operation.at().source_set()),
+                    )
+                }
+            }
+        };
+        return Err(Box::new(refusal));
+    }
+    Ok(())
+}
+
+/// `next` к словарю узла, где операция исполнима. Подробный контракт
+/// операции запрашивается только там, где он вычисляется: иначе `view`
+/// ответил бы на сам переход отказом.
+fn with_operation_dictionary(
+    mut result: DomainResult,
+    at: &str,
+    descriptor: crate::domain::apply::OperationDescriptor,
+) -> DomainResult {
+    let mut filter = json!({"sections": ["can"]});
+    if descriptor.argument_contract().is_some() {
+        filter["can"] = json!({"op": descriptor.name()});
+    }
+    result.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": at, "filter": filter},
+        "reason": format!("где исполнима операция `{}`", descriptor.name()),
+    }));
+    result
+}
+
+/// Отказ планировщика «узел не найден» по адресу операции: узел создаёт
+/// операция родителя, поэтому `next` ведёт к словарю родителя, а не к адресу,
+/// который `view` тоже не найдёт. `node_exists` отличает отсутствующий узел
+/// от существующего, у которого нет присоединённого ресурса (`Rights.xml`
+/// роли, `Form.xml` формы): во втором случае создавать нечего, и `next` не
+/// добавляется.
+pub(super) fn with_missing_target_parent(
+    mut result: DomainResult,
+    request: &crate::domain::apply::ApplyRequest,
+    error: &crate::infrastructure::native_operations::apply::ApplyPlanError,
+    node_exists: &dyn Fn(&QualifiedAddress) -> Option<bool>,
+) -> DomainResult {
+    if error.kind() != ApplyPlanErrorKind::NotFound {
+        return result;
+    }
+    let Some((index, tail)) = error.path().and_then(|path| {
+        let rest = path.strip_prefix("ops[")?;
+        let (index, tail) = rest.split_once(']')?;
+        Some((index.parse::<usize>().ok()?, tail))
+    }) else {
+        return result;
+    };
+    let Some(operation) = request.ops().get(index) else {
+        return result;
+    };
+    // Отказ касается самого узла операции, когда он назван путём `at` или
+    // когда операция не несёт ничего, кроме адреса (`attribute.remove`):
+    // тогда «не найден» — это её узел, а не что-то из аргументов.
+    let address_only = OperationRegistry::closed()
+        .lookup(operation.name())
+        .is_some_and(|descriptor| descriptor.skeleton_key() == "at");
+    if !(matches!(tail, ".at" | ".args.at") || address_only) {
+        return result;
+    }
+    if node_exists(operation.at()) != Some(false) {
+        return result;
+    }
+    let segments = operation.at().segments();
+    let parent = if segments.len() > 1 {
+        QualifiedAddress {
+            source_set: operation.at().source_set().to_string(),
+            segments: segments[..segments.len() - 1].to_vec(),
+        }
+    } else {
+        match QualifiedAddress::parse(&format!("{}:Configuration", operation.at().source_set())) {
+            Ok(root)
+                if segments.first().map(|first| first.kind()) != Some(NodeKind::Configuration) =>
+            {
+                root
+            }
+            _ => return result,
+        }
+    };
+    result.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": parent.to_string(), "filter": {"sections": ["can"]}},
+        "reason": "узел создаёт операция родителя",
+    }));
+    result
+}
+
 /// Отказ по операции называет маршрут к словарю узла, а не перечисляет
 /// операции в тексте: перечень уже публикуется секцией `can`, и агенту нужен
 /// путь к нему, а не копия внутри сообщения. Без этого пробелы словаря
@@ -6108,8 +6299,15 @@ mod tests {
             serde_json::to_vec(&result).unwrap().len()
                 <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
-        result.data =
-            Some(super::project_view_operation(&data, &json!(["items", "can"]), None).unwrap());
+        result.data = Some(
+            super::project_view_operation(
+                &data,
+                &json!(["items", "can"]),
+                None,
+                super::super::v13_read_modes::configuration_context(),
+            )
+            .unwrap(),
+        );
         assert!(
             serde_json::to_vec(&result).unwrap().len()
                 > crate::application::v13::view::PREFERRED_PAGE_BYTES

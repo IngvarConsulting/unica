@@ -1988,7 +1988,7 @@ pub(crate) mod actor_capacity_tests {
                 ),
                 (
                     "main:Interface",
-                    "targets `Subsystem.Name[.Subsystem.Child].Interface`".to_string(),
+                    "it addresses `Subsystem.Name[.Subsystem.Child].Interface`".to_string(),
                 ),
             ] {
                 let refused = interface_apply_call(
@@ -7337,9 +7337,10 @@ struct ActorLogicalReadLease {"#,
             entry("props.set"),
             serde_json::json!({"op": "props.set", "args": "values", "implemented": true})
         );
-        assert_eq!(
-            entry("object.create"),
-            serde_json::json!({"op": "object.create", "args": "values", "implemented": true})
+        // Новый объект создаёт его родитель — корень конфигурации.
+        assert!(
+            can.iter().all(|entry| entry["op"] != "object.create"),
+            "object.create belongs to the configuration root: {can:?}"
         );
         assert_eq!(
             entry("form.add"),

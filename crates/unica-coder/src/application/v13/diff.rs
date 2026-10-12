@@ -390,7 +390,10 @@ fn project_data(data: &Value, filter: &Value) -> Result<Value, DiffError> {
             field: "filter.sections".to_string(),
             message: "diff sections must be an array of strings".to_string(),
         })?;
-        const ALLOWED: &[&str] = &["at", "title", "props", "branches", "can", "limits", "items"];
+        // `can` и `limits` вычисляются из реестра и места узла, а не из
+        // исходников: сравнение их никогда не видит изменения источника.
+        const ALLOWED: &[&str] = &["at", "title", "props", "branches", "items"];
+        const COMPUTED: &[&str] = &["can", "limits"];
         if sections.is_empty() {
             return Err(DiffError::BadValue {
                 field: "filter.sections".to_string(),
@@ -402,6 +405,11 @@ fn project_data(data: &Value, filter: &Value) -> Result<Value, DiffError> {
                 field: "filter.sections".to_string(),
                 message: "diff sections must contain strings".to_string(),
             })?;
+            if COMPUTED.contains(&section) {
+                return Err(DiffError::UnsupportedFilter(format!(
+                    "diff sections compare node data; computed section `{section}` belongs to view"
+                )));
+            }
             if !ALLOWED.contains(&section) {
                 return Err(DiffError::UnsupportedFilter(format!(
                     "unsupported diff section `{section}`"
@@ -627,6 +635,31 @@ mod tests {
         assert_eq!(first.changes()[0].path, "/items/0/n");
         assert_eq!(second.changes()[0].path, "/items/2/n");
         assert_ne!(first.changes()[0].path, second.changes()[0].path);
+    }
+
+    /// `can` и `limits` вычисляются для `view`, а не читаются из
+    /// исходников: секция, которой нет в данных узла, получает отказ, а не
+    /// пустое сравнение, похожее на «изменений нет».
+    #[test]
+    fn diff_sections_refuse_computed_view_sections() {
+        let handler = DiffHandler::default();
+        for section in ["can", "limits"] {
+            let request = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items")
+                .unwrap()
+                .with_filter(json!({"sections": [section]}))
+                .unwrap();
+            let refusal = handler
+                .compare(
+                    &request,
+                    &source("main:Catalog.Items", "Catalog", "left-1", 1),
+                    &source("main:Catalog.Items", "Catalog", "right-1", 2),
+                )
+                .unwrap_err();
+            assert!(
+                matches!(&refusal, DiffError::UnsupportedFilter(message) if message.contains("belongs to view")),
+                "{section}: {refusal:?}"
+            );
+        }
     }
 
     #[test]

@@ -184,6 +184,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
         )
     }
 
+    /// The exact platform profile the reader serves; a logical reader exists
+    /// only for such a profile.
+    pub(crate) const fn platform_profile(&self) -> PlatformProfile {
+        self.profile
+    }
+
     pub(crate) fn with_read_authority(
         cancellation: &'a CancellationToken,
         read: ProviderReadAuthority,
