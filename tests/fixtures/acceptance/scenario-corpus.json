@@ -32839,6 +32839,206 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S394",
+   "name": "borrowed-common-module-without-properties",
+   "issue": 1304,
+   "area": "Расширения конфигурации",
+   "task": "Прочитать заимствованный общий модуль, который платформа выгрузила без свойств: незаписанные свойства и контексты — null, методы доступны, фильтр по контексту отказывает типизированно, вставка кода не трогает описание",
+   "workspace": "tests/fixtures/acceptance/workspace-borrowed",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.КешЗначений"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/commonModule/server",
+       "eq": null
+      },
+      {
+       "pointer": "/data/props/commonModule/returnValuesReuse",
+       "eq": null
+      },
+      {
+       "pointer": "/data/props/commonModule/privileged",
+       "eq": null
+      },
+      {
+       "pointer": "/data/props/belonging",
+       "eq": "borrowed"
+      },
+      {
+       "pointer": "/data/props/extends",
+       "eq": "main:CommonModule.КешЗначений"
+      }
+     ],
+     "captures": {
+      "descriptor": {
+       "kind": "sha256",
+       "file": "src/ext/CommonModules/КешЗначений.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.КешЗначений.Method.ПР_Удвоенное"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      },
+      {
+       "pointer": "/data/props/export",
+       "eq": true
+      },
+      {
+       "pointer": "/data/props/compile/contexts",
+       "eq": null
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.КешЗначений.Method",
+      "filter": {
+       "context": "server"
+      }
+     },
+     "expect": [
+      "unsupported"
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "unsupported_filter"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.СерверныеФункции.Method.ПР_Разность"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/compile/contexts",
+       "eq": [
+        "server",
+        "mobileAppServer",
+        "mobileStandaloneServer",
+        "externalConnection"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.СерверныеФункции"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/commonModule/server",
+       "eq": true
+      },
+      {
+       "pointer": "/data/props/commonModule/returnValuesReuse",
+       "eq": null
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "cfe"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonModule.КешЗначений",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "\nПроцедура ПР_Добавленная() Экспорт\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/ext/CommonModules/КешЗначений.xml",
+       "eq": "$capture.descriptor"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.КешЗначений.Method.ПР_Добавленная"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/compile/contexts",
+       "eq": null
+      }
+     ]
+    }
+   ]
   }
  ]
 }
