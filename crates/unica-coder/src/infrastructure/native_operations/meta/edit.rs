@@ -5636,16 +5636,18 @@ fn apply_typed_event_subscription_source(
     // A replace operation is also the repair path for a syntactically readable
     // legacy TypeDescription source. Failure to project the old wire value into
     // the logical algebra must not prevent replacing it with a valid target.
-    // A source with `v8:TypeId` members is never equal to a requested logical
-    // list: replacing it is the explicit request to drop those members.
-    let current = parse_meta_event_subscription_source(source_node)
-        .ok()
-        .filter(|current| current.type_ids.is_empty())
-        .map(|current| current.sources);
+    let current = parse_meta_event_subscription_source(source_node).ok();
+    // `v8:TypeId` members name types of the extended configuration that the
+    // logical algebra cannot express; replace acts on logical members only
+    // and keeps them verbatim (#1361).
+    let kept_type_ids = current
+        .as_ref()
+        .map(|current| current.type_ids.clone())
+        .unwrap_or_default();
     let requested = canonical_meta_event_sources(&requested);
     if current
-        .as_deref()
-        .is_some_and(|current| canonical_meta_event_sources(current) == requested)
+        .as_ref()
+        .is_some_and(|current| canonical_meta_event_sources(&current.sources) == requested)
     {
         return Ok(());
     }
@@ -5678,14 +5680,15 @@ fn apply_typed_event_subscription_source(
                 Some("relation"),
             )
         })?;
-    let replacement = emit_meta_event_subscription_source(&indent, &requested, source_node)
-        .map_err(|message| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                message,
-                Some("relation"),
-            )
-        })?;
+    let replacement =
+        emit_meta_event_subscription_source(&indent, &requested, &kept_type_ids, source_node)
+            .map_err(|message| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    message,
+                    Some("relation"),
+                )
+            })?;
     let replacement = meta_edit_lf_to_eol(replacement.trim_start(), replacement_eol);
     drop(document);
     xml_text.replace_range(range, &replacement);
@@ -7453,10 +7456,10 @@ pub(crate) mod tests {
     }
 
     /// Source расширения из штатной выгрузки 8.3.27: тип основной
-    /// конфигурации записан `v8:TypeId` (#1361). Правка другого свойства его
-    /// не трогает; явная замена Source — единственный путь его убрать.
+    /// конфигурации записан `v8:TypeId` (#1361). Его не трогают ни правка
+    /// другого свойства, ни замена логических источников.
     #[test]
-    fn typed_event_source_keeps_extension_type_id_until_an_explicit_replace() {
+    fn typed_event_source_replace_keeps_extension_type_ids_verbatim() {
         use crate::domain::metadata::{MetaPropertyChanges, MetaPropertyInput};
         let type_id = "<v8:TypeId>97a5ab75-0974-4551-8659-72579c7cef1e</v8:TypeId>";
         let mut xml = event_subscription_xml(&format!(
@@ -7479,20 +7482,26 @@ pub(crate) mod tests {
         assert!(xml.contains("<Comment>changed</Comment>"), "{xml}");
         assert!(xml.contains(type_id), "{xml}");
 
-        // The same logical members are not a no-op: replace drops the TypeId.
-        let operation = source_replace(vec![crate::domain::metadata::MetaEventSource::Object {
+        // The visible logical members unchanged: an exact-byte no-op.
+        let visible = source_replace(vec![MetaEventSource::Object {
             metadata_path: MetadataAddress::parse(
                 PLATFORM_XML_8_3_27_FORMAT_2_20,
                 "Catalog.Settings",
             )
             .unwrap(),
         }]);
-        apply_typed_operations(&mut xml, std::slice::from_ref(&operation)).unwrap();
-        assert!(!xml.contains("v8:TypeId"), "{xml}");
-        assert!(
-            xml.contains("<v8:Type>cfg:CatalogObject.Settings</v8:Type>"),
-            "{xml}"
-        );
+        let before = xml.clone();
+        apply_typed_operations(&mut xml, std::slice::from_ref(&visible)).unwrap();
+        assert_eq!(xml, before);
+
+        // A changed logical list keeps the TypeId after the logical members.
+        apply_typed_operations(&mut xml, &[source_replace(vec![catalog_family()])]).unwrap();
+        let family = xml
+            .find("<v8:TypeSet>cfg:CatalogObject</v8:TypeSet>")
+            .unwrap_or_else(|| panic!("{xml}"));
+        let kept = xml.find(type_id).unwrap_or_else(|| panic!("{xml}"));
+        assert!(family < kept, "{xml}");
+        assert!(!xml.contains("CatalogObject.Settings"), "{xml}");
     }
 
     #[test]

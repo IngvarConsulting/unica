@@ -32026,7 +32026,7 @@
    "id": "S389",
    "issue": 1361,
    "area": "Расширения конфигурации",
-   "task": "Проверить и изменить объекты расширения из штатной выгрузки, ссылающиеся на основную конфигурацию через v8:TypeId: реквизит справочника и Source подписки на события проходят проверку, тип реквизита виден как readOnly, правки не переписывают TypeId",
+   "task": "Проверить и изменить объекты расширения из штатной выгрузки, ссылающиеся на основную конфигурацию через v8:TypeId: реквизит справочника и Source подписки на события проходят проверку, тип реквизита и источник видны как readOnly, правки свойств и замена логических источников не теряют TypeId",
    "workspace": "tests/fixtures/acceptance/workspace-format",
    "wire": [
     {
@@ -32195,6 +32195,111 @@
        "eq": [
         "Перед записью настроек"
        ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек.Relation"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "contains": {
+        "relation": "source",
+        "kind": "typeId",
+        "typeId": "97a5ab75-0974-4551-8659-72579c7cef1e",
+        "readOnly": true
+       }
+      },
+      {
+       "pointer": "/data/items",
+       "contains": {
+        "relation": "source",
+        "at": "ext:Catalog.ПР_НастройкиВалют",
+        "kind": "Catalog"
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек",
+      "ops": [
+       {
+        "op": "relation.replace",
+        "args": {
+         "values": {
+          "relation": "source",
+          "targets": [
+           {
+            "kind": "family",
+            "sourceClass": "catalogObject"
+           }
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "97a5ab75-0974-4551-8659-72579c7cef1e"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeSet",
+       "eq": [
+        "cfg:CatalogObject"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
       }
      ]
     }

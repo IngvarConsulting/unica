@@ -1682,6 +1682,7 @@ fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
     for broken in [
         "<v8:TypeId>not-a-uuid</v8:TypeId>",
         "<v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId><v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId>",
+        "<v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId><v8:TypeId>41DBB66B-FF77-4B8F-AAF8-0CA2012D3A6F</v8:TypeId>",
     ] {
         let xml = properties(broken);
         let document = roxmltree::Document::parse(&xml).unwrap();

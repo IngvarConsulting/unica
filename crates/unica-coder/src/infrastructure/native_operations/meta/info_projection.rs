@@ -266,6 +266,14 @@ fn parse_observed_metadata_type_contents_node(
                     "existing metadata type identifier is not a UUID",
                 ));
             }
+            if variants.iter().any(|variant| {
+                matches!(variant, ObservedMetadataTypeVariant::TypeId { type_id: seen }
+                    if seen.eq_ignore_ascii_case(type_id))
+            }) {
+                return Err(invalid_observed_type(
+                    "existing metadata type identifier is duplicated",
+                ));
+            }
             variants.push(ObservedMetadataTypeVariant::TypeId {
                 type_id: type_id.to_string(),
             });

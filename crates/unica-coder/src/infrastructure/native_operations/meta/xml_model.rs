@@ -547,11 +547,11 @@ pub(super) fn parse_meta_event_subscription_source(
             "TypeId" => {
                 if qualifier_rank != 0 {
                     return Err(
-                        "EventSubscription Source requires v8:Type before v8:TypeSet before v8:TypeId before qualifiers"
+                        "EventSubscription Source requires v8:Type before v8:TypeSet and v8:TypeId, all before qualifiers"
                             .to_string(),
                     );
                 }
-                type_stage = 2;
+                type_stage = type_stage.max(1);
                 let type_id = strict_leaf_text(child, "EventSubscription Source v8:TypeId")?;
                 if !super::validation::is_guid(&type_id) {
                     return Err(format!(
@@ -569,12 +569,11 @@ pub(super) fn parse_meta_event_subscription_source(
                 type_ids.push(type_id);
             }
             tag @ ("Type" | "TypeSet") => {
-                if qualifier_rank != 0
-                    || (tag == "Type" && type_stage > 0)
-                    || (tag == "TypeSet" && type_stage > 1)
-                {
+                // Platform dumps evidence v8:Type before v8:TypeId; the
+                // place of v8:TypeSet relative to v8:TypeId is not pinned.
+                if qualifier_rank != 0 || (tag == "Type" && type_stage > 0) {
                     return Err(
-                        "EventSubscription Source requires v8:Type before v8:TypeSet before v8:TypeId before qualifiers"
+                        "EventSubscription Source requires v8:Type before v8:TypeSet and v8:TypeId, all before qualifiers"
                             .to_string(),
                     );
                 }
@@ -969,12 +968,21 @@ pub(super) fn canonical_meta_event_sources(sources: &[MetaEventSource]) -> Vec<M
 
 /// Emit only the Source element. Callers supply its existing indentation so
 /// direct-node replacement preserves the descriptor's surrounding layout.
+/// Emit Source from logical members plus the `v8:TypeId` members kept
+/// verbatim from the replaced node (#1361). Platform 8.3.27 rejects a Source
+/// left with `v8:TypeId` members only, so such a result is refused.
 pub(super) fn emit_meta_event_subscription_source(
     indent: &str,
     sources: &[MetaEventSource],
+    type_ids: &[String],
     namespace_context: roxmltree::Node<'_, '_>,
 ) -> Result<String, &'static str> {
     if sources.is_empty() {
+        if !type_ids.is_empty() {
+            return Err(
+                "EventSubscription Source keeps v8:TypeId members of the extended configuration and needs at least one source of this source set",
+            );
+        }
         return Ok(format!("{indent}<Source/>"));
     }
     let sources = canonical_meta_event_sources(sources);
@@ -1004,6 +1012,12 @@ pub(super) fn emit_meta_event_subscription_source(
                 ));
             }
         }
+    }
+    for type_id in type_ids {
+        lines.push(format!(
+            "{content_indent}<{data_prefix}:TypeId>{}</{data_prefix}:TypeId>",
+            escape_xml(type_id)
+        ));
     }
     lines.push(format!("{indent}</Source>"));
     Ok(lines.join("\n"))
@@ -1677,7 +1691,7 @@ mod tests {
         let namespace_context =
             meta_event_subscription_source_node(&namespace_context_document).unwrap();
         let source =
-            emit_meta_event_subscription_source("\t", &requested, namespace_context).unwrap();
+            emit_meta_event_subscription_source("\t", &requested, &[], namespace_context).unwrap();
         let xml = event_subscription_xml(&source);
         let document = roxmltree::Document::parse(&xml).unwrap();
         let source_node = meta_event_subscription_source_node(&document).unwrap();
@@ -1707,7 +1721,7 @@ mod tests {
         let namespace_context =
             meta_event_subscription_source_node(&namespace_context_document).unwrap();
 
-        let error = emit_meta_event_subscription_source("", &requested, namespace_context)
+        let error = emit_meta_event_subscription_source("", &requested, &[], namespace_context)
             .expect_err("an unmapped logical source must fail closed");
 
         assert!(error.contains("object source metadata root"), "{error}");
@@ -1736,6 +1750,17 @@ mod tests {
             }]
         );
         assert_eq!(parsed.type_ids, vec![type_id.to_string()]);
+
+        // Replace keeps the members verbatim after the logical ones; a Source
+        // left with `v8:TypeId` only does not load into 8.3.27.
+        let xml = event_subscription_xml("<Source/>");
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let context = meta_event_subscription_source_node(&document).unwrap();
+        let emitted =
+            emit_meta_event_subscription_source("", &parsed.sources, &parsed.type_ids, context)
+                .unwrap();
+        assert_eq!(read(&emitted).unwrap(), parsed);
+        assert!(emit_meta_event_subscription_source("", &[], &parsed.type_ids, context).is_err());
 
         for broken in [
             format!("<Source><v8:TypeId>{type_id}</v8:TypeId><v8:Type>cfg:CatalogObject.Settings</v8:Type></Source>"),
@@ -1835,7 +1860,8 @@ mod tests {
             metadata_path: metadata_path("Catalog.Items"),
         }];
 
-        let emitted = emit_meta_event_subscription_source("", &requested, source_node).unwrap();
+        let emitted =
+            emit_meta_event_subscription_source("", &requested, &[], source_node).unwrap();
         let rewritten = xml.replace("<Source/>", &emitted);
         let rewritten_document = roxmltree::Document::parse(&rewritten).unwrap();
         let rewritten_source = meta_event_subscription_source_node(&rewritten_document).unwrap();

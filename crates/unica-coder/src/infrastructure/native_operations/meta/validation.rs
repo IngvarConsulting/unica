@@ -3034,15 +3034,21 @@ pub(super) fn meta_validate_check_child_element(
             ));
             return false;
         }
-        if let Some(type_id) = type_ids
-            .into_iter()
-            .map(meta_info_inner_text)
-            .find(|type_id| !is_guid(type_id.trim()))
-        {
-            report.error(format!(
-                "7. {kind} '{name}' has invalid v8:TypeId '{type_id}'"
-            ));
-            return false;
+        let mut seen_type_ids = HashSet::new();
+        for type_id in type_ids.into_iter().map(meta_info_inner_text) {
+            let type_id = type_id.trim();
+            if !is_guid(type_id) {
+                report.error(format!(
+                    "7. {kind} '{name}' has invalid v8:TypeId '{type_id}'"
+                ));
+                return false;
+            }
+            if !seen_type_ids.insert(type_id.to_ascii_lowercase()) {
+                report.error(format!(
+                    "7. {kind} '{name}' has duplicate v8:TypeId '{type_id}'"
+                ));
+                return false;
+            }
         }
     }
     true
@@ -3244,14 +3250,18 @@ pub(super) fn meta_validate_check_cross_properties(
             check_ok = false;
             issues += 1;
         }
-        let has_source = meta_info_child(props_node, "Source")
-            .map(|node| {
-                ["Type", "TypeSet", "TypeId"]
-                    .iter()
-                    .any(|name| !meta_info_children(node, name).is_empty())
-            })
-            .unwrap_or(false);
-        if !has_source {
+        let source = meta_info_child(props_node, "Source");
+        let count = |name: &str| source.map_or(0, |node| meta_info_children(node, name).len());
+        let logical_sources = count("Type") + count("TypeSet");
+        if logical_sources == 0 && count("TypeId") > 0 {
+            // Platform 8.3.27 refuses to load it: «Имя события должно быть
+            // задано» — the event is resolved against this source set (#1361).
+            report.error(
+                "10. EventSubscription: Source has only v8:TypeId types of the extended configuration; platform requires at least one source of this source set",
+            );
+            check_ok = false;
+            issues += 1;
+        } else if logical_sources == 0 {
             report.warn("10. EventSubscription: no Source types specified");
             issues += 1;
         }
@@ -6842,6 +6852,23 @@ mod tests {
             malformed.errors
         );
 
+        let duplicate = validate(&dump.replacen(
+            currency,
+            &format!(
+                "{currency}{}",
+                currency.to_uppercase().replace("V8:TYPEID", "v8:TypeId")
+            ),
+            1,
+        ));
+        assert!(
+            duplicate
+                .errors
+                .iter()
+                .any(|error| error.contains("has duplicate v8:TypeId")),
+            "{:?}",
+            duplicate.errors
+        );
+
         let empty = validate(&dump.replace(currency, "").replace(rate_mode, ""));
         assert!(!empty.ok);
         for name in ["Attribute 'ОсновнаяВалюта'", "Attribute 'КодЯзыка'"] {
@@ -6857,10 +6884,11 @@ mod tests {
     }
 
     /// Source подписки расширения из штатной выгрузки 8.3.27 содержит
-    /// `v8:TypeId` источника из основной конфигурации (#1361): это заданный
-    /// источник, а не пустой.
+    /// `v8:TypeId` источника из основной конфигурации после собственного
+    /// `v8:Type` (#1361) — это допустимо. Source из одних `v8:TypeId`
+    /// платформа не загружает («Имя события должно быть задано»).
     #[test]
-    fn extension_event_subscription_type_id_source_is_a_specified_source() {
+    fn extension_event_subscription_type_id_source_needs_an_own_source() {
         let dump = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/fixtures/acceptance/workspace-format/src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml"
@@ -6873,12 +6901,21 @@ mod tests {
         };
         let own = "<v8:Type>cfg:CatalogObject.ПР_НастройкиВалют</v8:Type>";
         assert!(dump.contains(own) && dump.contains("<v8:TypeId>"));
-        let only_type_id = dump.replace(own, "");
 
-        let run = meta_validate_source(only_type_id.as_bytes(), &options, &inputs).unwrap();
-
+        let run = meta_validate_source(dump.as_bytes(), &options, &inputs).unwrap();
         assert!(run.ok, "{:?}", run.errors);
         assert!(run.warnings.is_empty(), "{:?}", run.warnings);
+
+        let only_type_id = dump.replace(own, "");
+        let run = meta_validate_source(only_type_id.as_bytes(), &options, &inputs).unwrap();
+        assert!(!run.ok);
+        assert!(
+            run.errors
+                .iter()
+                .any(|error| error.contains("Source has only v8:TypeId")),
+            "{:?}",
+            run.errors
+        );
     }
 
     #[test]
