@@ -544,12 +544,15 @@ impl ModuleProjectionSet {
                     "context `{context}` is not part of platform profile 8.3.27"
                 )));
             }
-            let Some(contexts) = method.compile.contexts.as_deref() else {
-                return Err(ProjectionError::invalid_context(format!(
-                    "compilation contexts of method `{method_at}` are unknown"
-                )));
-            };
-            if !contexts.iter().any(|candidate| candidate == context) {
+            // Публичный фильтр контекста отказывает раньше, в `view`, если
+            // контексты модуля неизвестны; здесь неизвестное не совпадает.
+            if !method
+                .compile
+                .contexts
+                .iter()
+                .flatten()
+                .any(|candidate| candidate == context)
+            {
                 return Ok(BodyPage {
                     lines: Vec::new(),
                     next: None,

@@ -236,6 +236,8 @@ fn form_method_facts(module: &ModuleProjectionSet) -> Vec<FormMethodFact<'_>> {
                 &method.name,
                 method.method_kind,
                 &method.signature,
+                // Формы и владельцы событий всегда знают контексты; `None`
+                // бывает только у заимствованного общего модуля без событий.
                 method
                     .compile
                     .contexts

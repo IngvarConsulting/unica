@@ -1264,7 +1264,9 @@ fn method_matches_event(
     capability: ModuleCapability,
     spec: &PlatformEventSpec,
 ) -> bool {
-    // Неизвестные контексты не доказывают совместимость обработчика.
+    // Контексты неизвестны только у заимствованного общего модуля, а у него
+    // нет событий платформы: ветка не исполняется и лишь не выдаёт
+    // совместимость без доказательства.
     let Some(contexts) = contexts else {
         return false;
     };

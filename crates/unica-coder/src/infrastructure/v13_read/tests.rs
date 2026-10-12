@@ -313,6 +313,86 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     assert!(filtered.ok, "{:?}", filtered.diagnostics);
 }
 
+/// #1304: контексты известны только при всех четырёх флагах среды.
+/// Без любого одного из них контексты метода — `null`, фильтр отказывает,
+/// а остальные записанные флаги читаются как есть.
+#[test]
+fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contexts() {
+    let environment =
+        fixture_text("platform_8_3_27/cfe_borrow/extension-common-module-environment-only.xml");
+    for (flag, element) in [
+        (
+            "clientManagedApplication",
+            "<ClientManagedApplication>false</ClientManagedApplication>",
+        ),
+        (
+            "clientOrdinaryApplication",
+            "<ClientOrdinaryApplication>false</ClientOrdinaryApplication>",
+        ),
+        ("server", "<Server>true</Server>"),
+        (
+            "externalConnection",
+            "<ExternalConnection>true</ExternalConnection>",
+        ),
+    ] {
+        let descriptor = environment.replace(element, "");
+        assert_ne!(descriptor, environment, "{flag}");
+        let props =
+            super::common_module_properties(descriptor.as_bytes(), SourceSetKind::Extension)
+                .unwrap();
+        assert!(!props.execution_environment_known(), "{flag}");
+
+        let fixture = RealReaderFixture::new();
+        let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
+        write(
+            &fixture.source.join("Configuration.xml"),
+            &configuration.replace(
+                "</ChildObjects>",
+                "<CommonModule>СерверныеФункции</CommonModule></ChildObjects>",
+            ),
+        );
+        write(
+            &fixture.source.join("CommonModules/СерверныеФункции.xml"),
+            &descriptor,
+        );
+        write(
+            &fixture
+                .source
+                .join("CommonModules/СерверныеФункции/Ext/Module.bsl"),
+            "Функция ПР_Разность(А, Б) Экспорт\n\tВозврат А - Б;\nКонецФункции\n",
+        );
+        let service = fixture.extension_view_service();
+        let module = service.view(ViewRequest::new("main:CommonModule.СерверныеФункции").unwrap());
+        assert!(module.ok, "{flag}: {:?}", module.diagnostics);
+        let common = &module.data.as_ref().unwrap()["props"]["commonModule"];
+        assert_eq!(common[flag], serde_json::Value::Null, "{flag}");
+        assert_eq!(common["serverCall"], true, "{flag}");
+        let method = service.view(
+            ViewRequest::new("main:CommonModule.СерверныеФункции.Method.ПР_Разность").unwrap(),
+        );
+        assert!(method.ok, "{flag}: {:?}", method.diagnostics);
+        assert_eq!(
+            method.data.unwrap()["props"]["compile"]["contexts"],
+            serde_json::Value::Null,
+            "{flag}"
+        );
+        let filtered = service.view(
+            ViewRequest::new("main:CommonModule.СерверныеФункции.Method")
+                .unwrap()
+                .with_filter(serde_json::Map::from_iter([(
+                    "context".to_string(),
+                    json!("server"),
+                )])),
+        );
+        assert!(!filtered.ok, "{flag}");
+        assert_eq!(
+            filtered.diagnostics[0]["code"], "unsupported_filter",
+            "{flag}: {:?}",
+            filtered.diagnostics
+        );
+    }
+}
+
 fn configuration_payload(
     reader: &ProviderReadAuthority,
 ) -> Result<serde_json::Value, crate::application::v13::view::ViewError> {

@@ -7,6 +7,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_view_serializes_unknown_privileged_without_losing_contexts
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_reads_platform_absent_properties_as_unknown
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_without_any_single_environment_flag_has_unknown_contexts
   - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_bounds_override_props_for_metadata_and_specialized_readers
 gap: https://github.com/IngvarConsulting/unica/issues/973
 ---

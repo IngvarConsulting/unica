@@ -66,6 +66,12 @@ flags, but neither `Privileged` nor `ReturnValuesReuse`. Import, `check` and
 `PropertyState Module/Extended`. A second cycle through an independently created
 infobase reproduced both descriptors byte for byte.
 
+Both extension input descriptors were written by hand, not produced by the
+Configurator's "add to extension" command. The experiment therefore proves that
+the platform accepts these shapes and preserves them unchanged through
+import/export; it does not show what the Configurator writes when it adopts a
+module itself.
+
 `extension-common-module-inherited.xml` and
 `extension-common-module-environment-only.xml` are those exports;
 `parent-common-module-cache.xml` is the parent of the first one. They prove that

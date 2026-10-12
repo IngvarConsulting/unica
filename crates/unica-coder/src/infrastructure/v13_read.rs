@@ -2454,7 +2454,7 @@ fn module_projection_view(
         // ответ по нему выдумал бы контексты заимствованного модуля.
         return Err(ViewError::new(
             RefusalCode::UnsupportedFilter,
-            "module filter.context needs compilation contexts, but this borrowed common module does not state its execution environment; read the parent module from props.extends",
+            "module filter.context needs compilation contexts, but this borrowed common module does not state its execution environment; read the parent module from props.extends when the parent is resolved",
         ));
     }
     if suffix.is_empty() {
