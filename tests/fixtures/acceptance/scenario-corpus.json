@@ -19797,7 +19797,7 @@
    "id": "S357",
    "issue": 895,
    "area": "Код BSL",
-   "task": "Выделить три helper-метода одной заменой метода: селектор и адрес метода дают одну запись, повтор пустой, повторно объявленный helper отказывает",
+   "task": "Выделить три helper-метода одной заменой метода: селектор и адрес метода дают одну запись, опубликованный повтор пустой, повторно объявленный helper отказывает",
    "wire": [
     {
      "tool": "unica.apply",
@@ -19888,6 +19888,37 @@
       {
        "pointer": "/data/mode",
        "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+      }
+     ],
+     "captures": {
+      "repeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
       },
       {
        "pointer": "/data/effects",
@@ -32926,6 +32957,456 @@
        "kind": "sha256",
        "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
        "eq": "$capture.before"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S394",
+   "issue": 1361,
+   "area": "Расширения конфигурации",
+   "task": "Проверить и изменить объекты расширения из штатной выгрузки, ссылающиеся на основную конфигурацию через v8:TypeId: реквизит справочника и Source подписки на события проходят проверку, тип реквизита и источник видны как readOnly, правки свойств и замена логических источников не теряют TypeId",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics/0",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"variants\":[{\"kind\":\"typeId\",\"typeId\":\"41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f\"}],\"mutationCapability\":\"readOnly\"}"
+      },
+      {
+       "pointer": "/data/props/incomplete",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "synonym": "Код"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/Catalogs/ПР_НастройкиВалют.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f",
+        "d7bc4697-f470-58f7-aca4-4e6bf45f9e69",
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f",
+        "d7bc4697-f470-58f7-aca4-4e6bf45f9e69",
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f"
+       ]
+      },
+      {
+       "path": "src-ext/Catalogs/ПР_НастройкиВалют.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "Код"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics/0",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Перед записью настроек"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "97a5ab75-0974-4551-8659-72579c7cef1e"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+       "eq": [
+        "cfg:CatalogObject.ПР_НастройкиВалют"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Comment",
+       "eq": [
+        "Перед записью настроек"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек.Relation"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "contains": {
+        "relation": "source",
+        "kind": "typeId",
+        "typeId": "97a5ab75-0974-4551-8659-72579c7cef1e",
+        "readOnly": true
+       }
+      },
+      {
+       "pointer": "/data/items",
+       "contains": {
+        "relation": "source",
+        "at": "ext:Catalog.ПР_НастройкиВалют",
+        "kind": "Catalog"
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек",
+      "ops": [
+       {
+        "op": "relation.replace",
+        "args": {
+         "values": {
+          "relation": "source",
+          "targets": [
+           {
+            "kind": "family",
+            "sourceClass": "catalogObject"
+           }
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "97a5ab75-0974-4551-8659-72579c7cef1e"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeSet",
+       "eq": [
+        "cfg:CatalogObject"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S395",
+   "name": "call-graph-is-a-branch-not-a-section",
+   "issue": 1373,
+   "area": "Код BSL",
+   "task": "Узел метода называет ветви графа вызовов без счёта, а секции callGraph у view нет",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст.Caller"
+       }
+      },
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст.Callee"
+       }
+      },
+      {
+       "pointer": "/data/props/callGraph",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст",
+      "filter": {
+       "sections": [
+        "callGraph"
+       ]
+      }
+     },
+     "expect": [
+      "unsupported"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "unsupported_filter"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "unsupported view section `callGraph`"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S396",
+   "name": "call-graph-branch-delivers-the-missing-analyzer",
+   "issue": 1373,
+   "area": "Код BSL",
+   "task": "Ветвь графа вызовов заказывает отсутствующий анализатор этим же вызовом, а провал поставки даёт типизированный отказ «нет движка»",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-delivery-failure",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches",
+       "contains": {
+        "at": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+       }
+      },
+      {
+       "pointer": "/data/delivery",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/at",
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример.Caller"
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "provider_absent"
+      },
+      {
+       "pointer": "/data/delivery",
+       "eq": {
+        "artifact": "bsl-analyzer",
+        "status": "failed",
+        "failureClass": "configuration"
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.Пример.Method.ОбработатьПример.Callee"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/at",
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример.Callee"
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "provider_absent"
+      },
+      {
+       "pointer": "/data/delivery",
+       "eq": {
+        "artifact": "bsl-analyzer",
+        "status": "failed",
+        "failureClass": "configuration"
+       }
       }
      ]
     }

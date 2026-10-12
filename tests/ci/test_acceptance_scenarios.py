@@ -524,20 +524,20 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 393)
+        self.assertEqual(len(scenarios), 396)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 939,
-            "a wire step went missing: the corpus freezes 939 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 956,
+            "a wire step went missing: the corpus freezes 956 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 394)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 397)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
         delivery = {s["id"] for s in select_profile(self.corpus, "delivery")["scenarios"]}
         agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
         fault = {s["id"] for s in select_profile(self.corpus, "fault-injection")["scenarios"]}
-        self.assertEqual(fault, {"S344", "S345", "S346", "S389", "S390"})
+        self.assertEqual(fault, {"S344", "S345", "S346", "S389", "S390", "S396"})
         self.assertFalse(fault & (source | delivery | agent))
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
@@ -975,9 +975,26 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
             self.assertFalse(manifest["testFixture"]["publishedArtifact"])
             self.assertEqual(manifest["tools"][0]["version"], "0.0.0-test-fixture")
             records = []
-            run_corpus(self, select_profile(self.corpus, "fault-injection"), plugin,
+            run_corpus(self, fault_cases(self.corpus, "analyzer-jsonl-fault"), plugin,
                        scenario_driver=fault_driver(plugin, records))
             self.assertEqual(sum(record["tool"] == "unica.check" for record in records), 5)
+
+    def test_call_graph_branch_names_a_failed_analyzer_delivery(self):
+        from tests.ci.acceptance_faults import stage_missing_analyzer, delivery_failure_driver
+        with tempfile.TemporaryDirectory(prefix="unica-delivery-failure-") as raw:
+            plugin = Path(raw).resolve() / "plugin"
+            manifest = stage_missing_analyzer(plugin)
+            self.assertFalse(manifest["testFixture"]["publishedArtifact"])
+            cases = fault_cases(self.corpus, "analyzer-delivery-failure")
+            self.assertEqual([scenario["id"] for scenario in cases["scenarios"]], ["S396"])
+            run_corpus(self, cases, plugin, scenario_driver=delivery_failure_driver(plugin))
+
+
+def fault_cases(corpus, driver):
+    selected = select_profile(corpus, "fault-injection")
+    return {**selected, "scenarios": [
+        scenario for scenario in selected["scenarios"] if scenario["driver"] == driver
+    ]}
 
 
 if __name__ == "__main__":

@@ -1444,6 +1444,20 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             }
         }
     }
+    // Источник подписки расширения из основной конфигурации платформа пишет
+    // идентификатором типа (`v8:TypeId`, #1361): адреса у него нет, но
+    // скрыть его нельзя — замена источников сохраняет его как есть.
+    let type_ids = relations
+        .and_then(|relations| relations.get("sourceTypeIds"))
+        .and_then(Value::as_array);
+    for type_id in type_ids.into_iter().flatten().filter_map(Value::as_str) {
+        items.push(json!({
+            "relation": "source",
+            "kind": "typeId",
+            "typeId": type_id,
+            "readOnly": true,
+        }));
+    }
     items
 }
 

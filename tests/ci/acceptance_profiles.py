@@ -14,6 +14,14 @@ SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
 FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "exit-failure", "missing-engine"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
+# A call graph branch orders the missing analyzer in the same call; the
+# delivery-failure driver stages a package that names it without a binary.
+DELIVERY_FAILURE_METHOD = "main:CommonModule.Пример.Method.ОбработатьПример"
+DELIVERY_FAILURE_ADDRESSES = {
+    DELIVERY_FAILURE_METHOD,
+    f"{DELIVERY_FAILURE_METHOD}.Caller",
+    f"{DELIVERY_FAILURE_METHOD}.Callee",
+}
 DCS_WORKSPACE = "tests/fixtures/acceptance/workspace-dcs"
 MXL_WORKSPACE = "tests/fixtures/acceptance/workspace-mxl"
 EXTERNAL_WORKSPACE = "tests/fixtures/acceptance/workspace-external"
@@ -85,7 +93,15 @@ def select_profile(corpus, profile):
             else:
                 raise ValueError(f"{scenario['id']}: invalid delivery driver or fixture")
         elif current == "fault-injection":
-            if driver != "analyzer-jsonl-fault" or workspace != DIAGNOSTICS_WORKSPACE or scenario.get("evaluation") not in FAULT_CASES or any(
+            if driver == "analyzer-delivery-failure":
+                if workspace != DIAGNOSTICS_WORKSPACE or "evaluation" in scenario or any(
+                    step["tool"] != "unica.view"
+                    or step["args"] != {"at": step["args"].get("at")}
+                    or step["args"]["at"] not in DELIVERY_FAILURE_ADDRESSES
+                    for step in scenario["wire"]
+                ):
+                    raise ValueError(f"{scenario['id']}: invalid analyzer delivery failure wire")
+            elif driver != "analyzer-jsonl-fault" or workspace != DIAGNOSTICS_WORKSPACE or scenario.get("evaluation") not in FAULT_CASES or any(
                 step["tool"] != "unica.check" or step["args"] != {"at": "main:CommonModule.Пример"}
                 for step in scenario["wire"]
             ):

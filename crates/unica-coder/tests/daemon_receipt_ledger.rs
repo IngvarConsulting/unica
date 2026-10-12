@@ -615,6 +615,7 @@ enum CrashPoint {
     AfterStagedTaskStoreTerminalReadbackBeforeLedgerCommit,
     BeforeTaskStoreCreate,
     AfterTaskStoreCreateBeforeTaskBound,
+    AfterTaskBoundBeforeHandoffReceiptCompletion,
     AfterCancelFlagBeforeTaskCreate,
     AfterTaskStoreCancelReadbackBeforeTaskBound,
     AfterWorkingReadbackBeforeReceiptBegun,
@@ -9136,6 +9137,20 @@ fn every_cross_store_crash_point_reconciles_without_split_brain() {
             false,
         ),
         (
+            EntryPath::PromisedUnbound,
+            CrashPoint::AfterTaskBoundBeforeHandoffReceiptCompletion,
+            1,
+            ExpectedTerminal::Failed(V5SafeFailureReason::Interrupted),
+            false,
+        ),
+        (
+            EntryPath::ReservedActorBound,
+            CrashPoint::AfterTaskBoundBeforeHandoffReceiptCompletion,
+            1,
+            ExpectedTerminal::Failed(V5SafeFailureReason::Interrupted),
+            false,
+        ),
+        (
             EntryPath::ReservedBegun,
             CrashPoint::BeforeBoundHandoffIntent,
             0,
@@ -9166,6 +9181,13 @@ fn every_cross_store_crash_point_reconciles_without_split_brain() {
         (
             EntryPath::ReservedBegun,
             CrashPoint::AfterTaskStoreCreateBeforeTaskBound,
+            1,
+            ExpectedTerminal::Failed(V5SafeFailureReason::OutcomeUncertain),
+            false,
+        ),
+        (
+            EntryPath::ReservedBegun,
+            CrashPoint::AfterTaskBoundBeforeHandoffReceiptCompletion,
             1,
             ExpectedTerminal::Failed(V5SafeFailureReason::OutcomeUncertain),
             false,
