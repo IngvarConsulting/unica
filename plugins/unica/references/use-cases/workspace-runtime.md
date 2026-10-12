@@ -49,6 +49,18 @@ Tasks uses `tasks/get` and `tasks/cancel` instead. The terminal result never
 publishes raw stdout. The Task state is the authority for the outcome; a
 `working` state alone does not prove that the runner is making progress.
 
+If any call fails with `data.code: submit_response_lost`, the daemon may
+already run it: wait for the `taskId` the error names (its `next`, also
+repeated in the message) instead of calling again; a client with native
+Tasks receives that Task directly. `task_not_found` for that id means the
+daemon no longer knows the call, for example after a restart: inspect the
+actual state before repeating `apply` or `run`. `submit_not_delivered` means
+the call never reached the daemon and will not run; repeat it as is. A
+refused connection (`task_backend_failed` with `needsHuman`) will not pass on
+a repeat. An identical read repeated shortly after the first one joins that
+work under its own `taskId` only while no source changed since it began;
+`apply` and `run` never do, so never repeat them blindly.
+
 ### If a mutating runner remains `working`
 
 Keep the `taskId` and the operation's infobase and workspace identity. Read

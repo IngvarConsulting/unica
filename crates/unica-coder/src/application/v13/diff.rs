@@ -1,7 +1,7 @@
 use crate::domain::address::QualifiedAddress;
 use crate::domain::refusal::RefusalCode;
 use serde::Serialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Mutex;
@@ -15,7 +15,6 @@ const MAX_CURSOR_ENTRIES: usize = 64;
 pub(crate) struct DiffRequest {
     left: QualifiedAddress,
     right: QualifiedAddress,
-    filter: Value,
     limit: usize,
     cursor: Option<String>,
 }
@@ -33,16 +32,9 @@ impl DiffRequest {
         Ok(Self {
             left,
             right,
-            filter: Value::Object(Map::new()),
             limit: DEFAULT_LIMIT,
             cursor: None,
         })
-    }
-
-    pub(crate) fn with_filter(mut self, filter: Value) -> Result<Self, DiffError> {
-        validate_filter(&filter)?;
-        self.filter = filter;
-        Ok(self)
     }
 
     pub(crate) fn with_limit(mut self, limit: usize) -> Self {
@@ -56,13 +48,7 @@ impl DiffRequest {
     }
 
     fn fingerprint(&self) -> String {
-        format!(
-            "{}|{}|{}|{}",
-            self.left,
-            self.right,
-            canonical_json(&self.filter),
-            self.limit
-        )
+        format!("{}|{}|{}", self.left, self.right, self.limit)
     }
 }
 
@@ -116,7 +102,6 @@ impl DiffPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DiffError {
     BadValue { field: String, message: String },
-    UnsupportedFilter(String),
     IncomparableNodes,
     InvalidCursor,
 }
@@ -125,7 +110,6 @@ impl DiffError {
     pub(crate) const fn code(&self) -> RefusalCode {
         match self {
             Self::BadValue { .. } => RefusalCode::BadValue,
-            Self::UnsupportedFilter(_) => RefusalCode::UnsupportedFilter,
             Self::IncomparableNodes => RefusalCode::IncomparableNodes,
             Self::InvalidCursor => RefusalCode::InvalidCursor,
         }
@@ -136,7 +120,6 @@ impl fmt::Display for DiffError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadValue { field, message } => write!(formatter, "{field}: {message}"),
-            Self::UnsupportedFilter(message) => formatter.write_str(message),
             Self::IncomparableNodes => {
                 formatter.write_str("diff requires nodes of the same logical kind")
             }
@@ -219,8 +202,8 @@ impl DiffHandler {
             if left.kind != right.kind {
                 return Err(DiffError::IncomparableNodes);
             }
-            let left_data = project_data(&left.data, &request.filter)?;
-            let right_data = project_data(&right.data, &request.filter)?;
+            let left_data = source_backed(&left.data);
+            let right_data = source_backed(&right.data);
             if left_data.get("kind") != right_data.get("kind") {
                 return Err(DiffError::IncomparableNodes);
             }
@@ -347,189 +330,15 @@ fn path_or_root(path: &str) -> &str {
     }
 }
 
-fn validate_filter(filter: &Value) -> Result<(), DiffError> {
-    let Some(filter) = filter.as_object() else {
-        return Err(DiffError::BadValue {
-            field: "filter".to_string(),
-            message: "diff filter must be an object".to_string(),
-        });
-    };
-    if filter.keys().any(|key| key != "paths" && key != "sections") {
-        return Err(DiffError::UnsupportedFilter(
-            "diff filter supports only paths or sections".to_string(),
-        ));
+/// `can` и `limits` вычисляются из реестра и места узла, а не читаются из
+/// исходников: сравнение их никогда не увидело бы изменения источника.
+fn source_backed(data: &Value) -> Value {
+    let mut data = data.clone();
+    if let Some(node) = data.as_object_mut() {
+        node.remove("can");
+        node.remove("limits");
     }
-    if filter.contains_key("paths") && filter.contains_key("sections") {
-        return Err(DiffError::BadValue {
-            field: "filter".to_string(),
-            message: "diff filter accepts either paths or sections, not both".to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn project_data(data: &Value, filter: &Value) -> Result<Value, DiffError> {
-    validate_filter(filter)?;
-    let Some(filter) = filter.as_object() else {
-        unreachable!()
-    };
-    if filter.is_empty() {
-        return Ok(data.clone());
-    }
-    let data_value = data.clone();
-    let data = data_value.as_object().ok_or_else(|| DiffError::BadValue {
-        field: "data".to_string(),
-        message: "diff source data must be an object".to_string(),
-    })?;
-    let mut projected = Map::new();
-    if let Some(kind) = data.get("kind") {
-        projected.insert("kind".to_string(), kind.clone());
-    }
-    if let Some(sections) = filter.get("sections") {
-        let sections = sections.as_array().ok_or_else(|| DiffError::BadValue {
-            field: "filter.sections".to_string(),
-            message: "diff sections must be an array of strings".to_string(),
-        })?;
-        // `can` и `limits` вычисляются из реестра и места узла, а не из
-        // исходников: сравнение их никогда не видит изменения источника.
-        const ALLOWED: &[&str] = &["at", "title", "props", "branches", "items"];
-        const COMPUTED: &[&str] = &["can", "limits"];
-        if sections.is_empty() {
-            return Err(DiffError::BadValue {
-                field: "filter.sections".to_string(),
-                message: "diff sections must not be empty".to_string(),
-            });
-        }
-        for section in sections {
-            let section = section.as_str().ok_or_else(|| DiffError::BadValue {
-                field: "filter.sections".to_string(),
-                message: "diff sections must contain strings".to_string(),
-            })?;
-            if COMPUTED.contains(&section) {
-                return Err(DiffError::UnsupportedFilter(format!(
-                    "diff sections compare node data; computed section `{section}` belongs to view"
-                )));
-            }
-            if !ALLOWED.contains(&section) {
-                return Err(DiffError::UnsupportedFilter(format!(
-                    "unsupported diff section `{section}`"
-                )));
-            }
-            if let Some(value) = data.get(section) {
-                projected.insert(section.to_string(), value.clone());
-            }
-        }
-        return Ok(Value::Object(projected));
-    }
-    let paths = filter["paths"]
-        .as_array()
-        .ok_or_else(|| DiffError::BadValue {
-            field: "filter.paths".to_string(),
-            message: "diff paths must be an array of JSON pointers".to_string(),
-        })?;
-    if paths.is_empty() {
-        return Err(DiffError::BadValue {
-            field: "filter.paths".to_string(),
-            message: "diff paths must not be empty".to_string(),
-        });
-    }
-    let mut paths = paths
-        .iter()
-        .map(|path| {
-            path.as_str().ok_or_else(|| DiffError::BadValue {
-                field: "filter.paths".to_string(),
-                message: "diff paths must contain strings".to_string(),
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    for path in &paths {
-        if !path.starts_with('/') || *path == "/" {
-            return Err(DiffError::BadValue {
-                field: "filter.paths".to_string(),
-                message: "diff paths must be non-root JSON pointers".to_string(),
-            });
-        }
-    }
-    paths.sort_unstable_by(|left, right| {
-        pointer_depth(left)
-            .cmp(&pointer_depth(right))
-            .then_with(|| left.cmp(right))
-    });
-    let mut normalized: Vec<&str> = Vec::with_capacity(paths.len());
-    for path in paths {
-        if normalized
-            .iter()
-            .any(|ancestor| pointer_covers(ancestor, path))
-        {
-            continue;
-        }
-        normalized.push(path);
-    }
-    for path in normalized {
-        if let Some(value) = data_value.pointer(path) {
-            insert_pointer(&mut projected, path, value.clone())?;
-        }
-    }
-    Ok(Value::Object(projected))
-}
-
-fn pointer_depth(pointer: &str) -> usize {
-    pointer.bytes().filter(|byte| *byte == b'/').count()
-}
-
-fn pointer_covers(ancestor: &str, candidate: &str) -> bool {
-    candidate == ancestor
-        || candidate
-            .strip_prefix(ancestor)
-            .is_some_and(|suffix| suffix.starts_with('/'))
-}
-
-fn insert_pointer(
-    root: &mut Map<String, Value>,
-    pointer: &str,
-    value: Value,
-) -> Result<(), DiffError> {
-    let segments = pointer
-        .split('/')
-        .skip(1)
-        .map(|segment| segment.replace("~1", "/").replace("~0", "~"))
-        .collect::<Vec<_>>();
-    let Some((last, parents)) = segments.split_last() else {
-        return Err(DiffError::BadValue {
-            field: "filter.paths".to_string(),
-            message: "diff JSON pointer is empty".to_string(),
-        });
-    };
-    let mut current = root;
-    for segment in parents {
-        let entry = current
-            .entry(segment.clone())
-            .or_insert_with(|| Value::Object(Map::new()));
-        current = entry.as_object_mut().ok_or_else(|| DiffError::BadValue {
-            field: "filter.paths".to_string(),
-            message: "diff path crosses a non-object JSON value".to_string(),
-        })?;
-    }
-    current.insert(last.clone(), value);
-    Ok(())
-}
-
-fn canonical_json(value: &Value) -> String {
-    match value {
-        Value::Object(map) => map
-            .iter()
-            .map(|(key, value)| format!("{}:{}", key, canonical_json(value)))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Array(values) => values
-            .iter()
-            .map(canonical_json)
-            .collect::<Vec<_>>()
-            .join(","),
-        _ => value.to_string(),
-    }
+    data
 }
 
 #[cfg(test)]
@@ -637,66 +446,17 @@ mod tests {
         assert_ne!(first.changes()[0].path, second.changes()[0].path);
     }
 
-    /// `can` и `limits` вычисляются для `view`, а не читаются из
-    /// исходников: секция, которой нет в данных узла, получает отказ, а не
-    /// пустое сравнение, похожее на «изменений нет».
+    /// `can` и `limits` вычисляются для `view`, а не читаются из исходников:
+    /// у узлов с одинаковыми данными словари не дают ложного различия.
     #[test]
-    fn diff_sections_refuse_computed_view_sections() {
+    fn diff_ignores_computed_view_sections() {
         let handler = DiffHandler::default();
-        for section in ["can", "limits"] {
-            let request = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items")
-                .unwrap()
-                .with_filter(json!({"sections": [section]}))
-                .unwrap();
-            let refusal = handler
-                .compare(
-                    &request,
-                    &source("main:Catalog.Items", "Catalog", "left-1", 1),
-                    &source("main:Catalog.Items", "Catalog", "right-1", 2),
-                )
-                .unwrap_err();
-            assert!(
-                matches!(&refusal, DiffError::UnsupportedFilter(message) if message.contains("belongs to view")),
-                "{section}: {refusal:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn diff_paths_filter_is_closed_and_preserves_kind_identity() {
-        let handler = DiffHandler::default();
-        let request = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items")
-            .unwrap()
-            .with_filter(json!({"paths": ["/props/value"]}))
-            .unwrap();
-        let page = handler
-            .compare(
-                &request,
-                &source("main:Catalog.Items", "Catalog", "left-1", 1),
-                &source("main:Catalog.Items", "Catalog", "right-1", 2),
-            )
-            .unwrap();
-        assert_eq!(page.changes()[0].path, "/props/value");
-        assert!(!page.changes()[0].left.as_ref().unwrap().is_null());
-    }
-
-    #[test]
-    fn diff_overlapping_path_filters_are_order_independent() {
-        let handler = DiffHandler::default();
-        let parent_first = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items")
-            .unwrap()
-            .with_filter(json!({"paths": ["/items", "/items/0"]}))
-            .unwrap();
-        let child_first = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items")
-            .unwrap()
-            .with_filter(json!({"paths": ["/items/0", "/items"]}))
-            .unwrap();
-        let left = source("main:Catalog.Items", "Catalog", "left-1", 1);
-        let right = source("main:Catalog.Items", "Catalog", "right-1", 2);
-
-        let parent_first_page = handler.compare(&parent_first, &left, &right).unwrap();
-        let child_first_page = handler.compare(&child_first, &left, &right).unwrap();
-
-        assert_eq!(parent_first_page, child_first_page);
+        let request = DiffRequest::new("main:Catalog.Items", "main:Catalog.Items").unwrap();
+        let mut left = source("main:Catalog.Items", "Catalog", "left-1", 1);
+        let right = source("main:Catalog.Items", "Catalog", "right-1", 1);
+        left.data["can"] = json!([{"op": "props.set"}]);
+        left.data["limits"] = json!({"items": 1});
+        let page = handler.compare(&request, &left, &right).unwrap();
+        assert!(page.changes().is_empty(), "computed sections leaked");
     }
 }

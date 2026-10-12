@@ -18,12 +18,13 @@ use crate::application::receipt_ledger::{
 #[cfg(test)]
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::invocation::{InvocationId, TaskId};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::daemon::client_v5::{
     V5DaemonClient, V5DaemonProcessOwner, V5TaskExchangeError, V5TransportError,
 };
 use crate::infrastructure::daemon::protocol_v5::{
-    V5DaemonErrorCode, V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse,
-    V5ServerResponse,
+    V5DaemonErrorCode, V5DaemonTaskSnapshot, V5InvocationPhase, V5InvocationRequest,
+    V5InvocationResponse, V5ServerResponse,
 };
 use rmcp::model::{CallToolResult, ErrorCode, ErrorData};
 use serde_json::{Map, Value};
@@ -109,6 +110,16 @@ pub(super) fn remaining_invocation_budget(
 pub(super) enum CanonicalCallOutcome {
     Direct(CallToolResult),
     Task(V5DaemonTaskSnapshot),
+    /// The submit answer was lost and could not be recovered: the call may
+    /// continue as the Task reserved for it. A client with native Tasks gets
+    /// that Task to poll; any other client gets the refusal naming it.
+    LostSubmit(Box<LostSubmit>),
+}
+
+#[derive(Debug)]
+pub(super) struct LostSubmit {
+    pub(super) task: V5DaemonTaskSnapshot,
+    pub(super) refusal: ErrorData,
 }
 
 pub(super) type CanonicalCallHandler = dyn Fn(
@@ -283,9 +294,11 @@ fn submit_and_settle(
     cancellation: CanonicalCancellation,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
     let cutoff = deadline.transport_cutoff();
+    // No frame of this call has left the frontend yet: whatever the
+    // connection failure, the daemon holds no receipt and will never start it.
     let mut peer = client
         .connect_peer_before(cutoff)
-        .map_err(transport_refusal)?;
+        .map_err(|error| unconnected_refusal(&error, cutoff))?;
     // The daemon anchors its handoff at the receipt of the frame, so its budget
     // is what remains of the frontend budget once the connection stands: a slow
     // connect or a spawn shortens the daemon's window instead of pushing its
@@ -328,9 +341,13 @@ fn submit_and_settle(
         // daemon may already hold a reserved or terminal receipt for it.
         Err(V5TransportError::ResponseLost(_)) => {
             let recovery_cutoff = cutoff.max(Instant::now()) + RECOVERY_BUDGET;
-            recover_receipt(client, &receipt_key, recovery_cutoff)?
+            match recover_receipt(client, &receipt_key, recovery_cutoff) {
+                Ok(recovered) => recovered,
+                Err(refusal) => return lost_submit_outcome(refusal, &receipt_key),
+            }
         }
-        Err(error) => return Err(transport_refusal(error)),
+        // Writing never started: the frame did not reach the daemon.
+        Err(error) => return Err(not_sent_refusal(&error)),
     };
     settle(peer, response, &receipt_key)
 }
@@ -418,8 +435,8 @@ fn receipt_key_for(
 /// Read the durable state of a submission whose response was lost. A receipt
 /// still inside its original budget is polled until that budget settles;
 /// nothing here opens a new invocation budget or submits again. When even the
-/// recovery window closes, the host gets the same closed refusal the v3
-/// frontend answered with: the daemon may hold the work, nobody replays it.
+/// recovery window closes, the host gets the closed lost-submit refusal that
+/// names the reserved Task: the daemon may hold the work, nobody replays it.
 fn recover_receipt(
     client: &V5DaemonClient,
     receipt_key: &ReceiptKey,
@@ -428,10 +445,10 @@ fn recover_receipt(
     loop {
         let mut peer = client
             .connect_peer_before(cutoff)
-            .map_err(|_| lost_submit_refusal())?;
+            .map_err(|_| lost_submit_refusal(receipt_key))?;
         let response = peer
             .recover_invocation_receipt_before(receipt_key.clone(), cutoff)
-            .map_err(|_| lost_submit_refusal())?;
+            .map_err(|_| lost_submit_refusal(receipt_key))?;
         match response {
             V5ServerResponse::Invocation {
                 outcome:
@@ -452,18 +469,47 @@ fn recover_receipt(
                 // on its own, nobody resubmits, and the host gets the same
                 // closed refusal as for a lost submission.
                 if until_settled >= remaining || remaining <= RECOVERY_POLL_INTERVAL {
-                    return Err(lost_submit_refusal());
+                    return Err(lost_submit_refusal(receipt_key));
                 }
                 std::thread::sleep(until_settled.max(RECOVERY_POLL_INTERVAL));
             }
-            // The daemon holds no receipt: the submission never reached its
-            // reserve, which is the same loss the host already knows how to
-            // treat.
+            // The daemon holds no receipt yet. The frame was written, so the
+            // daemon may still read and reserve it after this answer; only a
+            // cancel reserved for the exact key proves it never runs.
             V5ServerResponse::Error {
                 code: V5DaemonErrorCode::ReceiptNotFound,
-            } => return Err(lost_submit_refusal()),
+            } => return Err(fence_unreceived_submit(client, receipt_key, cutoff)),
             other => return Ok((peer, other)),
         }
+    }
+}
+
+/// Fence the exact key of a submission the daemon has not seen. A frame
+/// still on its way can only be read by the daemon process it was sent to;
+/// once that process holds the fence, the frame never runs there, so the host
+/// may repeat the call. Any other answer means the frame got there first:
+/// the call may continue as its Task.
+fn fence_unreceived_submit(
+    client: &V5DaemonClient,
+    receipt_key: &ReceiptKey,
+    cutoff: Instant,
+) -> ErrorData {
+    let fenced = client
+        .connect_peer_before(cutoff)
+        .and_then(|mut peer| peer.fence_invocation_receipt_before(receipt_key.clone(), cutoff));
+    match fenced {
+        Ok(V5ServerResponse::Invocation {
+            outcome:
+                V5InvocationResponse::ReceiptPending {
+                    receipt_key: fenced_key,
+                    phase: V5InvocationPhase::CancelReserved,
+                    cancel_requested: true,
+                    ..
+                },
+        }) if &fenced_key == receipt_key => not_delivered_refusal(
+            "daemon did not receive the invocation submit; it will not run".to_owned(),
+        ),
+        _ => lost_submit_refusal(receipt_key),
     }
 }
 
@@ -528,18 +574,110 @@ fn epoch_ms_now() -> u64 {
 }
 
 /// The closed answer for a submit whose response was lost and whose receipt
-/// could not be recovered in time. Same code and text as the v3 frontend, so
-/// hosts keep one rule: a read-only tool may be replayed, a mutation may not.
-fn lost_submit_refusal() -> ErrorData {
+/// could not be recovered in time. The frame reached the daemon, so the call
+/// may already be — or still become — the Task reserved for it: the refusal
+/// names that Task and points at the wait instead of a second submission.
+/// The Task identifier is the frontend's own opaque UUID; no path, argument
+/// or daemon text travels in the data.
+fn lost_submit_refusal(receipt_key: &ReceiptKey) -> ErrorData {
+    let code = RefusalCode::SubmitResponseLost;
+    let task_id = receipt_key.reserved_task_id().to_string();
+    // Hosts often show the model only the message: it names the Task too.
     ErrorData::new(
         ErrorCode(TOOL_EXECUTION_ERROR),
-        "daemon deadline expired during invocation submit response",
-        None,
+        format!(
+            "daemon deadline expired during invocation submit response; \
+             the call may continue as Task {task_id}: wait for that Task \
+             instead of repeating the call"
+        ),
+        Some(serde_json::json!({
+            "code": code.as_str(),
+            "outcome": code.outcome().as_str(),
+            "taskId": task_id,
+            "next": [{
+                "tool": "unica.task.result",
+                "args": {"taskId": task_id},
+            }],
+        })),
     )
 }
 
-fn transport_refusal(error: V5TransportError) -> ErrorData {
-    ErrorData::new(ErrorCode(TOOL_EXECUTION_ERROR), error.to_string(), None)
+/// Poll interval the queued Task of a lost submit announces; the daemon's
+/// own receipt-backed snapshots use the same 100 ms.
+const LOST_SUBMIT_POLL_INTERVAL_MS: u64 = 100;
+
+/// A lost-submit refusal becomes the outcome that carries both answers: the
+/// queued Task under the reserved id, which the daemon answers by that id
+/// whether the call is still inline, a Task, or ended directly, and the
+/// refusal for clients without native Tasks.
+fn lost_submit_outcome(
+    refusal: ErrorData,
+    receipt_key: &ReceiptKey,
+) -> Result<CanonicalCallOutcome, ErrorData> {
+    let lost = refusal
+        .data
+        .as_ref()
+        .and_then(|data| data.get("code"))
+        .and_then(Value::as_str)
+        == Some(RefusalCode::SubmitResponseLost.as_str());
+    if !lost {
+        return Err(refusal);
+    }
+    let now = epoch_ms_now();
+    Ok(CanonicalCallOutcome::LostSubmit(Box::new(LostSubmit {
+        task: V5DaemonTaskSnapshot::Queued {
+            task_id: receipt_key.reserved_task_id(),
+            invocation_id: receipt_key.invocation_id(),
+            receipt_key_digest: crate::application::receipt_ledger::receipt_key_digest(receipt_key),
+            created_at_epoch_ms: now,
+            updated_at_epoch_ms: now,
+            ttl_ms: crate::application::receipt_ledger::DIRECT_TERMINAL_RETENTION_MS,
+            poll_interval_ms: LOST_SUBMIT_POLL_INTERVAL_MS,
+            version: 1,
+            cancel_requested: false,
+        },
+        refusal,
+    })))
+}
+
+/// A connection that could not stand before the cutoff is transient: the
+/// call never left the frontend and may be repeated as is. One refused
+/// earlier — the daemon could not be started, rejected the handshake or
+/// belongs to another core — stays refused on a repeat: a person has to look.
+fn unconnected_refusal(error: &V5TransportError, cutoff: Instant) -> ErrorData {
+    if Instant::now() >= cutoff {
+        return not_sent_refusal(error);
+    }
+    let detail = crate::domain::refusal::RefusalDetail::BackendIncompatible;
+    ErrorData::new(
+        ErrorCode(TOOL_EXECUTION_ERROR),
+        format!("{error}; the call did not reach the daemon and will not run"),
+        Some(serde_json::json!({
+            "code": detail.code().as_str(),
+            "outcome": detail.outcome().as_str(),
+            "detailCode": detail.as_str(),
+        })),
+    )
+}
+
+/// The closed answer for a call whose frame never left the frontend: the
+/// connection or the handshake failed, or writing could not start. The daemon
+/// holds no receipt and will never start this call, so it may be repeated
+/// as is.
+fn not_sent_refusal(error: &V5TransportError) -> ErrorData {
+    not_delivered_refusal(error.to_string())
+}
+
+fn not_delivered_refusal(message: String) -> ErrorData {
+    let code = RefusalCode::SubmitNotDelivered;
+    ErrorData::new(
+        ErrorCode(TOOL_EXECUTION_ERROR),
+        message,
+        Some(serde_json::json!({
+            "code": code.as_str(),
+            "outcome": code.outcome().as_str(),
+        })),
+    )
 }
 
 fn submission_rejected(code: V5DaemonErrorCode) -> ErrorData {
@@ -633,7 +771,27 @@ pub(in crate::interfaces) mod test_support {
             Self::start_session_script(SessionScript::Raw(script), Duration::ZERO)
         }
 
+        /// The anchor session stands; every later session is dropped right
+        /// after its handshake request, as a daemon refusing the connection.
+        pub(in crate::interfaces) fn start_rejecting_peers() -> Self {
+            Self::start_sessions(
+                SessionScript::Framed(Box::new(|_, request| {
+                    panic!("a refused peer sends nothing: {request:?}")
+                })),
+                Duration::ZERO,
+                true,
+            )
+        }
+
         fn start_session_script(script: SessionScript, handshake_delay: Duration) -> Self {
+            Self::start_sessions(script, handshake_delay, false)
+        }
+
+        fn start_sessions(
+            script: SessionScript,
+            handshake_delay: Duration,
+            reject_peers: bool,
+        ) -> Self {
             let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
             listener
                 .set_nonblocking(true)
@@ -662,7 +820,14 @@ pub(in crate::interfaces) mod test_support {
                         }
                         Err(_) => return,
                     };
-                    thread_sessions.fetch_add(1, Ordering::SeqCst);
+                    let session = thread_sessions.fetch_add(1, Ordering::SeqCst);
+                    if reject_peers && session > 0 {
+                        // Read the handshake request, then close unanswered.
+                        let mut reader = BufReader::new(stream);
+                        let _ = reader.get_ref().set_nonblocking(false);
+                        let _ = read_bounded_v5_request_frame(&mut reader);
+                        continue;
+                    }
                     let record = thread_record.clone();
                     let seen = Arc::clone(&thread_seen);
                     let script = Arc::clone(&script);
@@ -864,9 +1029,44 @@ pub(in crate::interfaces) mod test_support {
             service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
             hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
         ) -> Self {
-            let state = tempfile::tempdir().unwrap();
             let workspace = tempfile::tempdir().unwrap();
             std::fs::write(workspace.path().join("v8project.yaml"), WORKSPACE_MANIFEST).unwrap();
+            Self::start_over(workspace, service, hooks)
+        }
+
+        /// A workspace whose sources live in `src/` and whose files are older
+        /// than the join freshness margin by the time the first call starts:
+        /// an identical read may join only while nothing changed since the
+        /// walk it joins began.
+        pub(in crate::interfaces) fn start_with_aged_sources(
+            service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+            hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
+        ) -> Self {
+            let workspace = tempfile::tempdir().unwrap();
+            std::fs::write(
+                workspace.path().join("v8project.yaml"),
+                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(workspace.path().join("src/CommonModules")).unwrap();
+            std::fs::write(
+                workspace.path().join("src/CommonModules/Module.bsl"),
+                "// v1\n",
+            )
+            .unwrap();
+            thread::sleep(
+                crate::infrastructure::daemon::runtime_v5::JOIN_TIMESTAMP_MARGIN
+                    + Duration::from_millis(200),
+            );
+            Self::start_over(workspace, service, hooks)
+        }
+
+        fn start_over(
+            workspace: tempfile::TempDir,
+            service: Arc<dyn crate::infrastructure::daemon::server::CanonicalInvocationService>,
+            hooks: Option<Arc<dyn crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks>>,
+        ) -> Self {
+            let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();
             let workspace_hint = std::fs::canonicalize(workspace.path())
                 .unwrap()
@@ -983,8 +1183,31 @@ mod tests {
             Ok(CanonicalCallOutcome::Task(snapshot)) => {
                 panic!("unexpected Task handoff: {snapshot:?}")
             }
+            Ok(CanonicalCallOutcome::LostSubmit(lost)) => {
+                panic!("unexpected lost submit: {}", lost.refusal)
+            }
             Err(error) => panic!("unexpected refusal: {error}"),
         }
+    }
+
+    /// A lost submit answers with the queued Task reserved for the call and
+    /// the refusal naming that same Task.
+    fn lost_refusal(outcome: Result<CanonicalCallOutcome, ErrorData>) -> ErrorData {
+        let lost = match outcome {
+            Ok(CanonicalCallOutcome::LostSubmit(lost)) => lost,
+            Ok(CanonicalCallOutcome::Direct(result)) => panic!("unexpected direct: {result:?}"),
+            Ok(CanonicalCallOutcome::Task(snapshot)) => panic!("unexpected Task: {snapshot:?}"),
+            Err(error) => panic!("unexpected refusal: {error}"),
+        };
+        assert_eq!(
+            lost.refusal.data.as_ref().unwrap()["taskId"],
+            json!(lost.task.task_id().to_string())
+        );
+        assert_eq!(
+            lost.task.status(),
+            crate::domain::invocation::InvocationStatus::Queued
+        );
+        lost.refusal
     }
 
     #[test]
@@ -1317,16 +1540,127 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
-        let refusal = call(&router, Some(Duration::from_millis(400)))
-            .expect_err("a receipt pending past the cutoff is refused");
+        let refusal = lost_refusal(call(&router, Some(Duration::from_millis(400))));
+
+        assert_names_the_reserved_task(&refusal, &fake);
+        assert_eq!(fake.submissions(), 1);
+    }
+
+    /// The lost-submit refusal names the Task reserved for the one submitted
+    /// call, in the data and in the text a host shows, and points at the
+    /// wait for it instead of a second submission.
+    fn assert_names_the_reserved_task(refusal: &ErrorData, fake: &FakeDaemon) {
+        let seen = fake.seen();
+        let reserved = seen
+            .iter()
+            .find_map(|request| match request {
+                V5ClientRequest::SubmitInvocation { invocation } => {
+                    Some(invocation.reserved_task_id().to_string())
+                }
+                _ => None,
+            })
+            .expect("the call was submitted");
+        assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
+        assert!(
+            refusal
+                .message
+                .starts_with("daemon deadline expired during invocation submit response"),
+            "{}",
+            refusal.message
+        );
+        assert!(refusal.message.contains(&reserved), "{}", refusal.message);
+        assert_eq!(
+            refusal.data,
+            Some(json!({
+                "code": "submit_response_lost",
+                "outcome": "goElsewhere",
+                "taskId": reserved,
+                "next": [{"tool": "unica.task.result", "args": {"taskId": reserved}}],
+            }))
+        );
+    }
+
+    fn assert_not_delivered(refusal: &ErrorData) {
+        assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
+        assert_eq!(
+            refusal.data,
+            Some(json!({"code": "submit_not_delivered", "outcome": "retry"}))
+        );
+        assert!(!refusal.message.contains("Task"), "{}", refusal.message);
+    }
+
+    #[test]
+    fn a_lost_submit_is_the_queued_task_reserved_for_the_call() {
+        let fake = FakeDaemon::start(Box::new(|_, request| match request {
+            V5ClientRequest::SubmitInvocation { .. } => Step::Close,
+            V5ClientRequest::RecoverInvocationReceipt { .. } => Step::Close,
+            other => panic!("unexpected frame {other:?}"),
+        }));
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+
+        let Ok(CanonicalCallOutcome::LostSubmit(lost)) = call(&router, None) else {
+            panic!("a lost submit carries its Task");
+        };
+
+        let seen = fake.seen();
+        let V5ClientRequest::SubmitInvocation { invocation } = &seen[0] else {
+            panic!("first frame must be the submission: {seen:?}");
+        };
+        let key = receipt_key_for(invocation, &V5DaemonClient::from(fake.owner())).unwrap();
+        assert_eq!(lost.task.task_id(), invocation.reserved_task_id());
+        assert_eq!(lost.task.invocation_id(), invocation.invocation_id());
+        assert_eq!(
+            lost.task.receipt_key_digest(),
+            &crate::application::receipt_ledger::receipt_key_digest(&key)
+        );
+        assert_eq!(
+            lost.task.status(),
+            crate::domain::invocation::InvocationStatus::Queued
+        );
+        assert_names_the_reserved_task(&lost.refusal, &fake);
+    }
+
+    #[test]
+    fn a_daemon_refusing_the_connection_needs_a_person_not_a_repeat() {
+        // The anchor stands; every further session is dropped right after its
+        // handshake request, long before the cutoff.
+        let fake = FakeDaemon::start_rejecting_peers();
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+
+        let refusal = call(&router, None).expect_err("a refused connection is refused");
 
         assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
         assert_eq!(
-            refusal.message,
-            "daemon deadline expired during invocation submit response"
+            refusal.data,
+            Some(json!({
+                "code": "task_backend_failed",
+                "outcome": "needsHuman",
+                "detailCode": "backend_incompatible",
+            }))
         );
-        assert_eq!(refusal.data, None);
-        assert_eq!(fake.submissions(), 1);
+        assert!(
+            refusal.message.contains("will not run"),
+            "{}",
+            refusal.message
+        );
+        assert_eq!(fake.submissions(), 0);
+    }
+
+    #[test]
+    fn a_call_whose_connection_never_stood_was_not_delivered() {
+        // A handshake slower than the whole host budget: no frame of the
+        // call leaves the frontend.
+        let fake = FakeDaemon::start_with_handshake_delay(
+            Box::new(|_, request| panic!("nothing is submitted: {request:?}")),
+            Duration::from_millis(600),
+        );
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+
+        let refusal = call(&router, Some(Duration::from_millis(200)))
+            .expect_err("an unreachable daemon refuses");
+
+        assert_not_delivered(&refusal);
+        assert_eq!(fake.submissions(), 0);
     }
 
     #[test]
@@ -1363,12 +1697,24 @@ mod tests {
     }
 
     #[test]
-    fn recovery_without_a_receipt_is_a_transport_refusal_and_no_resubmission() {
+    fn recovery_without_a_receipt_fences_the_exact_key_and_answers_not_delivered() {
         let fake = FakeDaemon::start(Box::new(|_, request| match request {
             V5ClientRequest::SubmitInvocation { .. } => Step::Close,
             V5ClientRequest::RecoverInvocationReceipt { .. } => {
                 Step::Reply(V5ServerResponse::Error {
                     code: V5DaemonErrorCode::ReceiptNotFound,
+                })
+            }
+            // The daemon fences the key it has never seen.
+            V5ClientRequest::FenceInvocationReceipt { receipt_key } => {
+                Step::Reply(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::ReceiptPending {
+                        receipt_key: receipt_key.clone(),
+                        phase: V5InvocationPhase::CancelReserved,
+                        accepted_epoch_ms: epoch_ms_now(),
+                        original_budget_ms: 0,
+                        cancel_requested: true,
+                    },
                 })
             }
             other => panic!("unexpected frame {other:?}"),
@@ -1377,11 +1723,56 @@ mod tests {
 
         let refusal = call(&router, None).expect_err("lost submission is refused");
 
-        assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
+        assert_not_delivered(&refusal);
+        assert_eq!(fake.submissions(), 1, "the call is never submitted again");
+        let seen = fake.seen();
+        let V5ClientRequest::SubmitInvocation { invocation } = &seen[0] else {
+            panic!("first frame must be the submission: {seen:?}");
+        };
+        let fenced = seen
+            .iter()
+            .find_map(|request| match request {
+                V5ClientRequest::FenceInvocationReceipt { receipt_key } => {
+                    Some(receipt_key.clone())
+                }
+                _ => None,
+            })
+            .expect("the exact key is fenced");
         assert_eq!(
-            refusal.message,
-            "daemon deadline expired during invocation submit response"
+            fenced,
+            receipt_key_for(invocation, &V5DaemonClient::from(fake.owner())).unwrap()
         );
+    }
+
+    #[test]
+    fn recovery_without_a_receipt_whose_fence_meets_the_call_names_its_task() {
+        // The frame overtook the fence: the cancel finds the call's own
+        // receipt, so it may run, and the refusal names its Task.
+        let fake = FakeDaemon::start(Box::new(|_, request| match request {
+            V5ClientRequest::SubmitInvocation { .. } => Step::Close,
+            V5ClientRequest::RecoverInvocationReceipt { .. } => {
+                Step::Reply(V5ServerResponse::Error {
+                    code: V5DaemonErrorCode::ReceiptNotFound,
+                })
+            }
+            V5ClientRequest::FenceInvocationReceipt { receipt_key } => {
+                Step::Reply(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::ReceiptPending {
+                        receipt_key: receipt_key.clone(),
+                        phase: V5InvocationPhase::ReservedBegun,
+                        accepted_epoch_ms: epoch_ms_now(),
+                        original_budget_ms: 7_000,
+                        cancel_requested: true,
+                    },
+                })
+            }
+            other => panic!("unexpected frame {other:?}"),
+        }));
+        let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
+
+        let refusal = lost_refusal(call(&router, None));
+
+        assert_names_the_reserved_task(&refusal, &fake);
         assert_eq!(fake.submissions(), 1);
     }
 
@@ -1448,14 +1839,9 @@ mod tests {
         }));
         let router = canonical_daemon_router(fake.owner(), fake.workspace_hint());
 
-        let refusal = call(&router, Some(Duration::from_millis(300)))
-            .expect_err("a recovery that does not settle is refused");
+        let refusal = lost_refusal(call(&router, Some(Duration::from_millis(300))));
 
-        assert_eq!(refusal.code, ErrorCode(TOOL_EXECUTION_ERROR));
-        assert_eq!(
-            refusal.message,
-            "daemon deadline expired during invocation submit response"
-        );
+        assert_names_the_reserved_task(&refusal, &fake);
         assert_eq!(fake.submissions(), 1);
     }
 
@@ -1820,6 +2206,9 @@ mod tests {
             Ok(CanonicalCallOutcome::Direct(result)) => {
                 panic!("slow work answered directly: {result:?}")
             }
+            Ok(CanonicalCallOutcome::LostSubmit(lost)) => {
+                panic!("slow work lost its answer: {}", lost.refusal)
+            }
             Err(error) => panic!("slow work refused: {error}"),
         };
         let task_id = handoff.task_id();
@@ -1849,6 +2238,617 @@ mod tests {
             crate::domain::invocation::InvocationStatus::Completed
         );
         assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+        drop(router);
+        daemon.finish();
+    }
+
+    /// Known-long work that runs until the test releases it and records
+    /// whether its cancellation reached it.
+    struct GatedService {
+        executions: AtomicUsize,
+        cancelled: AtomicUsize,
+        released: std::sync::atomic::AtomicBool,
+        /// Whether `apply` waits for the release too or ends at once.
+        gate_mutations: bool,
+    }
+
+    impl GatedService {
+        fn new() -> Arc<Self> {
+            Self::gating_mutations(true)
+        }
+
+        fn gating_mutations(gate_mutations: bool) -> Arc<Self> {
+            Arc::new(Self {
+                executions: AtomicUsize::new(0),
+                cancelled: AtomicUsize::new(0),
+                released: std::sync::atomic::AtomicBool::new(false),
+                gate_mutations,
+            })
+        }
+
+        fn release(&self) {
+            self.released.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl crate::infrastructure::daemon::server::CanonicalInvocationService for GatedService {
+        fn prepare(
+            &self,
+            _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+        ) -> Result<crate::application::operation_descriptors::ExecutionClass, Box<DomainResultAlias>>
+        {
+            use crate::application::operation_descriptors::{ExecutionClass, KnownLongReason};
+            Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+        }
+
+        fn execute(
+            &self,
+            invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+            cancellation: CancellationToken,
+        ) -> Result<DomainResultAlias, crate::domain::invocation::InvocationFailure> {
+            self.executions.fetch_add(1, Ordering::SeqCst);
+            if !self.gate_mutations && invocation.arguments().contains_key("ops") {
+                return Ok(DomainResultAlias::success("applied"));
+            }
+            let started = Instant::now();
+            while !self.released.load(Ordering::SeqCst)
+                && started.elapsed() < Duration::from_secs(20)
+            {
+                if cancellation.is_cancelled() {
+                    self.cancelled.fetch_add(1, Ordering::SeqCst);
+                    return Err(crate::domain::invocation::InvocationFailure::new(
+                        "cancelled",
+                        "cancelled",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(DomainResultAlias::success("shared traversal"))
+        }
+    }
+
+    type DomainResultAlias = crate::domain::invocation::DomainResult;
+
+    /// Loses the first submit answer and every recovery answer, as an
+    /// overloaded transport does: the frontend runs out of its recovery
+    /// window although the daemon holds the call.
+    #[derive(Default)]
+    struct LostSubmitHooks {
+        submits: AtomicUsize,
+        lose_recoveries: std::sync::atomic::AtomicBool,
+    }
+
+    impl crate::infrastructure::daemon::runtime_v5::V5RuntimeHooks for LostSubmitHooks {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn submit_response_disconnect(&self) -> bool {
+            self.submits.fetch_add(1, Ordering::SeqCst) == 0
+        }
+
+        fn recover_response_disconnect(&self) -> bool {
+            self.lose_recoveries.load(Ordering::SeqCst)
+        }
+    }
+
+    fn call_tool(
+        router: &CanonicalDaemonRouter,
+        tool: V5ToolIdentity,
+        arguments: &Map<String, Value>,
+    ) -> Result<CanonicalCallOutcome, ErrorData> {
+        (router.call)(
+            tool,
+            arguments,
+            &unica_bootstrap::HostRequest::default(),
+            deadline(None),
+            CancellationToken::new().into(),
+        )
+    }
+
+    fn task_of(outcome: Result<CanonicalCallOutcome, ErrorData>) -> V5DaemonTaskSnapshot {
+        match outcome {
+            Ok(CanonicalCallOutcome::Task(snapshot)) => snapshot,
+            Ok(CanonicalCallOutcome::Direct(result)) => panic!("unexpected direct: {result:?}"),
+            Ok(CanonicalCallOutcome::LostSubmit(lost)) => {
+                panic!("unexpected lost submit: {}", lost.refusal)
+            }
+            Err(error) => panic!("unexpected refusal: {error}"),
+        }
+    }
+
+    fn wait_terminal(router: &CanonicalDaemonRouter, task_id: TaskId) -> V5DaemonTaskSnapshot {
+        let started = Instant::now();
+        loop {
+            let snapshot = (router.wait)(
+                task_id,
+                2_000,
+                deadline(None),
+                CanonicalCancellation::default(),
+            )
+            .expect("wait for the Task");
+            if matches!(
+                snapshot.status(),
+                crate::domain::invocation::InvocationStatus::Completed
+                    | crate::domain::invocation::InvocationStatus::Failed
+                    | crate::domain::invocation::InvocationStatus::Cancelled
+            ) {
+                return snapshot;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "Task never ended"
+            );
+        }
+    }
+
+    #[test]
+    fn lost_submit_names_its_task_and_a_retry_joins_it_instead_of_running_again() {
+        let service = GatedService::new();
+        let hooks = Arc::new(LostSubmitHooks::default());
+        hooks.lose_recoveries.store(true, Ordering::SeqCst);
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), Some(hooks.clone()));
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let search = json!({"query": "Товары"}).as_object().unwrap().clone();
+
+        // The daemon hands the search off to a Task, and the host never
+        // learns it: the submit answer and every recovery answer are lost.
+        let refusal = lost_refusal(call_tool(&router, V5ToolIdentity::Search, &search));
+        hooks.lose_recoveries.store(false, Ordering::SeqCst);
+        let named: TaskId = refusal.data.as_ref().unwrap()["taskId"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            refusal.data.as_ref().unwrap()["code"],
+            "submit_response_lost"
+        );
+
+        // The agent repeats the call anyway: it joins the running Task under
+        // its own id instead of starting the same traversal again.
+        let retry = task_of(call_tool(&router, V5ToolIdentity::Search, &search));
+        assert_ne!(retry.task_id(), named);
+        let first = (router.get)(named, deadline(None)).expect("the named Task is readable");
+        assert_eq!(first.task_id(), named);
+
+        service.release();
+        let first = wait_terminal(&router, named);
+        let joined = wait_terminal(&router, retry.task_id());
+        assert_eq!(
+            first
+                .completed_result()
+                .map(|result| result.summary.as_str()),
+            Some("shared traversal")
+        );
+        assert_eq!(first.completed_result(), joined.completed_result());
+        assert_eq!(joined.task_id(), retry.task_id());
+        assert_eq!(
+            service.executions.load(Ordering::SeqCst),
+            1,
+            "the retry never ran the traversal again"
+        );
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
+    fn a_read_whose_answer_was_lost_inline_is_readable_by_its_task_id() {
+        // Inline work that ends directly: its answer is lost and no Task
+        // ever exists, yet the id the refusal names returns the result.
+        let service = Arc::new(ScriptedService {
+            delay: Duration::from_millis(10),
+            known_long: false,
+            outcome: Mutex::new(None),
+            executions: AtomicUsize::new(0),
+        });
+        let hooks = Arc::new(LostSubmitHooks::default());
+        hooks.lose_recoveries.store(true, Ordering::SeqCst);
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), Some(hooks.clone()));
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+
+        let refusal = lost_refusal(call(&router, None));
+        let named: TaskId = refusal.data.as_ref().unwrap()["taskId"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let terminal = wait_terminal(&router, named);
+
+        assert_eq!(terminal.task_id(), named);
+        assert_eq!(
+            terminal
+                .completed_result()
+                .map(|result| result.summary.as_str()),
+            Some("executed")
+        );
+        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
+    fn only_an_identical_read_joins_and_a_mutation_never_does() {
+        let service = GatedService::new();
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), None);
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let same = json!({"query": "Товары"}).as_object().unwrap().clone();
+        let other = json!({"query": "Цены"}).as_object().unwrap().clone();
+        let edit = json!({
+            "at": "main:Catalog.Товары",
+            "ops": [{"op": "props.set", "args": {"values": {"Comment": "joined"}}}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let leader = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        let joined = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        assert_ne!(joined.task_id(), leader.task_id());
+        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+        let different = task_of(call_tool(&router, V5ToolIdentity::Search, &other));
+        let first_apply = task_of(call_tool(&router, V5ToolIdentity::Apply, &edit));
+        let second_apply = task_of(call_tool(&router, V5ToolIdentity::Apply, &edit));
+        // A read submitted after a mutation sees its own traversal, and while
+        // the mutation runs no read becomes a leader another read could join.
+        let after_mutation = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        let during_mutation = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+
+        service.release();
+        for task in [
+            &leader,
+            &joined,
+            &different,
+            &first_apply,
+            &second_apply,
+            &after_mutation,
+            &during_mutation,
+        ] {
+            wait_terminal(&router, task.task_id());
+        }
+        assert_eq!(
+            service.executions.load(Ordering::SeqCst),
+            6,
+            "leader, different read, both applies and both reads after them ran; the joined read did not"
+        );
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
+    fn one_holder_cancelling_leaves_the_shared_work_to_the_others_until_all_cancel() {
+        let service = GatedService::new();
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), None);
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let same = json!({"query": "Товары"}).as_object().unwrap().clone();
+
+        let leader = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        let first = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        let second = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+
+        // One joined holder and then the leader's own holder let go: each sees
+        // its own cancellation, the work goes on for the remaining holder.
+        let first_cancelled = (router.cancel)(first.task_id(), deadline(None)).unwrap();
+        let leader_cancelled = (router.cancel)(leader.task_id(), deadline(None)).unwrap();
+        for (snapshot, holder) in [(&first_cancelled, &first), (&leader_cancelled, &leader)] {
+            assert_eq!(snapshot.task_id(), holder.task_id());
+            assert!(
+                snapshot.version() > holder.version(),
+                "the holder's own cancellation is a newer state than the one it saw"
+            );
+            assert_eq!(
+                snapshot.status(),
+                crate::domain::invocation::InvocationStatus::Cancelled
+            );
+        }
+        let remaining = (router.get)(second.task_id(), deadline(None)).unwrap();
+        assert!(!remaining.cancel_requested());
+        assert!(matches!(
+            remaining.status(),
+            crate::domain::invocation::InvocationStatus::Working
+                | crate::domain::invocation::InvocationStatus::Queued
+        ));
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(service.cancelled.load(Ordering::SeqCst), 0);
+
+        // The last holder lets go: now the shared work itself is cancelled.
+        let second_cancelled = (router.cancel)(second.task_id(), deadline(None)).unwrap();
+        assert_eq!(
+            second_cancelled.status(),
+            crate::domain::invocation::InvocationStatus::Cancelled
+        );
+        let started = Instant::now();
+        while service.cancelled.load(Ordering::SeqCst) == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the shared work never saw its cancellation"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
+    fn a_joined_holder_keeps_the_result_after_another_holder_cancelled() {
+        let service = GatedService::new();
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), None);
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let same = json!({"query": "Товары"}).as_object().unwrap().clone();
+
+        let leader = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        let joined = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        (router.cancel)(leader.task_id(), deadline(None)).unwrap();
+        service.release();
+
+        let kept = wait_terminal(&router, joined.task_id());
+        assert_eq!(
+            kept.completed_result()
+                .map(|result| result.summary.as_str()),
+            Some("shared traversal")
+        );
+        assert_eq!(
+            wait_terminal(&router, leader.task_id()).status(),
+            crate::domain::invocation::InvocationStatus::Cancelled
+        );
+        assert_eq!(service.cancelled.load(Ordering::SeqCst), 0);
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
+    fn an_exact_repeat_of_a_call_with_its_own_receipt_never_becomes_a_joiner() {
+        let service = GatedService::gating_mutations(false);
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), None);
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let same = json!({"query": "Товары"}).as_object().unwrap().clone();
+        let edit = json!({
+            "at": "main:Catalog.Товары",
+            "ops": [{"op": "props.set", "args": {"values": {"Comment": "between"}}}]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let workspace = unica_bootstrap::HostWorkspaceContext::from(daemon.workspace_hint.clone())
+            .resolve_request(&unica_bootstrap::HostRequest::default())
+            .unwrap();
+        let own = V5InvocationRequest::new(
+            InvocationId::new(),
+            TaskId::new(),
+            V5ToolIdentity::Search,
+            same.clone(),
+            workspace,
+            5_000,
+        )
+        .unwrap();
+        let submit = |invocation: V5InvocationRequest| {
+            daemon
+                .owner()
+                .submit_invocation_before(invocation, Instant::now() + Duration::from_secs(10))
+                .unwrap()
+        };
+
+        // The call reserves its own receipt and becomes a Task. A mutation
+        // then ends, and a later identical read leads the next joins.
+        let first = match submit(own.clone()) {
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot },
+            } => snapshot,
+            other => panic!("the first call becomes its own Task: {other:?}"),
+        };
+        let applied = task_of(call_tool(&router, V5ToolIdentity::Apply, &edit));
+        wait_terminal(&router, applied.task_id());
+        let later = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
+        assert_eq!(service.executions.load(Ordering::SeqCst), 3);
+
+        // The exact repeat answers from its own receipt, never as a holder of
+        // the later read: cancelling it still cancels its own work.
+        let _ = submit(own);
+        (router.cancel)(first.task_id(), deadline(None)).unwrap();
+        let started = Instant::now();
+        while service.cancelled.load(Ordering::SeqCst) == 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the repeat was joined to another Task instead of reading its own"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        service.release();
+        assert_eq!(
+            wait_terminal(&router, later.task_id())
+                .completed_result()
+                .map(|result| result.summary.as_str()),
+            Some("shared traversal")
+        );
+        assert_eq!(service.executions.load(Ordering::SeqCst), 3);
+        drop(router);
+        daemon.finish();
+    }
+
+    fn raw_invocation(
+        daemon: &LiveDaemon,
+        tool: V5ToolIdentity,
+        arguments: &Map<String, Value>,
+        budget_ms: u64,
+    ) -> V5InvocationRequest {
+        let workspace = unica_bootstrap::HostWorkspaceContext::from(daemon.workspace_hint.clone())
+            .resolve_request(&unica_bootstrap::HostRequest::default())
+            .unwrap();
+        V5InvocationRequest::new(
+            InvocationId::new(),
+            TaskId::new(),
+            tool,
+            arguments.clone(),
+            workspace,
+            budget_ms,
+        )
+        .unwrap()
+    }
+
+    fn raw_key(daemon: &LiveDaemon, invocation: &V5InvocationRequest) -> ReceiptKey {
+        receipt_key_for(invocation, &V5DaemonClient::from(daemon.owner())).unwrap()
+    }
+
+    #[test]
+    fn an_external_edit_after_the_leader_started_makes_the_repeat_run_fresh() {
+        let service = GatedService::new();
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), None);
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let check = json!({"query": "Модуль"}).as_object().unwrap().clone();
+
+        let leader = task_of(call_tool(&router, V5ToolIdentity::Search, &check));
+        // Nothing changed: the identical check joins the running walk.
+        let joined = task_of(call_tool(&router, V5ToolIdentity::Search, &check));
+        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+
+        // The agent edits a module directly, not through Unica.
+        std::fs::write(
+            std::path::Path::new(&daemon.workspace_hint).join("src/CommonModules/Module.bsl"),
+            "// v2\n",
+        )
+        .unwrap();
+        let fresh = task_of(call_tool(&router, V5ToolIdentity::Search, &check));
+        assert_ne!(fresh.task_id(), leader.task_id());
+        let started = Instant::now();
+        while service.executions.load(Ordering::SeqCst) < 2 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the check after the edit joined the walk that began before it"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        service.release();
+        for task in [&leader, &joined, &fresh] {
+            wait_terminal(&router, task.task_id());
+        }
+        assert_eq!(service.executions.load(Ordering::SeqCst), 2);
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
+    fn a_frame_that_arrives_cancelled_never_leads_identical_reads() {
+        let service = Arc::new(ScriptedService {
+            delay: Duration::from_millis(10),
+            known_long: false,
+            outcome: Mutex::new(None),
+            executions: AtomicUsize::new(0),
+        });
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), None);
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+
+        // An early cancel for the exact key, then the frame itself; its
+        // budget is spent by the time the identical read arrives.
+        let late = raw_invocation(&daemon, V5ToolIdentity::View, &arguments(), 1_000);
+        let key = raw_key(&daemon, &late);
+        V5DaemonProcessOwner::cancel_at_endpoint(daemon.owner().control_endpoint(), key).unwrap();
+        let late = daemon
+            .owner()
+            .submit_invocation_before(late, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert!(
+            matches!(late, V5ServerResponse::Invocation { .. }),
+            "the cancelled frame is answered: {late:?}"
+        );
+        thread::sleep(Duration::from_millis(1_200));
+
+        let started = Instant::now();
+        let result = direct_result(call(&router, None));
+        assert_eq!(result.is_error, Some(false));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the identical read waited for a leader that never runs: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
+    fn a_fenced_frame_never_runs_and_a_held_one_is_answered_by_its_state() {
+        let service = GatedService::new();
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), None);
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let search = json!({"query": "Товары"}).as_object().unwrap().clone();
+
+        let fenced = raw_invocation(&daemon, V5ToolIdentity::Search, &search, 5_000);
+        let fenced_key = raw_key(&daemon, &fenced);
+        let answer = daemon
+            .owner()
+            .fence_invocation_receipt_before(
+                fenced_key.clone(),
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap();
+        assert!(matches!(
+            answer,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::ReceiptPending {
+                    phase: V5InvocationPhase::CancelReserved,
+                    cancel_requested: true,
+                    ..
+                }
+            }
+        ));
+        let late = daemon
+            .owner()
+            .submit_invocation_before(fenced, Instant::now() + Duration::from_secs(10))
+            .unwrap();
+        assert!(
+            !matches!(late, V5ServerResponse::Invocation { .. }),
+            "{late:?}"
+        );
+        assert_eq!(service.executions.load(Ordering::SeqCst), 0);
+        assert!((router.get)(fenced_key.reserved_task_id(), deadline(None)).is_err());
+
+        // A call the daemon already holds is not fenced: it keeps running.
+        let held = task_of(call_tool(&router, V5ToolIdentity::Search, &search));
+        service.release();
+        assert_eq!(
+            wait_terminal(&router, held.task_id())
+                .completed_result()
+                .map(|result| result.summary.as_str()),
+            Some("shared traversal")
+        );
+        drop(router);
+        daemon.finish();
+    }
+
+    #[test]
+    fn the_task_id_of_a_call_still_inline_can_be_cancelled() {
+        let service = Arc::new(ScriptedService {
+            delay: Duration::from_millis(1_500),
+            known_long: false,
+            outcome: Mutex::new(None),
+            executions: AtomicUsize::new(0),
+        });
+        let daemon = LiveDaemon::start_with_aged_sources(service.clone(), None);
+        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        let inline = raw_invocation(&daemon, V5ToolIdentity::View, &arguments(), 7_000);
+        let task_id = inline.reserved_task_id();
+        let mut owner = daemon.owner();
+        let submit = thread::spawn(move || {
+            owner.submit_invocation_before(inline, Instant::now() + Duration::from_secs(10))
+        });
+        let started = Instant::now();
+        while service.executions.load(Ordering::SeqCst) == 0 {
+            assert!(started.elapsed() < Duration::from_secs(5), "never started");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let cancelled = (router.cancel)(task_id, deadline(None))
+            .expect("the reserved id of an inline call is cancellable");
+
+        assert_eq!(cancelled.task_id(), task_id);
+        assert!(
+            cancelled.cancel_requested()
+                || cancelled.status() == crate::domain::invocation::InvocationStatus::Cancelled,
+            "{cancelled:?}"
+        );
+        let _ = submit.join().unwrap();
         drop(router);
         daemon.finish();
     }

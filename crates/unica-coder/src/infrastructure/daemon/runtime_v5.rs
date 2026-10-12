@@ -59,9 +59,16 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod hooks;
+mod join_freshness;
+#[cfg(test)]
+pub(crate) use join_freshness::TIMESTAMP_MARGIN as JOIN_TIMESTAMP_MARGIN;
+mod joining;
 pub(crate) use hooks::{
     NoHooks, V5AdmissionRejection, V5PausePoint, V5ReceiptRuntimeEventKind, V5RetirementStep,
     V5RuntimeHooks, V5Stage, V5StoreFaultPoint,
+};
+use joining::{
+    tool_is_joinable, HolderCancel, JoinHolder, JoinRegistry, ReceiptHandles, SubmitFences,
 };
 #[cfg(feature = "receipt-ledger-test-support")]
 mod receipt_scenario_v5;
@@ -110,6 +117,15 @@ pub(crate) struct V5ReceiptRuntime {
     /// Who observes this runtime and what it injects; production installs
     /// `NoHooks`.
     hooks: Arc<dyn V5RuntimeHooks>,
+    /// Identical reads joined to one running Task (#1376); memory only.
+    joins: JoinRegistry,
+    /// Receipts not (yet) found as a Task, by their reserved Task id: the id
+    /// a lost-submit refusal names must answer while the call is still
+    /// inline or after it ended directly (#1376); memory only.
+    receipt_handles: ReceiptHandles,
+    /// Lost-submit frames this process must never run (#1376); memory only,
+    /// like the frames themselves.
+    submit_fences: SubmitFences,
 }
 
 #[derive(Default)]
@@ -2516,6 +2532,9 @@ impl V5ReceiptRuntime {
             external_store_fail_stop: AtomicBool::new(false),
             promoted_continuations: AtomicUsize::new(0),
             hooks,
+            joins: JoinRegistry::default(),
+            receipt_handles: ReceiptHandles::default(),
+            submit_fences: SubmitFences::default(),
         };
         if !config.skips_v5_startup_reconciliation() {
             let bound_handoffs =
@@ -2927,6 +2946,34 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         self.validate_receipt_key(&key)?;
+        let task_id = key.reserved_task_id();
+        // A joined call is cancelled as its holder, never through the ledger:
+        // an exact key it never reserved must not become a cancel row.
+        if let Some(alias) = self.joins.alias(task_id) {
+            if !alias.holder.matches(&key) {
+                return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+            }
+            let snapshot = self.cancel_task(task_id, deadline)?;
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot },
+            }));
+        }
+        if self.joins.is_shared_leader(task_id) {
+            let current = self.resolve_task(task_id, deadline)?;
+            if current.invocation_id() != key.invocation_id()
+                || current.receipt_key_digest()
+                    != &crate::application::receipt_ledger::receipt_key_digest(&key)
+            {
+                return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+            }
+        }
+        if self.joins.cancel_holder(task_id, epoch_ms) == HolderCancel::Released {
+            // Joined calls still wait for this work: only this holder leaves.
+            let snapshot = self.resolve_task(task_id, deadline)?;
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot },
+            }));
+        }
         {
             let _task_terminal_gate = self
                 .task_terminal_coordinator
@@ -3073,23 +3120,67 @@ impl V5ReceiptRuntime {
         let (key, response_budget_ms) = strict.into_parts();
         let cutoff = OriginalCutoffDescriptor::new(epoch_ms, response_budget_ms)
             .map_err(|_| ReceiptLedgerError::TimestampOverflow)?;
-        let outcome = self.receipt_ledger.reserve(key, cutoff, deadline)?;
-        if matches!(&outcome, ReserveOutcome::Created(_)) {
+        // A frame whose sender already gave up on it and fenced its key never
+        // runs; nobody reads the answer to it.
+        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+        if self.submit_fences.is_fenced(&digest) {
+            return Err(ReceiptLedgerError::ReceiptNotFound);
+        }
+        if let Some(reply) =
+            self.join_identical_read(&key, &invocation, &response_deadline, deadline)?
+        {
+            return Ok(reply);
+        }
+        let task_id = key.reserved_task_id();
+        // Captured before the live-mutation check: a mutation submitted after
+        // it keeps this read from leading (`register_leader`).
+        let mutation_epoch = self.joins.mutation_epoch();
+        let stripe = self.submit_fences.stripe(&digest);
+        if self.submit_fences.is_fenced(&digest) {
+            return Err(ReceiptLedgerError::ReceiptNotFound);
+        }
+        let outcome = self.receipt_ledger.reserve(key.clone(), cutoff, deadline)?;
+        drop(stripe);
+        let created = matches!(&outcome, ReserveOutcome::Created(_));
+        if created {
             self.hooks
                 .event(V5ReceiptRuntimeEventKind::ReceiptReserved, epoch_ms);
+            self.receipt_handles.insert(&key);
+            if !tool_is_joinable(key.tool()) {
+                self.joins.track_mutation(task_id);
+            }
         }
         let decision = decide_cancel_reserved_submit(outcome).map_err(|_| {
             ReceiptLedgerError::Corrupt("canonical cancelled terminal could not be constructed")
         })?;
         match decision {
-            CancelReservedSubmitDecision::ExecuteReserved(reservation) => self
-                .execute_reserved_invocation(
+            CancelReservedSubmitDecision::ExecuteReserved(reservation) => {
+                // Only an attempt that really runs can lead: a frame that
+                // arrives cancelled ends at once and never settles as one.
+                if created && tool_is_joinable(key.tool()) && !self.mutation_live(deadline) {
+                    self.joins
+                        .register_leader(&key, response_deadline.clone(), mutation_epoch);
+                }
+                let reply = self.execute_reserved_invocation(
                     reservation,
                     invocation,
                     response_deadline,
                     epoch_ms,
                     deadline,
-                ),
+                );
+                // The handler answered: a Task is found in its stores from
+                // now on, and a joiner waiting for this promotion may go on.
+                if matches!(
+                    &reply,
+                    Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Task { .. }
+                    }))
+                ) {
+                    self.receipt_handles.remove(task_id);
+                }
+                self.joins.leader_settled(task_id);
+                reply
+            }
             other => self.reply_for_cancel_submit_decision(
                 other,
                 epoch_ms,
@@ -5403,6 +5494,35 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// Fence the exact key of a submission whose answer was lost before the
+    /// daemon reserved it: under the key's lock either the receipt is
+    /// already there and is answered like its recovery, or the frame, if it
+    /// still arrives, meets the fence and never runs.
+    fn fence_invocation(
+        &self,
+        key: ReceiptKey,
+        epoch_ms: u64,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        self.validate_receipt_key(&key)?;
+        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+        let _stripe = self.submit_fences.stripe(&digest);
+        match self.recover_invocation(key.clone(), epoch_ms, deadline) {
+            Err(ReceiptLedgerError::ReceiptNotFound) if self.submit_fences.fence(digest) => {
+                Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::ReceiptPending {
+                        receipt_key: key,
+                        phase: V5InvocationPhase::CancelReserved,
+                        accepted_epoch_ms: epoch_ms,
+                        original_budget_ms: 0,
+                        cancel_requested: true,
+                    },
+                }))
+            }
+            other => other,
+        }
+    }
+
     fn recover_invocation(
         &self,
         key: ReceiptKey,
@@ -5410,6 +5530,16 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         self.validate_receipt_key(&key)?;
+        // A joined call has no receipt of its own: its alias answers.
+        if let Some(alias) = self.joins.alias(key.reserved_task_id()) {
+            if !alias.holder.matches(&key) {
+                return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+            }
+            let snapshot = self.resolve_task(key.reserved_task_id(), deadline)?;
+            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot },
+            }));
+        }
         let state = match self
             .receipt_ledger
             .recover_at(key.clone(), epoch_ms, deadline)
@@ -5460,9 +5590,12 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         self.validate_receipt_key(&key)?;
+        let task_id = key.reserved_task_id();
         let acknowledged =
             self.receipt_ledger
                 .acknowledge_direct(key, terminal_digest, epoch_ms, deadline)?;
+        // The frontend holds the answer: nobody waits for it by Task id.
+        self.receipt_handles.remove(task_id);
         self.hooks.event(
             V5ReceiptRuntimeEventKind::AcknowledgementCommitted,
             epoch_ms,
@@ -5474,7 +5607,126 @@ impl V5ReceiptRuntime {
         ))
     }
 
+    /// The state of one Task as its holder sees it: a joined call sees the
+    /// shared Task under its own identity, a holder that let go sees its own
+    /// cancellation, everybody else sees the stored Task.
     fn resolve_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        if let Some(alias) = self.joins.alias(task_id) {
+            return match self.resolve_receipt_task(alias.leader, deadline) {
+                Ok(shared) => Ok(joined_task_snapshot(
+                    &shared,
+                    &alias.holder,
+                    alias.cancelled_at_epoch_ms,
+                )),
+                Err(ReceiptLedgerError::ReceiptNotFound) => {
+                    self.joins.forget_shared(alias.leader);
+                    Err(ReceiptLedgerError::ReceiptNotFound)
+                }
+                Err(error) => Err(error),
+            };
+        }
+        let snapshot = match self.resolve_receipt_task(task_id, deadline) {
+            Err(ReceiptLedgerError::ReceiptNotFound) => {
+                self.joins.forget_shared(task_id);
+                return Err(ReceiptLedgerError::ReceiptNotFound);
+            }
+            other => other?,
+        };
+        if let Some(released_at) = self.joins.leader_released_at(task_id) {
+            let holder = JoinHolder {
+                task_id,
+                invocation_id: snapshot.invocation_id(),
+                receipt_key_digest: snapshot.receipt_key_digest().clone(),
+            };
+            return Ok(joined_task_snapshot(&snapshot, &holder, Some(released_at)));
+        }
+        Ok(snapshot)
+    }
+
+    /// A Task from its stores, or else the receipt reserved under its id.
+    fn resolve_receipt_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        match self.resolve_stored_task(task_id, deadline) {
+            Err(ReceiptLedgerError::ReceiptNotFound) => {
+                self.resolve_receipt_handle(task_id, deadline)
+            }
+            other => other,
+        }
+    }
+
+    /// The Task id a lost-submit refusal names while its call is no Task:
+    /// a receipt still inline is a queued Task, one that ended directly and
+    /// was never acknowledged answers with its terminal. Nothing runs again.
+    fn resolve_receipt_handle(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        let Some(key) = self.receipt_handles.get(task_id) else {
+            return Err(ReceiptLedgerError::ReceiptNotFound);
+        };
+        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+        let queued = |created_at_epoch_ms: u64, cancel_requested: bool| {
+            super::protocol_v5::V5DaemonTaskSnapshot::Queued {
+                task_id,
+                invocation_id: key.invocation_id(),
+                receipt_key_digest: digest.clone(),
+                created_at_epoch_ms,
+                updated_at_epoch_ms: created_at_epoch_ms,
+                ttl_ms: DIRECT_TERMINAL_RETENTION_MS,
+                poll_interval_ms: V5_TASK_POLL_INTERVAL_MS,
+                version: 1,
+                cancel_requested,
+            }
+        };
+        match self.receipt_ledger.recover(key.clone(), deadline) {
+            Ok(ReceiptState::Reserved(reserved)) => Ok(queued(
+                reserved.original_cutoff().accepted_epoch_ms(),
+                reserved.cancel_requested(),
+            )),
+            Ok(ReceiptState::CancelReserved(reserved)) => {
+                Ok(queued(reserved.cancel_reserved_at_epoch_ms(), true))
+            }
+            Ok(ReceiptState::DirectTerminalUnacked(receipt)) => Ok(terminal_task_snapshot(
+                TerminalSnapshotIdentity {
+                    task_id,
+                    invocation_id: key.invocation_id(),
+                    receipt_key_digest: digest.clone(),
+                    created_at_epoch_ms: receipt.original_cutoff().accepted_epoch_ms(),
+                    updated_at_epoch_ms: receipt.terminal_epoch_ms(),
+                    ttl_ms: DIRECT_TERMINAL_RETENTION_MS,
+                    poll_interval_ms: V5_TASK_POLL_INTERVAL_MS,
+                    version: receipt.record_version().get(),
+                    cancel_requested: false,
+                    terminal_epoch_ms: receipt.terminal_epoch_ms(),
+                },
+                receipt.terminal(),
+            )),
+            Ok(
+                state @ (ReceiptState::TaskPromisedUnbound(_)
+                | ReceiptState::TaskPromisedActorBound(_)
+                | ReceiptState::TaskHandoffActorBound(_)
+                | ReceiptState::TaskReceiptOwnedActorBound(_)
+                | ReceiptState::TaskTerminalReceiptBacked(_)),
+            ) => receipt_state_task_snapshot(state),
+            // Acknowledged, expired or gone: the answer is not this id's any
+            // more.
+            Ok(_) | Err(ReceiptLedgerError::ReceiptNotFound) => {
+                self.receipt_handles.remove(task_id);
+                Err(ReceiptLedgerError::ReceiptNotFound)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn resolve_stored_task(
         &self,
         task_id: crate::domain::invocation::TaskId,
         deadline: Instant,
@@ -5606,7 +5858,37 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// Cancel one holder's interest. The work itself is cancelled only when
+    /// no joined call still waits for it.
     fn cancel_task(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<super::protocol_v5::V5DaemonTaskSnapshot, ReceiptLedgerError> {
+        match self.joins.cancel_holder(task_id, self.epoch_ms()) {
+            HolderCancel::Released => self.resolve_task(task_id, deadline),
+            HolderCancel::CancelShared(shared) if shared == task_id => {
+                match self.cancel_stored_task(task_id, deadline) {
+                    // Not a Task yet, or ended directly: the id a lost-submit
+                    // refusal named cancels its exact receipt instead.
+                    Err(ReceiptLedgerError::ReceiptNotFound) => {
+                        let Some(key) = self.receipt_handles.get(task_id) else {
+                            return Err(ReceiptLedgerError::ReceiptNotFound);
+                        };
+                        self.cancel_invocation(key, self.epoch_ms(), deadline)?;
+                        self.resolve_task(task_id, deadline)
+                    }
+                    other => other,
+                }
+            }
+            HolderCancel::CancelShared(shared) => {
+                self.cancel_stored_task(shared, deadline)?;
+                self.resolve_task(task_id, deadline)
+            }
+        }
+    }
+
+    fn cancel_stored_task(
         &self,
         task_id: crate::domain::invocation::TaskId,
         deadline: Instant,
@@ -5725,6 +6007,133 @@ impl V5ReceiptRuntime {
             crate::application::receipt_ledger::receipt_key_digest(cancelled.key()),
             cancelled.cancel_requested(),
         ))
+    }
+
+    /// An identical read whose work already runs as a Task joins that Task
+    /// instead of starting the same traversal again (#1376). The joined call
+    /// reserves nothing: it answers with its own identity over the shared
+    /// Task. `None` means the call runs on its own, as before.
+    fn join_identical_read(
+        &self,
+        key: &ReceiptKey,
+        invocation: &V5InvocationRequest,
+        response_deadline: &crate::application::invocation::InvocationResponseDeadline,
+        deadline: Instant,
+    ) -> Result<Option<V5RuntimeReply>, ReceiptLedgerError> {
+        if !tool_is_joinable(key.tool()) {
+            // A mutation closes joins before it reserves: a read submitted
+            // after it never takes a result read before it.
+            self.joins.close_joins();
+            return Ok(None);
+        }
+        // The exact repeat of a joined call answers from its alias.
+        if let Some(alias) = self.joins.alias(key.reserved_task_id()) {
+            if !alias.holder.matches(key) {
+                return Err(ReceiptLedgerError::InvocationIdentityMismatch);
+            }
+            let snapshot = self.resolve_task(key.reserved_task_id(), deadline)?;
+            return Ok(Some(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot },
+            })));
+        }
+        let identity = key.request_identity();
+        loop {
+            let Some(candidate) = self.joins.candidate(&identity) else {
+                return Ok(None);
+            };
+            if candidate.task_id == key.reserved_task_id() || self.mutation_live(deadline) {
+                return Ok(None);
+            }
+            match self.resolve_stored_task(candidate.task_id, deadline) {
+                Ok(shared) if !task_snapshot_is_terminal(&shared) && !shared.cancel_requested() => {
+                    // An exact repeat of a call that already holds its own
+                    // receipt reads that receipt; it never becomes a joiner.
+                    if !matches!(
+                        self.receipt_ledger.recover(key.clone(), deadline),
+                        Err(ReceiptLedgerError::ReceiptNotFound)
+                    ) || !matches!(
+                        self.resolve_stored_task(key.reserved_task_id(), deadline),
+                        Err(ReceiptLedgerError::ReceiptNotFound)
+                    ) {
+                        return Ok(None);
+                    }
+                    // A join never answers with a walk older than the sources
+                    // at this call: any change since the leader started, by
+                    // Unica or by an external edit, makes the call run itself.
+                    if !join_freshness::sources_unchanged_since(
+                        invocation.workspace_hint(),
+                        candidate.started_wall,
+                    ) {
+                        self.joins.forget_leader(&identity, candidate.task_id);
+                        return Ok(None);
+                    }
+                    if self.joins.holders_full() {
+                        self.forget_retired_shared_tasks(deadline);
+                    }
+                    let Some(alias) = self.joins.attach(&identity, candidate.task_id, key) else {
+                        return Ok(None);
+                    };
+                    let snapshot = joined_task_snapshot(&shared, &alias.holder, None);
+                    return Ok(Some(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                        outcome: V5InvocationResponse::Task { snapshot },
+                    })));
+                }
+                Ok(_) => {
+                    self.joins.forget_leader(&identity, candidate.task_id);
+                    return Ok(None);
+                }
+                Err(ReceiptLedgerError::ReceiptNotFound) if candidate.in_flight => {
+                    // The leader is still inline. Only a leader whose own
+                    // cutoff already passed is about to become a Task; one
+                    // inside its window may well answer directly.
+                    let own = response_deadline.remaining_handoff_budget();
+                    if !candidate
+                        .leader_deadline
+                        .remaining_handoff_budget()
+                        .is_zero()
+                        || own.is_zero()
+                    {
+                        return Ok(None);
+                    }
+                    self.joins
+                        .wait_changed(own.min(INLINE_CUTOFF_POLL_INTERVAL * 5));
+                }
+                Err(ReceiptLedgerError::ReceiptNotFound) => {
+                    self.joins.forget_leader(&identity, candidate.task_id);
+                    return Ok(None);
+                }
+                // The leader's trouble is not this call's: it runs on its own.
+                Err(_) => return Ok(None),
+            }
+        }
+    }
+
+    /// Whether an `apply` or `run` may still change what a read sees. A
+    /// mutation is over once it has a terminal or nobody can find it.
+    fn mutation_live(&self, deadline: Instant) -> bool {
+        let mut live = false;
+        for task_id in self.joins.tracked_mutations() {
+            match self.resolve_receipt_task(task_id, deadline) {
+                Ok(snapshot) if task_snapshot_is_terminal(&snapshot) => {
+                    self.joins.mutation_finished(task_id)
+                }
+                Err(ReceiptLedgerError::ReceiptNotFound) => self.joins.mutation_finished(task_id),
+                // Running, or its state unknown: reads do not join meanwhile.
+                Ok(_) | Err(_) => live = true,
+            }
+        }
+        live
+    }
+
+    fn forget_retired_shared_tasks(&self, deadline: Instant) {
+        for leader in self.joins.shared_leaders() {
+            if matches!(
+                self.resolve_receipt_task(leader, deadline),
+                Err(ReceiptLedgerError::ReceiptNotFound)
+            ) {
+                self.joins.forget_shared(leader);
+            }
+        }
     }
 
     fn reply_for_existing_state(
@@ -6091,6 +6500,175 @@ fn pending_reserved_response(
             cancel_requested: receipt.cancel_requested(),
         },
     }
+}
+
+/// Identity and times of a Task snapshot built from a terminal.
+struct TerminalSnapshotIdentity {
+    task_id: crate::domain::invocation::TaskId,
+    invocation_id: crate::domain::invocation::InvocationId,
+    receipt_key_digest: ReceiptKeyDigest,
+    created_at_epoch_ms: u64,
+    updated_at_epoch_ms: u64,
+    ttl_ms: u64,
+    poll_interval_ms: u64,
+    version: u64,
+    cancel_requested: bool,
+    terminal_epoch_ms: u64,
+}
+
+fn terminal_task_snapshot(
+    identity: TerminalSnapshotIdentity,
+    terminal: &crate::application::receipt_ledger::V5CanonicalTerminal,
+) -> super::protocol_v5::V5DaemonTaskSnapshot {
+    let TerminalSnapshotIdentity {
+        task_id,
+        invocation_id,
+        receipt_key_digest,
+        created_at_epoch_ms,
+        updated_at_epoch_ms,
+        ttl_ms,
+        poll_interval_ms,
+        version,
+        cancel_requested,
+        terminal_epoch_ms,
+    } = identity;
+    let terminal_digest = terminal.digest().clone();
+    match terminal.outcome() {
+        ReceiptTerminalOutcome::Completed { result } => {
+            super::protocol_v5::V5DaemonTaskSnapshot::Completed {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                terminal_epoch_ms,
+                terminal_digest,
+                result: result.clone(),
+            }
+        }
+        ReceiptTerminalOutcome::Failed { reason } => {
+            super::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                task_id,
+                invocation_id,
+                receipt_key_digest,
+                created_at_epoch_ms,
+                updated_at_epoch_ms,
+                ttl_ms,
+                poll_interval_ms,
+                version,
+                cancel_requested,
+                terminal_epoch_ms,
+                terminal_digest,
+                reason: *reason,
+            }
+        }
+        ReceiptTerminalOutcome::Cancelled => super::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            created_at_epoch_ms,
+            updated_at_epoch_ms,
+            ttl_ms,
+            poll_interval_ms,
+            version,
+            cancel_requested,
+            terminal_epoch_ms,
+            terminal_digest,
+        },
+    }
+}
+
+fn snapshot_terminal_epoch_ms(snapshot: &super::protocol_v5::V5DaemonTaskSnapshot) -> Option<u64> {
+    match snapshot {
+        super::protocol_v5::V5DaemonTaskSnapshot::Completed {
+            terminal_epoch_ms, ..
+        }
+        | super::protocol_v5::V5DaemonTaskSnapshot::Failed {
+            terminal_epoch_ms, ..
+        }
+        | super::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+            terminal_epoch_ms, ..
+        } => Some(*terminal_epoch_ms),
+        super::protocol_v5::V5DaemonTaskSnapshot::Queued { .. }
+        | super::protocol_v5::V5DaemonTaskSnapshot::Working { .. } => None,
+    }
+}
+
+/// The shared Task as one holder sees it: under the holder's own identity,
+/// and cancelled from the moment the holder let go, unless the shared work
+/// had already ended by then.
+fn joined_task_snapshot(
+    shared: &super::protocol_v5::V5DaemonTaskSnapshot,
+    holder: &JoinHolder,
+    released_at_epoch_ms: Option<u64>,
+) -> super::protocol_v5::V5DaemonTaskSnapshot {
+    use super::protocol_v5::V5DaemonTaskSnapshot as Snapshot;
+    let ended_before_release = released_at_epoch_ms.is_some_and(|released| {
+        snapshot_terminal_epoch_ms(shared).is_some_and(|terminal| terminal <= released)
+    });
+    if let Some(released) = released_at_epoch_ms.filter(|_| !ended_before_release) {
+        let cancelled = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+            .expect("the canonical cancelled terminal has a fixed encoding");
+        return terminal_task_snapshot(
+            TerminalSnapshotIdentity {
+                task_id: holder.task_id,
+                invocation_id: holder.invocation_id,
+                receipt_key_digest: holder.receipt_key_digest.clone(),
+                created_at_epoch_ms: shared.created_at_epoch_ms(),
+                updated_at_epoch_ms: shared.updated_at_epoch_ms().max(released),
+                ttl_ms: shared.ttl_ms(),
+                poll_interval_ms: shared.poll_interval_ms(),
+                // The holder's own cancellation is a newer state than any
+                // shared state it saw before.
+                version: shared.version().saturating_add(1),
+                cancel_requested: true,
+                terminal_epoch_ms: released,
+            },
+            &cancelled,
+        );
+    }
+    let mut projected = shared.clone();
+    match &mut projected {
+        Snapshot::Queued {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            ..
+        }
+        | Snapshot::Working {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            ..
+        }
+        | Snapshot::Completed {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            ..
+        }
+        | Snapshot::Failed {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            ..
+        }
+        | Snapshot::Cancelled {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            ..
+        } => {
+            *task_id = holder.task_id;
+            *invocation_id = holder.invocation_id;
+            *receipt_key_digest = holder.receipt_key_digest.clone();
+        }
+    }
+    projected
 }
 
 pub(crate) fn run_daemon(config: DaemonServerConfig) -> Result<(), String> {
@@ -6652,6 +7230,25 @@ fn handle_probe_connection(
                     ),
                 }
             }
+            V5ClientRequestKind::FenceInvocationReceipt => {
+                let V5ClientRequest::FenceInvocationReceipt { receipt_key } =
+                    decoded.into_request()
+                else {
+                    unreachable!("request kind and decoded fence variant diverged");
+                };
+                let epoch_ms = runtime.epoch_ms();
+                match runtime.fence_invocation(receipt_key, epoch_ms, deadlines.operation) {
+                    Ok(reply) => {
+                        write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
+                    }
+                    Err(error) => write_runtime_ledger_error_before(
+                        &mut stream,
+                        runtime,
+                        &error,
+                        deadlines.response,
+                    ),
+                }
+            }
             V5ClientRequestKind::RecoverInvocationReceipt => {
                 let V5ClientRequest::RecoverInvocationReceipt { receipt_key } =
                     decoded.into_request()
@@ -6661,6 +7258,9 @@ fn handle_probe_connection(
                 let epoch_ms = runtime.epoch_ms();
                 match runtime.recover_invocation(receipt_key, epoch_ms, deadlines.operation) {
                     Ok(reply) => {
+                        if runtime.hooks.recover_response_disconnect() {
+                            return Ok(());
+                        }
                         write_runtime_reply_before(&mut stream, runtime, reply, deadlines.response)
                     }
                     Err(error) => write_runtime_ledger_error_before(

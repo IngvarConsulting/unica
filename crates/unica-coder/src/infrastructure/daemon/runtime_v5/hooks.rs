@@ -356,6 +356,12 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
         false
     }
 
+    /// Invoked after an exact receipt recovery is answered and before writing
+    /// the answer. Tests lose it to close the frontend recovery window.
+    fn recover_response_disconnect(&self) -> bool {
+        false
+    }
+
     /// Invoked only after the durable exact Cancel has succeeded and before
     /// writing its answer. Tests may delay or lose that committed answer.
     fn cancel_response_disconnect(&self) -> bool {

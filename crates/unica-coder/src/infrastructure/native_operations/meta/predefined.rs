@@ -473,6 +473,190 @@ pub(super) fn plan_predefined_resource_after_descriptor_edit(
     Ok(PlannedPredefinedResource { resources, effects })
 }
 
+/// Id of the predefined item named `name`, nested items included; `None`
+/// when no item carries that name. Names are compared like metadata names.
+pub(crate) fn predefined_item_id(
+    bytes: &[u8],
+    kind: MetadataKind,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| "Predefined.xml is not UTF-8".to_string())?
+        .trim_start_matches('\u{feff}');
+    validate_predefined_text_allowing_self_closing_items(kind, text)?;
+    let mut found = item_identities(text, kind)?
+        .into_iter()
+        .filter(|(_, candidate)| metadata_name_eq(candidate, name));
+    let first = found.next().map(|(id, _)| id);
+    // Имя — селектор адреса: при двух одноимённых элементах адрес ничего
+    // не выбирает, и первый попавшийся не подставляется.
+    if found.next().is_some() {
+        return Err(format!(
+            "Predefined.xml has more than one predefined item named `{name}`"
+        ));
+    }
+    Ok(first)
+}
+
+/// `(id, name)` каждого элемента документа на любой глубине.
+fn item_identities(text: &str, kind: MetadataKind) -> Result<Vec<(String, String)>, String> {
+    let document = Document::parse(text).map_err(|error| format!("Predefined.xml: {error}"))?;
+    let mut items = Vec::new();
+    for item in document
+        .root_element()
+        .children()
+        .filter(|node| is_predefined_element(*node, "Item"))
+    {
+        collect_items(text, item, kind, None, &mut items, &mut || Ok(()))?;
+    }
+    Ok(items.into_iter().map(|item| (item.id, item.name)).collect())
+}
+
+/// Отказ, если имя `name` уже носит другой элемент (на любой глубине):
+/// имя предопределённого элемента уникально в объекте и служит адресом.
+fn ensure_name_free(
+    text: &str,
+    kind: MetadataKind,
+    name: &str,
+    own_id: &str,
+    context: PredefinedOperationContext<'_>,
+    field: String,
+) -> Result<(), MetaFailure> {
+    let PredefinedOperationContext {
+        owner,
+        operation_index,
+    } = context;
+    let taken = item_identities(text, kind)
+        .map_err(|message| {
+            failure(
+                owner,
+                MetaDiagnosticCode::ValidationFailed,
+                message,
+                Some(operation_index),
+                Some(field.clone()),
+            )
+        })?
+        .into_iter()
+        .any(|(id, candidate)| {
+            metadata_name_eq(&candidate, name) && !id.eq_ignore_ascii_case(own_id)
+        });
+    if taken {
+        return Err(failure(
+            owner,
+            MetaDiagnosticCode::AlreadyExists,
+            format!("predefined item name `{name}` is already used"),
+            Some(operation_index),
+            Some(field),
+        ));
+    }
+    Ok(())
+}
+
+/// Post-image of `Ext/Predefined.xml` after one predefined-item operation:
+/// the planner of `apply` stages it itself, reading the current image from
+/// its staged state. `None` means the file is absent afterwards: the last
+/// item is gone, and the platform export keeps no empty document.
+///
+/// Diagnostic fields name the operation's own request (`elements[0].id`,
+/// `ids[0]`) without the wrapper's `operations[0]` prefix.
+pub(crate) fn predefined_post_image(
+    kind: MetadataKind,
+    owner: &MetadataAddress,
+    descriptor_text: &str,
+    original: Option<&[u8]>,
+    operation: &MetaEditOperation,
+) -> Result<Option<Vec<u8>>, MetaFailure> {
+    predefined_post_image_inner(kind, owner, descriptor_text, original, operation).map_err(
+        |mut failure| {
+            for diagnostic in &mut failure.diagnostics {
+                if let Some(field) = diagnostic.field.as_mut() {
+                    if let Some(rest) = field.strip_prefix("operations[0].") {
+                        *field = rest.to_string();
+                    }
+                }
+            }
+            failure
+        },
+    )
+}
+
+fn predefined_post_image_inner(
+    kind: MetadataKind,
+    owner: &MetadataAddress,
+    descriptor_text: &str,
+    original: Option<&[u8]>,
+    operation: &MetaEditOperation,
+) -> Result<Option<Vec<u8>>, MetaFailure> {
+    let invalid = |message: String| {
+        failure(
+            owner,
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            Some(0),
+            None,
+        )
+    };
+    let code_type = predefined_code_type(kind, descriptor_text).map_err(|message| {
+        failure(
+            owner,
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            None,
+            Some("properties.CodeType".to_string()),
+        )
+    })?;
+    let (mut text, has_bom) = match original {
+        Some(bytes) => {
+            let text = std::str::from_utf8(bytes).map_err(|_| {
+                failure(
+                    owner,
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "Predefined.xml is not UTF-8",
+                    None,
+                    None,
+                )
+            })?;
+            (
+                text.trim_start_matches('\u{feff}').to_string(),
+                bytes.starts_with(b"\xef\xbb\xbf"),
+            )
+        }
+        None => (
+            empty_document(kind, source_eol(descriptor_text).unwrap_or("\n")),
+            true,
+        ),
+    };
+    validate_predefined_text_allowing_self_closing_items(kind, &text).map_err(invalid)?;
+    let observed_eol = source_eol(&text);
+    let rendering_eol = observed_eol.as_deref().unwrap_or("\n");
+    let preimage = text.clone();
+    apply_operation(
+        &mut text,
+        rendering_eol,
+        kind,
+        code_type,
+        operation,
+        owner,
+        0,
+    )?;
+    if text != preimage {
+        if let Err(message) = &observed_eol {
+            return Err(invalid(message.clone()));
+        }
+    }
+    validate_predefined_text_allowing_self_closing_items(kind, &text).map_err(invalid)?;
+    validate_predefined_text_for_code_type(kind, code_type, &text).map_err(invalid)?;
+    if !document_has_items(&text).map_err(invalid)? {
+        return Ok(None);
+    }
+    let mut post_image = Vec::with_capacity(text.len() + usize::from(has_bom) * 3);
+    if has_bom {
+        post_image.extend_from_slice(b"\xef\xbb\xbf");
+    }
+    post_image.extend_from_slice(text.as_bytes());
+    Ok(Some(post_image))
+}
+
 fn document_has_items(text: &str) -> Result<bool, String> {
     let document = Document::parse(text).map_err(|error| format!("Predefined.xml: {error}"))?;
     Ok(document
@@ -1188,6 +1372,14 @@ fn add_item(
             Some(format!("elements[{element_index}].id")),
         ));
     }
+    ensure_name_free(
+        text,
+        kind,
+        &element.name,
+        &element.id,
+        context,
+        format!("elements[{element_index}].name"),
+    )?;
     expand_self_closing_root(text, eol);
     let (root_qname, root_context, root_range) = {
         let document = Document::parse(text).map_err(|error| {
@@ -1277,6 +1469,16 @@ fn update_item(
             Some(format!("elements[{element_index}].id")),
         ));
     };
+    if let Some(name) = &element.name {
+        ensure_name_free(
+            text,
+            kind,
+            name,
+            &element.id,
+            context,
+            format!("elements[{element_index}].name"),
+        )?;
+    }
     let mut fragment = text[location.range.clone()].to_string();
     let fragment_context = &location.fragment_context;
     if let Some(name) = &element.name {
@@ -3018,6 +3220,69 @@ mod tests {
         );
         let data = read_predefined_items(info.as_bytes(), MetadataKind::Catalog, 10).unwrap();
         assert_eq!(data.items[0].description, "oldtail");
+    }
+
+    /// Планировщик `apply` пишет `Ext/Predefined.xml` сам: первый элемент
+    /// создаёт файл, элемент находится по имени и во вложенных, последний
+    /// удалённый элемент убирает файл.
+    #[test]
+    fn apply_post_image_creates_the_file_finds_items_by_name_and_drops_it_empty() {
+        let owner = owner("Catalog");
+        let descriptor = descriptor_image(MetadataKind::Catalog, "String");
+        let id = "a1b2c3d4-1111-4111-8111-111111111111";
+        let add = MetaEditOperation::add_predefined_items(vec![MetaPredefinedItemAdd {
+            id: id.to_string(),
+            name: "Рубль".to_string(),
+            fields: MetaPredefinedFields::default(),
+        }])
+        .unwrap();
+        let created = predefined_post_image(MetadataKind::Catalog, &owner, &descriptor, None, &add)
+            .unwrap()
+            .expect("the first item creates the file");
+        assert!(created.starts_with(b"\xef\xbb\xbf"));
+        assert_eq!(
+            predefined_item_id(&created, MetadataKind::Catalog, "Рубль").unwrap(),
+            Some(id.to_string())
+        );
+        assert_eq!(
+            predefined_item_id(&created, MetadataKind::Catalog, "Евро").unwrap(),
+            None
+        );
+        let nested = r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="00000000-0000-4000-8000-000000000001"><Name>Parent</Name><Code/><Description/><IsFolder>true</IsFolder><ChildItems><Item id="00000000-0000-4000-8000-000000000002"><Name>Child</Name><Code/><Description/><IsFolder>false</IsFolder></Item></ChildItems></Item></PredefinedData>"#;
+        assert_eq!(
+            predefined_item_id(nested.as_bytes(), MetadataKind::Catalog, "Child").unwrap(),
+            Some("00000000-0000-4000-8000-000000000002".to_string())
+        );
+        let remove = MetaEditOperation::remove_predefined_items(vec![id.to_string()]).unwrap();
+        assert_eq!(
+            predefined_post_image(
+                MetadataKind::Catalog,
+                &owner,
+                &descriptor,
+                Some(&created),
+                &remove
+            )
+            .unwrap(),
+            None,
+            "the last item leaves no empty document"
+        );
+        let missing = MetaEditOperation::remove_predefined_items(vec![
+            "00000000-0000-4000-8000-000000000009".to_string(),
+        ])
+        .unwrap();
+        let failure = predefined_post_image(
+            MetadataKind::Catalog,
+            &owner,
+            &descriptor,
+            Some(&created),
+            &missing,
+        )
+        .unwrap_err();
+        assert_eq!(
+            failure.diagnostics[0].field.as_deref(),
+            Some("ids[0]"),
+            "fields name the operation's own request"
+        );
     }
 
     fn descriptor_image(kind: MetadataKind, code_type: &str) -> String {

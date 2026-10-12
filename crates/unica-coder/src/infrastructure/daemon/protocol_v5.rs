@@ -194,6 +194,7 @@ pub(crate) enum V5ClientRequestKind {
     RecoverInvocationReceipt,
     AcknowledgeInvocationReceipt,
     CancelInvocation,
+    FenceInvocationReceipt,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -342,6 +343,14 @@ pub(crate) enum V5ClientRequest {
         #[serde(rename = "receiptKey")]
         receipt_key: ReceiptKey,
     },
+    /// After a lost submit response with no receipt yet: keep a frame of
+    /// this exact key that is still on its way from ever running, for as
+    /// long as such a frame can still arrive. A key the daemon already holds
+    /// is answered like its recovery.
+    FenceInvocationReceipt {
+        #[serde(rename = "receiptKey")]
+        receipt_key: ReceiptKey,
+    },
 }
 
 impl V5ClientRequest {
@@ -359,6 +368,7 @@ impl V5ClientRequest {
                 V5ClientRequestKind::AcknowledgeInvocationReceipt
             }
             Self::CancelInvocation { .. } => V5ClientRequestKind::CancelInvocation,
+            Self::FenceInvocationReceipt { .. } => V5ClientRequestKind::FenceInvocationReceipt,
         }
     }
 
@@ -402,7 +412,8 @@ impl V5ClientRequest {
             | Self::CancelTask { .. }
             | Self::RecoverInvocationReceipt { .. }
             | Self::AcknowledgeInvocationReceipt { .. }
-            | Self::CancelInvocation { .. } => Ok(()),
+            | Self::CancelInvocation { .. }
+            | Self::FenceInvocationReceipt { .. } => Ok(()),
         }
     }
 }
@@ -447,6 +458,7 @@ impl fmt::Debug for V5ClientRequest {
                 formatter.write_str("V5AcknowledgeInvocationReceipt")
             }
             Self::CancelInvocation { .. } => formatter.write_str("V5CancelInvocation"),
+            Self::FenceInvocationReceipt { .. } => formatter.write_str("V5FenceInvocationReceipt"),
         }
     }
 }
@@ -808,6 +820,16 @@ impl V5DaemonTaskSnapshot {
             | Self::Completed { ttl_ms, .. }
             | Self::Failed { ttl_ms, .. }
             | Self::Cancelled { ttl_ms, .. } => *ttl_ms,
+        }
+    }
+
+    pub(crate) fn version(&self) -> u64 {
+        match self {
+            Self::Queued { version, .. }
+            | Self::Working { version, .. }
+            | Self::Completed { version, .. }
+            | Self::Failed { version, .. }
+            | Self::Cancelled { version, .. } => *version,
         }
     }
 
@@ -1598,6 +1620,13 @@ mod tests {
                 V5ClientRequestKind::CancelInvocation,
                 format!(
                     "{{\"kind\":\"cancel_invocation\",\"receiptKey\":{}}}",
+                    receipt_key_json()
+                ),
+            ),
+            (
+                V5ClientRequestKind::FenceInvocationReceipt,
+                format!(
+                    "{{\"kind\":\"fence_invocation_receipt\",\"receiptKey\":{}}}",
                     receipt_key_json()
                 ),
             ),

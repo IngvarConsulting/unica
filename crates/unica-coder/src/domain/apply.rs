@@ -457,12 +457,18 @@ impl<'a> OperationSite<'a> {
 
     /// Табличный документ или схема как узел владельца: `Owner.X.Template.T`.
     fn owned_template(&self) -> bool {
+        self.metadata_member(NodeKind::Template, MetaCollection::Templates)
+    }
+
+    /// Член коллекции объекта метаданных верхнего уровня:
+    /// `Owner.X.<kind>.Name`, где у вида владельца есть коллекция `collection`.
+    fn metadata_member(&self, kind: NodeKind, collection: MetaCollection) -> bool {
         self.route == RouteClass::Metadata
-            && matches!(self.segments(), [owner, template]
+            && matches!(self.segments(), [owner, member]
                 if owner.name().is_some()
-                    && template.kind() == NodeKind::Template
-                    && template.name().is_some()
-                    && metadata_collection_matches(owner.kind(), MetaCollection::Templates))
+                    && member.kind() == kind
+                    && member.name().is_some()
+                    && metadata_collection_matches(owner.kind(), collection))
     }
 
     fn dcs_terminal(&self, kinds: &[NodeKind]) -> bool {
@@ -485,7 +491,8 @@ enum OperationApplicability {
     /// Объект метаданных, роль или подсистема верхнего уровня: свойства.
     MetadataOrRoleOrSubsystem,
     /// Объект метаданных с коллекцией: операция владельца над коллекцией.
-    MetadataAttributes,
+    /// Реквизиты добавляются и в табличную часть — по её адресу.
+    MetadataAttributeContainer,
     MetadataTabularSections,
     MetadataDimensions,
     MetadataResources,
@@ -497,8 +504,17 @@ enum OperationApplicability {
     MetadataPredefinedItems,
     /// Сам реквизит объекта или его табличной части.
     MetadataAttribute,
-    /// Владелец макетов с `values.name` или сам макет владельца.
-    MetadataTemplatesOrTemplate,
+    /// Сам член коллекции владельца: табличная часть, измерение, ресурс,
+    /// значение перечисления, графа журнала, команда, макет,
+    /// предопределённый элемент.
+    MetadataTabularSection,
+    MetadataDimension,
+    MetadataResource,
+    MetadataEnumValue,
+    MetadataColumn,
+    MetadataCommand,
+    MetadataTemplate,
+    MetadataPredefinedItem,
     /// Форма объекта.
     Form,
     /// Форма объекта или её элемент.
@@ -544,7 +560,9 @@ impl OperationApplicability {
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata | Self::SupportRule => "`Kind.Name`",
             Self::MetadataOrRoleOrSubsystem => "`Kind.Name`, `Role.Name` or `Subsystem.Name`",
-            Self::MetadataAttributes => "`Kind.Name` of a kind with attributes",
+            Self::MetadataAttributeContainer => {
+                "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"
+            }
             Self::MetadataTabularSections => "`Kind.Name` of a kind with tabular sections",
             Self::MetadataDimensions => "`Kind.Name` of a register with dimensions",
             Self::MetadataResources => "`Kind.Name` of a register with resources",
@@ -555,7 +573,14 @@ impl OperationApplicability {
             Self::MetadataCommands => "`Kind.Name` of a kind with commands",
             Self::MetadataPredefinedItems => "`Kind.Name` of a kind with predefined items",
             Self::MetadataAttribute => "`Kind.Name[.TabularSection.T].Attribute.A`",
-            Self::MetadataTemplatesOrTemplate => "`Kind.Name[.Template.T]`",
+            Self::MetadataTabularSection => "`Kind.Name.TabularSection.T`",
+            Self::MetadataDimension => "`Kind.Name.Dimension.D` of a register",
+            Self::MetadataResource => "`Kind.Name.Resource.R` of a register",
+            Self::MetadataEnumValue => "`Enum.Name.EnumValue.V`",
+            Self::MetadataColumn => "`DocumentJournal.Name.Column.C`",
+            Self::MetadataCommand => "`Kind.Name.Command.C`",
+            Self::MetadataTemplate => "`Kind.Name.Template.T`",
+            Self::MetadataPredefinedItem => "`Kind.Name.PredefinedItem.P`",
             Self::Form => "`Kind.Name.Form.F`",
             Self::FormOrItem => "`Kind.Name.Form.F[.Item.I]`",
             Self::Role => "`Role.Name`",
@@ -592,7 +617,11 @@ impl OperationApplicability {
                         if only.name().is_some()
                             && matches!(only.kind(), NodeKind::Role | NodeKind::Subsystem))
             }
-            Self::MetadataAttributes => site.metadata_owner_with(MetaCollection::Attributes),
+            Self::MetadataAttributeContainer => {
+                site.metadata_owner_with(MetaCollection::Attributes)
+                    || site
+                        .metadata_member(NodeKind::TabularSection, MetaCollection::TabularSections)
+            }
             Self::MetadataTabularSections => {
                 site.metadata_owner_with(MetaCollection::TabularSections)
             }
@@ -630,8 +659,25 @@ impl OperationApplicability {
                         _ => false,
                     }
             }
-            Self::MetadataTemplatesOrTemplate => {
-                site.metadata_owner_with(MetaCollection::Templates) || site.owned_template()
+            Self::MetadataTabularSection => {
+                site.metadata_member(NodeKind::TabularSection, MetaCollection::TabularSections)
+            }
+            Self::MetadataDimension => {
+                site.metadata_member(NodeKind::Dimension, MetaCollection::Dimensions)
+            }
+            Self::MetadataResource => {
+                site.metadata_member(NodeKind::Resource, MetaCollection::Resources)
+            }
+            Self::MetadataEnumValue => {
+                site.metadata_member(NodeKind::EnumValue, MetaCollection::EnumValues)
+            }
+            Self::MetadataColumn => site.metadata_member(NodeKind::Column, MetaCollection::Columns),
+            Self::MetadataCommand => {
+                site.metadata_member(NodeKind::Command, MetaCollection::Commands)
+            }
+            Self::MetadataTemplate => site.owned_template(),
+            Self::MetadataPredefinedItem => {
+                site.metadata_member(NodeKind::PredefinedItem, MetaCollection::PredefinedItems)
             }
             Self::Form => site.route == RouteClass::Form && site.owned_form(),
             Self::FormOrItem => {
@@ -1023,8 +1069,35 @@ impl OperationDescriptor {
             OperationFamily::Metadata if self.name == "template.add" => {
                 super::operation_contract::OperationContract::mxl(self.name)
             }
+            OperationFamily::Metadata => {
+                super::operation_contract::OperationContract::metadata(self.name)
+            }
             _ => None,
         }
+    }
+
+    /// Контракт на конкретном узле: для членов метаданных поля, допустимость
+    /// которых зависит от вида владельца и от табличной части, сужены до
+    /// этого узла.
+    pub(crate) fn argument_contract_at(
+        self,
+        site: &OperationSite<'_>,
+    ) -> Option<super::operation_contract::OperationContract> {
+        if self.family == OperationFamily::Metadata && self.name != "template.add" {
+            let owner = site
+                .segments()
+                .first()
+                .and_then(|segment| MetadataKind::parse(segment.kind().as_str()).ok());
+            let in_section = site
+                .segments()
+                .iter()
+                .any(|segment| segment.kind() == NodeKind::TabularSection);
+            return super::operation_contract::OperationContract::metadata_at(
+                self.name,
+                owner.map(|owner| super::operation_contract::MetadataSite { owner, in_section }),
+            );
+        }
+        self.argument_contract()
     }
 
     pub(crate) fn copyable_skeleton(self) -> OperationRef {
@@ -1060,7 +1133,7 @@ operation_descriptors!(
     ("relation.remove", Metadata, Metadata, Values),
     ("relation.replace", Metadata, Metadata, Values),
     ("help.create", Metadata, Metadata, Values),
-    ("attribute.add", Metadata, MetadataAttributes, Items),
+    ("attribute.add", Metadata, MetadataAttributeContainer, Items),
     ("attribute.set", Metadata, MetadataAttribute, Values),
     ("attribute.remove", Metadata, MetadataAttribute, Target),
     (
@@ -1072,46 +1145,36 @@ operation_descriptors!(
     (
         "tabularSection.set",
         Metadata,
-        MetadataTabularSections,
+        MetadataTabularSection,
         Values
     ),
     (
         "tabularSection.remove",
         Metadata,
-        MetadataTabularSections,
-        Values
+        MetadataTabularSection,
+        Target
     ),
     ("dimension.add", Metadata, MetadataDimensions, Items),
-    ("dimension.set", Metadata, MetadataDimensions, Values),
-    ("dimension.remove", Metadata, MetadataDimensions, Values),
+    ("dimension.set", Metadata, MetadataDimension, Values),
+    ("dimension.remove", Metadata, MetadataDimension, Target),
     ("resource.add", Metadata, MetadataResources, Items),
-    ("resource.set", Metadata, MetadataResources, Values),
-    ("resource.remove", Metadata, MetadataResources, Values),
+    ("resource.set", Metadata, MetadataResource, Values),
+    ("resource.remove", Metadata, MetadataResource, Target),
     ("enumValue.add", Metadata, MetadataEnumValues, Items),
-    ("enumValue.set", Metadata, MetadataEnumValues, Values),
-    ("enumValue.remove", Metadata, MetadataEnumValues, Values),
+    ("enumValue.set", Metadata, MetadataEnumValue, Values),
+    ("enumValue.remove", Metadata, MetadataEnumValue, Target),
     ("column.add", Metadata, MetadataColumns, Items),
-    ("column.set", Metadata, MetadataColumns, Values),
-    ("column.remove", Metadata, MetadataColumns, Values),
+    ("column.set", Metadata, MetadataColumn, Values),
+    ("column.remove", Metadata, MetadataColumn, Target),
     ("form.add", Form, MetadataForms, Items),
     ("form.set", Form, MetadataForms, Values),
     ("form.remove", Form, Form, Target),
     ("template.add", Metadata, MetadataTemplates, Items),
-    (
-        "template.set",
-        Metadata,
-        MetadataTemplatesOrTemplate,
-        Values
-    ),
-    (
-        "template.remove",
-        Metadata,
-        MetadataTemplatesOrTemplate,
-        Values
-    ),
+    ("template.set", Metadata, MetadataTemplate, Values),
+    ("template.remove", Metadata, MetadataTemplate, Target),
     ("command.add", Metadata, MetadataCommands, Items),
-    ("command.set", Metadata, MetadataCommands, Values),
-    ("command.remove", Metadata, MetadataCommands, Values),
+    ("command.set", Metadata, MetadataCommand, Values),
+    ("command.remove", Metadata, MetadataCommand, Target),
     (
         "predefinedItem.add",
         Metadata,
@@ -1121,14 +1184,14 @@ operation_descriptors!(
     (
         "predefinedItem.set",
         Metadata,
-        MetadataPredefinedItems,
+        MetadataPredefinedItem,
         Values
     ),
     (
         "predefinedItem.remove",
         Metadata,
-        MetadataPredefinedItems,
-        Values
+        MetadataPredefinedItem,
+        Target
     ),
     ("form.create", Form, Form, Values),
     ("element.add", Form, Form, Items),
@@ -1228,7 +1291,11 @@ operation_descriptors!(
 ///
 /// `key` — путь внутри `args`: точки разделяют ключи объектов, `[]` обходит
 /// массив (`items[].into`). В `address` подставляются `{at}` — адрес вызова —
-/// и `{value}` — строковое значение снятого ключа.
+/// и `{value}` — строковое значение снятого ключа. Шаблон, который
+/// кончается на `.{name}` вместо `{value}`, — для ключа, который называл
+/// подузел не его именем (идентификатором предопределённого элемента):
+/// адрес из значения не строится, и отказ ведёт к чтению коллекции, где
+/// у подузла видно имя.
 ///
 /// Запись действует, когда операция переехала (`retired`) и исполнима по
 /// построенному адресу. Пока операция не переехала, прежний вызов работает
@@ -1258,88 +1325,80 @@ retired_arguments!(
         "attribute.add",
         "scope.tabularSection",
         "{at}.TabularSection.{value}",
-        false
+        true
     ),
     (
         "tabularSection.set",
         "values.name",
         "{at}.TabularSection.{value}",
-        false
+        true
     ),
     (
         "tabularSection.remove",
         "values.name",
         "{at}.TabularSection.{value}",
-        false
+        true
     ),
     (
         "dimension.set",
         "values.name",
         "{at}.Dimension.{value}",
-        false
+        true
     ),
     (
         "dimension.remove",
         "values.name",
         "{at}.Dimension.{value}",
-        false
+        true
     ),
-    (
-        "resource.set",
-        "values.name",
-        "{at}.Resource.{value}",
-        false
-    ),
+    ("resource.set", "values.name", "{at}.Resource.{value}", true),
     (
         "resource.remove",
         "values.name",
         "{at}.Resource.{value}",
-        false
+        true
     ),
     (
         "enumValue.set",
         "values.name",
         "{at}.EnumValue.{value}",
-        false
+        true
     ),
     (
         "enumValue.remove",
         "values.name",
         "{at}.EnumValue.{value}",
-        false
+        true
     ),
-    ("column.set", "values.name", "{at}.Column.{value}", false),
-    ("column.remove", "values.name", "{at}.Column.{value}", false),
-    ("command.set", "values.name", "{at}.Command.{value}", false),
+    ("column.set", "values.name", "{at}.Column.{value}", true),
+    ("column.remove", "values.name", "{at}.Column.{value}", true),
+    ("command.set", "values.name", "{at}.Command.{value}", true),
     (
         "command.remove",
         "values.name",
         "{at}.Command.{value}",
-        false
+        true
     ),
-    (
-        "template.set",
-        "values.name",
-        "{at}.Template.{value}",
-        false
-    ),
+    ("template.set", "values.name", "{at}.Template.{value}", true),
     (
         "template.remove",
         "values.name",
         "{at}.Template.{value}",
-        false
+        true
     ),
+    // Предопределённый элемент прежде назывался идентификатором, а адрес
+    // называет его по имени: имя видно в коллекции.
     (
         "predefinedItem.set",
         "values.id",
-        "{at}.PredefinedItem.{value}",
-        false
+        "{at}.PredefinedItem.{name}",
+        true
     ),
     (
         "predefinedItem.remove",
         "values.id",
-        "{at}.PredefinedItem.{value}",
-        false
+        "{at}.PredefinedItem.{name}",
+        true
     ),
     // Формы (П4, #1355): элемент события задаётся адресом `Item`.
     ("event.bind", "values.element", "{at}.Item.{value}", false),
@@ -1350,9 +1409,17 @@ retired_arguments!(
 pub(crate) struct ArgumentRedirect {
     /// Путь снятого ключа внутри `args`, с номером элемента массива.
     pub(crate) location: String,
-    /// Адрес, на котором операция исполнима.
+    /// Адрес, на котором операция исполнима, или — при `listing` —
+    /// коллекция, где подузел виден по имени.
     pub(crate) at: QualifiedAddress,
+    /// Значение ключа не было именем подузла: операция исполнима на
+    /// `<at>.<Имя>`, а имя читается в коллекции `at`.
+    pub(crate) listing: bool,
 }
+
+/// Подстановка в шаблон адреса для записи, чей ключ называл подузел не
+/// именем: проверяет, что операция исполнима на члене коллекции.
+const LISTED_MEMBER: &str = "Member";
 
 impl RetiredArgument {
     /// Адрес, который строит запись для вызова на `at` с `args`; `None`, если
@@ -1366,15 +1433,31 @@ impl RetiredArgument {
         // Адрес собирается подстановкой в строку и разбирается заново: единого
         // построителя адреса пока нет, он появится в П5 (#1356) вместе с
         // экранированием точки в именах; тогда подстановку заменит он.
-        let raw = self
-            .address
-            .replace("{at}", &at.to_string())
-            .replace("{value}", &value);
-        let target = QualifiedAddress::parse(&raw).ok()?;
+        let raw = self.address.replace("{at}", &at.to_string());
+        if let Some(collection) = raw.strip_suffix(".{name}") {
+            return Some(ArgumentRedirect {
+                location,
+                at: QualifiedAddress::parse(collection).ok()?,
+                listing: true,
+            });
+        }
+        let target = QualifiedAddress::parse(&raw.replace("{value}", &value)).ok()?;
         Some(ArgumentRedirect {
             location,
             at: target,
+            listing: false,
         })
+    }
+}
+
+impl ArgumentRedirect {
+    /// Адрес, на котором операция исполнима: для записи с `listing` — член
+    /// коллекции с подставленным именем.
+    fn executable_at(&self) -> Option<QualifiedAddress> {
+        if !self.listing {
+            return Some(self.at.clone());
+        }
+        QualifiedAddress::parse(&format!("{}.{LISTED_MEMBER}", self.at)).ok()
     }
 }
 
@@ -1422,8 +1505,10 @@ fn retired_argument_redirect_in(
         .filter(|entry| entry.retired && entry.op == descriptor.name)
         .filter_map(|entry| entry.redirect(site.at, args))
         .find(|redirect| {
-            OperationSite::new(&redirect.at, site.source)
-                .is_some_and(|target| descriptor.applies_at(&target))
+            redirect.executable_at().is_some_and(|target| {
+                OperationSite::new(&target, site.source)
+                    .is_some_and(|target| descriptor.applies_at(&target))
+            })
         })
 }
 
@@ -1889,12 +1974,24 @@ mod tests {
             ),
             ("dimension.add", "main:InformationRegister.Prices", true),
             ("dimension.add", "main:Document.Order", false),
-            ("resource.remove", "main:CalculationRegister.Payroll", true),
-            ("resource.remove", "main:Catalog.Items", false),
-            ("enumValue.set", "main:Enum.Kinds", true),
-            ("enumValue.set", "main:Catalog.Items", false),
-            ("column.remove", "main:DocumentJournal.All", true),
-            ("column.remove", "main:Document.Order", false),
+            (
+                "resource.remove",
+                "main:CalculationRegister.Payroll.Resource.Amount",
+                true,
+            ),
+            (
+                "resource.remove",
+                "main:Catalog.Items.Resource.Amount",
+                false,
+            ),
+            ("enumValue.set", "main:Enum.Kinds.EnumValue.Main", true),
+            ("enumValue.set", "main:Catalog.Items.EnumValue.Main", false),
+            (
+                "column.remove",
+                "main:DocumentJournal.All.Column.Date",
+                true,
+            ),
+            ("column.remove", "main:Document.Order.Column.Date", false),
             ("predefinedItem.add", "main:Catalog.Items", true),
             ("predefinedItem.add", "main:ChartOfAccounts.Main", true),
             ("predefinedItem.add", "main:Document.Order", false),
@@ -2146,11 +2243,14 @@ mod tests {
 
     /// Каждая запись таблицы снятых аргументов строит адрес листа владельца
     /// того вида, который называет шаблон, и распознаёт снятый ключ по своему
-    /// пути. Пока операция не переехала, запись не срабатывает: старый вызов
-    /// работает (П1 переключает применимость, таблица уже готова).
+    /// пути. Переехавшая операция на владельце больше не исполнима, и прежний
+    /// вызов получает отказ с адресом листа; вызов на самом листе отказа по
+    /// таблице не получает. Запись ещё не переехавшей операции не срабатывает.
     #[test]
     fn every_retired_argument_entry_builds_a_routable_member_address() {
         let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let owners = [
             "main:Document.Order",
             "main:Enum.Kinds",
@@ -2166,55 +2266,94 @@ mod tests {
                 .unwrap_or_else(|| panic!("{} is registered", entry.op));
             let (container, key) = entry.key.split_once('.').expect("nested key");
             let args = json!({container: {key: "Member"}});
+            let args = args.as_object().unwrap();
             let mut proved = false;
             for owner in owners {
                 let at = address(owner);
-                let site = OperationSite::new(
-                    &at,
-                    SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
-                )
-                .unwrap();
-                if !descriptor.applies_at(&site) {
-                    continue;
-                }
+                let site = OperationSite::new(&at, traits).unwrap();
                 let redirect = entry
-                    .redirect(&at, args.as_object().unwrap())
+                    .redirect(&at, args)
                     .unwrap_or_else(|| panic!("{} {} builds no address", entry.op, entry.key));
                 assert_eq!(redirect.location, entry.key);
-                let target = OperationSite::new(
-                    &redirect.at,
-                    SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
-                )
-                .unwrap_or_else(|| panic!("{} is not routable", redirect.at));
+                let member = if redirect.listing {
+                    address(&format!("{}.Member", redirect.at))
+                } else {
+                    redirect.at.clone()
+                };
+                let target = OperationSite::new(&member, traits)
+                    .unwrap_or_else(|| panic!("{member} is not routable"));
+                if !descriptor.applies_at(&target) {
+                    continue;
+                }
                 // Адрес подузла остаётся в дереве владельца.
-                assert_eq!(target.route(), site.route(), "{}", redirect.at);
+                assert_eq!(target.route(), site.route(), "{member}");
                 assert_eq!(
-                    redirect.at.segments().len(),
+                    member.segments().len(),
                     at.segments().len() + 1,
-                    "{} names one member below the owner",
-                    redirect.at
+                    "{member} names one member below the owner"
                 );
-                assert_eq!(
-                    redirect.at.segments().last().unwrap().name(),
-                    Some("Member")
-                );
-                // В П0 операции ещё на владельце — прежний вызов не получает
-                // отказа.
-                assert!(!entry.retired, "{} moves in its own package", entry.op);
-                assert_eq!(
-                    registry.retired_argument_redirect(entry.op, &site, args.as_object().unwrap()),
-                    None,
-                    "{} has not moved yet",
-                    entry.op
-                );
+                assert_eq!(member.segments().last().unwrap().name(), Some("Member"));
+                let refused = registry.retired_argument_redirect(entry.op, &site, args);
+                if entry.retired {
+                    assert_eq!(refused, Some(redirect), "{} at {owner}", entry.op);
+                    assert_eq!(
+                        registry.retired_argument_redirect(entry.op, &target, args),
+                        None,
+                        "{} at its own address is not redirected",
+                        entry.op
+                    );
+                } else {
+                    assert!(
+                        descriptor.applies_at(&site),
+                        "{} still at {owner}",
+                        entry.op
+                    );
+                    assert_eq!(refused, None, "{} has not moved yet", entry.op);
+                }
                 proved = true;
             }
             assert!(
                 proved,
-                "{} {}: no owner accepts the operation",
+                "{} {}: no owner leads to a node where the operation applies",
                 entry.op, entry.key
             );
         }
+    }
+
+    /// Пакет П1 перенёс члены метаданных: каждая их запись в таблице
+    /// переключена, а предопределённый элемент, прежде названный
+    /// идентификатором, ведёт к коллекции, где видно его имя.
+    #[test]
+    fn metadata_member_entries_are_retired_and_predefined_items_route_to_their_listing() {
+        for entry in RETIRED_ARGUMENTS {
+            let member_package = entry.op != "event.bind";
+            assert_eq!(entry.retired, member_package, "{}", entry.op);
+            assert_eq!(
+                entry.address.ends_with(".{name}"),
+                entry.op.starts_with("predefinedItem."),
+                "{}",
+                entry.op
+            );
+        }
+        let registry = OperationRegistry::closed();
+        let owner = address("main:Catalog.Items");
+        let site = OperationSite::new(
+            &owner,
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+        )
+        .unwrap();
+        let redirect = registry
+            .retired_argument_redirect(
+                "predefinedItem.remove",
+                &site,
+                json!({"values": {"id": "a1b2c3d4-1111-4111-8111-111111111111"}})
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("the id selector is retired");
+        assert!(redirect.listing);
+        assert_eq!(redirect.location, "values.id");
+        assert_eq!(redirect.at.to_string(), "main:Catalog.Items.PredefinedItem");
     }
 
     /// Механизм перехода: запись переехавшей операции отдаёт место снятого
@@ -2223,15 +2362,6 @@ mod tests {
     #[test]
     fn a_retired_argument_redirects_once_the_operation_has_moved() {
         let registry = OperationRegistry::closed();
-        // `template.set` уже исполним на самом макете: переключение записи —
-        // ровно то, что сделает П1.
-        let moved = super::RetiredArgument {
-            retired: true,
-            ..*RETIRED_ARGUMENTS
-                .iter()
-                .find(|entry| entry.op == "template.set")
-                .unwrap()
-        };
         let owner = address("main:Report.Sales");
         let site = OperationSite::new(
             &owner,
@@ -2239,23 +2369,19 @@ mod tests {
         )
         .unwrap();
         let args = json!({"values": {"name": "Print", "synonym": "x"}});
-        let redirect = super::retired_argument_redirect_in(
-            &[moved],
-            registry.lookup("template.set").unwrap(),
-            &site,
-            args.as_object().unwrap(),
-        )
-        .expect("a moved operation refuses its retired argument");
+        let redirect = registry
+            .retired_argument_redirect("template.set", &site, args.as_object().unwrap())
+            .expect("a moved operation refuses its retired argument");
         assert_eq!(redirect.location, "values.name");
         assert_eq!(redirect.at.to_string(), "main:Report.Sales.Template.Print");
-        // `tabularSection.set` ещё не исполним на табличной части: даже
-        // переключённая запись не уводит вызов туда, где его отвергнут.
-        let premature = super::RetiredArgument {
+        assert!(!redirect.listing);
+        // `attribute.set` не исполним на табличной части: даже переключённая
+        // запись не уводит вызов туда, где его отвергнут.
+        let misdirected = super::RetiredArgument {
+            op: "attribute.set",
+            key: "values.name",
+            address: "{at}.TabularSection.{value}",
             retired: true,
-            ..*RETIRED_ARGUMENTS
-                .iter()
-                .find(|entry| entry.op == "tabularSection.set")
-                .unwrap()
         };
         let document = address("main:Document.Order");
         let site = OperationSite::new(
@@ -2265,8 +2391,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             super::retired_argument_redirect_in(
-                &[premature],
-                registry.lookup("tabularSection.set").unwrap(),
+                &[misdirected],
+                registry.lookup("attribute.set").unwrap(),
                 &site,
                 json!({"values": {"name": "Goods"}}).as_object().unwrap(),
             ),
@@ -2299,6 +2425,132 @@ mod tests {
                 json!({"items": [{"name": "A"}]}).as_object().unwrap()
             )
             .is_none());
+    }
+
+    /// Члены метаданных адресуются (#1352): изменение и удаление исполнимы на
+    /// самом члене и не исполнимы на владельце; реквизит добавляется и на
+    /// владельце, и на его табличной части.
+    #[test]
+    fn member_operations_apply_at_the_member_address_not_at_the_owner() {
+        for (op, member, owner) in [
+            (
+                "tabularSection.set",
+                "main:Document.Order.TabularSection.Goods",
+                "main:Document.Order",
+            ),
+            (
+                "tabularSection.remove",
+                "main:Document.Order.TabularSection.Goods",
+                "main:Document.Order",
+            ),
+            (
+                "dimension.set",
+                "main:InformationRegister.Prices.Dimension.Item",
+                "main:InformationRegister.Prices",
+            ),
+            (
+                "dimension.remove",
+                "main:InformationRegister.Prices.Dimension.Item",
+                "main:InformationRegister.Prices",
+            ),
+            (
+                "resource.set",
+                "main:InformationRegister.Prices.Resource.Price",
+                "main:InformationRegister.Prices",
+            ),
+            (
+                "resource.remove",
+                "main:AccumulationRegister.Stock.Resource.Quantity",
+                "main:AccumulationRegister.Stock",
+            ),
+            (
+                "enumValue.set",
+                "main:Enum.Kinds.EnumValue.Main",
+                "main:Enum.Kinds",
+            ),
+            (
+                "enumValue.remove",
+                "main:Enum.Kinds.EnumValue.Main",
+                "main:Enum.Kinds",
+            ),
+            (
+                "column.set",
+                "main:DocumentJournal.All.Column.Date",
+                "main:DocumentJournal.All",
+            ),
+            (
+                "column.remove",
+                "main:DocumentJournal.All.Column.Date",
+                "main:DocumentJournal.All",
+            ),
+            (
+                "command.set",
+                "main:Document.Order.Command.Print",
+                "main:Document.Order",
+            ),
+            (
+                "command.remove",
+                "main:Document.Order.Command.Print",
+                "main:Document.Order",
+            ),
+            (
+                "template.set",
+                "main:Report.Sales.Template.Print",
+                "main:Report.Sales",
+            ),
+            (
+                "template.remove",
+                "main:Report.Sales.Template.Print",
+                "main:Report.Sales",
+            ),
+            (
+                "predefinedItem.set",
+                "main:Catalog.Items.PredefinedItem.Main",
+                "main:Catalog.Items",
+            ),
+            (
+                "predefinedItem.remove",
+                "main:ChartOfAccounts.Main.PredefinedItem.Cash",
+                "main:ChartOfAccounts.Main",
+            ),
+        ] {
+            assert!(applies(op, member), "{op} at {member}");
+            assert!(!applies(op, owner), "{op} at {owner}");
+        }
+        // Табличная часть — место реквизитов, но не измерений и не самой
+        // себя; узел чужого вида операцию члена не принимает.
+        assert!(applies(
+            "attribute.add",
+            "main:Document.Order.TabularSection.Goods"
+        ));
+        assert!(applies("attribute.add", "main:Document.Order"));
+        assert!(!applies(
+            "attribute.add",
+            "main:Document.Order.TabularSection.Goods.Attribute.Price"
+        ));
+        assert!(!applies(
+            "attribute.add",
+            "main:InformationRegister.Prices.TabularSection.Goods"
+        ));
+        assert!(!applies(
+            "tabularSection.add",
+            "main:Document.Order.TabularSection.Goods"
+        ));
+        assert!(!applies(
+            "dimension.set",
+            "main:Document.Order.TabularSection.Goods"
+        ));
+        assert!(!applies(
+            "command.set",
+            "main:Document.Order.Form.Main.Command.Ok"
+        ));
+        // Создание остаётся на владельце: у адреса члена `add` нет.
+        assert!(applies("predefinedItem.add", "main:Catalog.Items"));
+        assert!(!applies(
+            "predefinedItem.add",
+            "main:Catalog.Items.PredefinedItem.Main"
+        ));
+        assert!(!applies("template.add", "main:Report.Sales.Template.Print"));
     }
 
     #[test]

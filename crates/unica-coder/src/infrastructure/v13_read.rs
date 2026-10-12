@@ -1,7 +1,7 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::resolve::ResolvedLines;
-use crate::application::v13::view::{ViewError, ViewFilter, ViewReadAuthority, ViewSourceSnapshot};
+use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewSourceSnapshot};
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -84,26 +84,6 @@ fn review_run_after_canonical_role_read() {
 }
 
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
-const MODULE_CONTEXTS: &[&str] = &[
-    "client",
-    "server",
-    "externalConnection",
-    "thinClient",
-    "webClient",
-    "thickClientManaged",
-    "thickClientOrdinary",
-    "mobileClient",
-    "mobileAppClient",
-    "mobileAppServer",
-    "mobileStandaloneServer",
-];
-
-#[derive(Default)]
-struct ModuleViewFilter {
-    context: Option<String>,
-    public: Option<bool>,
-}
-
 /// Hidden v0.13 read adapter. Its revision service is supplied by the
 /// workspace actor that owns the source capability; the adapter never creates
 /// an ambient per-call revision authority.
@@ -315,7 +295,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                     ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
                 })?;
                 // A valid registered descriptor must also be readable through the public reader.
-                self.read_exact(&address, &ViewFilter::default(), &admitted)?;
+                self.read_exact(&address, &admitted)?;
                 matches.push(at);
             }
         }
@@ -391,7 +371,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .module()
             .filter(|_| route.reader() == LogicalReader::Module);
         let Some(capability) = capability else {
-            let projected = self.read_exact(at, &ViewFilter::default(), admitted)?;
+            let projected = self.read_exact(at, admitted)?;
             return Ok((projected.kind().to_string(), ResolvedLines::NotLineBased));
         };
         let (module_at, prefix_len) = module_prefix(at, self.profile, capability)?;
@@ -411,7 +391,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 .iter()
                 .all(|segment| is_named(segment, NodeKind::Region));
         if !(module_body || method || method_body || region) {
-            let projected = self.read_exact(at, &ViewFilter::default(), admitted)?;
+            let projected = self.read_exact(at, admitted)?;
             return Ok((projected.kind().to_string(), ResolvedLines::NotLineBased));
         }
         self.read_checkpoint()?;
@@ -528,7 +508,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .map_err(|error| ViewError::new(RefusalCode::BadValue, error))?;
         // Registration, owner identity, format and module containment are proved
         // by the same reader as view, using this invocation's retained root.
-        self.read_exact(&module_at, &ViewFilter::default(), &admitted)?;
+        self.read_exact(&module_at, &admitted)?;
         let target = module_source_address(&module_at, capability)?;
         let relative = self.read.module_export_path(&target)?;
         let source_set = self.read.source_set().to_owned();
@@ -1113,7 +1093,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         &self,
         route: &LogicalTreeRoute,
         admitted: &ViewSourceSnapshot,
-        filter: &ModuleViewFilter,
     ) -> Result<NodeViewData, ViewError> {
         let Some(capability) = route.module() else {
             return self.module_branch_view(route.at(), admitted);
@@ -1150,7 +1129,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(NodeViewData::Node(event_node(&event)));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        module_projection_view(route.at(), prefix_len, projections.as_ref(), filter)
+        module_projection_view(route.at(), prefix_len, projections.as_ref())
     }
 
     fn module_projection(
@@ -1571,12 +1550,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
     fn read_body_disk(
         &self,
         at: &QualifiedAddress,
-        filter: &ViewFilter,
         admitted: &ViewSourceSnapshot,
     ) -> Result<Option<BodySnapshot>, ViewError> {
-        if !filter.is_empty() {
-            return Ok(None);
-        }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Module {
@@ -1742,7 +1717,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
     fn read_exact(
         &self,
         at: &QualifiedAddress,
-        filter: &ViewFilter,
         admitted: &ViewSourceSnapshot,
     ) -> Result<NodeViewData, ViewError> {
         self.read_checkpoint()?;
@@ -1756,9 +1730,8 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
-        let module_filter = validate_view_filter(&route, filter)?;
         let projected = if route.reader() == LogicalReader::Module {
-            self.module_view(&route, admitted, &module_filter)?
+            self.module_view(&route, admitted)?
         } else if route.reader() == LogicalReader::Configuration
             && matches!(
                 self.read.source_set_kind(),
@@ -2220,106 +2193,6 @@ fn mxl_content_requested(route: &LogicalTreeRoute) -> bool {
         && body.name().is_none()
 }
 
-fn validate_view_filter(
-    route: &LogicalTreeRoute,
-    filter: &ViewFilter,
-) -> Result<ModuleViewFilter, ViewError> {
-    filter.can_operation()?;
-    let has_reader_filter = filter
-        .iter()
-        .any(|(key, _)| !matches!(key.as_str(), "sections" | "can"));
-    if route.reader() != LogicalReader::Module {
-        return if !has_reader_filter {
-            Ok(ModuleViewFilter::default())
-        } else {
-            Err(ViewError::new(
-                RefusalCode::BadValue,
-                "this logical projection does not support a filter",
-            ))
-        };
-    }
-    if route.module().is_none() {
-        return if !has_reader_filter {
-            Ok(ModuleViewFilter::default())
-        } else {
-            Err(ViewError::new(
-                RefusalCode::BadValue,
-                "module capability collections do not support a filter",
-            ))
-        };
-    }
-    let mut result = ModuleViewFilter::default();
-    for (key, value) in filter.iter() {
-        match key.as_str() {
-            "sections" | "can" => {}
-            "context" => {
-                let context = value.as_str().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::BadValue,
-                        "module filter.context must be a string",
-                    )
-                })?;
-                if !MODULE_CONTEXTS.contains(&context) {
-                    return Err(ViewError::new(
-                        RefusalCode::BadValue,
-                        format!("unsupported module execution context `{context}`"),
-                    ));
-                }
-                result.context = Some(context.to_string());
-            }
-            "public" => {
-                result.public = Some(value.as_bool().ok_or_else(|| {
-                    ViewError::new(
-                        RefusalCode::BadValue,
-                        "module filter.public must be boolean",
-                    )
-                })?);
-            }
-            _ => {
-                return Err(ViewError::new(
-                    RefusalCode::BadValue,
-                    format!("unsupported module filter `{key}`"),
-                ));
-            }
-        }
-    }
-    let (_, prefix_len) = route
-        .module()
-        .and_then(|capability| {
-            module_prefix(route.at(), PlatformProfile::v8_3_27(), capability).ok()
-        })
-        .ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::ProviderUnavailable,
-                "module prefix is unavailable",
-            )
-        })?;
-    let suffix = &route.at().segments()[prefix_len..];
-    if result.context.is_some()
-        && !matches!(
-            suffix.first().map(AddressSegment::kind),
-            Some(NodeKind::Body | NodeKind::Method)
-        )
-    {
-        return Err(ViewError::new(
-            RefusalCode::BadValue,
-            "module filter.context is supported only for Body and Method projections",
-        ));
-    }
-    if result.public.is_some()
-        && !matches!(
-            suffix.first().map(AddressSegment::kind),
-            Some(NodeKind::Method)
-        )
-    {
-        return Err(ViewError::new(
-            RefusalCode::BadValue,
-            "module filter.public is supported only for Method projections",
-        ));
-    }
-    Ok(result)
-}
-
 fn module_prefix(
     address: &QualifiedAddress,
     profile: PlatformProfile,
@@ -2439,24 +2312,8 @@ fn module_projection_view(
     requested: &QualifiedAddress,
     prefix_len: usize,
     projections: &ModuleProjectionSet,
-    filter: &ModuleViewFilter,
 ) -> Result<NodeViewData, ViewError> {
     let suffix = &requested.segments()[prefix_len..];
-    if filter.context.is_some()
-        && projections
-            .summary()
-            .props
-            .common_module
-            .as_ref()
-            .is_some_and(|common| !common.execution_environment_known())
-    {
-        // Без флагов среды фильтр не может ни включить, ни исключить метод:
-        // ответ по нему выдумал бы контексты заимствованного модуля.
-        return Err(ViewError::new(
-            RefusalCode::UnsupportedFilter,
-            "module filter.context needs compilation contexts, but this borrowed common module does not state its execution environment; read the parent module from props.extends when the parent is resolved",
-        ));
-    }
     if suffix.is_empty() {
         let summary = projections.summary();
         let props = serde_json::to_value(&summary.props)
@@ -2494,14 +2351,13 @@ fn module_projection_view(
             projections
                 .methods()
                 .iter()
-                .filter(|method| module_method_matches_filter(method, filter))
                 .map(method_node_value)
                 .collect(),
         ),
         (NodeKind::Method, Some(name), None) => projections
             .methods()
             .iter()
-            .find(|method| method.name == name && module_method_matches_filter(method, filter))
+            .find(|method| method.name == name)
             .map(method_node)
             .map(NodeViewData::Node)
             .ok_or_else(|| {
@@ -2514,19 +2370,12 @@ fn module_projection_view(
             if detail.name().is_none() && detail.kind() == NodeKind::Body =>
         {
             let method = find_method(projections, name)?;
-            if !module_method_matches_filter(method, filter) {
-                return Err(ViewError::new(
-                    RefusalCode::NotFound,
-                    format!("method `{name}` does not match the requested filter"),
-                ));
-            }
             let items = projections
                 .body()
                 .iter()
                 .filter(|line| {
                     line.line >= method.body_from_line && line.line <= method.body_to_line
                 })
-                .filter(|line| module_body_line_matches_filter(line.line, projections, filter))
                 .map(|line| json!({"line": line.line, "text": line.text}))
                 .collect();
             module_collection(requested, NodeKind::Body, items)
@@ -2633,7 +2482,6 @@ fn module_projection_view(
             projections
                 .body()
                 .iter()
-                .filter(|line| module_body_line_matches_filter(line.line, projections, filter))
                 .map(|line| json!({"line": line.line, "text": line.text}))
                 .collect(),
         ),
@@ -2642,63 +2490,6 @@ fn module_projection_view(
             "module projection suffix is not available",
         )),
     }
-}
-
-fn module_method_matches_filter(method: &MethodProjection, filter: &ModuleViewFilter) -> bool {
-    filter.public.is_none_or(|public| method.export == public)
-        && filter.context.as_deref().is_none_or(|context| {
-            method
-                .compile
-                .contexts
-                .iter()
-                .flatten()
-                .any(|candidate| module_context_matches(context, candidate))
-        })
-}
-
-fn module_context_matches(requested: &str, actual: &str) -> bool {
-    match requested {
-        "client" => actual.to_ascii_lowercase().contains("client"),
-        "server" => actual == "server" || actual.ends_with("Server"),
-        exact => actual == exact,
-    }
-}
-
-fn module_body_line_matches_filter(
-    line: usize,
-    projections: &ModuleProjectionSet,
-    filter: &ModuleViewFilter,
-) -> bool {
-    let Some(context) = filter.context.as_deref() else {
-        return true;
-    };
-    projections.methods().iter().any(|method| {
-        let directive_lines = usize::from(method.compile.directive.is_some());
-        let from = method.body_from_line.saturating_sub(1 + directive_lines);
-        let to = method
-            .body_to_line
-            .saturating_add(1)
-            .max(method.body_from_line);
-        line >= from
-            && line <= to
-            && method
-                .compile
-                .contexts
-                .iter()
-                .flatten()
-                .any(|candidate| module_context_matches(context, candidate))
-            && projections
-                .compilation()
-                .iter()
-                .filter(|range| line >= range.from_line && line <= range.to_line)
-                .all(|range| {
-                    range
-                        .contexts
-                        .iter()
-                        .flatten()
-                        .any(|candidate| module_context_matches(context, candidate))
-                })
-    })
 }
 
 fn module_collection(

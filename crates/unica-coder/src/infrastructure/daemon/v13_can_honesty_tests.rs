@@ -145,10 +145,6 @@ const ARGUMENT_DEPENDENT: &[(&str, &str)] = &[
         "на адресе модуля замена требует `selector` с существующим методом",
     ),
     (
-        "attribute.add",
-        "тип реквизита проверяется по видам типов владельца; пример не подходит всем",
-    ),
-    (
         "code.insert",
         "на адресе модуля вставка с `selector` требует существующий метод",
     ),
@@ -175,9 +171,22 @@ const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
     (
         "workspace",
         &[
+            "attribute.add",
             "childSubsystem.add",
             "childSubsystem.remove",
             "code.insert",
+            "column.remove",
+            "column.set",
+            "dimension.remove",
+            "dimension.set",
+            "enumValue.remove",
+            "enumValue.set",
+            "resource.remove",
+            "resource.set",
+            "tabularSection.remove",
+            "tabularSection.set",
+            "template.remove",
+            "template.set",
             "code.replace",
             "commandPlacement.set",
             "commandVisibility.set",
@@ -203,6 +212,14 @@ const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
     (
         "workspace-resolve",
         &["code.insert", "code.replace", "form.remove"],
+    ),
+    (
+        "workspace-predefined",
+        &[
+            "predefinedItem.add",
+            "predefinedItem.remove",
+            "predefinedItem.set",
+        ],
     ),
 ];
 
@@ -310,10 +327,25 @@ fn fixture(name: &str) -> Fixture {
 }
 
 fn invoke(workspace: &Path, tool: ToolIdentity, arguments: Value) -> DomainResult {
-    let runtime = V5CanonicalInvocationRuntime::new(
-        Arc::new(CanonicalV13ReadService::default()),
-        Arc::new(TokioClock),
-    );
+    invoke_on(
+        &V5CanonicalInvocationRuntime::new(
+            Arc::new(CanonicalV13ReadService::default()),
+            Arc::new(TokioClock),
+        ),
+        workspace,
+        tool,
+        arguments,
+    )
+}
+
+/// Вызов на одном живом сервисе: план и его `executionToken` переживают
+/// вызов только внутри одного сервиса.
+fn invoke_on(
+    runtime: &V5CanonicalInvocationRuntime,
+    workspace: &Path,
+    tool: ToolIdentity,
+    arguments: Value,
+) -> DomainResult {
     runtime
         .bind(InvocationRequest::new(tool, arguments, workspace.to_string_lossy(), 7_000).unwrap())
         .unwrap()
@@ -403,38 +435,10 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
         "help.create" => json!({"values": {"lang": "ru"}}),
         "role.create" | "subsystem.create" => json!({"values": {"name": "Sample"}}),
         "object.create" => json!({"values": {"kind": "Catalog", "name": "Sample"}}),
-        "object.remove" | "attribute.remove" | "form.remove" | "type.remove"
-        | "event.implement" => json!({"at": ""}),
-        "form.add" | "formAttribute.add" | "formCommand.add" | "element.add" | "command.add"
-        | "tabularSection.add" | "childSubsystem.add" | "dimension.add" | "resource.add"
-        | "enumValue.add" | "column.add" => json!({"items": [{"name": "Sample"}]}),
-        "attribute.add" => json!({"items": [{"name": "Sample", "type": "String"}]}),
-        "predefinedItem.add" => json!({"items": [{
-            "id": "11111111-2222-4333-8444-555555555555",
-            "name": "Sample"
-        }]}),
-        "predefinedItem.set" => json!({"values": {
-            "id": "11111111-2222-4333-8444-555555555555",
-            "description": "sample"
-        }}),
-        "predefinedItem.remove" => {
-            json!({"values": {"id": "11111111-2222-4333-8444-555555555555"}})
-        }
-        "attribute.set" => json!({"values": {"comment": "sample"}}),
+        "object.remove" | "form.remove" | "type.remove" | "event.implement" => json!({"at": ""}),
+        "form.add" | "formAttribute.add" | "formCommand.add" | "element.add"
+        | "childSubsystem.add" => json!({"items": [{"name": "Sample"}]}),
         "form.set" => json!({"values": {"defaultObjectForm": "Sample"}}),
-        "command.set" | "tabularSection.set" | "template.set" | "dimension.set"
-        | "resource.set" | "enumValue.set" | "column.set" => {
-            json!({"values": {"name": "Sample", "comment": "sample"}})
-        }
-        "command.remove"
-        | "tabularSection.remove"
-        | "template.remove"
-        | "dimension.remove"
-        | "resource.remove"
-        | "enumValue.remove"
-        | "column.remove" => {
-            json!({"values": {"name": "Sample"}})
-        }
         "event.bind" => json!({"values": {"event": "OnOpen", "handler": "Sample"}}),
         "content.add" => json!({"items": [{"object": "Catalog.Sample"}]}),
         "right.set" => {
@@ -542,8 +546,11 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
             routes.insert(route);
             covered.insert((route, terminal.to_string()));
             // Не больше двух форм адреса на пару «маршрут, вид»: словарь
-            // сверяется на каждой, а время теста остаётся в пределах.
-            let per_pair = pairs.entry((route, terminal)).or_insert(0usize);
+            // сверяется на каждой, а время теста остаётся в пределах. Ветвь
+            // коллекции и именованный узел того же вида считаются раздельно:
+            // ветви не занимают места членов, на которых исполняются операции.
+            let named = address.segments().last().unwrap().name().is_some();
+            let per_pair = pairs.entry((route, terminal, named)).or_insert(0usize);
             let shape = shape_key(&address);
             if *per_pair < 2 && !representatives.contains_key(&shape) {
                 *per_pair += 1;
@@ -553,12 +560,17 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
         let mut planned_pairs = BTreeSet::new();
         for at in representatives.values() {
             let address = QualifiedAddress::parse(at).unwrap();
+            let terminal = address.segments().last().unwrap();
             let pair = (
                 classify_route(&address, PlatformProfile::v8_3_27()),
-                address.segments().last().unwrap().kind().as_str(),
+                terminal.kind().as_str(),
+                terminal.name().is_some(),
             );
             // Планы дороги: файлы плана проверяются на одном узле пары
-            // «маршрут, вид», словарь — на каждом представителе.
+            // «маршрут, вид», словарь — на каждом представителе. Ветвь
+            // коллекции (`main:Catalog`, `…Column`) и именованный узел того же
+            // вида — разные места: на ветви писать нечего, и план узла не
+            // должен уступать ей очередь.
             let plan_writes = planned_pairs.insert(pair);
             check_node(&checked, at, plan_writes, &mut mismatches);
         }
@@ -620,6 +632,11 @@ const FIXTURE_COVERAGE: &[FixtureCoverage] = &[
             (RouteClass::Metadata, "Attribute"),
             (RouteClass::Metadata, "Method"),
             (RouteClass::Metadata, "Template"),
+            (RouteClass::Metadata, "TabularSection"),
+            (RouteClass::Metadata, "Dimension"),
+            (RouteClass::Metadata, "Resource"),
+            (RouteClass::Metadata, "EnumValue"),
+            (RouteClass::Metadata, "Column"),
             (RouteClass::Form, "Attribute"),
             (RouteClass::Form, "Event"),
             (RouteClass::Module, "Event"),
@@ -647,7 +664,11 @@ const FIXTURE_COVERAGE: &[FixtureCoverage] = &[
             (RouteClass::Module, "Method"),
         ],
     ),
-    ("workspace-predefined", &[RouteClass::Metadata], &[]),
+    (
+        "workspace-predefined",
+        &[RouteClass::Metadata],
+        &[(RouteClass::Metadata, "PredefinedItem")],
+    ),
     (
         "workspace-resolve",
         &[RouteClass::Form, RouteClass::Module],
@@ -777,11 +798,7 @@ thread_local! {
 }
 
 fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &mut Vec<String>) {
-    let viewed = invoke(
-        checked.workspace,
-        ToolIdentity::View,
-        json!({"at": at, "filter": {"sections": ["can"]}}),
-    );
+    let viewed = invoke(checked.workspace, ToolIdentity::View, json!({"at": at}));
     assert!(viewed.ok, "{at}: {viewed:?}");
     let data = viewed.data.unwrap();
     let can = data["can"]
@@ -996,17 +1013,14 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
         assert_eq!(value["diagnostics"][0]["outcome"], "fixCall", "{value}");
         let next = &refusal.next[0];
         assert_eq!(next["tool"], "unica.view", "{value}");
-        assert_eq!(next["args"]["at"], target, "{value}");
-        assert_eq!(
-            next["args"]["filter"]["sections"],
-            json!(["can"]),
-            "{value}"
-        );
-        assert_eq!(
-            next["args"]["filter"].get("can").is_some(),
-            contract,
-            "{value}"
-        );
+        // Контракт операции читается её адресом там, где он вычисляется,
+        // иначе — словарь самого узла.
+        let expected = if contract {
+            format!("{target}.Can.{op}")
+        } else {
+            target.to_string()
+        };
+        assert_eq!(next["args"], json!({"at": expected}), "{value}");
     }
 }
 
@@ -1101,12 +1115,245 @@ fn a_missing_member_answers_not_found_with_the_owner_dictionary_next() {
     assert_eq!(value["diagnostics"][0]["code"], "not_found", "{value}");
     assert!(!result.next.is_empty(), "{value}");
     assert_eq!(
-        result.next[0]["args"]["at"], "main:Catalog.Валюты",
+        result.next[0]["args"],
+        json!({"at": "main:Catalog.Валюты"}),
         "{value}"
     );
+}
+
+/// Рабочее пространство с двумя наборами конфигурации: первичный `base` и
+/// `sales` с документом и справочником корпуса — проверка того, что адрес
+/// сохраняет непервичный набор исходников.
+fn two_set_workspace() -> (tempfile::TempDir, PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = std::fs::canonicalize(root.path()).unwrap().join("ws");
+    let fixtures = repo_root().join("tests/fixtures/acceptance");
+    copy_tree(
+        &fixtures.join("workspace-code/src/cf"),
+        &workspace.join("src/base"),
+    );
+    copy_tree(
+        &fixtures.join("workspace/src"),
+        &workspace.join("src/sales"),
+    );
+    std::fs::write(
+        workspace.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: base\n    type: CONFIGURATION\n    path: src/base\n  - name: sales\n    type: CONFIGURATION\n    path: src/sales\n",
+    )
+    .unwrap();
+    (root, workspace)
+}
+
+fn tree_digest(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                if path.file_name().is_some_and(|name| name == ".build") {
+                    continue;
+                }
+                stack.push(path);
+            } else {
+                files.insert(path.clone(), std::fs::read(&path).unwrap());
+            }
+        }
+    }
+    files
+}
+
+/// #1318: вызов со снятым `scope.tabularSection` получает отказ, `next`
+/// которого ведёт к словарю табличной части с подробным контрактом
+/// `attribute.add`; исправленный по нему вызов строит исполнимый план,
+/// публикация кладёт реквизит в часть, а не в шапку, и сохраняет соседей.
+/// Отказ, чтение и предпросмотр исходников не меняют. Набор исходников —
+/// непервичный.
+#[test]
+fn a_retired_scope_call_recovers_through_next_to_a_published_tabular_attribute() {
+    let (_root, workspace) = two_set_workspace();
+    let document = "sales:Document.АктОбУничтоженииПерсональныхДанных";
+    let section = format!("{document}.TabularSection.КатегорииДанных");
+    let item = json!({
+        "name": "Основание",
+        "type": {"variants": [{"kind": "string", "length": 100, "allowedLength": "variable"}]}
+    });
+    let before = tree_digest(&workspace.join("src"));
+    let runtime = V5CanonicalInvocationRuntime::new(
+        Arc::new(CanonicalV13ReadService::default()),
+        Arc::new(TokioClock),
+    );
+    let invoke =
+        |workspace: &Path, tool, arguments| invoke_on(&runtime, workspace, tool, arguments);
+
+    let refused = invoke(
+        &workspace,
+        ToolIdentity::Apply,
+        json!({"at": document, "ops": [{"op": "attribute.add", "args": {
+            "scope": {"tabularSection": "КатегорииДанных"},
+            "items": [item.clone()]
+        }}]}),
+    );
+    let value = serde_json::to_value(&refused).unwrap();
+    assert!(!refused.ok, "{value}");
+    assert_eq!(value["diagnostics"][0]["code"], "bad_value", "{value}");
+    assert_eq!(value["diagnostics"][0]["outcome"], "fixCall", "{value}");
+    assert_eq!(value["at"], "ops[0].args.scope.tabularSection", "{value}");
+    let next = refused.next[0].clone();
+    assert_eq!(next["tool"], "unica.view", "{value}");
     assert_eq!(
-        result.next[0]["args"]["filter"],
-        json!({"sections": ["can"]}),
+        next["args"],
+        json!({"at": format!("{section}.Can.attribute.add")}),
         "{value}"
     );
+
+    let viewed = invoke(&workspace, ToolIdentity::View, next["args"].clone());
+    let viewed_value = serde_json::to_value(&viewed).unwrap();
+    assert!(viewed.ok, "{viewed_value}");
+    let entry = &viewed_value["data"]["props"];
+    assert_eq!(entry["op"], "attribute.add", "{viewed_value}");
+    assert_eq!(entry["implemented"], true, "{viewed_value}");
+    let contract = &entry["contract"];
+    assert!(
+        contract["argsSchema"]["properties"]["items"]["items"]["properties"]["type"].is_object(),
+        "the contract shows the attribute type: {contract}"
+    );
+    assert!(
+        !contract["argsSchema"].to_string().contains("\"scope\""),
+        "no scope argument is published: {contract}"
+    );
+    assert!(contract["exampleArgs"]["items"].is_array(), "{contract}");
+
+    let preview = invoke(
+        &workspace,
+        ToolIdentity::Apply,
+        json!({"at": section, "ops": [{"op": "attribute.add", "args": {"items": [item]}}]}),
+    );
+    let preview_value = serde_json::to_value(&preview).unwrap();
+    assert!(preview.ok, "{preview_value}");
+    assert_eq!(preview_value["data"]["executable"], true, "{preview_value}");
+    assert_eq!(
+        tree_digest(&workspace.join("src")),
+        before,
+        "refusal, reading and preview leave the sources untouched"
+    );
+
+    let token = preview_value["data"]["executionToken"].clone();
+    let published = invoke(
+        &workspace,
+        ToolIdentity::Apply,
+        json!({"executionToken": token}),
+    );
+    assert!(
+        published.ok,
+        "{}",
+        serde_json::to_value(&published).unwrap()
+    );
+    let added = invoke(
+        &workspace,
+        ToolIdentity::View,
+        json!({"at": format!("{section}.Attribute.Основание")}),
+    );
+    assert!(added.ok, "{:?}", added);
+    let header = invoke(
+        &workspace,
+        ToolIdentity::View,
+        json!({"at": format!("{document}.Attribute.Основание")}),
+    );
+    assert!(!header.ok, "the attribute is not a header attribute");
+    for sibling in ["Субъект", "ИмяОбъекта"] {
+        let kept = invoke(
+            &workspace,
+            ToolIdentity::View,
+            json!({"at": format!("{section}.Attribute.{sibling}")}),
+        );
+        assert!(kept.ok, "{sibling} stays");
+    }
+    let descriptor = workspace.join("src/sales/Documents/АктОбУничтоженииПерсональныхДанных.xml");
+    let after = std::fs::read_to_string(&descriptor).unwrap();
+    let original = String::from_utf8(before[&descriptor].clone()).unwrap();
+    assert_eq!(
+        after.matches("<xr:GeneratedType").count(),
+        original.matches("<xr:GeneratedType").count(),
+        "an attribute brings no generated type"
+    );
+}
+
+/// Реквизит шапки документа и реквизит справочника по-прежнему добавляются
+/// на адресе владельца.
+#[test]
+fn header_and_catalog_attributes_still_add_at_the_owner() {
+    let fixture = fixture("workspace");
+    for owner in [
+        "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "main:Catalog.Валюты",
+    ] {
+        let preview = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at": owner, "ops": [{"op": "attribute.add", "args": {"items": [{
+                "name": "Примечание",
+                "type": {"variants": [{"kind": "string", "length": 0, "allowedLength": "variable"}]}
+            }]}}]}),
+        );
+        assert!(
+            preview.ok,
+            "{owner}: {}",
+            serde_json::to_value(&preview).unwrap()
+        );
+    }
+}
+
+/// Снятые аргументы членов метаданных: прежний вызов на владельце получает
+/// `bad_value` с адресом члена; предопределённый элемент, прежде названный
+/// идентификатором, ведёт к коллекции, где видно его имя.
+#[test]
+fn retired_member_arguments_route_next_to_the_member_address() {
+    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    for (at, op, args, location, next_at, branch) in [
+        (
+            "cf:Catalog.Items",
+            "tabularSection.set",
+            json!({"values": {"name": "Rows", "synonym": "x"}}),
+            "ops[0].args.values.name",
+            "cf:Catalog.Items.TabularSection.Rows.Can.tabularSection.set",
+            Some("cf:Catalog.Items.TabularSection"),
+        ),
+        (
+            "cf:Report.Sales",
+            "template.remove",
+            json!({"values": {"name": "Print"}}),
+            "ops[0].args.values.name",
+            "cf:Report.Sales.Template.Print.Can.template.remove",
+            Some("cf:Report.Sales.Template"),
+        ),
+        (
+            "cf:Catalog.Items",
+            "predefinedItem.set",
+            json!({"values": {"id": "a1b2c3d4-1111-4111-8111-111111111111", "description": "x"}}),
+            "ops[0].args.values.id",
+            "cf:Catalog.Items.PredefinedItem",
+            None,
+        ),
+    ] {
+        let request = apply_request(at, op, args);
+        let refusal = preflight_apply_operations(&request, traits, &|_| None)
+            .expect_err("a retired argument refuses before planning");
+        let value = serde_json::to_value(&*refusal).unwrap();
+        assert_eq!(value["diagnostics"][0]["code"], "bad_value", "{value}");
+        assert_eq!(value["diagnostics"][0]["outcome"], "fixCall", "{value}");
+        assert_eq!(value["at"], location, "{value}");
+        assert_eq!(refusal.next[0]["tool"], "unica.view", "{value}");
+        assert_eq!(refusal.next[0]["args"], json!({"at": next_at}), "{value}");
+        // Адрес из значения может не существовать: вторым шагом — ветвь
+        // владельца, где видны имена членов этого вида.
+        match branch {
+            Some(branch) => {
+                assert_eq!(refusal.next.len(), 2, "{value}");
+                assert_eq!(refusal.next[1]["args"]["at"], branch, "{value}");
+            }
+            None => assert_eq!(refusal.next.len(), 1, "{value}"),
+        }
+    }
 }

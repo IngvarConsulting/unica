@@ -452,6 +452,13 @@ fn execute_surface_tool(
                 ErrorData::invalid_params("tool is not in the canonical v0.13 profile", None)
             })?;
             match (router.call)(tool, arguments, host, deadline, cancellation)? {
+                // A lost submit answer: a native client polls the Task the
+                // call may continue as; any other client gets the refusal
+                // that names it.
+                CanonicalCallOutcome::LostSubmit(lost) if client_supports_tasks => {
+                    Ok(SurfaceToolOutcome::Task(lost.task))
+                }
+                CanonicalCallOutcome::LostSubmit(lost) => Err(lost.refusal),
                 CanonicalCallOutcome::Direct(result) => Ok(SurfaceToolOutcome::Direct(result)),
                 CanonicalCallOutcome::Task(snapshot) if client_supports_tasks => {
                     Ok(SurfaceToolOutcome::Task(snapshot))
@@ -5175,6 +5182,57 @@ mod tests {
         assert_eq!(cancellations.load(Ordering::SeqCst), 2);
         assert_eq!(lookup_count.load(Ordering::SeqCst), 5);
         client.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_lost_submit_is_a_task_for_native_clients_and_a_named_refusal_for_others() {
+        use crate::domain::invocation::{InvocationStatus, TaskId};
+
+        let task_id = TaskId::new();
+        let lost_call = move || -> Arc<CanonicalCallHandler> {
+            Arc::new(move |_, _, _, _, _| {
+                Ok(CanonicalCallOutcome::LostSubmit(Box::new(
+                    crate::interfaces::daemon_router::LostSubmit {
+                        task: canonical_snapshot(task_id, InvocationStatus::Queued, None),
+                        refusal: ErrorData::new(
+                            ErrorCode(-32000),
+                            format!("lost; wait for Task {task_id}"),
+                            Some(json!({
+                                "code": "submit_response_lost",
+                                "outcome": "goElsewhere",
+                                "taskId": task_id.to_string(),
+                            })),
+                        ),
+                    },
+                )))
+            })
+        };
+        for (meta, native) in [(modern_tasks_meta(), true), (modern_meta(), false)] {
+            let get: Arc<CanonicalTaskHandler> = Arc::new(move |_, _| {
+                Ok(canonical_snapshot(task_id, InvocationStatus::Queued, None))
+            });
+            let server = UnicaServer::with_canonical_v13_tasks(lost_call(), Arc::clone(&get), get);
+            let (mut client, _) = spawn_unica_server(server);
+            client
+                .send(json!({
+                    "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": "unica.search", "arguments": {}, "_meta": meta}
+                }))
+                .await;
+            let answer = client.receive().await;
+            if native {
+                assert_eq!(answer["result"]["resultType"], "task", "{answer}");
+                assert_eq!(answer["result"]["taskId"], task_id.to_string(), "{answer}");
+            } else {
+                assert_eq!(
+                    answer["error"]["data"]["taskId"],
+                    task_id.to_string(),
+                    "{answer}"
+                );
+                assert_eq!(answer["error"]["data"]["code"], "submit_response_lost");
+            }
+            client.shutdown().await;
+        }
     }
 
     #[tokio::test]
