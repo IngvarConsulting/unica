@@ -485,11 +485,23 @@ pub(super) fn parse_defined_type_event_sources(
     Ok(sources)
 }
 
+/// EventSubscription/Properties/Source as read from platform XML.
+///
+/// `type_ids` are `v8:TypeId` members: Designer writes an extension's source
+/// from the extended configuration by the UUID of its generated type (#1361).
+/// They have no logical event-source form, so they are kept verbatim and are
+/// never produced by the writer.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ObservedEventSubscriptionSource {
+    pub(crate) sources: Vec<MetaEventSource>,
+    pub(crate) type_ids: Vec<String>,
+}
+
 /// Parse the exact direct contents of EventSubscription/Properties/Source.
 /// The same closed parser is used by mutation planning and meta.info readback.
 pub(super) fn parse_meta_event_subscription_source(
     source: roxmltree::Node<'_, '_>,
-) -> Result<Vec<MetaEventSource>, String> {
+) -> Result<ObservedEventSubscriptionSource, String> {
     if source.tag_name().namespace() != Some(MD_CLASSES_NS) || source.tag_name().name() != "Source"
     {
         return Err("EventSubscription source must be a direct MDClasses Source".to_string());
@@ -507,6 +519,7 @@ pub(super) fn parse_meta_event_subscription_source(
     }
 
     let mut wire_sources = Vec::new();
+    let mut type_ids = Vec::<String>::new();
     let mut seen_wire_types = std::collections::HashSet::new();
     let mut type_stage = 0u8;
     let mut qualifier_rank = 0u8;
@@ -531,10 +544,37 @@ pub(super) fn parse_meta_event_subscription_source(
             ));
         }
         match child.tag_name().name() {
-            tag @ ("Type" | "TypeSet") => {
-                if qualifier_rank != 0 || (tag == "Type" && type_stage > 0) {
+            "TypeId" => {
+                if qualifier_rank != 0 {
                     return Err(
-                        "EventSubscription Source requires v8:Type before v8:TypeSet before qualifiers"
+                        "EventSubscription Source requires v8:Type before v8:TypeSet before v8:TypeId before qualifiers"
+                            .to_string(),
+                    );
+                }
+                type_stage = 2;
+                let type_id = strict_leaf_text(child, "EventSubscription Source v8:TypeId")?;
+                if !super::validation::is_guid(&type_id) {
+                    return Err(format!(
+                        "EventSubscription Source v8:TypeId '{type_id}' is not a UUID"
+                    ));
+                }
+                if type_ids
+                    .iter()
+                    .any(|seen| seen.eq_ignore_ascii_case(&type_id))
+                {
+                    return Err(format!(
+                        "EventSubscription Source contains duplicate v8:TypeId {type_id}"
+                    ));
+                }
+                type_ids.push(type_id);
+            }
+            tag @ ("Type" | "TypeSet") => {
+                if qualifier_rank != 0
+                    || (tag == "Type" && type_stage > 0)
+                    || (tag == "TypeSet" && type_stage > 1)
+                {
+                    return Err(
+                        "EventSubscription Source requires v8:Type before v8:TypeSet before v8:TypeId before qualifiers"
                             .to_string(),
                     );
                 }
@@ -719,7 +759,7 @@ pub(super) fn parse_meta_event_subscription_source(
             ));
         }
     }
-    Ok(sources)
+    Ok(ObservedEventSubscriptionSource { sources, type_ids })
 }
 
 #[derive(Clone, Copy)]
@@ -1641,7 +1681,9 @@ mod tests {
         let xml = event_subscription_xml(&source);
         let document = roxmltree::Document::parse(&xml).unwrap();
         let source_node = meta_event_subscription_source_node(&document).unwrap();
-        let parsed = parse_meta_event_subscription_source(source_node).unwrap();
+        let parsed = parse_meta_event_subscription_source(source_node)
+            .unwrap()
+            .sources;
 
         assert_eq!(parsed, canonical_meta_event_sources(&requested));
         assert!(
@@ -1671,6 +1713,39 @@ mod tests {
         assert!(error.contains("object source metadata root"), "{error}");
     }
 
+    /// Штатная выгрузка расширения 8.3.27 пишет источник из основной
+    /// конфигурации как `v8:TypeId` после `v8:Type` (#1361).
+    #[test]
+    fn event_subscription_source_keeps_extension_type_ids_verbatim() {
+        let type_id = "97a5ab75-0974-4551-8659-72579c7cef1e";
+        let read = |source: &str| {
+            let xml = event_subscription_xml(source);
+            let document = roxmltree::Document::parse(&xml).unwrap();
+            parse_meta_event_subscription_source(
+                meta_event_subscription_source_node(&document).unwrap(),
+            )
+        };
+        let parsed = read(&format!(
+            "<Source><v8:Type>cfg:CatalogObject.Settings</v8:Type><v8:TypeId>{type_id}</v8:TypeId></Source>"
+        ))
+        .unwrap();
+        assert_eq!(
+            parsed.sources,
+            vec![MetaEventSource::Object {
+                metadata_path: metadata_path("Catalog.Settings"),
+            }]
+        );
+        assert_eq!(parsed.type_ids, vec![type_id.to_string()]);
+
+        for broken in [
+            format!("<Source><v8:TypeId>{type_id}</v8:TypeId><v8:Type>cfg:CatalogObject.Settings</v8:Type></Source>"),
+            "<Source><v8:TypeId>not-a-uuid</v8:TypeId></Source>".to_string(),
+            format!("<Source><v8:TypeId>{type_id}</v8:TypeId><v8:TypeId>{type_id}</v8:TypeId></Source>"),
+        ] {
+            assert!(read(&broken).is_err(), "{broken}");
+        }
+    }
+
     #[test]
     fn event_subscription_source_reads_empty_and_rejects_format_only_sources() {
         let empty = event_subscription_xml("<Source/>");
@@ -1679,6 +1754,7 @@ mod tests {
             meta_event_subscription_source_node(&document).unwrap()
         )
         .unwrap()
+        .sources
         .is_empty());
 
         let invalid = event_subscription_xml(
@@ -1727,7 +1803,8 @@ mod tests {
         let parsed = parse_meta_event_subscription_source(
             meta_event_subscription_source_node(&document).unwrap(),
         )
-        .unwrap();
+        .unwrap()
+        .sources;
 
         assert_eq!(
             parsed,
@@ -1766,7 +1843,9 @@ mod tests {
         assert!(emitted.contains(&format!(r#"xmlns:cfg1="{CURRENT_CONFIG_NS}""#)));
         assert!(emitted.contains("<cfg:Type>cfg1:CatalogObject.Items</cfg:Type>"));
         assert_eq!(
-            parse_meta_event_subscription_source(rewritten_source).unwrap(),
+            parse_meta_event_subscription_source(rewritten_source)
+                .unwrap()
+                .sources,
             requested
         );
     }

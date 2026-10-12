@@ -3644,7 +3644,9 @@ fn parse_typed_final_relation_graph(
                     .with_metadata_path(owner.clone()),
                 )
             })?;
-        for (index, source) in source.into_iter().enumerate() {
+        // `v8:TypeId` members name no metadata in this source set; they are
+        // kept in place and are not relation targets.
+        for (index, source) in source.sources.into_iter().enumerate() {
             graph.push((
                 MetaRelation::Source,
                 index,
@@ -5634,7 +5636,12 @@ fn apply_typed_event_subscription_source(
     // A replace operation is also the repair path for a syntactically readable
     // legacy TypeDescription source. Failure to project the old wire value into
     // the logical algebra must not prevent replacing it with a valid target.
-    let current = parse_meta_event_subscription_source(source_node).ok();
+    // A source with `v8:TypeId` members is never equal to a requested logical
+    // list: replacing it is the explicit request to drop those members.
+    let current = parse_meta_event_subscription_source(source_node)
+        .ok()
+        .filter(|current| current.type_ids.is_empty())
+        .map(|current| current.sources);
     let requested = canonical_meta_event_sources(&requested);
     if current
         .as_deref()
@@ -7443,6 +7450,49 @@ pub(crate) mod tests {
         let post_image = xml.clone();
         apply_typed_operations(&mut xml, &[operation]).unwrap();
         assert_eq!(xml, post_image);
+    }
+
+    /// Source расширения из штатной выгрузки 8.3.27: тип основной
+    /// конфигурации записан `v8:TypeId` (#1361). Правка другого свойства его
+    /// не трогает; явная замена Source — единственный путь его убрать.
+    #[test]
+    fn typed_event_source_keeps_extension_type_id_until_an_explicit_replace() {
+        use crate::domain::metadata::{MetaPropertyChanges, MetaPropertyInput};
+        let type_id = "<v8:TypeId>97a5ab75-0974-4551-8659-72579c7cef1e</v8:TypeId>";
+        let mut xml = event_subscription_xml(&format!(
+            "<Source><v8:Type>cfg:CatalogObject.Settings</v8:Type>{type_id}</Source>"
+        ));
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::SetProperties {
+                values: MetaPropertyChanges::convert(
+                    MetadataKind::EventSubscription,
+                    vec![MetaPropertyInput::new(
+                        "Comment",
+                        MetaPropertyValue::String("changed".into()),
+                    )],
+                )
+                .unwrap(),
+            }],
+        )
+        .unwrap();
+        assert!(xml.contains("<Comment>changed</Comment>"), "{xml}");
+        assert!(xml.contains(type_id), "{xml}");
+
+        // The same logical members are not a no-op: replace drops the TypeId.
+        let operation = source_replace(vec![crate::domain::metadata::MetaEventSource::Object {
+            metadata_path: MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "Catalog.Settings",
+            )
+            .unwrap(),
+        }]);
+        apply_typed_operations(&mut xml, std::slice::from_ref(&operation)).unwrap();
+        assert!(!xml.contains("v8:TypeId"), "{xml}");
+        assert!(
+            xml.contains("<v8:Type>cfg:CatalogObject.Settings</v8:Type>"),
+            "{xml}"
+        );
     }
 
     #[test]

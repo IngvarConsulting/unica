@@ -32021,6 +32021,184 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S389",
+   "issue": 1361,
+   "area": "Расширения конфигурации",
+   "task": "Проверить и изменить объекты расширения из штатной выгрузки, ссылающиеся на основную конфигурацию через v8:TypeId: реквизит справочника и Source подписки на события проходят проверку, тип реквизита виден как readOnly, правки не переписывают TypeId",
+   "workspace": "tests/fixtures/acceptance/workspace-format",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics/0",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"variants\":[{\"kind\":\"typeId\",\"typeId\":\"41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f\"}],\"mutationCapability\":\"readOnly\"}"
+      },
+      {
+       "pointer": "/data/props/incomplete",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:Catalog.ПР_НастройкиВалют.TabularSection.Представления.Attribute.КодЯзыка",
+      "ops": [
+       {
+        "op": "attribute.set",
+        "args": {
+         "values": {
+          "synonym": "Код"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/Catalogs/ПР_НастройкиВалют.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f",
+        "d7bc4697-f470-58f7-aca4-4e6bf45f9e69",
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f",
+        "d7bc4697-f470-58f7-aca4-4e6bf45f9e69",
+        "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f"
+       ]
+      },
+      {
+       "path": "src-ext/Catalogs/ПР_НастройкиВалют.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}TabularSection//{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "Код"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics/0",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:EventSubscription.ПР_ПередЗаписьюНастроек",
+      "ops": [
+       {
+        "op": "props.set",
+        "args": {
+         "values": {
+          "Comment": "Перед записью настроек"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}TypeId",
+       "eq": [
+        "97a5ab75-0974-4551-8659-72579c7cef1e"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Source/{http://v8.1c.ru/8.1/data/core}Type",
+       "eq": [
+        "cfg:CatalogObject.ПР_НастройкиВалют"
+       ]
+      },
+      {
+       "path": "src-ext/EventSubscriptions/ПР_ПередЗаписьюНастроек.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/MDClasses}Comment",
+       "eq": [
+        "Перед записью настроек"
+       ]
+      }
+     ]
+    }
+   ]
   }
  ]
 }
