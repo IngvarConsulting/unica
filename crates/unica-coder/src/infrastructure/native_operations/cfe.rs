@@ -1692,11 +1692,60 @@ impl unica_source_contract::proposal::TrackedSourceProposal for CfeBorrowWritePl
 mod borrowed_form_binding_regressions {
     use super::*;
 
-    const OWNER: &str = r#"<MetaDataObject><Document><Properties><Name>Order</Name></Properties><ChildObjects><TabularSection><Properties><Name>Товары</Name></Properties><ChildObjects><Attribute><Properties><Name>TotalCost</Name></Properties></Attribute></ChildObjects></TabularSection></ChildObjects></Document></MetaDataObject>"#;
+    #[test]
+    fn no_main_attribute_removes_owner_paths_and_links_from_both_snapshots() {
+        for name in ["Объект", "DocumentData"] {
+            let source = format!(
+                r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable"><TitleDataPath>{name}.Title</TitleDataPath><AutoCommandBar><ChoiceParameterLinks><xr:Link><xr:DataPath>{name}.Partner</xr:DataPath></xr:Link></ChoiceParameterLinks></AutoCommandBar><ChildItems><InputField name="Quantity" id="1"><DataPath>{name}.Items.Quantity</DataPath><FooterDataPath>{name}.Items.TotalQuantity</FooterDataPath><HeaderDataPath>{name}.Header</HeaderDataPath><ChoiceParameterLinks><xr:Link><xr:DataPath>{name}.Partner</xr:DataPath></xr:Link></ChoiceParameterLinks></InputField></ChildItems><Attributes><Attribute name="{name}"><MainAttribute>true</MainAttribute></Attribute></Attributes></Form>"#
+            );
+            let mut log = CfeBorrowLog::default();
+            let generated = cfe_borrow_form_xml(
+                &unica_workspace::discovery::ProjectDiscoveryReader::new(Path::new("")),
+                &source,
+                Path::new("."),
+                "Document",
+                "Order",
+                false,
+                &mut log,
+            );
+            let doc = Document::parse(&generated).unwrap();
+            let root = doc.root_element();
+            let base = root
+                .children()
+                .find(|n| n.has_tag_name("BaseForm"))
+                .unwrap();
+            for snapshot in [root, base] {
+                let attrs = snapshot
+                    .children()
+                    .find(|n| n.has_tag_name("Attributes"))
+                    .unwrap();
+                assert_eq!(attrs.children().filter(|n| n.is_element()).count(), 0);
+                for node in snapshot.descendants().filter(|n| n.is_element()) {
+                    if node.tag_name().name().ends_with("DataPath") {
+                        assert!(
+                            !node.text().unwrap_or("").starts_with(name),
+                            "dangling {} in {}",
+                            node.tag_name().name(),
+                            snapshot.tag_name().name()
+                        );
+                    }
+                }
+                assert_eq!(
+                    snapshot
+                        .descendants()
+                        .filter(|n| n.has_tag_name("Link"))
+                        .count(),
+                    0
+                );
+            }
+        }
+    }
+
+    const OWNER: &str = r#"<MetaDataObject><Document><Properties><Name>Order</Name></Properties><ChildObjects><TabularSection><Properties><Name>Товары</Name></Properties><ChildObjects><Attribute><Properties><Name>TotalCost</Name></Properties></Attribute><Attribute><Properties><Name>Cost</Name><Type><Type>xs:decimal</Type></Type></Properties></Attribute><Attribute><Properties><Name>Количество</Name><Type><Type>xs:decimal</Type></Type></Properties></Attribute><Attribute><Properties><Name>Label</Name><Type><Type>xs:string</Type></Type></Properties></Attribute></ChildObjects></TabularSection></ChildObjects></Document></MetaDataObject>"#;
 
     #[test]
     fn footer_inference_preserves_metadata_fields_reference_paths_and_unknown_owner() {
-        let source = r#"<Form><FooterDataPath>Объект.Товары.TotalCost</FooterDataPath><FooterDataPath>Объект.Товары.TotalКоличество</FooterDataPath><FooterDataPath>Объект.Партнер.TotalCost</FooterDataPath><FooterDataPath>Объект.Unknown.TotalCost</FooterDataPath></Form>"#;
+        let source = r#"<Form><FooterDataPath>Объект.Товары.TotalCost</FooterDataPath><InputField><DataPath>Объект.Товары.Количество</DataPath><FooterDataPath>Объект.Товары.TotalКоличество</FooterDataPath></InputField><FooterDataPath>Объект.Партнер.TotalCost</FooterDataPath><FooterDataPath>Объект.Unknown.TotalCost</FooterDataPath></Form>"#;
         let omitted =
             cfe_borrow_synthetic_footer_paths(source, Some(OWNER), "Document", "Order").unwrap();
         assert_eq!(
@@ -1711,6 +1760,26 @@ mod borrowed_form_binding_regressions {
         assert!(
             cfe_borrow_synthetic_footer_paths(source, Some(OWNER), "Document", "Other").is_none()
         );
+    }
+
+    #[test]
+    fn footer_inference_preserves_unpaired_nonnumeric_and_other_main_attribute_paths() {
+        for source in [
+            r#"<Form><FooterDataPath>Объект.Товары.TotalКоличество</FooterDataPath></Form>"#,
+            r#"<Form><InputField><DataPath>Объект.Товары.Other</DataPath><FooterDataPath>Объект.Товары.TotalКоличество</FooterDataPath></InputField></Form>"#,
+            r#"<Form><InputField><DataPath>Объект.Товары.Label</DataPath><FooterDataPath>Объект.Товары.TotalLabel</FooterDataPath></InputField></Form>"#,
+            r#"<Form><InputField><DataPath>DocumentData.Товары.Количество</DataPath><FooterDataPath>DocumentData.Товары.TotalКоличество</FooterDataPath></InputField></Form>"#,
+            r#"<Form><InputField><DataPath>Объект.Товары.Cost</DataPath><FooterDataPath>Объект.Товары.TotalCost</FooterDataPath></InputField></Form>"#,
+        ] {
+            let omitted =
+                cfe_borrow_synthetic_footer_paths(source, Some(OWNER), "Document", "Order")
+                    .unwrap();
+            assert!(omitted.is_empty(), "must retain uncertain footer: {source}");
+            assert_eq!(
+                cfe_borrow_prune_omitted_form_bindings(source, &omitted),
+                source
+            );
+        }
     }
 
     #[test]
@@ -1759,7 +1828,7 @@ mod borrowed_form_binding_regressions {
     #[test]
     fn removes_only_bindings_to_omitted_form_data_including_namespaced_links() {
         let source = r#"<Form><ChildItems><FooterDataPath>Объект.Товары.TotalКоличество</FooterDataPath></ChildItems><Attributes><Attribute name="Объект"><MainAttribute>true</MainAttribute><Columns><AdditionalColumns table="Объект.Товары"><Column name="Артикул"/></AdditionalColumns></Columns></Attribute><Attribute name="ИспользоватьСоглашенияСКлиентами"/></Attributes></Form>"#;
-        let omitted = cfe_borrow_omitted_form_paths(source);
+        let omitted = cfe_borrow_omitted_form_paths(source, true);
         assert!(omitted.contains("Объект.Товары.Артикул"));
         assert!(!omitted.contains("Объект.Товары.TotalКоличество"));
         assert!(!omitted.contains("Объект"));

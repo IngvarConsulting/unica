@@ -1429,12 +1429,13 @@ pub fn cfe_borrow_form_xml(
         }
     }
 
-    // The borrowed shell intentionally omits auxiliary form attributes and
-    // AdditionalColumns. Their bindings must not survive in either snapshot.
-    let omitted_paths = cfe_borrow_omitted_form_paths(source);
+    // Omit auxiliary attributes/columns and, when requested, the main attribute.
+    // Their bindings must not survive in either snapshot or form-level properties.
+    let omitted_paths = cfe_borrow_omitted_form_paths(source, borrow_main_attr);
     for xml in [&mut auto_cmd_xml, &mut child_items_xml]
         .into_iter()
         .flatten()
+        .chain(form_props.iter_mut())
     {
         *xml = cfe_borrow_prune_omitted_form_bindings(xml, &omitted_paths);
     }
@@ -1498,8 +1499,8 @@ pub fn cfe_borrow_form_xml(
     parts.concat()
 }
 
-// Return paths belonging to form-only data, not configuration metadata.
-pub fn cfe_borrow_omitted_form_paths(source: &str) -> HashSet<String> {
+// Return data roots omitted from the shell, including an unborrowed main attribute.
+pub fn cfe_borrow_omitted_form_paths(source: &str, borrow_main_attr: bool) -> HashSet<String> {
     let mut paths = HashSet::new();
     let Ok(doc) = Document::parse(source) else {
         return paths;
@@ -1516,7 +1517,7 @@ pub fn cfe_borrow_omitted_form_paths(source: &str) -> HashSet<String> {
             let main = attr
                 .children()
                 .any(|n| n.has_tag_name("MainAttribute") && n.text() == Some("true"));
-            if !main {
+            if !main || !borrow_main_attr {
                 paths.insert(name.to_string());
             }
             for columns in attr
@@ -1537,8 +1538,10 @@ pub fn cfe_borrow_omitted_form_paths(source: &str) -> HashSet<String> {
     paths
 }
 
-// Only a declared owner section can establish that a Total-prefixed field
-// is a form aggregate rather than a real metadata attribute or reference path.
+// Infer only a Total+numeric-attribute footer paired with its exact DataPath.
+// Unknown cases and declared Total-prefixed metadata fields stay untouched.
+// The emitter currently uses the conventional main attribute "Объект";
+// differently named main attributes are deliberately not inferred here.
 pub fn cfe_borrow_synthetic_footer_paths(
     source: &str,
     owner: Option<&str>,
@@ -1551,6 +1554,23 @@ pub fn cfe_borrow_synthetic_footer_paths(
     let candidates: Vec<_> = form
         .descendants()
         .filter(|node| node.has_tag_name("FooterDataPath"))
+        .filter(|node| {
+            let Some(path) = node.text() else {
+                return false;
+            };
+            let Some((parent_path, name)) = path.rsplit_once('.') else {
+                return false;
+            };
+            let Some(attribute) = name.strip_prefix("Total").filter(|n| !n.is_empty()) else {
+                return false;
+            };
+            let data_path = format!("{parent_path}.{attribute}");
+            node.parent().is_some_and(|parent| {
+                parent.children().any(|child| {
+                    child.has_tag_name("DataPath") && child.text() == Some(data_path.as_str())
+                })
+            })
+        })
         .filter_map(|node| node.text())
         .filter(|path| {
             path.split('.')
@@ -1597,7 +1617,25 @@ pub fn cfe_borrow_synthetic_footer_paths(
                     .as_deref()
                     == Some(pieces[2])
         });
-        if !declared {
+        let numeric_base = pieces[2].strip_prefix("Total").is_some_and(|base| {
+            attributes.children().any(|node| {
+                if !node.has_tag_name("Attribute") {
+                    return false;
+                }
+                let Some(props) = child_element(node, "Properties") else {
+                    return false;
+                };
+                if child_direct_text(props, "Name").as_deref() != Some(base) {
+                    return false;
+                }
+                let Some(typ) = child_element(props, "Type") else {
+                    return false;
+                };
+                let types: Vec<_> = typ.children().filter(|n| n.has_tag_name("Type")).collect();
+                types.len() == 1 && types[0].text() == Some("xs:decimal")
+            })
+        });
+        if !declared && numeric_base {
             omitted.insert(path.to_string());
         }
     }
