@@ -5,8 +5,7 @@ use crate::application::{
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::operational_config::OperationalConfig;
 use crate::domain::workspace::WorkspaceContext;
-use crate::infrastructure::bundled_tools::{resolve_bundled_tool, BundledTool};
-use crate::infrastructure::code_intelligence::is_provider_unavailable_error;
+use crate::infrastructure::bundled_tools::{resolve_bundled_tool, BundledTool, BundledToolError};
 use crate::infrastructure::diagnostics_baseline::{broken_baseline_outcome, cli_baseline_failure};
 use crate::infrastructure::diagnostics_jsonl::{
     AnalyzerDiagnosticsBatch, AnalyzerDiagnosticsFileTotals, DiagnosticsJsonlParser,
@@ -1584,10 +1583,10 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         // A provider that ran and failed is a different case and still fails.
         let bundled_tool = match resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run) {
             Ok(bundled_tool) => bundled_tool,
-            Err(error) if is_provider_unavailable_error(&error) => {
-                return Ok(provider_unavailable_outcome(tool_name, error))
+            Err(error @ BundledToolError::Missing(_)) => {
+                return Ok(provider_unavailable_outcome(tool_name, error.into()))
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         let command = bsl_mcp_command(
             &source_dir,

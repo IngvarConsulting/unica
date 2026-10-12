@@ -3951,14 +3951,18 @@ pub(crate) mod tests {
             "причина допуска названа: {:?}",
             result.errors
         );
+        let missing = result
+            .diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.get("missingEngine"))
+            .expect("отсутствие движка названо полями");
+        assert_eq!(missing["code"], "bundled_tool_missing");
+        assert_eq!(missing["stage"], "delivery");
         assert!(
-            result
-                .errors
-                .iter()
-                .any(|error| error.contains("bundled_tool_missing")
-                    && error.contains("build-unica-tools.py")),
-            "отсутствие движка названо вместе со следующим шагом: {:?}",
-            result.errors
+            missing["nextStep"]
+                .as_str()
+                .is_some_and(|step| step.contains("build-unica-tools.py")),
+            "следующий шаг назван: {missing}"
         );
         assert_eq!(
             result

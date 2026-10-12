@@ -794,6 +794,16 @@ impl CanonicalV13ReadService {
                 format!("operational config is unreadable: {diagnostic}"),
             ))
         })?;
+        // Граф вызовов знает только анализатор BSL: если его нет, вопрос
+        // `callGraph` не ответить, и отказ называет движок (#549), а не
+        // прячет его отсутствие за состоянием `unavailable`.
+        acquire_engine(
+            invocation,
+            &workspace.cwd,
+            CALL_GRAPH_ENGINE,
+            Some(method_at.to_string()),
+            cancellation,
+        )?;
         let summary = fetch_summary(
             self.ports.as_ref(),
             workspace,
@@ -817,6 +827,16 @@ impl CanonicalV13ReadService {
             };
             Box::new(error_result(Some(method_at.to_string()), code, message))
         })?;
+        if summary.state() == crate::domain::code_intelligence::CallGraphState::Unavailable {
+            if let Some(refusal) = engine_absence_refusal(
+                &workspace.cwd,
+                CALL_GRAPH_ENGINE,
+                Some(method_at.to_string()),
+                cancellation,
+            ) {
+                return Err(Box::new(refusal));
+            }
+        }
         Ok((summary, directory))
     }
 
@@ -1531,28 +1551,10 @@ impl CanonicalV13ReadService {
         #[cfg(test)]
         let engine = engine.filter(|_| self.search_providers.is_none());
         if let Some(engine) = engine {
-            if let Some(plugin_root) =
-                crate::infrastructure::plugin_runtime::find_plugin_root(&context.cwd)
+            if let Err(refusal) =
+                acquire_engine(invocation, &context.cwd, engine, None, cancellation)
             {
-                let progress =
-                    crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
-                let state = crate::infrastructure::engine_delivery::deliver_if_missing(
-                    invocation.delivery_work(),
-                    &plugin_root,
-                    engine,
-                    cancellation,
-                    &progress,
-                );
-                if cancellation.is_cancelled() {
-                    return error_result(None, RefusalCode::Cancelled, "role search cancelled");
-                }
-                if let Some(result) =
-                    crate::infrastructure::engine_delivery::canonical_delivery_result(
-                        state, &progress,
-                    )
-                {
-                    return result;
-                }
+                return *refusal;
             }
         }
         let request = SearchRequest {
@@ -1621,6 +1623,11 @@ impl CanonicalV13ReadService {
         } {
             Ok(execution) => execution,
             Err(error) => {
+                if let Some(refusal) = engine.and_then(|engine| {
+                    engine_absence_refusal(&context.cwd, engine, None, cancellation)
+                }) {
+                    return refusal;
+                }
                 let code = if error.starts_with(crate::domain::cancellation::CANCELLED_PREFIX) {
                     RefusalCode::Cancelled
                 } else {
@@ -1642,6 +1649,15 @@ impl CanonicalV13ReadService {
             result_fingerprint: None,
             page_limit: limit,
         };
+        // Поставщик не ответил: если причина — движок, не прошедший проверку
+        // поставки (контрольная сумма), отказ называет движок, а не сбой поиска.
+        if !execution.ok {
+            if let Some(refusal) = engine
+                .and_then(|engine| engine_absence_refusal(&context.cwd, engine, None, cancellation))
+            {
+                return refusal;
+            }
+        }
         provider_search_page(
             &self.search_cursors,
             role,
@@ -2335,10 +2351,106 @@ impl CanonicalV13ReadService {
     }
 }
 
+/// Поставить движок маршрута, если его нет, и убедиться, что он на месте.
+///
+/// Незавершённая поставка отвечает `working` с повтором, неудачная — своим
+/// классом с полями движка; движок, которого после поставки нет, — общим
+/// отказом «нет поставляемого движка» (#549). Контрольная сумма здесь не
+/// считается: её сверяет [`engine_absence_refusal`] на пути отказа.
+fn acquire_engine(
+    invocation: &ActorBoundExecution,
+    cwd: &std::path::Path,
+    engine: &str,
+    at: Option<String>,
+    cancellation: &CancellationToken,
+) -> Result<(), Box<DomainResult>> {
+    let Some(plugin_root) = crate::infrastructure::plugin_runtime::find_plugin_root(cwd) else {
+        return Err(Box::new(
+            crate::infrastructure::bundled_tools::plugin_root_missing(engine).refusal(at),
+        ));
+    };
+    let progress = crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
+    let state = crate::infrastructure::engine_delivery::deliver_if_missing(
+        invocation.delivery_work(),
+        &plugin_root,
+        engine,
+        cancellation,
+        &progress,
+    );
+    if cancellation.is_cancelled() {
+        return Err(Box::new(error_result(
+            at,
+            RefusalCode::Cancelled,
+            format!("cancelled while waiting for {engine} delivery"),
+        )));
+    }
+    if let Some(mut result) =
+        crate::infrastructure::engine_delivery::canonical_engine_delivery_result(
+            state,
+            &progress,
+            &plugin_root,
+            engine,
+        )
+    {
+        result.at = at;
+        return Err(Box::new(result));
+    }
+    if let Some(missing) =
+        crate::infrastructure::bundled_tools::missing_engine(&plugin_root, engine)
+    {
+        return Err(Box::new(missing.refusal(at)));
+    }
+    Ok(())
+}
+
+/// Отказ «нет поставляемого движка» после неудачного прогона поставщика:
+/// движок, который есть на диске, но не прошёл полную проверку поставки
+/// (контрольную сумму), называется тем же отказом, что и отсутствующий.
+/// Решает тип отказа резолвера, а не текст ошибки поставщика.
+fn engine_absence_refusal(
+    cwd: &std::path::Path,
+    engine: &str,
+    at: Option<String>,
+    cancellation: &CancellationToken,
+) -> Option<DomainResult> {
+    if cancellation.is_cancelled() {
+        return None;
+    }
+    let missing = match crate::infrastructure::plugin_runtime::find_plugin_root(cwd) {
+        None => crate::infrastructure::bundled_tools::plugin_root_missing(engine),
+        Some(plugin_root) => {
+            crate::infrastructure::bundled_tools::engine_absence(&plugin_root, engine)?
+        }
+    };
+    Some(missing.refusal(at))
+}
+
+/// Движок диагностик BSL и поиска символов.
+const BSL_ANALYZER_ENGINE: &str = "bsl-analyzer";
+
+/// Движок, который отвечает на вопрос `callGraph`.
+const CALL_GRAPH_ENGINE: &str = BSL_ANALYZER_ENGINE;
+
+/// Отказ «нет поставляемого движка», если движка нет на диске. Контрольную
+/// сумму не считает: дёшево проверить до запуска поставщика.
+fn engine_presence_refusal(
+    cwd: &std::path::Path,
+    engine: &str,
+    at: Option<String>,
+) -> Option<DomainResult> {
+    let missing = match crate::infrastructure::plugin_runtime::find_plugin_root(cwd) {
+        None => crate::infrastructure::bundled_tools::plugin_root_missing(engine),
+        Some(plugin_root) => {
+            crate::infrastructure::bundled_tools::missing_engine(&plugin_root, engine)?
+        }
+    };
+    Some(missing.refusal(at))
+}
+
 fn selected_role_engine(role: ProviderRole) -> Option<&'static str> {
     match role {
         ProviderRole::Lexical => None,
-        ProviderRole::Symbol => Some("bsl-analyzer"),
+        ProviderRole::Symbol => Some(BSL_ANALYZER_ENGINE),
         ProviderRole::Semantic => Some("rlm-bsl-mcp"),
     }
 }
@@ -3141,6 +3253,21 @@ fn run_bsl_diagnostics(
             )))
         }
     };
+    // Анализатора, которого нет на машине, `check` не запускает: отказ
+    // называет движок и шаг поставки (#549). Поставку здесь не начинает —
+    // проверка наличия идёт после неё.
+    let analyzer_engine = true;
+    #[cfg(test)]
+    let analyzer_engine = analyzer_engine
+        && crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+            .with(|slot| slot.borrow().is_none());
+    if analyzer_engine {
+        if let Some(refusal) =
+            engine_presence_refusal(&context.cwd, BSL_ANALYZER_ENGINE, Some(address.to_string()))
+        {
+            return Err(Box::new(refusal));
+        }
+    }
     let metadata_path = mapping.target().metadata_path.clone();
     let request = DiagnosticRequest {
         action: DiagnosticAction::Analyze,
@@ -3180,6 +3307,19 @@ fn run_bsl_diagnostics(
             // «проверено и чисто» — худшее направление ошибки для инструмента
             // проверки.
             if !bsl_result_proves_full_verdict(&result) {
+                // Движок на диске, но не прошёл полную проверку поставки
+                // (контрольная сумма): это отсутствие движка, а не сбой
+                // прогона, и отказ тот же, что на всех маршрутах (#549).
+                if analyzer_engine {
+                    if let Some(refusal) = engine_absence_refusal(
+                        &context.cwd,
+                        BSL_ANALYZER_ENGINE,
+                        Some(address.to_string()),
+                        cancellation,
+                    ) {
+                        return Err(Box::new(refusal));
+                    }
+                }
                 // Прогон начался и не завершился — это не отсутствие
                 // поставщика: уточнения у такого случая нет, и код отвечает
                 // своим умолчанием. Причину, которую поставщик назвал

@@ -29,7 +29,7 @@ use super::runner_014::{origin_kind, OriginKind, Runner014ProcessRunner};
 use super::v13_infobase_exports::{
     configuration_source_set, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::CancellationToken;
@@ -564,7 +564,9 @@ fn invoke_runner(
                 cancellation.protect_process_on_spawn()
             },
         })
-        .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
+        .map_err(|error| {
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
+        })?;
     parse_runner_output(output, contents)
 }
 
@@ -623,8 +625,8 @@ fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
 
 /// Поставляемого раннера нет: маршрут один на все операции `run`, уточнение
 /// `provider_absent` назначает общий помощник.
-fn reject_absent_runner(message: impl Into<String>) -> DomainResult {
-    missing_runner_rejection(Some(OPERATION.to_string()), message)
+fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
+    missing_runner_rejection(Some(OPERATION.to_string()), absence)
 }
 
 #[cfg(test)]

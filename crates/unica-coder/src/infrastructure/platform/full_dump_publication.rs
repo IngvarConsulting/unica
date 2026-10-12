@@ -1340,7 +1340,7 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             let bundled = match resolve_bundled_tool(&plugin_root, "v8-runner", true) {
                 Ok(bundled) => bundled,
                 Err(error) => {
-                    finish_prepared!(dump_failure(tool_name, error, None, None, None));
+                    finish_prepared!(dump_failure(tool_name, error.into(), None, None, None));
                 }
             };
             (bundled.program, bundled.warnings)

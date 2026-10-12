@@ -36,6 +36,17 @@ def stage_fault_producer(plugin: Path) -> dict:
     return manifest
 
 
+def place_checksum(plugin: Path, case: str, original: bytes) -> None:
+    """The checksum case publishes a manifest whose digest the producer does not match."""
+    manifest_path = plugin / "third-party/manifest.json"
+    if case != "checksum-mismatch":
+        manifest_path.write_bytes(original)
+        return
+    manifest = json.loads(original)
+    manifest["tools"][0]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
 def write_fault_case(plugin: Path, case: str) -> None:
     if case not in FAULT_CASES:
         raise ValueError(f"unknown controlled JSONL case {case!r}")
@@ -43,10 +54,13 @@ def write_fault_case(plugin: Path, case: str) -> None:
 
 
 def fault_driver(plugin: Path, records: list):
+    original = (plugin / "third-party/manifest.json").read_bytes()
+
     def prepare(server, scenario):
         if scenario.get("driver") != "analyzer-jsonl-fault":
             raise ValueError("fault profile requires its closed driver")
         write_fault_case(plugin, scenario["evaluation"])
+        place_checksum(plugin, scenario["evaluation"], original)
         if not hasattr(server, "_fault_original_call"):
             server._fault_original_call = server.call
 

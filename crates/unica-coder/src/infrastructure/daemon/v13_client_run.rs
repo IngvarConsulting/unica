@@ -17,7 +17,7 @@ use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     closed_workspace_relative_path, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    RunnerAbsence, CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
@@ -695,14 +695,14 @@ fn invoke_runner(
             )
         } else if super::runner_014::config_refusal(&error).is_some() {
             // Проектный файл отклонён до запуска раннера: клиента ещё нет.
-            runner_start_rejection(Some(OPERATION.to_string()), &error)
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
         } else if owns_client {
             reject(
                 RefusalCode::ProviderFailed,
                 "v8-runner could not complete the owned launch",
             )
         } else {
-            reject_absent_runner("failed to run bundled v8-runner for launch")
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
         }
     })?;
     let (envelope, outcome) = parse_runner_output(output, prepared)?;
@@ -845,8 +845,8 @@ fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
 
 /// Поставляемого раннера нет: маршрут один на все операции `run`, уточнение
 /// `provider_absent` назначает общий помощник.
-fn reject_absent_runner(message: impl Into<String>) -> DomainResult {
-    missing_runner_rejection(Some(OPERATION.to_string()), message)
+fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
+    missing_runner_rejection(Some(OPERATION.to_string()), absence)
 }
 
 #[cfg(test)]
@@ -1376,7 +1376,15 @@ fn main() {
                 }
             );
             assert_private_launch_cleanup(&result, &runner.paths.lock().unwrap()[0]);
-            assert!(!serde_json::to_string(&result)
+            let mut published = result.clone();
+            if scenario == "spawn-failure" {
+                // Раннер, который не стартовал, — отказ «нет движка» (#549):
+                // путь к движку назван только полем `data.path`, а не текстом.
+                let data = published.data.take().expect("поля движка в data");
+                assert_eq!(data["stage"], "start", "{data}");
+                assert_eq!(data["path"], json!(missing.program.display().to_string()));
+            }
+            assert!(!serde_json::to_string(&published)
                 .unwrap()
                 .contains(&root.path().display().to_string()));
         }

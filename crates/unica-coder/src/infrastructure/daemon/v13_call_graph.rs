@@ -46,7 +46,7 @@ impl CallGraphSummary {
     /// Хуже из двух: если одно направление ещё строится, счёт второго верен, но
     /// узел целиком назвать готовым нельзя — читатель принял бы неполную
     /// картину за полную.
-    fn state(&self) -> CallGraphState {
+    pub(super) fn state(&self) -> CallGraphState {
         match (self.callers.state, self.callees.state) {
             (CallGraphState::Unavailable, _) | (_, CallGraphState::Unavailable) => {
                 CallGraphState::Unavailable
