@@ -7826,6 +7826,8 @@
   },
   {
    "id": "S299",
+   "name": "view-foreign-cursor-refused",
+   "issue": 1340,
    "area": "Навигация и чтение",
    "task": "Продолжить страницу чужим курсором — отказ вместо чужого ответа",
    "wire": [
@@ -7837,9 +7839,25 @@
       "cursor": "не-наш-курсор"
      },
      "expect": [
-      "gap"
+      "refused"
      ],
-     "gap": "Канонический `view` отказывает чужому курсору кодом `invalid_cursor`, который не входит в закрытый набор отказов поверхности (bad_value, not_found, invalid_state, invalid_source, stale_revision)."
+     "refusal": "invalid_cursor: view cursor is invalid, expired, or belongs to another question",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics",
+       "eq": [
+        {
+         "code": "invalid_cursor",
+         "outcome": "fixCall",
+         "message": "view cursor is invalid, expired, or belongs to another question"
+        }
+       ]
+      }
+     ]
     }
    ]
   },
