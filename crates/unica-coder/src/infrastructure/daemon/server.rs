@@ -10356,23 +10356,23 @@ struct ActorLogicalReadLease {"#,
                 "the held download never produces the analyzer"
             );
 
-            assert!(!checked.ok, "{checked:?}");
-            assert_eq!(checked.diagnostics.len(), 1, "{checked:?}");
-            let diagnostic = &checked.diagnostics[0];
-            assert_eq!(diagnostic["code"], "provider_unavailable", "{checked:?}");
-            assert_eq!(
-                diagnostic["detailCode"], "delivery_in_progress",
-                "{checked:?}"
+            assert!(
+                !checked.ok,
+                "check must not pass while the analyzer is delivered"
             );
-            assert_eq!(diagnostic["outcome"], "retry", "{checked:?}");
+            assert_eq!(checked.diagnostics.len(), 1);
+            let diagnostic = &checked.diagnostics[0];
+            assert_eq!(diagnostic["code"], "provider_unavailable");
+            assert_eq!(diagnostic["detailCode"], "delivery_in_progress");
+            assert_eq!(diagnostic["outcome"], "retry");
             assert_eq!(
                 checked.at.as_deref(),
                 Some("main:CommonModule.Handlers.Body")
             );
             let delivery = &checked.data.as_ref().expect("delivery state")["delivery"];
-            assert_eq!(delivery["artifact"], "bsl-analyzer", "{checked:?}");
-            assert_eq!(delivery["status"], "working", "{checked:?}");
-            assert!(delivery["retryAfterMs"].as_u64().is_some(), "{checked:?}");
+            assert_eq!(delivery["artifact"], "bsl-analyzer");
+            assert_eq!(delivery["status"], "working");
+            assert!(delivery["retryAfterMs"].as_u64().is_some());
             return;
         }
 
