@@ -5,7 +5,8 @@ use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::shared_work::{
     LongWorkFailure, ProviderHostKey, ProviderHostOwner, SharedWorkLease, SharedWorkProducer,
 };
-use crate::domain::address::QualifiedAddress;
+use crate::application::v13::view::ViewError;
+use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::ApplyRequest;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -13,12 +14,15 @@ use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHas
 use crate::domain::project_sources::{
     ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind,
 };
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::infrastructure::logical_event_source::module_address_for_relative;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind;
-use crate::infrastructure::v13_large_configuration::RegistrationCache;
+use crate::infrastructure::v13_large_configuration::{
+    read_configuration_registration_index, RegistrationCache, RegistrationIndex,
+};
 use crate::infrastructure::workspace::discover_workspace;
 #[cfg(test)]
 use crate::infrastructure::workspace_actor::WorkspaceRevisionFence;
@@ -63,6 +67,118 @@ impl LiteralSearchScan {
             detail.insert("reason".to_owned(), reason.into());
             self.details.push(serde_json::Value::Object(detail));
         }
+    }
+}
+
+/// Proves that the owner of a module address derived from a hit path is
+/// registered in this source set, so a hit names only a module `view` admits.
+/// Configuration and extension owners are checked against the source set's own
+/// `Configuration.xml` registrations, read once per revision through the
+/// retained root and shared with `view` by the registration cache; each owner
+/// is decided once per scan. An extension object that is neither its own nor
+/// borrowed is not registered there and stays unproven.
+struct SearchHitOwners<'a> {
+    root: &'a RetainedDirectoryCapability,
+    source_kind: SourceSetKind,
+    identity: &'a str,
+    revision: &'a str,
+    cache: &'a RegistrationCache,
+    index: Option<Option<Arc<RegistrationIndex>>>,
+    owners: std::collections::BTreeMap<(&'static str, String), bool>,
+}
+
+impl<'a> SearchHitOwners<'a> {
+    fn new(
+        root: &'a RetainedDirectoryCapability,
+        source_kind: SourceSetKind,
+        identity: &'a str,
+        revision: &'a str,
+        cache: &'a RegistrationCache,
+    ) -> Self {
+        Self {
+            root,
+            source_kind,
+            identity,
+            revision,
+            cache,
+            index: None,
+            owners: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// `Err` only for cancellation or an elapsed deadline; an unreadable
+    /// registration source leaves the owner unproven instead.
+    fn proves(
+        &mut self,
+        at: &QualifiedAddress,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<bool, ViewError> {
+        let interrupted = |error: &ViewError| {
+            matches!(
+                error.code(),
+                RefusalCode::Cancelled | RefusalCode::DeadlineExceeded
+            )
+        };
+        let Some(owner) = at.segments().first() else {
+            return Ok(false);
+        };
+        let configuration = matches!(
+            self.source_kind,
+            SourceSetKind::Configuration | SourceSetKind::Extension
+        );
+        // Application modules belong to the admitted Configuration itself.
+        if owner.kind() == NodeKind::Module {
+            return Ok(configuration);
+        }
+        let Some(name) = owner.name() else {
+            return Ok(false);
+        };
+        let key = (owner.kind().as_str(), name.to_owned());
+        if let Some(proved) = self.owners.get(&key) {
+            return Ok(*proved);
+        }
+        checkpoint()?;
+        let proved = if configuration {
+            if self.index.is_none() {
+                let root = self.root;
+                let built =
+                    self.cache
+                        .get_or_build(self.identity, self.revision, checkpoint, || {
+                            let file = root
+                                .open_relative_regular_nofollow(std::path::Path::new(
+                                    "Configuration.xml",
+                                ))
+                                .map_err(|error| {
+                                    ViewError::detailed(
+                                        RefusalDetail::SourceUnreadable,
+                                        error.to_string(),
+                                    )
+                                })?;
+                            read_configuration_registration_index(file, checkpoint)
+                        });
+                self.index = Some(match built {
+                    Ok(index) => Some(index),
+                    Err(error) if interrupted(&error) => return Err(error),
+                    Err(_) => None,
+                });
+            }
+            match self.index.as_ref().and_then(Option::as_ref) {
+                Some(index) => match index.contains(owner.kind().as_str(), name, checkpoint) {
+                    Ok(contains) => contains,
+                    Err(error) if interrupted(&error) => return Err(error),
+                    Err(_) => false,
+                },
+                None => false,
+            }
+        } else {
+            // An external processor or report is described by its root
+            // descriptor beside its directory.
+            self.root
+                .open_relative_regular_nofollow(std::path::Path::new(&format!("{name}.xml")))
+                .is_ok()
+        };
+        self.owners.insert(key, proved);
+        Ok(proved)
     }
 }
 
@@ -244,6 +360,29 @@ impl ActorReadSourceCapability {
                 (relative, directory)
             }
         };
+        let platform_profile = self.binding.source_profile().platform_profile();
+        let owner_checkpoint = || {
+            if cancellation.is_cancelled() {
+                Err(ViewError::new(
+                    RefusalCode::Cancelled,
+                    "canonical search was cancelled",
+                ))
+            } else if self.deadline.is_elapsed() {
+                Err(ViewError::new(
+                    RefusalCode::DeadlineExceeded,
+                    "canonical search operation deadline elapsed",
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        let mut owners = SearchHitOwners::new(
+            &root,
+            self.binding.source_kind(),
+            &self.identity,
+            &self.read_identity,
+            &self.registration_cache,
+        );
         let mut stack = vec![(start_relative, start_directory, 0_usize)];
         let mut visited_entries = 0_usize;
         let mut scan = LiteralSearchScan::complete();
@@ -321,6 +460,9 @@ impl ActorReadSourceCapability {
                         let mut reader = std::io::BufReader::new(opened);
                         let mut raw_line = Vec::new();
                         let mut line_index = 0_usize;
+                        // Mapped once per file, on its first hit, from the
+                        // path already in hand: no descriptor or module read.
+                        let mut module_at = None::<Result<String, &'static str>>;
                         loop {
                             let has_line = read_search_line_bounded(
                                 &mut reader,
@@ -380,6 +522,13 @@ impl ActorReadSourceCapability {
                             let line = text.strip_suffix('\n').map_or(text, |without_lf| {
                                 without_lf.strip_suffix('\r').unwrap_or(without_lf)
                             });
+                            // `view` reads the module without its byte-order
+                            // mark; the hit column and snippet must match it.
+                            let line = if line_index == 1 {
+                                line.strip_prefix('\u{feff}').unwrap_or(line)
+                            } else {
+                                line
+                            };
                             let mut previous_byte = 0;
                             let mut column = 1;
                             let mut snippet = None::<String>;
@@ -403,6 +552,49 @@ impl ActorReadSourceCapability {
                                     "scope".to_string(),
                                     serde_json::Value::String(scope_at.to_string()),
                                 );
+                                if module_at.is_none() {
+                                    let mapped = match platform_profile {
+                                        None => Err("unsupported_source_profile"),
+                                        Some(profile) => match module_address_for_relative(
+                                            self.binding.source_set_name(),
+                                            self.binding.source_kind(),
+                                            profile,
+                                            &relative,
+                                        ) {
+                                            None => Err("outside_module_layout"),
+                                            Some(at) => {
+                                                if owners
+                                                    .proves(&at, &owner_checkpoint)
+                                                    .map_err(|error| error.to_string())?
+                                                {
+                                                    Ok(at.to_string())
+                                                } else {
+                                                    Err("owner_unproven")
+                                                }
+                                            }
+                                        },
+                                    };
+                                    module_at = Some(mapped);
+                                }
+                                match module_at.as_ref() {
+                                    Some(Ok(hit_at)) => {
+                                        item.insert(
+                                            "at".to_string(),
+                                            serde_json::Value::String(hit_at.clone()),
+                                        );
+                                    }
+                                    Some(Err(reason)) => {
+                                        // No proven module owns this file: name
+                                        // it by the scan ordinal, never by path.
+                                        item.insert(
+                                            "fileId".to_string(),
+                                            format!("bsl-{file_ordinal}").into(),
+                                        );
+                                        item.insert("unaddressed".to_string(), (*reason).into());
+                                    }
+                                    // Mapped just above; a file is never left unmapped.
+                                    None => {}
+                                }
                                 item.insert(
                                     "line".to_string(),
                                     serde_json::Value::from(line_index),
@@ -561,7 +753,7 @@ impl ActorBoundInvocation {
     pub(super) fn begin_execution(
         self,
         cancellation: &CancellationToken,
-    ) -> Result<ActorBoundExecution, String> {
+    ) -> Result<ActorBoundExecution, ExecutionBoundaryError> {
         // Логическое чтение идёт до конечного исхода: срок ему не задан,
         // остановить его может только явная отмена (#1251).
         let logical_deadline = ProviderDeadline::no_deadline();
@@ -667,9 +859,7 @@ impl ActorBoundInvocation {
                     ),
                 };
                 if matches!(route, ActorLogicalReadRoute::Admitted) && selected.is_empty() {
-                    return Err(
-                        "logical read admission selected no actor-owned source sets".to_string()
-                    );
+                    return Err("logical read admission selected no actor-owned source sets".into());
                 }
                 let sources = selected
                     .into_iter()
@@ -1129,14 +1319,15 @@ impl ActorBoundExecution {
         self,
         staged: Result<DomainResult, InvocationFailure>,
         cancellation: &CancellationToken,
-    ) -> Result<Result<DomainResult, InvocationFailure>, String> {
+    ) -> Result<Result<DomainResult, InvocationFailure>, ExecutionBoundaryError> {
         match self.revision {
             #[cfg(test)]
             ActorExecutionRevision::Legacy(revision) => self
                 .invocation
                 .actor
                 .begin_publication(&revision, ProviderDeadline::no_deadline(), cancellation)?
-                .publish(staged, ProviderDeadline::no_deadline(), cancellation),
+                .publish(staged, ProviderDeadline::no_deadline(), cancellation)
+                .map_err(ExecutionBoundaryError::from),
             // A layout directory publishes no revision state: `find` neither
             // captures a lease nor confirms one, so its result stands as read.
             ActorExecutionRevision::LayoutRead(lease) => {
@@ -1144,7 +1335,10 @@ impl ActorBoundExecution {
                     return Ok(staged);
                 }
                 for binding in &lease.bindings {
-                    self.invocation.actor.validate_binding(binding)?;
+                    self.invocation
+                        .actor
+                        .validate_binding(binding)
+                        .map_err(ExecutionBoundaryError::binding_changed)?;
                 }
                 if matches!(
                     self.invocation.tool,
@@ -1168,8 +1362,7 @@ impl ActorBoundExecution {
                 if let ActorLogicalReadRoute::Rejected(expected) = lease.route {
                     let is_closed_typed_rejection = staged.as_ref() == Ok(expected.as_ref());
                     return is_closed_typed_rejection.then_some(staged).ok_or_else(|| {
-                        "logical view input rejection produced an unexpected terminal result"
-                            .to_string()
+                        "logical view input rejection produced an unexpected terminal result".into()
                     });
                 }
                 if staged.is_err() {
@@ -1185,15 +1378,38 @@ impl ActorBoundExecution {
                         .parent_source_selection
                         .validate(lease.deadline, cancellation)
                     {
-                        return if error.kind() == SourceSelectionEvidenceErrorKind::Deadline {
-                            Ok(Ok(logical_read_deadline_result()))
-                        } else {
-                            Err(error.to_string())
+                        // A changed selection and a cancellation are the
+                        // caller's typed refusals, as at apply publication;
+                        // only a provider failure is internal (#1338).
+                        return match error.kind() {
+                            SourceSelectionEvidenceErrorKind::Deadline => {
+                                Ok(Ok(logical_read_deadline_result()))
+                            }
+                            SourceSelectionEvidenceErrorKind::Changed => {
+                                Ok(Ok(DomainResult::canonical_rejection(
+                                    None,
+                                    RefusalCode::SourceSelectionChanged,
+                                    "The project source selection changed while the read ran; repeat the call.",
+                                )))
+                            }
+                            SourceSelectionEvidenceErrorKind::Cancelled => {
+                                Ok(Ok(DomainResult::canonical_rejection(
+                                    None,
+                                    RefusalCode::Cancelled,
+                                    "Logical source read was cancelled before publishing its result.",
+                                )))
+                            }
+                            SourceSelectionEvidenceErrorKind::Provider => {
+                                Err(error.to_string().into())
+                            }
                         };
                     }
                 }
                 for source in lease.sources.into_iter().chain(parent_sources) {
-                    self.invocation.actor.validate_binding(&source.binding)?;
+                    self.invocation
+                        .actor
+                        .validate_binding(&source.binding)
+                        .map_err(ExecutionBoundaryError::binding_changed)?;
                 }
                 if cancellation.is_cancelled() {
                     return Ok(Ok(DomainResult::canonical_rejection(
@@ -1230,12 +1446,62 @@ impl ActorBoundExecution {
                 };
                 if requires_actor_publication {
                     return Err(
-                        "unpublished Apply result requires real actor apply publication"
-                            .to_string(),
+                        "unpublished Apply result requires real actor apply publication".into(),
                     );
                 }
                 Ok(staged)
             }
+        }
+    }
+}
+
+/// Why an actor-bound execution could not begin or publish its result.
+///
+/// Only a binding that no longer belongs to this workspace actor — another
+/// actor, a replaced or moved root — is a changed workspace the caller may
+/// repeat the call for. Every other boundary error is an internal invariant
+/// failure; a plain message is one by default (#1338).
+pub(crate) enum ExecutionBoundaryError {
+    BindingChanged(String),
+    Internal(String),
+}
+
+impl ExecutionBoundaryError {
+    pub(crate) fn binding_changed(message: String) -> Self {
+        Self::BindingChanged(message)
+    }
+}
+
+impl From<String> for ExecutionBoundaryError {
+    fn from(message: String) -> Self {
+        Self::Internal(message)
+    }
+}
+
+impl From<&str> for ExecutionBoundaryError {
+    fn from(message: &str) -> Self {
+        Self::Internal(message.to_string())
+    }
+}
+
+// Written by hand: the actor capability audit forbids generated impls in
+// this module.
+impl std::fmt::Debug for ExecutionBoundaryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BindingChanged(message) => formatter
+                .debug_tuple("BindingChanged")
+                .field(message)
+                .finish(),
+            Self::Internal(message) => formatter.debug_tuple("Internal").field(message).finish(),
+        }
+    }
+}
+
+impl std::fmt::Display for ExecutionBoundaryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BindingChanged(message) | Self::Internal(message) => formatter.write_str(message),
         }
     }
 }

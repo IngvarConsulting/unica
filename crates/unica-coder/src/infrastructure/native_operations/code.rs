@@ -600,7 +600,7 @@ fn plan_one_code_operation(
             .replace(&relative, before, postimage.after.clone())
             .map_err(|error| staged_code_error(error, &at_path))?,
         None => staged
-            .create_leaf_below_retained_parent(&relative, postimage.after.clone())
+            .create(&relative, postimage.after.clone())
             .map_err(|error| staged_code_error(error, &at_path))?,
     }
     if staged
@@ -878,7 +878,10 @@ fn plan_code_postimage(
                 }
             };
             let replacement = site.replacement(&args.text);
-            let no_op = snapshot.raw().get(site.start..site.end) == Some(replacement.as_slice());
+            let no_op =
+                replacement_is_present(snapshot.raw(), site, &replacement, |found, methods| {
+                    relocate_replaced_method(found, methods, selector.as_ref(), &args.at)
+                });
             let mut after = snapshot.raw().to_vec();
             if !no_op {
                 after.splice(site.start..site.end, replacement.iter().copied());
@@ -913,6 +916,15 @@ fn plan_code_postimage(
         )
         .at_path(&text_path));
     }
+    if let CodePlanOperation::Replace(args) = operation {
+        if replaces_whole_method(selector.as_ref(), &args.at) {
+            reject_redeclared_methods(&args.text, &indexed.methods, &post.methods).map_err(
+                |message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&text_path)
+                },
+            )?;
+        }
+    }
     let repeat = match operation {
         CodePlanOperation::Replace(args) if args.selector.is_none() => {
             let repeat_snapshot = SourceTextSnapshot::from_bytes(&after)
@@ -923,9 +935,12 @@ fn plan_code_postimage(
                 Err(_) => Err("patched BSL address became ambiguous or invalid".to_string()),
                 Ok(repeated) => {
                     let bytes = repeated.replacement(content);
-                    if repeat_snapshot.raw().get(repeated.start..repeated.end)
-                        == Some(bytes.as_slice())
-                    {
+                    if replacement_is_present(
+                        repeat_snapshot.raw(),
+                        repeated,
+                        &bytes,
+                        |found, methods| relocate_replaced_method(found, methods, None, &args.at),
+                    ) {
                         Ok(())
                     } else {
                         Err("addressed replacement would change bytes again".to_string())
@@ -1229,7 +1244,10 @@ fn build_patch(
             let selector = Selector::parse(args)?;
             let site = locate_replacement(&snapshot, &selector, &indexed.methods)?;
             let replacement = site.replacement(&content);
-            let no_op = snapshot.raw().get(site.start..site.end) == Some(replacement.as_slice());
+            let no_op =
+                replacement_is_present(snapshot.raw(), site, &replacement, |found, methods| {
+                    relocate_selected_method(found, methods, &selector)
+                });
             let mut after = snapshot.raw().to_vec();
             if !no_op {
                 after.splice(site.start..site.end, replacement.iter().copied());
@@ -1302,6 +1320,19 @@ fn finish_patch(
             format!("validate patched BSL module: {details}"),
             Some(data),
         );
+    }
+    if matches!(plan.site, PatchSite::Replacement(_))
+        && matches!(plan.selector, Some(Selector::Method(_)))
+    {
+        let pre = std::str::from_utf8(&plan.before)
+            .map_err(|_| "original BSL module is not UTF-8".to_string())
+            .and_then(analyze_module);
+        let checked = pre.and_then(|pre| {
+            reject_redeclared_methods(&plan.content, &pre.methods, &analysis.methods)
+        });
+        if let Err(error) = checked {
+            return CodePatchExecution::failure(error, Some(data));
+        }
     }
     if let Err(error) = prove_repeat_is_noop(postimage, &plan, &analysis.methods) {
         return CodePatchExecution::failure(error, Some(data));
@@ -1827,22 +1858,25 @@ fn prove_repeat_is_noop_parts(
                 normalized_content(content, repeat_site.eol, repeat_site.leading_separator);
             insertion_is_present(postimage.as_bytes(), repeat_site, &repeat_insertion)
         }
-        PatchSite::Replacement(_) => match locate_replacement(
-            &snapshot,
-            selector.expect("replacement has a selector"),
-            methods,
-        ) {
-            // The edit consumed its own selector — an anchor rewritten to new
-            // text, a method renamed. A repeated identical call then resolves
-            // nothing and fails closed without writing, which is exactly the
-            // double application the guard exists to prevent.
-            Err(_) => true,
-            Ok(repeat_site) => {
-                let repeat_replacement = repeat_site.replacement(content);
-                snapshot.raw().get(repeat_site.start..repeat_site.end)
-                    == Some(repeat_replacement.as_slice())
+        PatchSite::Replacement(_) => {
+            let selector = selector.expect("replacement has a selector");
+            match locate_replacement(&snapshot, selector, methods) {
+                // The edit consumed its own selector — an anchor rewritten to new
+                // text, a method renamed. A repeated identical call then resolves
+                // nothing and fails closed without writing, which is exactly the
+                // double application the guard exists to prevent.
+                Err(_) => true,
+                Ok(repeat_site) => {
+                    let repeat_replacement = repeat_site.replacement(content);
+                    replacement_is_present(
+                        snapshot.raw(),
+                        repeat_site,
+                        &repeat_replacement,
+                        |found, methods| relocate_selected_method(found, methods, selector),
+                    )
+                }
             }
-        },
+        }
     };
     if repeated_is_noop {
         Ok(())
@@ -1852,6 +1886,132 @@ fn prove_repeat_is_noop_parts(
                 .to_string(),
         )
     }
+}
+
+/// Whether a replacement already stands where its target is found today.
+///
+/// A whole-method replacement may extend past the method it addresses: the
+/// "extract method" refactor sends the method together with the helpers
+/// carved out of it. After the first write the addressed method spans only
+/// its own part of that text, so comparing the method's span alone would
+/// plan the helpers a second time. The comparison therefore anchors at the
+/// method's place inside the replacement and asks whether the whole
+/// replacement already surrounds the method found in the module. Targets
+/// without a method of their own (anchors, bodies, the module body) keep the
+/// exact span comparison.
+fn replacement_is_present(
+    raw: &[u8],
+    site: ReplacementSite,
+    replacement: &[u8],
+    relocate: impl Fn(&SourceTextSnapshot, &[Method]) -> Option<ReplacementSite>,
+) -> bool {
+    if raw.get(site.start..site.end) == Some(replacement) {
+        return true;
+    }
+    let Some(lead) = replacement_lead(replacement, relocate) else {
+        return false;
+    };
+    site.start
+        .checked_sub(lead)
+        .and_then(|from| raw.get(from..from.checked_add(replacement.len())?))
+        == Some(replacement)
+}
+
+/// Offset at which the addressed method starts inside its own replacement,
+/// located by the same rule that finds it in the module. The method must sit
+/// on whole lines of the replacement, so the text around it is whole lines
+/// too; an inline tail after `КонецПроцедуры` would otherwise read as a fixed
+/// point while each repeat appended it again. The equality with the module
+/// then puts the same line breaks there.
+fn replacement_lead(
+    replacement: &[u8],
+    relocate: impl Fn(&SourceTextSnapshot, &[Method]) -> Option<ReplacementSite>,
+) -> Option<usize> {
+    let snapshot = SourceTextSnapshot::from_bytes(replacement).ok()?;
+    let analysis = analyze_module(snapshot.decoded_text()).ok()?;
+    if !analysis.diagnostics.is_empty() {
+        return None;
+    }
+    let site = relocate(&snapshot, &analysis.methods)?;
+    let raw = snapshot.raw();
+    let starts_line = site.start == 0 || raw.get(..site.start)?.ends_with(b"\n");
+    let ends_line = raw.get(..site.end)?.ends_with(b"\n");
+    (starts_line && ends_line).then_some(site.start)
+}
+
+/// Finds the whole method a staged replacement addresses, by a method
+/// selector or by a `…Method.<Имя>` address, in any module text.
+fn relocate_replaced_method(
+    snapshot: &SourceTextSnapshot,
+    methods: &[Method],
+    selector: Option<&Selector>,
+    at: &QualifiedAddress,
+) -> Option<ReplacementSite> {
+    if let Some(selector) = selector {
+        return relocate_selected_method(snapshot, methods, selector);
+    }
+    match code_projection(at) {
+        Some((_, CodeProjection::Method(_))) => {
+            locate_addressed_replacement(snapshot, at, methods, "").ok()
+        }
+        Some((_, CodeProjection::ModuleBody | CodeProjection::MethodBody(_))) | None => None,
+    }
+}
+
+/// Whether a staged replacement targets a whole method, the only target that
+/// can carry methods besides itself.
+fn replaces_whole_method(selector: Option<&Selector>, at: &QualifiedAddress) -> bool {
+    match selector {
+        Some(selector) => matches!(selector, Selector::Method(_)),
+        None => matches!(code_projection(at), Some((_, CodeProjection::Method(_)))),
+    }
+}
+
+fn relocate_selected_method(
+    snapshot: &SourceTextSnapshot,
+    methods: &[Method],
+    selector: &Selector,
+) -> Option<ReplacementSite> {
+    match selector {
+        Selector::Method(_) => locate_replacement_typed(snapshot, selector, methods).ok(),
+        Selector::Anchor(_) => None,
+    }
+}
+
+/// A whole-method replacement may declare methods besides the one it
+/// addresses, but never one the rest of the module already defines: the
+/// result would carry two methods with one name, which no repeat can undo.
+///
+/// Same-named methods in `#Если … #Иначе` branches are legitimate and the
+/// parser does not tell them apart from duplicates, so twins already in the
+/// module or wholly inside the replacement stay allowed; only a name whose
+/// count grows while the rest of the module also declares it is refused.
+fn reject_redeclared_methods(
+    replacement: &str,
+    pre: &[Method],
+    post: &[Method],
+) -> Result<(), String> {
+    let Ok(declared) = analyze_module(replacement) else {
+        return Ok(());
+    };
+    let count = |methods: &[Method], folded: &str| {
+        methods
+            .iter()
+            .filter(|candidate| candidate.name.to_lowercase() == folded)
+            .count()
+    };
+    for method in &declared.methods {
+        let folded = method.name.to_lowercase();
+        let in_text = count(&declared.methods, &folded);
+        let after = count(post, &folded);
+        if after > in_text && after > count(pre, &folded) {
+            return Err(format!(
+                "replacement declares method `{}` that the module already defines elsewhere",
+                method.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn guard_resolved_support(
@@ -4294,6 +4454,232 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn whole_method_replacement_extracts_helpers_and_repeats_as_noop() {
+        // #895: the "extract method" refactor replaces a method with itself
+        // plus new helpers; the repeat finds the method and its helpers in
+        // place instead of planning the helpers a second time.
+        let target = "Function Target()\r\n    Return 1 + 2;\r\nEndFunction\r\n";
+        let before = format!(
+            "Procedure First()\r\nEndProcedure\r\n\r\n{target}\r\nProcedure Last()\r\nEndProcedure\r\n"
+        );
+        let extracted = "Function Target()\n    Return One() + Two();\nEndFunction\n\n\
+                         Function One()\n    Return 1;\nEndFunction\n\n\
+                         Function Two()\n    Return 2;\nEndFunction";
+        let commented = format!("// Extracted.\n{extracted}");
+        for (args, text) in [
+            (
+                json!({"at":"main:CommonModule.Sample.Method.Target", "text":extracted}),
+                extracted.to_owned(),
+            ),
+            (
+                json!({"at":"main:CommonModule.Sample.Method.Target", "text":commented}),
+                commented.clone(),
+            ),
+            (
+                json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":extracted}),
+                extracted.to_owned(),
+            ),
+            (
+                json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":commented}),
+                commented.clone(),
+            ),
+        ] {
+            let expected = before.replace(target, &format!("{}\r\n", text.replace('\n', "\r\n")));
+            let fixture = staged_code_fixture("extract-method", before.as_bytes());
+            let operation =
+                parse_code_plan_operation("code.replace", &args, 0, &fixture.binding).unwrap();
+            let admission = staged_code_admission(&fixture, false);
+            let (mut state, effects) = plan_admitted_code(
+                &admission,
+                &fixture.binding,
+                std::slice::from_ref(&operation),
+            )
+            .unwrap_or_else(|error| panic!("{args}: {error:?}"));
+            let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+            assert_eq!(
+                String::from_utf8(state.read(relative).unwrap().unwrap()).unwrap(),
+                expected,
+                "{args}"
+            );
+            fixture
+                .actor
+                .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+                .unwrap();
+            let repeated = staged_code_admission(&fixture, true);
+            let (state, effects) = plan_admitted_code(&repeated, &fixture.binding, &[operation])
+                .unwrap_or_else(|error| panic!("repeat {args}: {error:?}"));
+            assert!(state.planned_changes().is_empty(), "{args}");
+            assert!(effects.events().is_empty(), "{args}");
+            assert_eq!(
+                fs::read(fixture.source.join(relative)).unwrap(),
+                expected.as_bytes()
+            );
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn whole_method_replacement_refuses_a_helper_the_module_already_defines() {
+        let before = "Function Target()\n    Return 1;\nEndFunction\n\nFunction One()\n    Return 1;\nEndFunction\n";
+        let text = "Function Target()\n    Return One();\nEndFunction\n\nFunction one()\n    Return 1;\nEndFunction";
+        for args in [
+            json!({"at":"main:CommonModule.Sample.Method.Target", "text":text}),
+            json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":text}),
+        ] {
+            let fixture = staged_code_fixture("extract-duplicate", before.as_bytes());
+            let operation =
+                parse_code_plan_operation("code.replace", &args, 0, &fixture.binding).unwrap();
+            let admission = staged_code_admission(&fixture, false);
+            let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+                .expect_err("a second `One` must not be written");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{args}");
+            assert_eq!(error.path(), Some("ops[0].args.text"), "{args}");
+            assert_eq!(
+                fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+                before.as_bytes()
+            );
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn module_body_replacement_that_prefixes_the_module_still_writes() {
+        // Only a whole method carries extracted helpers; a module body that
+        // merely starts with the replacement is not already replaced.
+        let before = "Procedure Base()\nEndProcedure\n\nProcedure Other()\nEndProcedure\n";
+        let fixture = staged_code_fixture("module-body-prefix", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Body", "text":"Procedure Base()\nEndProcedure"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let (mut state, _) =
+            plan_admitted_code(&admission, &fixture.binding, &[operation]).unwrap();
+        assert_eq!(
+            state
+                .read(Path::new("CommonModules/Sample/Ext/Module.bsl"))
+                .unwrap()
+                .unwrap(),
+            b"Procedure Base()\nEndProcedure\n"
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn conditional_compilation_twins_are_not_redeclarations() {
+        // `#Если … #Иначе` branches legitimately declare one name twice; the
+        // parser cannot tell them from duplicates, so neither a module body
+        // nor an extracted helper with such twins is refused.
+        let twins = "#Если Сервер Тогда\nProcedure Helper()\nEndProcedure\n#Иначе\nProcedure Helper()\nEndProcedure\n#КонецЕсли";
+        let body_fixture = staged_code_fixture("twins-body", b"Procedure Base()\nEndProcedure\n");
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Body", "text":twins}),
+            0,
+            &body_fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&body_fixture, false);
+        let (mut state, _) = plan_admitted_code(&admission, &body_fixture.binding, &[operation])
+            .expect("a module body with #Если twins is written");
+        assert_eq!(
+            state
+                .read(Path::new("CommonModules/Sample/Ext/Module.bsl"))
+                .unwrap()
+                .unwrap(),
+            format!("{twins}\n").as_bytes()
+        );
+        body_fixture.cleanup();
+
+        let before = "Procedure Base()\nEndProcedure\n";
+        let text = format!("Procedure Base()\n    Helper();\nEndProcedure\n\n{twins}");
+        let fixture = staged_code_fixture("twins-helper", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Method.Base", "text":text}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let (mut state, effects) = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            std::slice::from_ref(&operation),
+        )
+        .expect("a helper in both #Если branches is written");
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        assert_eq!(
+            state.read(relative).unwrap().unwrap(),
+            format!("{text}\n").as_bytes()
+        );
+        fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        let repeated = staged_code_admission(&fixture, true);
+        let (state, _) = plan_admitted_code(&repeated, &fixture.binding, &[operation]).unwrap();
+        assert!(state.planned_changes().is_empty());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn inline_tail_after_the_method_is_not_a_fixed_point() {
+        // The method ends mid-line, so the text after it is not whole lines:
+        // the repeat would append the tail again and must be refused.
+        let before = "Procedure Base()\nEndProcedure // к\n";
+        let fixture = staged_code_fixture("inline-tail", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample.Method.Base", "text":"Procedure Base()\n    Value = 1;\nEndProcedure // к"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+            .expect_err("a doubled inline tail must not pass as a repeat no-op");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::Postcondition);
+        assert_eq!(
+            fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+            before.as_bytes()
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn code_patch_replace_with_extracted_helpers_repeats_as_noop() {
+        let context = temp_context("replace-extract-method");
+        let module = context
+            .workspace_root
+            .join("src/CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, "Функция Цель()\n\tВозврат 3;\nКонецФункции\n").unwrap();
+        let args = replace_args(
+            "CommonModule.Sample.Module",
+            json!({"method": "Цель"}),
+            "Функция Цель()\n\tВозврат Один() + 2;\nКонецФункции\n\nФункция Один()\n\tВозврат 1;\nКонецФункции",
+        );
+
+        let applied = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(applied.outcome.ok, "{:?}", applied.outcome.errors);
+        let after = fs::read_to_string(&module).unwrap();
+        assert_eq!(
+            after,
+            "Функция Цель()\n\tВозврат Один() + 2;\nКонецФункции\n\nФункция Один()\n\tВозврат 1;\nКонецФункции\n"
+        );
+
+        let repeated = patch_inner(&args, &context, PatchMode::Apply);
+        assert!(repeated.outcome.ok, "{:?}", repeated.outcome.errors);
+        assert!(repeated.data.unwrap().no_op);
+        assert_eq!(fs::read_to_string(&module).unwrap(), after);
+        fs::remove_dir_all(&context.workspace_root).unwrap();
+    }
+
+    #[test]
     fn addressed_method_body_replaces_statements_on_the_closing_line() {
         for before in [
             "Procedure Base()\n    Value = 1; EndProcedure\n",
@@ -4541,41 +4927,102 @@ pub(super) mod tests {
         writer.cleanup();
     }
 
+    /// #955: a registered owner's module exists logically without its file.
+    /// A dumped empty common module keeps an empty `Ext/` without the file;
+    /// `object.borrow` registers a common module without its directory.
+    /// The first write materializes the missing chain on publication only.
     #[test]
-    fn staged_code_rejects_absent_leaf_below_missing_parent_topology() {
-        for (name, missing_parent) in [
+    fn staged_code_first_body_materializes_a_missing_module_chain() {
+        for (name, missing) in [
+            ("missing-file", "CommonModules/Sample/Ext/Module.bsl"),
             ("missing-ext", "CommonModules/Sample/Ext"),
             ("missing-owner-directory", "CommonModules/Sample"),
         ] {
             let fixture = staged_code_fixture(name, b"Procedure Base()\nEndProcedure\n");
-            fs::remove_dir_all(fixture.source.join(missing_parent)).unwrap();
-            let admission = staged_code_admission(&fixture, true);
-            let source_before = snapshot_staged_code_tree(&fixture.source);
-            let cache_before = snapshot_staged_code_tree(&fixture.root.join(".build/unica"));
+            let removed = fixture.source.join(missing);
+            if removed.is_dir() {
+                fs::remove_dir_all(&removed).unwrap();
+            } else {
+                fs::remove_file(&removed).unwrap();
+            }
+            let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
             let operation = [staged_insert(
                 "main:CommonModule.Sample",
                 "Procedure Added()\nEndProcedure",
                 None,
                 None,
             )];
+            let source_before = snapshot_staged_code_tree(&fixture.source);
+            let cache_before = snapshot_staged_code_tree(&fixture.root.join(".build/unica"));
 
-            let result = plan_admitted_code(&admission, &fixture.binding, &operation);
-
-            let error = result.expect_err(&format!(
-                "planner returned effects for missing parent topology: {missing_parent}"
-            ));
+            let preview = staged_code_admission(&fixture, true);
+            let (mut state, effects) = plan_admitted_code(&preview, &fixture.binding, &operation)
+                .unwrap_or_else(|error| panic!("{missing}: {error:?}"));
+            let changes = state.planned_changes();
+            assert_eq!(changes.len(), 1, "{missing}");
+            assert_eq!(changes[0].relative_path, relative, "{missing}");
+            assert_eq!(changes[0].original, StagedFileState::Absent, "{missing}");
+            let expected = state.read(relative).unwrap().expect("staged first body");
+            assert!(
+                String::from_utf8_lossy(&expected).contains("Procedure Added()"),
+                "{missing}"
+            );
             assert_eq!(
-                error.kind(),
-                ApplyPlanErrorKind::Staging(ApplyStagingErrorKind::MissingParent)
+                effects.events(),
+                &[DomainEvent::new(
+                    DomainEventKind::ModuleChanged,
+                    "main:CommonModule.Sample"
+                )]
             );
             assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
             assert_eq!(
                 snapshot_staged_code_tree(&fixture.root.join(".build/unica")),
                 cache_before
             );
-            assert!(!fixture.root.join(".build/unica/state.json").exists());
+            drop(state);
+
+            let admission = staged_code_admission(&fixture, false);
+            let (state, effects) =
+                plan_admitted_code(&admission, &fixture.binding, &operation).unwrap();
+            fixture
+                .actor
+                .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+                .unwrap_or_else(|error| panic!("{missing}: {error:?}"));
+            assert_eq!(fs::read(fixture.source.join(relative)).unwrap(), expected);
+
+            let repeated = staged_code_admission(&fixture, true);
+            let (state, effects) =
+                plan_admitted_code(&repeated, &fixture.binding, &operation).unwrap();
+            assert!(state.planned_changes().is_empty(), "{missing}");
+            assert!(effects.events().is_empty(), "{missing}");
             fixture.cleanup();
         }
+    }
+
+    /// A module chain that appears after planning belongs to someone else:
+    /// publication refuses and keeps the foreign file instead of overwriting it.
+    #[test]
+    fn staged_code_missing_module_chain_keeps_a_foreign_appearance() {
+        let fixture = staged_code_fixture("foreign-chain", b"Procedure Base()\nEndProcedure\n");
+        fs::remove_dir_all(fixture.source.join("CommonModules/Sample")).unwrap();
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            None,
+            None,
+        )];
+        let admission = staged_code_admission(&fixture, false);
+        let (state, effects) =
+            plan_admitted_code(&admission, &fixture.binding, &operation).unwrap();
+        let prepared = admission.prepare_with_effects(state, effects).unwrap();
+        let foreign = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+        fs::write(&foreign, b"// foreign body\n").unwrap();
+
+        assert!(fixture.actor.publish_prepared_apply(prepared).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(), b"// foreign body\n");
+        assert!(!fixture.root.join(".build/unica/state.json").exists());
+        fixture.cleanup();
     }
 
     #[test]
@@ -5459,6 +5906,7 @@ pub(super) mod tests {
         );
 
         fs::remove_dir_all(fixture.source.join("CommonModules/Sample/Ext")).unwrap();
+        fs::write(fixture.source.join("CommonModules/Sample/Ext"), b"occupied").unwrap();
         let admission = staged_code_admission(&fixture, true);
         let staging = plan_admitted_code(
             &admission,
@@ -5473,7 +5921,7 @@ pub(super) mod tests {
         .unwrap_err();
         assert_closed_code_error(
             &staging,
-            ApplyPlanErrorKind::Staging(ApplyStagingErrorKind::MissingParent),
+            ApplyPlanErrorKind::Staging(ApplyStagingErrorKind::AbsentChainOccupied),
             Some("ops[0].args.at"),
             &fixture.root,
         );

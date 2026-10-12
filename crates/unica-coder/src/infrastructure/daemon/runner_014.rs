@@ -23,7 +23,7 @@
 //! root before the copy is written.
 use super::v13_workspace_bootstrap::read_yaml_config;
 use crate::infrastructure::internal_adapters::{
-    ProcessCommand, ProcessOutput, ProcessRunner, SystemProcessRunner,
+    ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure, SystemProcessRunner,
 };
 use crate::infrastructure::platform::PendingProcessHandoff;
 use crate::infrastructure::source_roots::normalize_path_identity;
@@ -74,6 +74,16 @@ impl ProcessRunner for Runner014ProcessRunner {
         run_projected(&SystemProcessRunner, command)
     }
 
+    /// A projection refusal happens before any process exists, but it is not
+    /// a failed launch of the runner: it keeps its own refusal prefix and is
+    /// reported as a failure after start, never as an unstartable engine.
+    fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
+        with_projected_config(command, |projected| {
+            Ok(SystemProcessRunner.run_staged(projected))
+        })
+        .map_err(ProcessStreamFailure::Run)?
+    }
+
     fn run_pending_handoff(
         &self,
         command: &ProcessCommand,
@@ -81,6 +91,17 @@ impl ProcessRunner for Runner014ProcessRunner {
         with_projected_config(command, |projected| {
             SystemProcessRunner.run_pending_handoff(projected)
         })
+    }
+
+    /// As [`Self::run_staged`]: a projection refusal is not a failed launch.
+    fn run_pending_handoff_staged(
+        &self,
+        command: &ProcessCommand,
+    ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
+        with_projected_config(command, |projected| {
+            Ok(SystemProcessRunner.run_pending_handoff_staged(projected))
+        })
+        .map_err(ProcessStreamFailure::Run)?
     }
 }
 

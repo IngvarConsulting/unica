@@ -3,8 +3,8 @@
   "additionalProperties": false,
   "properties": {
     "result": {"type": "string"},
-    "newSchemaSupport": {"type": "string"},
+    "newSchemaResult": {"type": "string"},
     "explanation": {"type": "string"}
   },
-  "required": ["result", "newSchemaSupport", "explanation"]
+  "required": ["result", "newSchemaResult", "explanation"]
 }

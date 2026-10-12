@@ -43,7 +43,7 @@ Two rules cut across all of them: `ОбменДанными.Загрузка` is
 
 1. Name what the logic needs to observe — fill source, old values, written state, or nothing yet — and let that pick the handler.
 2. Locate what already runs: read the object module with `unica.view` on the module node (its `Method` branch lists the methods), and find subscriptions on the same events with `unica.search` and `unica.view` on the object node. A subscription is invisible from the object module it affects.
-3. Search the shared procedures the handler calls with `unica.search` to see what else the change reaches; a call graph is not on the v0.13 surface.
+3. Read the shared procedures the handler calls with `unica.view` at `<handler>.Callee`, and their callers at `<method>.Caller`, to see what else the change reaches.
 4. Write the guard before the logic: `Если ОбменДанными.Загрузка Тогда Возврат; КонецЕсли;` — in the subscription handler too, not only in the object module.
 5. Express conditional requiredness by collecting `НепроверяемыеРеквизиты` and removing them from `ПроверяемыеРеквизиты` at the end, never by adding to `ПроверяемыеРеквизиты`.
 6. Apply the change with `unica.apply`, one verifiable step at a time.

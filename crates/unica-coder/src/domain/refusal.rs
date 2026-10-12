@@ -132,6 +132,10 @@ pub enum RefusalCode {
     ProviderFailed,
     /// `invalid_result`
     InvalidResult,
+    /// `submit_response_lost`
+    SubmitResponseLost,
+    /// `submit_not_delivered`
+    SubmitNotDelivered,
 }
 
 impl RefusalCode {
@@ -180,6 +184,8 @@ impl RefusalCode {
             Self::TaskProjectionFailed => "task_projection_failed",
             Self::ProviderFailed => "provider_failed",
             Self::InvalidResult => "invalid_result",
+            Self::SubmitResponseLost => "submit_response_lost",
+            Self::SubmitNotDelivered => "submit_not_delivered",
         }
     }
 
@@ -236,6 +242,12 @@ impl RefusalCode {
             Self::TaskProjectionFailed => Outcome::DeadEnd,
             Self::ProviderFailed => Outcome::DeadEnd,
             Self::InvalidResult => Outcome::DeadEnd,
+            // Ответ на отправку потерян, но вызов мог стать заданием: ждать
+            // его по `taskId` из `next`, а не отправлять вызов заново.
+            Self::SubmitResponseLost => Outcome::GoElsewhere,
+            // Вызов не дошёл до демона и уже не запустится: тот же вызов
+            // можно повторить как есть.
+            Self::SubmitNotDelivered => Outcome::RetryAsIs,
         }
     }
 
@@ -245,7 +257,7 @@ impl RefusalCode {
     }
 
     /// Весь словарь — для проверок полноты и порождения ведомостей.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 44] = [
         Self::ConcurrentChange,
         Self::SourceSelectionChanged,
         Self::DeadlineExceeded,
@@ -288,6 +300,8 @@ impl RefusalCode {
         Self::TaskProjectionFailed,
         Self::ProviderFailed,
         Self::InvalidResult,
+        Self::SubmitResponseLost,
+        Self::SubmitNotDelivered,
     ];
 }
 
@@ -331,6 +345,12 @@ pub enum RefusalDetail {
     /// Внутренний кэш отравлен: поток запаниковал под замком, и до
     /// перезапуска процесса замок не отдаётся.
     CachePoisoned,
+    /// Учётные данные отвергнуты: агент конфигуратора не принял пользователя
+    /// ИБ. Повтор с теми же настройками не пройдёт.
+    CredentialsRejected,
+    /// Точка входа, к которой обращается поставщик, не ответила или назвалась
+    /// чужим ключом.
+    EndpointUnreachable,
     /// Демон занят: очередь, ёмкость рабочего пространства или владельца.
     BackendBusy,
     /// Демон несовместим: протокол, ядро, права.
@@ -350,6 +370,8 @@ impl RefusalDetail {
             Self::DependencyPending => "dependency_pending",
             Self::WrongSourceKind => "wrong_source_kind",
             Self::CachePoisoned => "cache_poisoned",
+            Self::CredentialsRejected => "credentials_rejected",
+            Self::EndpointUnreachable => "endpoint_unreachable",
             Self::BackendBusy => "backend_busy",
             Self::BackendIncompatible => "backend_incompatible",
             Self::BackendBroken => "backend_broken",
@@ -364,7 +386,9 @@ impl RefusalDetail {
             | Self::DeliveryInProgress
             | Self::DependencyPending
             | Self::WrongSourceKind
-            | Self::CachePoisoned => RefusalCode::ProviderUnavailable,
+            | Self::CachePoisoned
+            | Self::CredentialsRejected
+            | Self::EndpointUnreachable => RefusalCode::ProviderUnavailable,
             Self::BackendBusy | Self::BackendIncompatible | Self::BackendBroken => {
                 RefusalCode::TaskBackendFailed
             }
@@ -376,6 +400,9 @@ impl RefusalDetail {
         match self {
             Self::SourceUnreadable => Outcome::FixSource,
             Self::ProviderAbsent | Self::BackendIncompatible => Outcome::NeedsHuman,
+            // Настройку подключения правит человек: ни повтор, ни правка
+            // аргументов вызова её не меняют.
+            Self::CredentialsRejected | Self::EndpointUnreachable => Outcome::NeedsHuman,
             Self::DeliveryInProgress | Self::DependencyPending => Outcome::RetryAsIs,
             Self::WrongSourceKind => Outcome::FixCall,
             Self::BackendBusy => Outcome::RetryAsIs,
@@ -390,13 +417,15 @@ impl RefusalDetail {
     }
 
     /// Все уточнения — для проверок полноты.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::SourceUnreadable,
         Self::ProviderAbsent,
         Self::DeliveryInProgress,
         Self::DependencyPending,
         Self::WrongSourceKind,
         Self::CachePoisoned,
+        Self::CredentialsRejected,
+        Self::EndpointUnreachable,
         Self::BackendBusy,
         Self::BackendIncompatible,
         Self::BackendBroken,

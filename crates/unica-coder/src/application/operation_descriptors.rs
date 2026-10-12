@@ -152,7 +152,6 @@ const SUBSYSTEM_COMPILE_WRITE: &[&str] = &["OutputDir", "outputDir", "Parent", "
 const SUBSYSTEM_COMPILE_GUARD: &[&str] = &["Parent", "parent", "OutputDir", "outputDir"];
 const OUTPUT_PATH: &[&str] = &["OutputPath", "outputPath"];
 pub(crate) const TEMPLATE_PATH: &[&str] = &["TemplatePath", "templatePath", "Path", "path"];
-const TEMPLATE_PATH_REQUIRED: &[&str] = &["TemplatePath"];
 pub(crate) const RIGHTS_PATH: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
 const SUPPORT_PATH: &[&str] = &["Path", "path", "TargetPath", "targetPath"];
 const CFE_DIFF_REQUIRED: &[&str] = &["ExtensionPath", "ConfigPath"];
@@ -225,8 +224,6 @@ const SUBSYSTEM_COMPILE_PATH_GROUPS: &[PathAliasGroup] =
 const SUBSYSTEM_EDIT_PATH_GROUPS: &[PathAliasGroup] =
     &[SUBSYSTEM_PATH_GROUP, DEFINITION_FILE_GROUP];
 const SUBSYSTEM_READ_PATH_GROUPS: &[PathAliasGroup] = &[SUBSYSTEM_PATH_GROUP];
-const DCS_COMPILE_PATH_GROUPS: &[PathAliasGroup] = &[OUTPUT_PATH_GROUP, DEFINITION_FILE_GROUP];
-const DCS_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, DEFINITION_FILE_GROUP];
 const DCS_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP];
 const MXL_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, SRC_DIR_GROUP];
 /// `unica.mxl.info` requires `TemplatePath`, so the `SrcDir` half of the
@@ -256,8 +253,6 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
         "subsystem-compile" => SUBSYSTEM_COMPILE_PATH_GROUPS,
         "subsystem-edit" => SUBSYSTEM_EDIT_PATH_GROUPS,
         "subsystem-info" | "subsystem-validate" => SUBSYSTEM_READ_PATH_GROUPS,
-        "dcs-compile" => DCS_COMPILE_PATH_GROUPS,
-        "dcs-edit" => DCS_EDIT_PATH_GROUPS,
         "dcs-info" | "dcs-validate" => DCS_READ_PATH_GROUPS,
         "mxl-info" => MXL_INFO_PATH_GROUPS,
         "mxl-decompile" | "mxl-validate" => MXL_READ_PATH_GROUPS,
@@ -483,22 +478,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     ),
     descriptor("subsystem-info", EMPTY, EMPTY, SUBSYSTEM_PATH, None),
     descriptor("subsystem-validate", EMPTY, EMPTY, SUBSYSTEM_PATH, None),
-    descriptor(
-        "dcs-compile",
-        EMPTY,
-        OUTPUT_PATH,
-        OUTPUT_PATH,
-        Some(path_guard(OUTPUT_PATH, SupportGuardRequirement::Editable)),
-    ),
-    descriptor_with_paths(
-        "dcs-edit",
-        TEMPLATE_PATH_REQUIRED,
-        TEMPLATE_PATH,
-        TEMPLATE_PATH,
-        FormatGuardPolicy::ExistingDump,
-        FormatPathPolicy::HandlerResolved,
-        Some(path_guard(TEMPLATE_PATH, SupportGuardRequirement::Editable)),
-    ),
     descriptor("dcs-info", EMPTY, EMPTY, TEMPLATE_PATH, None),
     descriptor_with_paths(
         "dcs-validate",

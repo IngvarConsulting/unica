@@ -28,7 +28,7 @@ use super::runner_014::Runner014ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
-    CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
+    RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
 use crate::application::invocation_store::ToolIdentity;
@@ -779,7 +779,7 @@ fn invoke_runner(
         args.push("--dry-run".to_string());
     }
     let output = runner
-        .run(&ProcessCommand {
+        .run_staged(&ProcessCommand {
             program: tool.program.clone(),
             args,
             cwd: prepared.context.workspace_root.clone(),
@@ -795,7 +795,9 @@ fn invoke_runner(
                 cancellation.protect_process_on_spawn()
             },
         })
-        .map_err(|error| runner_start_rejection(Some(OPERATION.to_string()), &error))?;
+        .map_err(|error| {
+            runner_start_rejection(Some(OPERATION.to_string()), &error, &tool.program)
+        })?;
     parse_runner_output(output).map_err(|(rejection, envelope)| {
         let mut result = exchange_refusal(prepared, rejection, &envelope["error"]);
         note_another_copy(&mut result, &envelope);
@@ -976,8 +978,8 @@ fn reject(code: RefusalCode, message: impl Into<String>) -> DomainResult {
 
 /// Поставляемого раннера нет: маршрут один на все операции `run`, уточнение
 /// `provider_absent` назначает общий помощник.
-fn reject_absent_runner(message: impl Into<String>) -> DomainResult {
-    missing_runner_rejection(Some(OPERATION.to_string()), message)
+fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
+    missing_runner_rejection(Some(OPERATION.to_string()), absence)
 }
 
 #[cfg(test)]

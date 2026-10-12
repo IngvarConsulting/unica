@@ -718,6 +718,15 @@ pub struct ManagedChild {
     capture_limits: Option<(usize, usize)>,
 }
 
+/// Where a run that hands its process tree over failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingRunFailure {
+    /// The launcher did not start; the start failure says where.
+    Spawn(ManagedSpawnFailure),
+    /// The launcher started and its run failed.
+    Run(String),
+}
+
 /// Owns the runner's process tree after its leader exited, while the caller
 /// validates the complete captured reply. An unverified reply leaves this guard
 /// armed: dropping it terminates the still-owned descendants.
@@ -936,15 +945,47 @@ enum ChildState {
     Reaped,
 }
 
+/// Where starting a managed process failed.
+///
+/// Only [`ManagedSpawnFailure::Launch`] means the operating system did not
+/// create the process; a caller may call that an unstartable program. A
+/// failure to prepare the process tree or the working directory never tried
+/// the program, and a failure to attach an existing process is not a failed
+/// launch either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ManagedSpawnFailure {
+    /// The process tree or the working directory was not ready, or the call
+    /// was cancelled before launch; the program was not tried.
+    Prepare(String),
+    /// The operating system did not create the process.
+    Launch(String),
+    /// The process existed but could not be placed under Unica's control and
+    /// was terminated.
+    Attach(String),
+}
+
+impl ManagedSpawnFailure {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            Self::Prepare(message) | Self::Launch(message) | Self::Attach(message) => message,
+        }
+    }
+}
+
 impl ManagedChild {
     pub fn spawn(command: ManagedCommand) -> Result<Self, String> {
+        Self::spawn_staged(command).map_err(ManagedSpawnFailure::into_message)
+    }
+
+    /// [`ManagedChild::spawn`] that names where the start failed.
+    pub(crate) fn spawn_staged(command: ManagedCommand) -> Result<Self, ManagedSpawnFailure> {
         let mut process = Command::new(&command.program);
         process.args(&command.args).current_dir(&command.cwd);
         for name in command.env_remove {
             process.env_remove(name);
         }
         process.envs(command.env);
-        Self::spawn_process_with_limits(
+        Self::spawn_process_staged(
             process,
             command.timeout,
             command.cancellation,
@@ -961,29 +1002,59 @@ impl ManagedChild {
     }
 
     fn spawn_process_with_limits(
-        mut process: Command,
+        process: Command,
         timeout: Option<Duration>,
         cancellation: CancellationToken,
         capture_limits: Option<(usize, usize)>,
     ) -> Result<Self, String> {
+        Self::spawn_process_staged(process, timeout, cancellation, capture_limits)
+            .map_err(ManagedSpawnFailure::into_message)
+    }
+
+    fn spawn_process_staged(
+        mut process: Command,
+        timeout: Option<Duration>,
+        cancellation: CancellationToken,
+        capture_limits: Option<(usize, usize)>,
+    ) -> Result<Self, ManagedSpawnFailure> {
+        // A missing working directory fails the OS launch with the same error
+        // as a missing program; name it before the program is tried.
+        if let Some(cwd) = process.get_current_dir() {
+            if !cwd.is_dir() {
+                return Err(ManagedSpawnFailure::Prepare(
+                    "process_failed: working directory is not available".to_string(),
+                ));
+            }
+        }
         process
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut process_tree = ProcessTree::prepare(&mut process).map_err(process_error)?;
+        let mut process_tree = ProcessTree::prepare(&mut process)
+            .map_err(|error| ManagedSpawnFailure::Prepare(process_error(error)))?;
         // Cancellation and OS launch (including Windows Job attachment) are
         // serialized. A failed launch never claims the protected phase.
-        let (child, cancellation) = cancellation.spawn_with_gate(|| {
-            let mut child = process.spawn().map_err(process_error)?;
+        let stage = std::cell::Cell::new(None);
+        let gated = cancellation.spawn_with_gate(|| {
+            let mut child = process.spawn().map_err(|error| {
+                stage.set(Some(false));
+                process_error(error)
+            })?;
             #[cfg(all(test, windows))]
             wait_at_job_attach_gate_for_test(&process);
             if let Err(error) = process_tree.attach(&mut child) {
                 let _ = process_tree.terminate(&mut child);
                 let _ = child.kill();
                 let _ = child.try_wait();
+                stage.set(Some(true));
                 return Err(process_error(error));
             }
             Ok(child)
+        });
+        let (child, cancellation) = gated.map_err(|message| match stage.get() {
+            Some(false) => ManagedSpawnFailure::Launch(message),
+            Some(true) => ManagedSpawnFailure::Attach(message),
+            None => ManagedSpawnFailure::Prepare(message),
         })?;
 
         Ok(Self {
@@ -1001,25 +1072,28 @@ impl ManagedChild {
         child.wait_for_output()
     }
 
-    /// Run a launcher while retaining its exact process-tree authority until
-    /// the upper layer validates the complete response. This path never uses
-    /// the generic leader reap, which terminates surviving descendants.
+    #[cfg(test)]
     pub(crate) fn run_pending_handoff(
         command: ManagedCommand,
     ) -> Result<(ManagedOutput, PendingProcessHandoff), String> {
-        let mut process = Command::new(&command.program);
-        process.args(&command.args).current_dir(&command.cwd);
-        for name in command.env_remove {
-            process.env_remove(name);
-        }
-        process.envs(command.env);
-        let mut child = Self::spawn_process_with_limits(
-            process,
-            command.timeout,
-            command.cancellation,
-            command.capture_limits,
-        )?;
-        let output = child.wait_for_pending_handoff_output()?;
+        Self::run_pending_handoff_staged(command).map_err(|failure| match failure {
+            PendingRunFailure::Spawn(failure) => failure.into_message(),
+            PendingRunFailure::Run(message) => message,
+        })
+    }
+
+    /// Run a launcher while retaining its exact process-tree authority until
+    /// the upper layer validates the complete response. This path never uses
+    /// the generic leader reap, which terminates surviving descendants.
+    ///
+    /// The failure keeps whether the launcher was ever started.
+    pub(crate) fn run_pending_handoff_staged(
+        command: ManagedCommand,
+    ) -> Result<(ManagedOutput, PendingProcessHandoff), PendingRunFailure> {
+        let mut child = Self::spawn_staged(command).map_err(PendingRunFailure::Spawn)?;
+        let output = child
+            .wait_for_pending_handoff_output()
+            .map_err(PendingRunFailure::Run)?;
         Ok((
             output,
             PendingProcessHandoff {
@@ -2989,6 +3063,42 @@ mod tests {
             0,
             "install SIGTERM handler: {}",
             std::io::Error::last_os_error()
+        );
+    }
+
+    /// Ревью #549: незапуском программы называется только отказ ОС создать
+    /// процесс. Отсутствующий рабочий каталог программу не пробовал, хотя ОС
+    /// ответила бы на него той же ошибкой, что на отсутствующий файл.
+    #[test]
+    fn only_a_refused_launch_is_a_launch_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let command = |program: PathBuf, cwd: PathBuf| ManagedCommand {
+            program,
+            args: Vec::new(),
+            cwd,
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            capture_limits: None,
+            timeout: None,
+            cancellation: CancellationToken::new(),
+        };
+        let missing_program = ManagedChild::spawn_staged(command(
+            root.path().join("no-such-program"),
+            root.path().to_path_buf(),
+        ));
+        assert!(
+            matches!(missing_program, Err(super::ManagedSpawnFailure::Launch(_))),
+            "{:?}",
+            missing_program.err()
+        );
+        let missing_cwd = ManagedChild::spawn_staged(command(
+            std::env::current_exe().unwrap(),
+            root.path().join("no-such-directory"),
+        ));
+        assert!(
+            matches!(missing_cwd, Err(super::ManagedSpawnFailure::Prepare(_))),
+            "{:?}",
+            missing_cwd.err()
         );
     }
 

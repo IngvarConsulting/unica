@@ -50,7 +50,12 @@ pub(crate) struct OperationContract {
     pub(crate) effect: &'static str,
     pub(crate) notes: &'static str,
     pub(crate) example_args: Value,
+    /// Plugin reference that explains the use case of the operation.
+    pub(crate) help: &'static str,
 }
+
+const REPORTS_HELP: &str = "references/use-cases/reports-printing.md";
+const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ContractError {
@@ -110,98 +115,236 @@ fn field_head(names: &[&str], required: &[&str]) -> Value {
 
 impl OperationContract {
     pub(crate) fn dcs(op: &str) -> Option<Self> {
-        let data = "Existing Template.DataSet.<name> (Query.<name> alias also selects the dataset). Read DataSet and Field names from view; the Template itself is not a DCS apply target.";
-        let setting = "Existing Template.Setting.<name>. Read Setting and its Item collection; do not assume the variant is named Основной.";
-        let parameter = "A DCS DataSet or Setting; parameter.remove ends with Parameter.<name>.";
-        let head_example = json!({"items":[{"dataPath":"Added","title":"Added"}]});
-        let (key, inner, target, effect, notes, example_args) = match op {
-            "field.add" => ("items", items(field_head(&["dataPath","name"], &[])), data,
-                "Add fields; duplicate dataPath is skipped by the editor. Inspect the post-image to establish the effect.",
-                "The first supplied alias wins: dataPath, then name; it must not be empty. Optional empty type/title are ignored. Values are typed fields, not legacy shorthand flags.", head_example),
-            "field.set" => ("values", field_head(&["field","dataPath","name"], &[]), data,
-                "Update an existing field's supplied title; explicit type is written only for a non-query dataset. Query fields derive their type from the query, so an old valueType is removed.",
-                "Field alias precedence: first supplied field, dataPath, name; the selected alias must not be empty. Read the existing Field collection before choosing the name. Other field properties are preserved.", json!({"values":{"field":"Amount","title":"Amount"}})),
+        let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
+        let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member. Query.<name> is a dataset alias.";
+        let setting_target = "Existing DCS Template.Setting.<name>. Optional group selects a unique named structure item; read Setting.Item first.";
+        let title = json!({"anyOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]});
+        let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
+        let localized_value =
+            json!({"type":"object","minProperties":1,"additionalProperties":{"type":"string"}});
+        let typed_value = json!({"anyOf":[scalar.clone(),localized_value.clone(),object(&[("variant",text(true)),("startDate",text(true)),("endDate",text(true))],&["variant"])]});
+        let appearance_value = json!({"anyOf":[typed_value.clone(),object(&[("valueType",text(true)),("value",typed_value.clone())],&["valueType","value"])]});
+        let strings = items(text(true));
+        let comparison = json!({"type":"string","default":"Equal","enum":["Equal","NotEqual","Greater","GreaterOrEqual","Less","LessOrEqual","Contains","NotContains","BeginsWith","NotBeginsWith","InList","NotInList","InHierarchy","InListByHierarchy","Filled","NotFilled"]});
+        let filter = || {
+            aliases(
+                object(
+                    &[
+                        ("field", text(true)),
+                        ("dataPath", text(true)),
+                        (
+                            "comparison",
+                            if op == "filter.add" {
+                                comparison.clone()
+                            } else {
+                                let mut value = comparison.clone();
+                                value.as_object_mut().unwrap().remove("default");
+                                value
+                            },
+                        ),
+                        ("value", scalar.clone()),
+                        ("valueType", text(true)),
+                        ("use", json!({"type":"boolean"})),
+                        (
+                            "viewMode",
+                            json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]}),
+                        ),
+                        ("userSettingID", text(true)),
+                        ("userSettingPresentation", text(false)),
+                        ("group", text(true)),
+                    ],
+                    &[],
+                ),
+                &["field", "dataPath"],
+            )
+        };
+        let structure = || {
+            object(
+                &[
+                    ("name", text(true)),
+                    (
+                        "kind",
+                        json!({"type":"string","enum":["group","table","chart"],"default":"group"}),
+                    ),
+                    ("groupBy", strings.clone()),
+                    ("parent", text(true)),
+                    (
+                        "axis",
+                        json!({"type":"string","enum":["row","column","point","series"]}),
+                    ),
+                    (
+                        "viewMode",
+                        json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]}),
+                    ),
+                ],
+                &["name"],
+            )
+        };
+        let restriction = object(
+            &["field", "condition", "group", "order"]
+                .iter()
+                .map(|key| (*key, json!({"type":"boolean"})))
+                .collect::<Vec<_>>(),
+            &[],
+        );
+        let parameter = || {
+            object(
+                &[
+                    ("name", text(true)),
+                    ("type", text(false)),
+                    ("title", title.clone()),
+                    ("value", typed_value.clone()),
+                    (
+                        "values",
+                        json!({"type":"array","items":typed_value.clone()}),
+                    ),
+                    (
+                        "availableValues",
+                        json!({"type":"array","items":object(&[("value",typed_value.clone()),("presentation",title.clone())],&["value"])}),
+                    ),
+                    ("valueType", text(true)),
+                    ("expression", text(false)),
+                    ("useRestriction", json!({"type":"boolean"})),
+                    ("valueListAllowed", json!({"type":"boolean"})),
+                    ("availableAsField", json!({"type":"boolean"})),
+                    ("denyIncompleteValues", json!({"type":"boolean"})),
+                    (
+                        "use",
+                        json!({"type":"string","enum":["Always","Auto","Never"]}),
+                    ),
+                ],
+                &["name"],
+            )
+        };
+        let (key, inner, target, effect, example_args) = match op {
+            "dataSource.add" | "dataSource.set" => {
+                let mut kind = json!({"type":"string","enum":["Local","External"]});
+                if op.ends_with("add") {kind["default"]=json!("Local");}
+                (if op.ends_with("add"){"items"}else{"values"},object(&[("name",text(true)),("kind",kind)],if op.ends_with("add"){&["name"][..]}else{&["name","kind"][..]}),schema_target,if op.ends_with("add"){"Add a new named source; an existing name is refused."}else{"Change only the kind of an existing named source. A missing name is refused; create it with dataSource.add."},if op.ends_with("add"){json!({"items":[{"name":"Database"}]})}else{json!({"values":{"name":"Database","kind":"Local"}})})
+            }
+            "dataSource.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove an unused named source; a referenced source is refused.",json!({"values":{"name":"Unused"}})),
+            "dataSet.add" => {
+                let inner=object(&[("name",text(true)),("kind",json!({"type":"string","enum":["Query","Object","Union"],"default":"Query"})),("dataSource",text(true)),("query",text(true)),("objectName",text(true))],&["name"]);
+                ("items",inner,"DCS Template adds a top-level dataset; an existing Union DataSet adds one member.","Create one Query/Object/Union dataset. Query requires dataSource and query; Object requires dataSource and objectName; Union members are separate dataSet.add operations. Add fields separately.",json!({"items":[{"name":"Data","kind":"Query","dataSource":"ИсточникДанных1","query":"ВЫБРАТЬ 1 КАК Amount"}]}))
+            }
+            "dataSet.set" => ("values",object(&[("dataSource",text(true)),("objectName",text(true)),("autoFillFields",json!({"type":"boolean"}))],&[]),data_target,"Update only supplied dataset properties; changing its kind is refused.",json!({"values":{"autoFillFields":false}})),
+            "dataSet.remove" => ("",json!({}),data_target,"Remove the addressed dataset. No dependent fields, links or variant settings are implicitly rewritten.",json!({})),
+            "field.add" => {
+                let mut inner=field_head(&["dataPath","name"],&[]);inner["properties"]["title"]=title.clone();inner["properties"]["field"]=text(true);
+                for key in ["useRestriction","attributeUseRestriction"]{inner["properties"][key]=restriction.clone();}
+                inner["properties"]["presentationExpression"]=text(false);
+                ("items",inner,data_target,"Add dataset fields. Existing dataPath is unchanged. Selection is a separate operation.",json!({"items":[{"dataPath":"Added","title":"Added [шт]"}]}))
+            }
+            "field.set" => {
+                let mut inner=field_head(&["field","dataPath","name"],&[]);inner["properties"]["title"]=title.clone();
+                for key in ["useRestriction","attributeUseRestriction"]{inner["properties"][key]=restriction.clone();}
+                inner["properties"]["presentationExpression"]=text(false);inner["properties"]["sourceField"]=text(true);
+                ("values",inner,data_target,"Update only supplied field mapping/title/type/restrictions/presentation expression. Query fields derive their type from query; field.set removes stale valueType on the selected Query field. Other field data remains.",json!({"values":{"field":"Amount","title":{"ru":"Сумма","en":"Amount"}}}))
+            }
+            "field.remove" | "parameter.remove" => ("",json!({}),if op=="field.remove"{data_target}else{schema_target},"Remove only the named terminal Field or Parameter. References and selections are separate operations.",json!({})),
             "fieldRole.set" => {
-                let role = json!({"type":"string","anyOf":[{"enum":DCS_ROLE_FLAGS},
-                    {"pattern":format!(r"^({0})=\S+(?:\s+({0})=\S+)*$",DCS_ROLE_KEYS.join("|"))}]});
-                let inner = aliases(object(&[("field",text(true)),("dataPath",text(true)),
-                    ("name",text(true)),("role",role)], &["role"]), &["field","dataPath","name"]);
-                ("values",inner,data,"Replace the existing field role with only the supplied role entries; previous entries are removed.",
-                    "The field uses alias precedence field, dataPath, name. role accepts one bare supported flag or whitespace-separated key=value entries. Copy any existing role entries that must remain. The editor validates values against the platform XSD; flags in the field name are not accepted.",
-                    json!({"values":{"field":"Amount","role":"dimension"}}))
+                let flags=object(&DCS_ROLE_KEYS.iter().map(|key|(*key,if DCS_ROLE_FLAGS.contains(key){json!({"type":"boolean"})}else{text(true)})).collect::<Vec<_>>(),&[]);
+                ("values",aliases(object(&[("field",text(true)),("dataPath",text(true)),("name",text(true)),("role",flags)],&["role"]),&["field","dataPath","name"]),data_target,"Replace field role with the supplied object. Values are validated against platform types; omitted role entries are removed.",json!({"values":{"field":"Amount","role":{"dimension":true}}}))
             }
-            "parameter.add" | "parameter.set" => {
-                let inner = object(&[("name",text(true)),("type",text(false)),("title",text(false)),("value",text(false))], &["name"]);
-                let (key, inner, example) = if op == "parameter.add" {
-                    ("items",items(inner),json!({"items":[{"name":"Period","type":"date"}]}))
-                } else {
-                    ("values",inner,json!({"values":{"name":"Period","title":"Period"}}))
-                };
-                (key,inner,parameter,"Add or update a schema parameter; inspect the Parameter collection after execution.",
-                    "value is a string, not arbitrary JSON; empty optional strings are ignored. Hidden/autoDates/availableValues flags of the old DSL are not supported by these typed arguments.",example)
-            }
-            "filter.add" => {
-                let comparison = json!({"type":"string","default":"Equal","enum":[
-                    "Equal","NotEqual","Greater","GreaterOrEqual","Less","LessOrEqual",
-                    "Contains","NotContains","BeginsWith","NotBeginsWith","InList","NotInList",
-                    "InHierarchy","InListByHierarchy","Filled","NotFilled"]});
-                ("items",items(aliases(object(&[("field",text(true)),("dataPath",text(true)),
-                    ("comparison",comparison),("value",json!({}))], &[]), &["field","dataPath"])),setting,
-                    "Add variant filters, preserving existing filters.",
-                    "The first supplied alias wins: field, then dataPath; it must not be empty. Omitted comparison is Equal. Omitted value is empty text; a JSON value is serialized by the editor. This operation does not expose the legacy group/user-setting DSL.",
-                    json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]}))
-            }
-            "selection.add" => ("items",items(aliases(object(&[("field",text(true)),("dataPath",text(true))], &[]), &["field","dataPath"])),setting,
-                "Add selected fields to the variant.","field precedes dataPath; read dataset fields before selecting.",json!({"items":[{"field":"Amount"}]})),
+            "parameter.add" | "parameter.set" => (if op.ends_with("add"){"items"}else{"values"},parameter(),schema_target,if op.ends_with("add"){"Add a new schema parameter. Parameters for dates and their expressions are explicit separate operations."}else{"Patch only supplied properties of an existing schema parameter. A missing parameter is refused; create it with parameter.add."},if op.ends_with("add"){json!({"items":[{"name":"Period","type":"date"}]})}else{json!({"values":{"name":"Period","title":"Period"}})}),
+            "parameter.rename" => ("values",object(&[("name",text(true)),("newName",text(true))],&["name","newName"]),schema_target,"Rename the parameter declaration only. References are explicit query/expression operations in the same batch.",json!({"values":{"name":"Period","newName":"ReportPeriod"}})),
+            "parameter.reorder" => ("items",object(&[("name",text(true))],&["name"]),schema_target,"Reorder all schema parameter elements by the supplied complete unique list. Comments and all other nodes stay in their original slots.",json!({"items":[{"name":"Period"}]})),
             "calculatedField.add" => {
-                let mut inner = field_head(&["name","dataPath"], &[]);
-                inner["properties"]["expression"] = text(true);
-                inner["required"] = json!(["expression"]);
-                ("items",items(inner),data,"Add schema calculated fields.",
-                    "The first supplied alias wins: name, then dataPath; it must not be empty. expression is literal expression text; legacy restriction flags are not typed fields.",
-                    json!({"items":[{"name":"DoubleAmount","expression":"Amount * 2"}]}))
+                let mut inner=aliases(object(&[("name",text(true)),("dataPath",text(true)),("expression",text(true)),("title",title.clone()),("type",text(false))],&["expression"]),&["name","dataPath"]);
+                inner["properties"]["useRestriction"]=restriction.clone();
+                ("items",inner,schema_target,"Add a calculated field; selection is independent.",json!({"items":[{"name":"DoubleAmount","expression":"Amount * 2"}]}))
             }
-            "total.add" => ("items",items(aliases(object(&[("field",text(true)),("dataPath",text(true)),("expression",text(false))], &[]), &["field","dataPath"])),setting,
-                "Add schema totals.","The first supplied alias wins: field, then dataPath; it must not be empty. Omitted or empty expression is Сумма(<field>); grouping associations are not exposed by this operation.",json!({"items":[{"field":"Amount","expression":"Сумма(Amount)"}]})),
-            "variant.add" => ("items",items(optional_aliases(object(&[("name",text(true)),("title",text(false)),("presentation",text(false))], &["name"]), &["title","presentation"])),setting,
-                "Add a settings variant.","title precedes presentation; optional empty titles are ignored.",json!({"items":[{"name":"Additional","title":"Additional"}]})),
-            "query.set" => ("values",aliases(object(&[("dataSet",text(false)),("query",text(true)),("text",text(true))], &[]), &["query","text"]),data,
-                "Replace the existing dataset query with supplied text.",
-                "The first supplied alias wins: query, then text; it must not be empty. dataSet overrides the dataset selected by the address. Supply text itself; @file is refused. A new template has no DataSet and cannot be populated by query.set.",
-                json!({"values":{"query":"ВЫБРАТЬ 1 КАК Amount"}})),
-            "query.patch" => ("values",object(&[("dataSet",text(false)),("find",text(true)),
-                ("replace",json!({"type":"string","default":""})),("once",json!({"type":"boolean","default":false}))], &["find"]),data,
-                "Replace matching query text; no matches fail. once=true requires exactly one match.",
-                "Empty replace deletes the matching text. dataSet overrides the address dataset. Matching uses decoded XML text; CDATA may become escaped text. XML comments/PI remain byte-for-byte; a marker within replaced text anchors to the replacement start. find/replace are text; editor control tokens ' => ' and @once are refused.",
-                json!({"values":{"find":"1 КАК Amount","replace":"2 КАК Amount","once":true}})),
-            "structure.set" | "structure.patch" => ("values",object(&[("variant",text(false)),
-                ("groupBy",json!({"type":"array","items":{"type":"string","pattern":r"\S"},"default":[]})),
-                ("details",json!({"type":"boolean","default":true}))], &[]),setting,
-                if op == "structure.set" {"Replace variant grouping structure."} else {"Change the grouping fields of existing named groups; an unknown or ambiguous group must fail without publication."},
-                "variant overrides the address variant; if neither supplies a name, the editor uses Основной (not the first variant). groupBy=[] creates details even with details=false. For patch, read Setting.Item and use a real unique group name in 'Amount @name=ExistingGroup'; warning/skip is not evidence of a change. Patch preserves other groups.",
-                if op == "structure.set" {json!({"values":{"groupBy":["Amount"],"details":true}})} else {json!({"values":{"groupBy":["Amount @name=ExistingGroup"],"details":false}})}),
-            "field.remove" | "parameter.remove" => ("",json!({}),
-                if op == "field.remove" {"A named existing DataSet.Field.<name>."} else {"A named existing DCS Parameter.<name>."},
-                "Remove the addressed field or parameter.","The terminal address supplies the name; no values/items payload is accepted.",json!({})),
-            "filter.clear" | "selection.clear" | "order.clear" | "conditionalAppearance.clear" => ("",json!({}),setting,
-                "Clear the entire corresponding variant collection.",
-                "This removes all items, not one chosen item. No values/items payload is accepted; read the result after saved-plan execution.",json!({})),
+            "total.add" => ("items",aliases(object(&[("field",text(true)),("dataPath",text(true)),("expression",text(false)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&[]),&["field","dataPath"]),schema_target,"Add a total with explicit expression/group. Omitted expression is Сумма(field).",json!({"items":[{"field":"Amount","expression":"Сумма(Amount)"}]})),
+            "total.remove" | "calculatedField.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove the named schema total/calculation only.",json!({"values":{"name":"Amount"}})),
+            "variant.add" | "variant.set" => (if op.ends_with("add"){"items"}else{"values"},optional_aliases(object(&[("name",text(true)),("title",title.clone()),("presentation",title.clone())],&["name"]),&["title","presentation"]),schema_target,if op.ends_with("add"){"Create an empty settings variant. Configure selection and structure separately."}else{"Change the presentation of an existing settings variant. A missing variant is refused; create it with variant.add."},if op.ends_with("add"){json!({"items":[{"name":"Additional","title":"Additional"}]})}else{json!({"values":{"name":"Additional","title":"Report"}})}),
+            "variant.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove the selected variant.",json!({"values":{"name":"Additional"}})),
+            "query.set" => ("values",aliases(object(&[("dataSet",text(false)),("query",text(true)),("text",text(true))],&[]),&["query","text"]),data_target,"Replace query text. Supply literal text, not @file.",json!({"values":{"query":"ВЫБРАТЬ 1 КАК Amount"}})),
+            "query.patch" => ("values",object(&[("dataSet",text(false)),("find",text(true)),("replace",json!({"type":"string","default":""})),("once",json!({"type":"boolean","default":false}))],&["find"]),data_target,"Patch decoded query text. No matches fail; once=true requires exactly one. Comments/PI are preserved; a marker within replaced text anchors to replacement start.",json!({"values":{"find":"1 КАК Amount","replace":"2 КАК Amount","once":true}})),
+            "filter.add" | "filter.set" => (if op.ends_with("add"){"items"}else{"values"},filter(),setting_target,"Add a filter or patch one uniquely selected by field. Literal strings retain @, brackets and comparison words. Set requires a unique match.",if op.ends_with("add"){json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]})}else{json!({"values":{"field":"Amount","comparison":"Greater","value":1}})}),
+            "filter.remove" => ("values",object(&[("field",text(true)),("group",text(true))],&["field"]),setting_target,"Remove one uniquely selected filter; multiple matches fail.",json!({"values":{"field":"Amount"}})),
+            "selection.add" | "order.add" => {
+                let mut inner=optional_aliases(object(&[("field",text(true)),("dataPath",text(true)),("kind",json!({"type":"string","enum":["Field","Auto"],"default":"Field"})),("group",text(true))],&[]),&["field","dataPath"]);
+                if op=="order.add" {inner["properties"]["direction"]=json!({"type":"string","enum":["Asc","Desc"],"default":"Asc"});}
+                ("items",inner,setting_target,"Add one explicit Field or Auto selection/order item. Field requires field; Auto has no field. Use index selectors for anonymous Auto items.",json!({"items":[{"field":"Amount"}]}))
+            }
+            "filter.clear" | "selection.clear" | "order.clear" | "conditionalAppearance.clear" => ("values",object(&[("group",text(true))],&[]),setting_target,"Clear the selected collection's elements. The collection's attributes/comments stay; an absent collection is unchanged.",json!({"values":{}})),
+            "dataParameter.add" | "dataParameter.set" | "outputParameter.set" => (if op=="dataParameter.add"{"items"}else{"values"},object(&[("name",text(true)),("value",typed_value.clone()),("valueType",text(true)),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",title.clone()),("group",text(true))],if op=="dataParameter.add"{&["name","value"][..]}else{&["name"][..]}),setting_target,"Set only supplied variant data/output parameter properties. Typed defaults, NULL, periods, references and localized values preserve their platform type; schema parameter declarations remain separate.",if op=="dataParameter.add"{json!({"items":[{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}]})}else{json!({"values":{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}})}),
+            "conditionalAppearance.add" => {
+                let mut condition = filter();
+                condition["properties"].as_object_mut().unwrap().remove("group");
+                condition["properties"]["comparison"]["default"] = json!("Equal");
+                ("items",object(&[("fields",strings.clone()),("filter",json!({"type":"array","items":condition})),("use",json!({"type":"boolean"})),("appearance",json!({"type":"object","minProperties":1,"additionalProperties":appearance_value.clone()})),("group",text(true))],&["fields","appearance"]),setting_target,"Add conditional appearance with explicit use, comparisons and typed value atoms. Formatting does not change field values.",json!({"items":[{"fields":["Amount"],"use":false,"appearance":{"Формат":{"valueType":"v8:LocalStringType","value":{"ru":"ЧДЦ=2"}}}}]}))
+            }
+            "structure.add" => ("items",structure(),setting_target,"Add one named group/table/chart; parent selects an existing unique item, axis selects its row/column/point/series. Add each child with a separate operation.",json!({"items":[{"name":"ByAmount","kind":"group","groupBy":["Amount"]}]})),
+            "structure.set" => ("values",object(&[("variant",text(false)),("name",text(true)),("groupBy",json!({"type":"array","items":text(true),"default":[]})),("details",json!({"type":"boolean","default":true}))],&[]),setting_target,"Replace the variant structure with one group and optional nested details. groupBy=[] is a details group; use structure.add for tables/charts and nested composition.",json!({"values":{"name":"ByAmount","groupBy":["Amount"],"details":true}})),
+            "structure.patch" => ("values",object(&[("variant",text(false)),("name",text(true)),("groupBy",strings.clone())],&["name","groupBy"]),setting_target,"Patch groupBy of one uniquely named group. Other structure and settings are preserved. Names and fields are separate operands.",json!({"values":{"name":"ExistingGroup","groupBy":["Amount"]}})),
+            "structure.remove" => ("values",object(&[("name",text(true))],&["name"]),setting_target,"Remove a unique named structure item and its children.",json!({"values":{"name":"ExistingGroup"}})),
+            "calculatedField.set" => ("values",object(&[("name",text(true)),("expression",text(true)),("title",title.clone()),("type",text(true)),("useRestriction",restriction.clone())],&["name"]),schema_target,"Patch only supplied calculation properties.",json!({"values":{"name":"DoubleAmount","expression":"Amount * 3"}})),
+            "total.set" => ("values",object(&[("field",text(true)),("expression",text(true)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&["field"]),schema_target,"Patch supplied total expression/group.",json!({"values":{"field":"Amount","expression":"Максимум(Amount)"}})),
+            "selection.set" | "order.set" => {
+                let mut inner=object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0})),("group",text(true)),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",text(false))],&[]);
+                if op=="order.set"{inner["properties"]["direction"]=json!({"type":"string","enum":["Asc","Desc"]});}
+                ("values",inner,setting_target,"Patch one uniquely selected field item, preserving unspecified settings.",json!({"values":{"field":"Amount","use":false}}))
+            }
+            "selection.remove" | "order.remove" => ("values",object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0})),("group",text(true))],&[]),setting_target,"Remove one uniquely selected field item.",json!({"values":{"field":"Amount"}})),
+            "dataParameter.remove" | "outputParameter.remove" => ("values",object(&[("name",text(true)),("group",text(true))],&["name"]),setting_target,"Remove the uniquely named settings parameter.",json!({"values":{"name":"Period"}})),
+            "conditionalAppearance.remove" => ("values",object(&[("index",json!({"type":"integer","minimum":0})),("group",text(true))],&["index"]),setting_target,"Remove the zero-based appearance item from the captured settings image; read props before selecting.",json!({"values":{"index":0}})),
+            "dataSetLink.set" | "dataSetLink.remove" => ("values",object(&[("selector",object(&[("source",text(true)),("destination",text(true)),("sourceExpression",text(true)),("destinationExpression",text(true))],&["source","destination","sourceExpression","destinationExpression"])),("parameter",text(true)),("parameterListAllowed",json!({"type":"boolean"})),("required",json!({"type":"boolean"})),("condition",text(false)),("startExpression",text(false))],&["selector"]),schema_target,"Select one unique dataset link by its endpoints and expressions. Patch only supplied properties or remove the selected link.",json!({"values":{"selector":{"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount"},"condition":"Amount > 0"}})),
+            "dataSetLink.add" => ("items",object(&[("source",text(true)),("destination",text(true)),("sourceExpression",text(true)),("destinationExpression",text(true)),("parameter",text(true)),("parameterListAllowed",json!({"type":"boolean"})),("required",json!({"type":"boolean"})),("condition",text(false)),("startExpression",text(false))],&["source","destination","sourceExpression","destinationExpression"]),schema_target,"Add one dataset link between existing top-level datasets.",json!({"items":[{"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount"}]})),
             _ => return None,
         };
+        let mut inner = inner;
+        if op.starts_with("selection.")
+            && matches!(op, "selection.add" | "selection.set" | "selection.remove")
+        {
+            inner["properties"]["parentIndexes"] =
+                json!({"type":"array","items":{"type":"integer","minimum":0}});
+            if op == "selection.add" {
+                inner["properties"]["kind"]["enum"] = json!(["Field", "Auto", "Folder"]);
+                inner["properties"]["title"] = title.clone();
+            }
+        }
+        if op == "variant.set" {
+            inner["anyOf"] = json!([{"required":["title"]},{"required":["presentation"]}]);
+        }
+        if matches!(op, "structure.add" | "structure.patch" | "structure.set") {
+            let props = inner["properties"]
+                .as_object_mut()
+                .expect("structure object");
+            props.insert("use".into(), json!({"type":"boolean"}));
+            for key in [
+                "columnsViewMode",
+                "rowsViewMode",
+                "pointsViewMode",
+                "seriesViewMode",
+                "itemsViewMode",
+                "viewMode",
+            ] {
+                props.insert(
+                    key.into(),
+                    json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]}),
+                );
+            }
+            props.insert("userSettingID".into(), text(true));
+            props.insert("userSettingPresentation".into(), title.clone());
+            if op == "structure.patch" {
+                inner["required"] = json!(["name"]);
+            }
+        }
+        let inner = if key == "items" { items(inner) } else { inner };
         let mut fields = vec![("at", text(true))];
         let required = if key.is_empty() {
             vec![]
         } else {
             fields.push((key, inner));
-            vec![key]
+            if op.ends_with("clear") {
+                vec![]
+            } else {
+                vec![key]
+            }
         };
-        Some(Self {
-            schema: object(&fields, &required),
-            target,
-            effect,
-            notes,
-            example_args,
-        })
+        Some(Self{schema:object(&fields,&required),target,effect,
+            notes:"Operands are structured values. There is no shorthand or whole-schema JSON input. Unspecified properties and unrelated XML bytes are preserved; create template.add first, then compose operations. Preview makes no writes; execute its executionToken, read the post-image and check the template.",example_args,help:REPORTS_HELP})
     }
 
     pub(crate) fn mxl(op: &str) -> Option<Self> {
@@ -241,6 +384,7 @@ impl OperationContract {
             effect,
             notes,
             example_args,
+            help: REPORTS_HELP,
         })
     }
 
@@ -256,8 +400,304 @@ impl OperationContract {
         json!({"argsSchema":self.schema,"target":self.target,"effect":self.effect,
             "notes":self.notes,"exampleArgs":self.example_args,
             "exampleUse":"Read existing targets and required names through view. For creation, choose a new unused name. These argument examples do not establish that their names exist in this workspace.",
-            "help":{"scope":"plugin","path":"references/use-cases/reports-printing.md"},
+            "help":{"scope":"plugin","path":self.help},
             "execution":"Preview with at/ops; execute only data.executionToken from the successful plan, then read the post-image and check. Observe the same Task to terminal state; never repeat a mutation to wait for it."})
+    }
+}
+
+/// The node a metadata member contract is asked for: the owner kind and
+/// whether the address lies inside a tabular section. Field legality that
+/// depends on them (fill values, predefined-item fields) is published only
+/// for the node it holds on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MetadataSite {
+    pub(crate) owner: crate::domain::metadata::MetadataKind,
+    pub(crate) in_section: bool,
+}
+
+/// `fillValue` is accepted for `collection` at `site`; without a site, for any
+/// owner that has the collection.
+fn fill_value_allowed(
+    collection: crate::domain::metadata::MetaCollection,
+    site: Option<MetadataSite>,
+) -> bool {
+    use crate::domain::metadata::{
+        metadata_collection_spec, metadata_fill_value_is_allowed, MetaElementScope,
+    };
+    match site {
+        None => metadata_collection_spec(collection).allows_fill_value,
+        Some(site) => metadata_fill_value_is_allowed(
+            site.owner,
+            collection,
+            if site.in_section {
+                MetaElementScope::TabularSection
+            } else {
+                MetaElementScope::TopLevel
+            },
+        ),
+    }
+}
+
+const IDENTIFIER_PATTERN: &str = r"^[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$";
+
+/// Typed collection of a member operation of a metadata object.
+fn metadata_member_collection(family: &str) -> Option<crate::domain::metadata::MetaCollection> {
+    use crate::domain::metadata::MetaCollection;
+    Some(match family {
+        "attribute" => MetaCollection::Attributes,
+        "tabularSection" => MetaCollection::TabularSections,
+        "dimension" => MetaCollection::Dimensions,
+        "resource" => MetaCollection::Resources,
+        "enumValue" => MetaCollection::EnumValues,
+        "column" => MetaCollection::Columns,
+        "command" => MetaCollection::Commands,
+        _ => return None,
+    })
+}
+
+/// JSON Schema of one collection element: exactly the fields the typed
+/// metadata writer accepts for this collection. `update` describes the
+/// changed fields of an existing member, named by the address.
+fn metadata_element_schema(
+    collection: crate::domain::metadata::MetaCollection,
+    update: bool,
+    site: Option<MetadataSite>,
+) -> Value {
+    use crate::domain::metadata::{
+        fill_value_schema, metadata_collection_spec, metadata_type_schema, position_schema,
+        MetaCollection,
+    };
+    let spec = metadata_collection_spec(collection);
+    let identifier = json!({"type":"string","pattern":IDENTIFIER_PATTERN});
+    let mut fields = Map::new();
+    if update {
+        fields.insert("newName".into(), identifier);
+    } else {
+        fields.insert("name".into(), identifier);
+    }
+    fields.insert("synonym".into(), json!({"type":"string"}));
+    fields.insert("comment".into(), json!({"type":"string"}));
+    if spec.allows_type {
+        fields.insert("type".into(), metadata_type_schema());
+    }
+    if spec.allows_required {
+        fields.insert("required".into(), json!({"type":"boolean"}));
+    }
+    if fill_value_allowed(collection, site) {
+        fields.insert("fillValue".into(), fill_value_schema());
+    }
+    if spec.allows_position {
+        fields.insert("position".into(), position_schema());
+    }
+    if spec.allows_indexing {
+        fields.insert(
+            "indexing".into(),
+            json!({"type":"string","enum":["DontIndex","Index","IndexWithAdditionalOrder"]}),
+        );
+    }
+    if spec.allows_nested_attributes && !update {
+        fields.insert(
+            "attributes".into(),
+            json!({"type":"array","minItems":1,
+                "items":metadata_element_schema(MetaCollection::Attributes, false,
+                    site.map(|site| MetadataSite { in_section: true, ..site }))}),
+        );
+    }
+    let mut schema = json!({"type":"object","additionalProperties":false,"properties":fields});
+    if update {
+        schema["minProperties"] = json!(1);
+    } else {
+        schema["required"] = json!(["name"]);
+    }
+    schema
+}
+
+/// Fields of a predefined item: `add` names a new item with its `id`, `set`
+/// changes an existing one, named by the address (a rename is `newName`).
+/// With an owner kind only the fields that kind accepts are published.
+fn predefined_item_schema(
+    update: bool,
+    owner: Option<crate::domain::metadata::MetadataKind>,
+) -> Value {
+    use crate::domain::metadata::{metadata_predefined_kind_fields, metadata_type_schema};
+    let mut fields = Map::new();
+    if update {
+        fields.insert(
+            "newName".into(),
+            json!({"type":"string","pattern":IDENTIFIER_PATTERN}),
+        );
+    } else {
+        fields.insert(
+            "id".into(),
+            json!({"type":"string","pattern":"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"}),
+        );
+        fields.insert(
+            "name".into(),
+            json!({"type":"string","pattern":IDENTIFIER_PATTERN}),
+        );
+    }
+    let kind_fields = owner.map(metadata_predefined_kind_fields);
+    for (name, schema) in [
+        ("code", json!({"type":"string"})),
+        ("description", json!({"type":"string"})),
+        ("isFolder", json!({"type":"boolean"})),
+        ("type", metadata_type_schema()),
+        (
+            "accountType",
+            json!({"type":"string","enum":["Active","Passive","ActivePassive"]}),
+        ),
+        ("offBalance", json!({"type":"boolean"})),
+        ("order", json!({"type":"string"})),
+        (
+            "accountingFlags",
+            json!({"type":"object","additionalProperties":{"type":"boolean"}}),
+        ),
+        (
+            "extDimensionTypes",
+            json!({"type":"array","items":{"type":"object","additionalProperties":false,
+                "required":["name"],"properties":{"name":{"type":"string","minLength":1},
+                "turnover":{"type":"boolean"},
+                "accountingFlags":{"type":"object","additionalProperties":{"type":"boolean"}}}}}),
+        ),
+        ("actionPeriodIsBase", json!({"type":"boolean"})),
+    ] {
+        let common = matches!(name, "code" | "description");
+        if common || kind_fields.is_none_or(|allowed| allowed.contains(&name)) {
+            fields.insert(name.into(), schema);
+        }
+    }
+    let mut schema = json!({"type":"object","additionalProperties":false,"properties":fields});
+    if update {
+        schema["minProperties"] = json!(1);
+    } else {
+        schema["required"] = json!(["id", "name"]);
+    }
+    schema
+}
+
+impl OperationContract {
+    /// Contracts of the member operations of a metadata object: `*.add` on
+    /// the owner (attributes also on a tabular section), `*.set` and
+    /// `*.remove` on the member itself. The schema publishes the fields the
+    /// typed writer accepts for the collection; the planner parses the same
+    /// arguments with the writer's own request parser.
+    pub(crate) fn metadata(op: &str) -> Option<Self> {
+        Self::metadata_at(op, None)
+    }
+
+    /// The contract on a concrete node: fields whose legality depends on the
+    /// owner kind or on the tabular section are narrowed to that node.
+    pub(crate) fn metadata_at(op: &str, site: Option<MetadataSite>) -> Option<Self> {
+        let (family, verb) = op.split_once('.')?;
+        let owner = site.map(|site| site.owner);
+        let at = || ("at", text(true));
+        if family == "predefinedItem" {
+            let (schema, target, effect, example_args) = match verb {
+                "add" => (
+                    object(&[at(), ("items", json!({"type":"array","minItems":1,"items":predefined_item_schema(false, owner)}))], &["items"]),
+                    "A metadata object with predefined items: <source-set>:<Kind>.<Name>. Read its PredefinedItem branch first; a new item needs a new UUID id and a new name.",
+                    "Add predefined items to Ext/Predefined.xml of the owner; the file is created with the first item.",
+                    json!({"items":[{"id":"a1b2c3d4-1111-4111-8111-111111111111","name":"Sample","description":"Sample item"}]}),
+                ),
+                "set" => (
+                    object(&[at(), ("values", predefined_item_schema(true, owner))], &["values"]),
+                    "The existing item: <source-set>:<Kind>.<Name>.PredefinedItem.<ItemName>. The id is not an input.",
+                    "Change the listed fields of the item; newName renames it. Unlisted fields stay.",
+                    json!({"values":{"description":"Sample item"}}),
+                ),
+                "remove" => (
+                    object(&[at()], &[]),
+                    "The existing item: <source-set>:<Kind>.<Name>.PredefinedItem.<ItemName>.",
+                    "Remove the item with its nested items; the file is removed with the last item.",
+                    json!({}),
+                ),
+                _ => return None,
+            };
+            return Some(Self {
+                schema,
+                target,
+                effect,
+                notes: "Predefined items are named by their address; there is no id or name selector argument. Item names are unique within the owner at every depth; an add or rename onto a used name is refused. The fields beyond code and description depend on the owner kind.",
+                example_args,
+                help: METADATA_HELP,
+            });
+        }
+        if family == "template" {
+            let (schema, effect, example_args) = match verb {
+                "set" => (
+                    object(&[at(), ("values", json!({"type":"object","additionalProperties":false,"minProperties":1,
+                        "properties":{"synonym":{"type":"string"},"comment":{"type":"string"},
+                            "templateType":{"type":"string","enum":crate::domain::metadata::MetaTemplateKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()}}}))], &["values"]),
+                    "Change the listed properties of the template descriptor. Unlisted properties stay.",
+                    json!({"values":{"synonym":"Sample"}}),
+                ),
+                "remove" => (
+                    object(&[at()], &[]),
+                    "Remove the template descriptor and its content, and clear owner properties that pointed at it.",
+                    json!({}),
+                ),
+                _ => return None,
+            };
+            return Some(Self {
+                schema,
+                target: "The existing template: <source-set>:<Kind>.<Name>.Template.<T>.",
+                effect,
+                notes: "The template is named by its address; there is no name argument.",
+                example_args,
+                help: METADATA_HELP,
+            });
+        }
+        let collection = metadata_member_collection(family)?;
+        let (schema, target, effect, notes, example_args) = match verb {
+            "add" => {
+                let target = if family == "attribute" {
+                    "A metadata object with attributes: <source-set>:<Kind>.<Name> adds header attributes; <source-set>:<Kind>.<Name>.TabularSection.<T> adds attributes of that tabular section."
+                } else {
+                    "A metadata object with this collection: <source-set>:<Kind>.<Name>."
+                };
+                let example = match family {
+                    "attribute" | "dimension" => json!({"items":[{"name":"Sample",
+                        "type":{"variants":[{"kind":"string","length":50,"allowedLength":"variable"}]}}]}),
+                    // Ресурс регистра накопления числовой: пример годится всем регистрам.
+                    "resource" => json!({"items":[{"name":"Sample",
+                        "type":{"variants":[{"kind":"number","digits":15,"fraction":2,"sign":"any"}]}}]}),
+                    _ => json!({"items":[{"name":"Sample"}]}),
+                };
+                (
+                    object(&[at(), ("items", json!({"type":"array","minItems":1,"items":metadata_element_schema(collection, false, site)}))], &["items"]),
+                    target,
+                    "Add new members after the existing ones, or at position.before/position.after an existing sibling. A name already used in the collection is refused.",
+                    "Read the collection branch of the target before choosing a new valid 1C identifier. A new node is addressable only after the plan is executed; within one apply call a later operation may already address it. Cross-field rules — fillValue needs an explicit type and must match it — are checked by the planner, not by this schema.",
+                    example,
+                )
+            }
+            "set" => (
+                object(&[at(), ("values", metadata_element_schema(collection, true, site))], &["values"]),
+                match family {
+                    "attribute" => "The existing attribute: <source-set>:<Kind>.<Name>.Attribute.<A> or <source-set>:<Kind>.<Name>.TabularSection.<T>.Attribute.<A>.",
+                    _ => "The existing member at its own address: <source-set>:<Kind>.<Name>.<Leaf>.<Member>.",
+                },
+                "Change the listed fields of the member; newName renames it. Unlisted fields stay.",
+                "The member is named by its address, not by values.name. Read the member first. Cross-field rules — fillValue must match the member type — are checked by the planner, not by this schema.",
+                json!({"values":{"synonym":"Sample"}}),
+            ),
+            "remove" => (
+                object(&[at()], &[]),
+                "The existing member at its own address: <source-set>:<Kind>.<Name>.<Leaf>.<Member>.",
+                "Remove the member from its owner.",
+                "The member is named by its address; the operation takes no other arguments.",
+                json!({}),
+            ),
+            _ => return None,
+        };
+        Some(Self {
+            schema,
+            target,
+            effect,
+            notes,
+            example_args,
+            help: METADATA_HELP,
+        })
     }
 }
 
@@ -553,7 +993,7 @@ mod tests {
             assert!(serde_json::to_vec(&contract.details()).unwrap().len() < 16 * 1024);
             count += 1;
         }
-        assert_eq!(count, 20);
+        assert_eq!(count, 53);
     }
 
     #[test]
@@ -565,7 +1005,7 @@ mod tests {
                 .unwrap(),
             json!({"values":{"find":"old","replace":"","once":false}})
         );
-        let structure = OperationContract::dcs("structure.patch").unwrap();
+        let structure = OperationContract::dcs("structure.set").unwrap();
         assert_eq!(
             structure.normalize(&json!({"values":{}}), "args").unwrap(),
             json!({"values":{"groupBy":[],"details":true}})
@@ -588,36 +1028,20 @@ mod tests {
         }
         let role = OperationContract::dcs("fieldRole.set").unwrap();
         for value in [
-            "dimension",
-            "period",
-            "dimension=false",
-            "periodType=Main",
-            "balanceType=OpeningBalance",
-            "parentDimension=Parent",
-            "accountTypeExpression=Type",
-            "balanceGroupName=Amount",
-            "accountField=Account",
-            "dimension=true parentDimension=Parent accountField=Account",
+            json!({"dimension":true}),
+            json!({"periodType":"Main"}),
+            json!({"balanceType":"OpeningBalance"}),
+            json!({"parentDimension":"Parent","accountField":"Account"}),
         ] {
-            assert!(
-                role.normalize(&json!({"values":{"field":"Amount","role":value}}), "args")
-                    .is_ok(),
-                "{value}"
-            );
+            assert!(role
+                .normalize(&json!({"values":{"field":"Amount","role":value}}), "args")
+                .is_ok());
         }
-        for value in [
-            "@dimension",
-            "dimension autoOrder",
-            "unknown",
-            "unknown=true",
-            "dimension=",
-            "dimension=true extra",
-        ] {
-            assert!(
-                role.normalize(&json!({"values":{"field":"Amount","role":value}}), "args")
-                    .is_err(),
-                "{value}"
-            );
-        }
+        assert!(role
+            .normalize(
+                &json!({"values":{"field":"Amount","role":"dimension"}}),
+                "args"
+            )
+            .is_err());
     }
 }

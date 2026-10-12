@@ -10,7 +10,7 @@ check:
   - crates/unica-coder/tests/daemon_receipt_ledger/frontend_restart.rs::compatibility_completed_task_survives_daemon_process_restart
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_do_not_replace_open_frontend_cutoff_with_125ms
   - crates/unica-coder/src/interfaces/mcp.rs::compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exchange
-gap: https://github.com/IngvarConsulting/unica/issues/928
+  - crates/unica-coder/src/infrastructure/daemon/client_v5.rs::task_exchange_post_parse_expiry_wins_for_valid_and_malformed_frames
 ---
 
 # Compatibility Task возвращает сохранённое состояние без нового исполнения
@@ -38,8 +38,6 @@ gap: https://github.com/IngvarConsulting/unica/issues/928
 не публикуется, а его соединение закрывается для повторного использования.
 Срок проверяется и после разбора ответа: если он истёк при разборе,
 корректность полученных данных уже не меняет причину отказа.
-Проверка этого случая для корректного и некорректного ответа пока отсутствует;
-разрыв учтён в `gap`.
 
 Проверка сочетает MCP-вызовы с управляемыми обработчиками и сокетами
 с настоящим перезапуском runtime v5 поверх сохранённого состояния.

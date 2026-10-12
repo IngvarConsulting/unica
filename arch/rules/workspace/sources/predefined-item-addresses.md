@@ -2,7 +2,13 @@
 id: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::predefined_items_answer_by_address_with_the_count_from_the_reader
-gap: https://github.com/IngvarConsulting/unica/issues/932
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::predefined_items_beyond_first_page_answer_by_address
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::predefined_items_pages_preserve_complete_document_order
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::predefined_items_empty_inapplicable_and_unreadable_are_distinct
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::predefined_items_cursor_replays_after_source_removal
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::predefined_items_refuse_file_and_snapshot_budget_without_cursor
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::predefined_items_checkpoint_preserves_cancellation_and_deadline
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::predefined_items_other_owner_fields_survive_addressed_reads
 ---
 
 # Предопределённый элемент доступен по адресу независимо от страницы
@@ -15,7 +21,3 @@ gap: https://github.com/IngvarConsulting/unica/issues/932
 Список выдаётся страницами без потери хвоста. Вложенные элементы идут
 в плоском документном порядке со ссылкой на родителя. Вид, у которого
 предопределённых элементов быть не может, не получает эту коллекцию.
-
-Существующая проверка охватывает один элемент и неприменимый вид владельца.
-Сейчас чтение по адресу и листание ограничены первыми 50 элементами;
-полный счёт и доступ ко всему списку требуют проверок из `gap`.

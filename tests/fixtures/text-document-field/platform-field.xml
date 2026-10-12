@@ -1,7 +1,6 @@
-<ns0:TextDocumentField xmlns:ns0="http://v8.1c.ru/8.3/xcf/logform" name="ProtocolField" id="59">
-							<ns0:DataPath>Протокол</ns0:DataPath>
-							<ns0:TitleLocation>None</ns0:TitleLocation>
-							<ns0:ContextMenu name="ProtocolContextMenu" id="60" />
-							<ns0:ExtendedTooltip name="ProtocolExtendedTooltip" id="61" />
-						</ns0:TextDocumentField>
-					
+<TextDocumentField name="Протокол1" id="59">
+							<DataPath>Протокол</DataPath>
+							<TitleLocation>None</TitleLocation>
+							<ContextMenu name="Протокол1КонтекстноеМеню" id="60"/>
+							<ExtendedTooltip name="Протокол1РасширеннаяПодсказка" id="61"/>
+						</TextDocumentField>

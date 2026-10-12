@@ -16,7 +16,7 @@ current wording with `unica.docs` with `source: "development-standard"` before c
 
 - **Information register** stores state keyed by dimensions: prices, rates,
   settings, links. Periodic when the value has a history worth querying by date.
-- **Accumulation register, `RegisterType = Balances`** stores quantities that
+- **Accumulation register, `RegisterType = Balance`** stores quantities that
   come in and go out. It yields balance, turnover, and combined virtual tables.
 - **Accumulation register, `RegisterType = Turnovers`** accumulates turnovers
   only. Balance is meaningless for it, and it yields one virtual table.
@@ -36,7 +36,7 @@ document writes all of them.
   attribute is accompanying information that is never a key and never summed.
   Putting a value in the wrong slot is the defect that is most expensive to
   correct later, because it changes the stored table.
-- For a `Balances` register a dimension is valid only when both receipt and
+- For a `Balance` register a dimension is valid only when both receipt and
   expense are always meaningful for it. A value that exists on receipts but not
   on expenses — a vendor on a goods receipt — belongs to a turnover register or
   to an attribute. Ignoring this produces balances that never net out.
@@ -125,7 +125,7 @@ register read on every screen refresh leans away from it.
 
 ## Stop Rules
 
-- Do not add a dimension to a `Balances` register that is meaningful on only one
+- Do not add a dimension to a `Balance` register that is meaningful on only one
   record direction.
 - Do not enable totals separation without naming the read path it costs, and do
   not disable it without naming the write contention it restores.

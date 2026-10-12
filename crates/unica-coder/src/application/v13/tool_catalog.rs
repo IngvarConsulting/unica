@@ -320,7 +320,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     input_schema: schema(
                         json!({
                             "query": {"type": "string", "description": "Literal BSL text, symbol, or metadata name to search for."},
-                            "corpus": {"type": "string", "enum": ["text", "names"], "description": "Where to search: `text` matches BSL module content and answers scope, line, column and snippet; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`.", "default": "text"},
+                            "corpus": {"type": "string", "enum": ["text", "names"], "description": "Where to search: `text` matches BSL module content and answers scope, line, column, snippet and the proven module address at; a hit without one carries unaddressed and fileId instead; `names` matches metadata names and synonyms and answers at, kind and title. Defaults to `text`.", "default": "text"},
                             "kind": {"type": "string", "description": "`names` corpus only: narrow the search to one logical node kind."},
                             "role": {"type": "string", "enum": ["lexical", "symbol", "semantic"], "description": "`text` corpus only: which provider answers. `lexical` matches literally, `symbol` uses the symbol index, `semantic` matches by meaning. Omit for the literal search Unica performs itself."},
                             "scope": logical_subtree_address(),

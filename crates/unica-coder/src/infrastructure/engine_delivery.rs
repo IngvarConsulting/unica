@@ -419,6 +419,37 @@ pub(crate) fn canonical_delivery_result(
     }
 }
 
+/// Состояние доставки движка `tool_name` для канонического маршрута.
+///
+/// Неудачная доставка, после которой движка нет, — тот же отказ «нет
+/// поставляемого движка»: рядом с классом сбоя доставки `data` несёт поля
+/// движка на шаге `delivery` (#549). Срок и внутренний сбой остаются своими
+/// кодами и полей движка не получают.
+pub(crate) fn canonical_engine_delivery_result(
+    state: EngineDeliveryState,
+    progress: &CanonicalDeliveryProgress,
+    plugin_root: &Path,
+    tool_name: &str,
+) -> Option<DomainResult> {
+    let mut result = canonical_delivery_result(state, progress)?;
+    let absent = result
+        .diagnostics
+        .first()
+        .and_then(|diagnostic| diagnostic.get("detailCode"))
+        == Some(&serde_json::Value::from(
+            RefusalDetail::ProviderAbsent.as_str(),
+        ));
+    if absent {
+        let engine = crate::infrastructure::bundled_tools::delivery_failure(plugin_root, tool_name);
+        if let (Some(serde_json::Value::Object(data)), serde_json::Value::Object(fields)) =
+            (result.data.as_mut(), engine.refusal_data())
+        {
+            data.extend(fields);
+        }
+    }
+    Some(result)
+}
+
 /// Разрешение с явно названным окружением: так его видно в тесте.
 fn order_for_in(
     plugin_root: &Path,
@@ -631,6 +662,46 @@ mod tests {
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("secret network URL"));
         assert!(!encoded.contains("private cache path"));
+    }
+
+    /// #549: неудачная доставка, после которой движка нет, — тот же отказ «нет
+    /// движка» с полями на шаге `delivery`; срок доставки остаётся своим кодом.
+    #[test]
+    fn a_failed_engine_delivery_carries_the_missing_engine_fields() {
+        let plugin_root = plugin_root_with_tool("delivery-fields");
+        let failed = |class| EngineDeliveryState::Failed {
+            artifact: "rlm-tools-bsl".to_string(),
+            failure: Arc::new(DeliveryFailure::new(class, "private cache path")),
+        };
+
+        let result = canonical_engine_delivery_result(
+            failed(DeliveryFailureClass::Network),
+            &CanonicalDeliveryProgress::default(),
+            &plugin_root,
+            "rlm-bsl-index",
+        )
+        .expect("failed delivery has a public refusal");
+        assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["delivery"]["failureClass"], "network");
+        assert_eq!(data["tool"], "rlm-bsl-index");
+        assert_eq!(data["stage"], "delivery");
+        assert_eq!(data["pinnedVersion"], "1.33.0");
+        assert_eq!(data["retryable"], false);
+        assert!(
+            data["target"].is_string() && data["path"].is_string(),
+            "{data}"
+        );
+
+        let timeout = canonical_engine_delivery_result(
+            failed(DeliveryFailureClass::Timeout),
+            &CanonicalDeliveryProgress::default(),
+            &plugin_root,
+            "rlm-bsl-index",
+        )
+        .unwrap();
+        assert_eq!(timeout.diagnostics[0]["code"], "deadline_exceeded");
+        assert!(timeout.data.as_ref().unwrap().get("tool").is_none());
     }
 
     /// Первая доставка движка за антивирусом: ОС не доверяет подменённому

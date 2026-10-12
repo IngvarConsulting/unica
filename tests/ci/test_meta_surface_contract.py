@@ -401,14 +401,18 @@ class MetaSurfaceContractTests(unittest.TestCase):
                 else:
                     self.assertNotRegex(contract, r"(?i)^\s*(?:the )?dsl (?:was )?removed")
 
-    def test_removed_register_type_is_absent_from_public_registry(self) -> None:
+    def test_register_type_is_a_typed_registry_property(self) -> None:
         ledger = json.loads(META_CAPABILITY_LEDGER.read_text(encoding="utf-8"))
         register_type = next(
             entry for entry in ledger if entry["legacyKey"] == "registerType"
         )
 
-        self.assertEqual(register_type["status"], "removed")
-        self.assertNotIn("RegisterType", registered_metadata_properties())
+        self.assertEqual(register_type["status"], "supported")
+        self.assertEqual(
+            register_type["typedOperation"],
+            "unica.meta.edit.setProperties.RegisterType",
+        )
+        self.assertIn("RegisterType", registered_metadata_properties())
 
     def test_live_rust_guidance_never_advertises_retired_meta_routes(self) -> None:
         retired_route = re.compile(

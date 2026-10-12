@@ -1629,3 +1629,66 @@ fn http_method_projection_accepts_every_8_3_27_enum_literal() {
         );
     }
 }
+
+/// Ссылка расширения на тип расширяемой конфигурации (`v8:TypeId`, #1361)
+/// читается как есть и закрыта для записи: имени типа у неё нет.
+#[test]
+fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
+    use crate::domain::metadata::{
+        MetadataMutationCapability, MetadataType, ObservedMetadataTypeVariant, StringLengthMode,
+    };
+    let properties = |type_children: &str| {
+        format!(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config"><Type>{type_children}</Type></Properties>"#
+        )
+    };
+    let single = properties("<v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId>");
+    let document = roxmltree::Document::parse(&single).unwrap();
+    let observed = parse_observed_metadata_type_node(document.root_element()).unwrap();
+    assert_eq!(
+        observed.variants,
+        vec![ObservedMetadataTypeVariant::TypeId {
+            type_id: "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f".to_string()
+        }]
+    );
+    assert_eq!(
+        observed.mutation_capability,
+        MetadataMutationCapability::ReadOnly
+    );
+    assert_eq!(
+        serde_json::to_value(&observed.variants[0]).unwrap(),
+        serde_json::json!({"kind": "typeId", "typeId": "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f"})
+    );
+    assert!(MetadataType::try_from(observed).is_err());
+
+    let composite = properties(
+        "<v8:Type>cfg:CatalogRef.Settings</v8:Type><v8:Type>xs:string</v8:Type><v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId><v8:TypeId>d7bc4697-f470-58f7-aca4-4e6bf45f9e69</v8:TypeId><v8:StringQualifiers><v8:Length>50</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers>",
+    );
+    let document = roxmltree::Document::parse(&composite).unwrap();
+    let observed = parse_observed_metadata_type_node(document.root_element()).unwrap();
+    assert_eq!(observed.variants.len(), 4);
+    assert_eq!(
+        observed.variants[1],
+        ObservedMetadataTypeVariant::String {
+            length: 50,
+            allowed_length: StringLengthMode::Variable
+        }
+    );
+    assert_eq!(
+        observed.mutation_capability,
+        MetadataMutationCapability::ReadOnly
+    );
+
+    for broken in [
+        "<v8:TypeId>not-a-uuid</v8:TypeId>",
+        "<v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId><v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId>",
+        "<v8:TypeId>41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f</v8:TypeId><v8:TypeId>41DBB66B-FF77-4B8F-AAF8-0CA2012D3A6F</v8:TypeId>",
+    ] {
+        let xml = properties(broken);
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        assert!(
+            parse_observed_metadata_type_node(document.root_element()).is_err(),
+            "{broken}"
+        );
+    }
+}

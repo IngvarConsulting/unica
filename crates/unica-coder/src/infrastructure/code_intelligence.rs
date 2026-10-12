@@ -654,7 +654,7 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                 }
                 section
             }
-            Err(error) if is_provider_unavailable_error(&error) => {
+            Err(error) if provider_engine_absent(&context.workspace.cwd, "bsl-analyzer") => {
                 unavailable_section(ProviderId::BslAnalyzer, error)
             }
             Err(error) => failed_section(ProviderId::BslAnalyzer, error),
@@ -872,7 +872,8 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                 return failed_section(ProviderId::Rlm, error);
             }
             Err(error)
-                if error.contains("source revision") || is_provider_unavailable_error(&error) =>
+                if error.contains("source revision")
+                    || provider_engine_absent(&context.workspace.cwd, "rlm-bsl-mcp") =>
             {
                 if error.contains("source revision") {
                     context.report_progress(ProviderProgressUpdate {
@@ -1640,22 +1641,19 @@ fn contained_provider_relative_path(
     Err("provider path is outside sourceSet".to_string())
 }
 
-/// Causes that mean "this provider is not present here", as opposed to "this
-/// provider ran and failed". `code.search` degrades on them and `code.graph`
-/// reports them instead of failing the call, so the classification stays in one
-/// place rather than being restated per caller.
-pub(crate) fn is_provider_unavailable_error(error: &str) -> bool {
-    [
-        crate::domain::engine::BUNDLED_TOOL_MISSING,
-        "could not locate Unica plugin root",
-        "Unica third-party manifest not found",
-        "bundled tool binary is not present",
-        "tool not found in manifest",
-        "tool not found in tools lock",
-        "No such file or directory",
-    ]
-    .iter()
-    .any(|marker| error.contains(marker))
+/// The provider's bundled engine is not present here, as opposed to "this
+/// provider ran and failed". `code.search` degrades on it and `code.graph`
+/// reports it instead of failing the call. The bundled-tool resolver decides by
+/// the typed delivery step where the engine is missing, never by the text of
+/// the provider's error (#549); the checksum is hashed only on this failure
+/// path.
+pub(crate) fn provider_engine_absent(cwd: &std::path::Path, tool: &str) -> bool {
+    match crate::infrastructure::plugin_runtime::find_plugin_root(cwd) {
+        None => true,
+        Some(plugin_root) => {
+            crate::infrastructure::bundled_tools::engine_absence(&plugin_root, tool).is_some()
+        }
+    }
 }
 
 fn process_exit_code_is(status: &str, code: i32) -> bool {

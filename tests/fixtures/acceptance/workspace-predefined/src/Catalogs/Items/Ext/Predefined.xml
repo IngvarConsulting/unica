@@ -1,0 +1,162 @@
+<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20">
+ <Item id="00000000-0000-4000-8000-000000000001">
+  <Name>Item001</Name><Code>001</Code><Description>Description 1</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000002">
+  <Name>Item002</Name><Code>002</Code><Description>Description 2</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000003">
+  <Name>Item003</Name><Code>003</Code><Description>Description 3</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000004">
+  <Name>Item004</Name><Code>004</Code><Description>Description 4</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000005">
+  <Name>Item005</Name><Code>005</Code><Description>Description 5</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000006">
+  <Name>Item006</Name><Code>006</Code><Description>Description 6</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000007">
+  <Name>Item007</Name><Code>007</Code><Description>Description 7</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000008">
+  <Name>Item008</Name><Code>008</Code><Description>Description 8</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000009">
+  <Name>Item009</Name><Code>009</Code><Description>Description 9</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000010">
+  <Name>Item010</Name><Code>010</Code><Description>Description 10</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000011">
+  <Name>Item011</Name><Code>011</Code><Description>Description 11</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000012">
+  <Name>Item012</Name><Code>012</Code><Description>Description 12</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000013">
+  <Name>Item013</Name><Code>013</Code><Description>Description 13</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000014">
+  <Name>Item014</Name><Code>014</Code><Description>Description 14</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000015">
+  <Name>Item015</Name><Code>015</Code><Description>Description 15</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000016">
+  <Name>Item016</Name><Code>016</Code><Description>Description 16</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000017">
+  <Name>Item017</Name><Code>017</Code><Description>Description 17</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000018">
+  <Name>Item018</Name><Code>018</Code><Description>Description 18</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000019">
+  <Name>Item019</Name><Code>019</Code><Description>Description 19</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000020">
+  <Name>Item020</Name><Code>020</Code><Description>Description 20</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000021">
+  <Name>Item021</Name><Code>021</Code><Description>Description 21</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000022">
+  <Name>Item022</Name><Code>022</Code><Description>Description 22</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000023">
+  <Name>Item023</Name><Code>023</Code><Description>Description 23</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000024">
+  <Name>Item024</Name><Code>024</Code><Description>Description 24</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000025">
+  <Name>Item025</Name><Code>025</Code><Description>Description 25</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000026">
+  <Name>Item026</Name><Code>026</Code><Description>Description 26</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000027">
+  <Name>Item027</Name><Code>027</Code><Description>Description 27</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000028">
+  <Name>Item028</Name><Code>028</Code><Description>Description 28</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000029">
+  <Name>Item029</Name><Code>029</Code><Description>Description 29</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000030">
+  <Name>Item030</Name><Code>030</Code><Description>Description 30</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000031">
+  <Name>Item031</Name><Code>031</Code><Description>Description 31</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000032">
+  <Name>Item032</Name><Code>032</Code><Description>Description 32</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000033">
+  <Name>Item033</Name><Code>033</Code><Description>Description 33</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000034">
+  <Name>Item034</Name><Code>034</Code><Description>Description 34</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000035">
+  <Name>Item035</Name><Code>035</Code><Description>Description 35</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000036">
+  <Name>Item036</Name><Code>036</Code><Description>Description 36</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000037">
+  <Name>Item037</Name><Code>037</Code><Description>Description 37</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000038">
+  <Name>Item038</Name><Code>038</Code><Description>Description 38</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000039">
+  <Name>Item039</Name><Code>039</Code><Description>Description 39</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000040">
+  <Name>Item040</Name><Code>040</Code><Description>Description 40</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000041">
+  <Name>Item041</Name><Code>041</Code><Description>Description 41</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000042">
+  <Name>Item042</Name><Code>042</Code><Description>Description 42</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000043">
+  <Name>Item043</Name><Code>043</Code><Description>Description 43</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000044">
+  <Name>Item044</Name><Code>044</Code><Description>Description 44</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000045">
+  <Name>Item045</Name><Code>045</Code><Description>Description 45</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000046">
+  <Name>Item046</Name><Code>046</Code><Description>Description 46</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000047">
+  <Name>Item047</Name><Code>047</Code><Description>Description 47</Description><IsFolder>false</IsFolder>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000048">
+  <Name>Item048</Name><Code>048</Code><Description>Description 48</Description><IsFolder>true</IsFolder>
+  <ChildItems>
+   <Item id="00000000-0000-4000-8000-000000000049">
+    <Name>Item049</Name><Code>049</Code><Description>Description 49</Description><IsFolder>false</IsFolder>
+   </Item>
+   <Item id="00000000-0000-4000-8000-000000000050">
+    <Name>Item050</Name><Code>050</Code><Description>Description 50</Description><IsFolder>true</IsFolder>
+    <ChildItems>
+     <Item id="00000000-0000-4000-8000-000000000051">
+      <Name>Item051</Name><Code>051</Code><Description>Description 51</Description><IsFolder>false</IsFolder>
+     </Item>
+    </ChildItems>
+   </Item>
+  </ChildItems>
+ </Item>
+ <Item id="00000000-0000-4000-8000-000000000052">
+  <Name>Item052</Name><Code>052</Code><Description>Description 52</Description><IsFolder>false</IsFolder>
+ </Item>
+</PredefinedData>

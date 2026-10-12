@@ -4925,7 +4925,13 @@ mod tests {
         };
 
         cleanup(&context);
-        assert_eq!(error, "tool not found in manifest: rlm-bsl-mcp");
+        // Прежнее имя в манифесте не признаётся: движок не описан, шаг
+        // поставки `manifest`, а не найденный под старым именем бинарь.
+        assert!(
+            error.starts_with("bundled_tool_missing: rlm-bsl-mcp is not available for ")
+                && error.contains("the delivery manifest does not describe it"),
+            "{error}"
+        );
     }
 
     #[test]

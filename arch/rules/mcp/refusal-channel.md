@@ -4,6 +4,7 @@ check:
   - crates/unica-coder/src/domain/invocation.rs::refusal_envelope::a_refusal_carries_code_outcome_and_message_and_nothing_else
   - crates/unica-coder/src/domain/invocation.rs::refusal_envelope::a_detail_overrides_the_default_outcome_of_its_code
   - crates/unica-coder/src/domain/invocation.rs::refusal_envelope::every_code_answers_with_one_of_the_six_outcomes
+  - crates/unica-coder/src/domain/invocation.rs::refusal_envelope::the_six_outcomes_are_spelled_as_published_on_the_wire
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set
 ---
 
@@ -22,7 +23,7 @@ check:
 Проверка исполняет предметные вызовы через production daemon runtime;
 форму compatibility Task-ответов задаёт отдельный контракт.
 
-Диагностика отказа содержит `outcome`: повторить вызов (`retryAsIs`), исправить
+Диагностика отказа содержит `outcome`: повторить вызов (`retry`), исправить
 аргументы (`fixCall`), восстановить исходники (`fixSource`), обратиться
 к человеку (`needsHuman`), выбрать другой маршрут (`goElsewhere`) или
 остановиться (`deadEnd`). Исход определяется кодом; уточнение `detailCode`

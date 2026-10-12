@@ -395,8 +395,7 @@ fn declared_output_root_expectation(
     target: &Path,
 ) -> Option<PlatformXmlRootExpectation> {
     let (output, expected_root) = match operation {
-        "dcs-compile" => (output_path_arg(args, context), DCS_ROOT),
-        "dcs-edit" | "dcs-validate" => (resolve_dcs_validate_path(args, context).ok(), DCS_ROOT),
+        "dcs-validate" => (resolve_dcs_validate_path(args, context).ok(), DCS_ROOT),
         "mxl-compile" => (output_path_arg(args, context), MXL_ROOT),
         "mxl-validate" => (resolve_mxl_validate_path(args, context).ok(), MXL_ROOT),
         "form-compile" => (
@@ -459,14 +458,15 @@ const LOGFORM_NS: &str = "http://v8.1c.ru/8.3/xcf/logform";
 const ROLES_NS: &str = "http://v8.1c.ru/8.2/roles";
 const EXTRNPROPS_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 const SCHEME_NS: &str = "http://v8.1c.ru/8.3/xcf/scheme";
+const DCS_SCHEMA_NS: &str = "http://v8.1c.ru/8.1/data-composition-system/schema";
 const SPREADSHEET_NS: &str = "http://v8.1c.ru/8.2/data/spreadsheet";
 const MD_CLASSES_NS_GATE: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 /// Classifies the root of one staged platform XML document against the active
 /// writable profile. Versioned roots (`MetaDataObject`, managed `Form`,
 /// `Rights`, `CommandInterface`, `GraphicalSchema`) must carry exactly the
-/// active export format; the spreadsheet `document` root must stay
-/// versionless. Any other root, or a document that does not parse, is not a
+/// active export format; the spreadsheet `document` and DCS
+/// `DataCompositionSchema` roots must stay versionless. Any other root, or a document that does not parse, is not a
 /// finding: the family planner reports those on its own terms.
 pub(crate) fn classify_staged_platform_xml_root(
     relative: &Path,
@@ -487,11 +487,19 @@ pub(crate) fn classify_staged_platform_xml_root(
             | (EXTRNPROPS_NS, "CommandInterface")
             | (SCHEME_NS, "GraphicalSchema")
     );
-    if (namespace, name) == (SPREADSHEET_NS, "document") {
+    if matches!(
+        (namespace, name),
+        (SPREADSHEET_NS, "document") | (DCS_SCHEMA_NS, "DataCompositionSchema")
+    ) {
+        let label = if namespace == DCS_SCHEMA_NS {
+            "DCS schema"
+        } else {
+            "spreadsheet document"
+        };
         return version.map(|actual| StagedRootFormatFinding {
             code: "formatVersionInvalid",
             message: format!(
-                "{relative}: the spreadsheet document root must not carry a version attribute (found {actual}); the active platform XML profile is {} for 1C {}",
+                "{relative}: the {label} root must not carry a version attribute (found {actual}); the active platform XML profile is {} for 1C {}",
                 ACTIVE_FORMAT_PROFILE.export_format, ACTIVE_FORMAT_PROFILE.platform_line
             ),
             actual: Some(actual),
@@ -1123,7 +1131,7 @@ fn handler_resolved_format_paths(
         "subsystem-edit" => {
             raw.and_then(|path| resolve_subsystem_edit_xml(absolutize(path, &context.cwd)).ok())
         }
-        "dcs-edit" | "dcs-validate" => resolve_dcs_validate_path(args, context).ok(),
+        "dcs-validate" => resolve_dcs_validate_path(args, context).ok(),
         // Without these two arms the guard falls back to the raw path
         // argument, which a logical call does not carry — the format
         // dependency would silently be empty.
@@ -1206,8 +1214,8 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_format_paths, evaluate_format_guard, evaluate_mutation_format_guard,
-        evaluate_read_format_guard,
+        classify_staged_platform_xml_root, effective_format_paths, evaluate_format_guard,
+        evaluate_mutation_format_guard, evaluate_read_format_guard,
     };
     use crate::application::operation_descriptors::native_operation_descriptor;
     use crate::application::ports::{ApplicationPorts, FormatGuardCheck, XdtoPublicErrorCode};
@@ -2123,8 +2131,7 @@ mod tests {
         let subsystem_xml = src.join("Subsystems/Sales.xml");
         std::fs::write(&subsystem_xml, "subsystem bytes").unwrap();
 
-        let template_dir = src.join("Reports/Sales/Templates/Print");
-        let template_xml = template_dir.join("Ext/Template.xml");
+        let template_xml = src.join("Reports/Sales/Templates/Print/Ext/Template.xml");
         std::fs::create_dir_all(template_xml.parent().unwrap()).unwrap();
         std::fs::write(&template_xml, "template bytes").unwrap();
 
@@ -2157,7 +2164,6 @@ mod tests {
                 subsystem_dir,
                 vec![subsystem_xml.canonicalize().unwrap()],
             ),
-            ("dcs-edit", "path", template_dir, vec![template_xml]),
             ("form-edit", "Path", form_xml.clone(), vec![form_xml]),
         ];
 
@@ -2502,7 +2508,7 @@ mod tests {
     }
 
     #[test]
-    fn dcs_edit_blocks_old_external_source_set_via_owner_descriptor() {
+    fn staged_dcs_owner_is_outside_the_old_external_source_set_profile() {
         let root = test_root("old-external-dcs");
         std::fs::create_dir_all(&root).unwrap();
         let source_root = external_source_set(
@@ -2514,63 +2520,35 @@ mod tests {
         );
         let target = source_root.join("PriceLoader/Templates/Main/Ext/Template.xml");
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        let original = "<DataCompositionSchema/>";
+        let original = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"/>"#;
         std::fs::write(&target, original).unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "TemplatePath".into(),
-            Value::String(target.display().to_string()),
-        );
-
-        let check = evaluate_format_guard(spec("unica.dcs.edit"), &args, &context(&root)).unwrap();
-        let FormatGuardCheck::Block {
-            outcome,
-            diagnostic,
-        } = check
-        else {
-            panic!("old EPF owner must block DCS edit");
-        };
-        assert_eq!(diagnostic["actualFormat"], "2.19");
-        assert_platform_reexport_warning(&outcome.warnings.join("\n"));
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
+        let owner = source_root.join("PriceLoader.xml");
+        let finding = classify_staged_platform_xml_root(
+            std::path::Path::new("PriceLoader.xml"),
+            &std::fs::read(owner).unwrap(),
+        )
+        .expect("the external DCS owner is outside the writable profile");
+        assert_eq!(finding.code, "formatMigrationAvailable");
+        assert_eq!(finding.actual.as_deref(), Some("2.19"));
+        assert!(finding
+            .message
+            .contains("re-export the sources with the platform"));
+        assert_eq!(std::fs::read(&target).unwrap(), original);
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn dcs_edit_blocks_a_version_attribute_on_the_versionless_schema_root() {
+    fn staged_dcs_root_refuses_a_version_attribute_for_every_file_name() {
         for file_name in ["Template.xml", "Template"] {
-            let root = std::env::temp_dir().join(format!(
-                "unica-format-guard-versioned-dcs-{}",
-                uuid::Uuid::new_v4()
-            ));
-            std::fs::create_dir_all(&root).unwrap();
-            let target = root.join(file_name);
-            let source = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.21"/>"#;
-            std::fs::write(&target, source).unwrap();
-            let args = Map::from_iter([(
-                "TemplatePath".to_string(),
-                Value::String(target.display().to_string()),
-            )]);
-
-            let check =
-                evaluate_format_guard(spec("unica.dcs.edit"), &args, &context(&root)).unwrap();
-            let FormatGuardCheck::Block {
-                outcome,
-                diagnostic,
-            } = check
-            else {
-                panic!("a version-bearing versionless DCS root must block edit: {file_name}");
-            };
-            assert_eq!(diagnostic["code"], "formatVersionInvalid");
-            assert!(
-                outcome
-                    .errors
-                    .join("\n")
-                    .contains("must not carry a version attribute"),
-                "{outcome:?}"
-            );
-            assert_eq!(std::fs::read_to_string(&target).unwrap(), source);
-            let _ = std::fs::remove_dir_all(root);
+            let source = br#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" version="2.21"/>"#;
+            let finding =
+                classify_staged_platform_xml_root(std::path::Path::new(file_name), source)
+                    .expect("a version-bearing DCS root must refuse a canonical mutation");
+            assert_eq!(finding.code, "formatVersionInvalid");
+            assert!(finding
+                .message
+                .contains("must not carry a version attribute"));
+            assert_eq!(finding.actual.as_deref(), Some("2.21"));
         }
     }
 
@@ -2648,15 +2626,15 @@ mod tests {
             "PriceLoader",
             "2.19",
         );
-        let target = source_root.join("PriceLoader/Templates/../Templates/Main/Ext/Template.xml");
+        let target = source_root.join("PriceLoader/Forms/../Forms/Main/Ext/Form.xml");
         let mut args = Map::new();
         args.insert(
-            "TemplatePath".into(),
+            "FormPath".into(),
             Value::String(target.display().to_string()),
         );
 
         assert!(matches!(
-            evaluate_format_guard(spec("unica.dcs.edit"), &args, &context(&root)).unwrap(),
+            evaluate_format_guard(spec("unica.form.edit"), &args, &context(&root)).unwrap(),
             FormatGuardCheck::Block { .. }
         ));
         let _ = std::fs::remove_dir_all(root);
@@ -2992,7 +2970,7 @@ mod tests {
         single_writable_platform_xml_profile_is_exact();
         crate::application::tool_contracts::tests::native_mutation_surface_has_exact_operations_and_schemas();
         public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
-        dcs_edit_blocks_old_external_source_set_via_owner_descriptor();
+        staged_dcs_owner_is_outside_the_old_external_source_set_profile();
         cf_init_public_guard_blocks_newer_existing_post_validation_dependency();
     }
 
@@ -3018,8 +2996,6 @@ mod tests {
             "unica.cfe.init",
             "unica.cfe.patch_method",
             "unica.code.patch",
-            "unica.dcs.compile",
-            "unica.dcs.edit",
             "unica.epf.init",
             "unica.erf.init",
             "unica.form.compile",

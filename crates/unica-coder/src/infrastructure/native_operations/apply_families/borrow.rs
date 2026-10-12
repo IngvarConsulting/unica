@@ -27,7 +27,7 @@ pub(super) fn parse(
     if binding.source_kind() != SourceSetKind::Extension {
         return Err(fail("object.borrow requires an extension destination"));
     }
-    super::validate_platform_xml_binding(binding, index)?;
+    super::validate_platform_xml_binding(binding, "object.borrow", index)?;
     let args = args
         .as_object()
         .ok_or_else(|| fail("borrow args must be an object"))?;
