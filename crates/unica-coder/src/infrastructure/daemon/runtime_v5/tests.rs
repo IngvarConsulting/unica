@@ -1786,6 +1786,177 @@ fn startup_materializes_handoff_without_replaying_begun_work() {
     }
 }
 
+/// #1360: the predecessor died after the lifecycle link became `TaskBound`
+/// and before the handoff receipt was completed. The successor must adopt
+/// that exact link, finish the Task with a recovery terminal and start; it
+/// must neither refuse to start nor replay the work.
+#[test]
+fn startup_completes_handoff_whose_link_is_already_task_bound() {
+    for (phase, cancel_requested) in [
+        (AttemptPhase::NotBegun, false),
+        (AttemptPhase::NotBegun, true),
+        (AttemptPhase::Begun, false),
+        (AttemptPhase::Begun, true),
+    ] {
+        let root = tempfile::tempdir().expect("temporary bound handoff recovery root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity)
+            .expect("open bound handoff recovery daemon state");
+        let config = DaemonServerConfig::new(
+            state_root.clone(),
+            identity.clone(),
+            Duration::from_millis(50),
+        );
+        let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+        let key = ReceiptKey::new(
+            InvocationId::new(),
+            TaskId::new(),
+            RequestIdentity::new(
+                identity.digest().clone(),
+                V5ToolIdentity::View,
+                normalized_arguments_hash(&serde_json::Map::new()),
+                request_scope_hash("workspace-a").expect("request scope"),
+            ),
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let reserved = runtime
+            .receipt_ledger
+            .reserve(
+                key.clone(),
+                OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+                deadline,
+            )
+            .expect("reserve bound handoff receipt")
+            .into_reservation()
+            .expect("new bound handoff receipt");
+        let bound = runtime
+            .receipt_ledger
+            .bind_reserved_actor(
+                key.clone(),
+                reserved.record_version(),
+                SafeIdentityHash::from_sha256(Sha256::digest(b"bound-handoff").into()),
+                deadline,
+            )
+            .expect("bind bound handoff actor");
+        let version = match phase {
+            AttemptPhase::NotBegun => bound.record_version(),
+            AttemptPhase::Begun => runtime
+                .receipt_ledger
+                .mark_reserved_begun(key.clone(), bound.record_version(), deadline)
+                .expect("mark bound handoff begun")
+                .record_version(),
+        };
+        let handoff = runtime
+            .receipt_ledger
+            .begin_bound_task_handoff(
+                key.clone(),
+                version,
+                1_009,
+                3_600_000,
+                V5_TASK_POLL_INTERVAL_MS,
+                deadline,
+            )
+            .expect("persist bound Task handoff");
+        if cancel_requested {
+            runtime
+                .receipt_ledger
+                .request_task_cancel(
+                    key.clone(),
+                    TaskCancellationReceipt::HandoffActorBound(handoff),
+                    deadline,
+                )
+                .expect("persist bound handoff cancellation");
+        }
+        let ReceiptState::TaskHandoffActorBound(handoff) = runtime
+            .receipt_ledger
+            .recover(key.clone(), deadline)
+            .expect("read bound handoff receipt")
+        else {
+            panic!("bound handoff receipt changed state");
+        };
+        // The crash window: TaskStore row and TaskBound link are durable,
+        // the receipt still holds the handoff intent.
+        let (created, task_bound) = runtime
+            .task_projection
+            .materialize_bound_handoff(&handoff, 1_010, deadline, runtime.hooks.as_ref())
+            .unwrap_or_else(|failure| panic!("materialize bound handoff: {:?}", failure.error));
+        assert_eq!(task_bound.phase(), phase);
+        drop(runtime);
+
+        let reopened = V5ReceiptRuntime::open(&state, &config).unwrap_or_else(|error| {
+            panic!(
+                "{phase:?}/{cancel_requested}: startup must recover a TaskBound handoff: {error}"
+            )
+        });
+        assert_eq!(
+            reopened
+                .receipt_ledger
+                .recover(key.clone(), Instant::now() + Duration::from_secs(2)),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        );
+        let snapshot = reopened
+            .resolve_task(
+                key.reserved_task_id(),
+                Instant::now() + Duration::from_secs(2),
+            )
+            .expect("resolve recovered bound handoff Task");
+        match (phase, cancel_requested, snapshot) {
+            (
+                AttemptPhase::NotBegun,
+                false,
+                crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                    reason: V5SafeFailureReason::Interrupted,
+                    cancel_requested: false,
+                    ..
+                },
+            )
+            | (
+                AttemptPhase::NotBegun,
+                true,
+                crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Cancelled {
+                    cancel_requested: true,
+                    ..
+                },
+            )
+            | (
+                AttemptPhase::Begun,
+                false,
+                crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                    reason: V5SafeFailureReason::OutcomeUncertain,
+                    cancel_requested: false,
+                    ..
+                },
+            )
+            | (
+                AttemptPhase::Begun,
+                true,
+                crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot::Failed {
+                    reason: V5SafeFailureReason::OutcomeUncertain,
+                    cancel_requested: true,
+                    ..
+                },
+            ) => {}
+            (_, _, other) => panic!("unexpected recovered bound handoff Task: {other:?}"),
+        }
+        let terminal = reopened
+            .task_projection
+            .task_store
+            .get(
+                key.reserved_task_id(),
+                crate::domain::code_intelligence::ProviderDeadline::new(
+                    Instant::now() + Duration::from_secs(2),
+                ),
+            )
+            .expect("read recovered bound handoff Task");
+        assert_eq!(terminal.version, created.version + 1, "one recovery step");
+        drop(reopened);
+
+        // The recovered state is final: the next process starts as well.
+        V5ReceiptRuntime::open(&state, &config).expect("second restart after recovery");
+    }
+}
+
 #[derive(Default)]
 struct StagedTerminalPostStoreCrash {
     exited: AtomicBool,
@@ -3172,6 +3343,14 @@ fn startup_rejects_preexisting_handoff_task_without_prior_link_reservation() {
     };
     assert!(error.contains("preexisting handoff Task has no exact prior link reservation"));
 
+    // The daemon process records the refusal for its frontend (#1360).
+    let error = run_daemon(config.clone()).expect_err("daemon refuses the persisted state");
+    assert!(error.contains("preexisting handoff Task has no exact prior link reservation"));
+    assert_eq!(
+        state.read_startup_failure(std::process::id()).as_deref(),
+        Some(error.as_str())
+    );
+
     let task_root = RetainedDirectoryCapability::open(&state.path().join("tasks"))
         .expect("retain handoff TaskStore after failed startup");
     let (store, _) = FileInvocationStoreV5::open_retained_directory_inspect_only(
@@ -3205,6 +3384,22 @@ fn startup_rejects_preexisting_handoff_task_without_prior_link_reservation() {
     ))
     .expect("snapshot unchanged lifecycle store");
     assert!(links.entries().is_empty());
+}
+
+#[test]
+fn started_daemon_removes_an_earlier_startup_failure_record() {
+    let root = tempfile::tempdir().expect("temporary startup failure root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity)
+        .expect("open startup failure daemon state");
+    let earlier_pid = std::process::id();
+    state
+        .publish_startup_failure(earlier_pid, "an earlier refusal")
+        .expect("record an earlier refusal");
+    let config = DaemonServerConfig::new(state_root.clone(), identity, Duration::from_millis(50));
+    run_daemon(config).expect("daemon starts and leaves after its idle grace");
+    assert_eq!(state.read_startup_failure(earlier_pid), None);
 }
 
 #[test]

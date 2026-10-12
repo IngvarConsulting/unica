@@ -522,6 +522,7 @@ pub(super) enum ScenarioCrashPoint {
     AfterStagedTaskStoreTerminalReadbackBeforeLedgerCommit,
     BeforeTaskStoreCreate,
     AfterTaskStoreCreateBeforeTaskBound,
+    AfterTaskBoundBeforeHandoffReceiptCompletion,
     AfterCancelFlagBeforeTaskCreate,
     AfterTaskStoreCancelReadbackBeforeTaskBound,
     AfterWorkingReadbackBeforeReceiptBegun,

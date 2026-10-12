@@ -29,6 +29,12 @@ const ENDPOINT_FILE_NAME: &str = "endpoint.json";
 const SPAWN_LOCK_NAME: &str = ".daemon-spawn.lock";
 const RECEIPT_AUTHORITY_DIRECTORY_NAME: &str = ".receipt-authority";
 const RECEIPT_AUTHORITY_LOCK_NAME: &str = ".receipt-authority.lock";
+/// Why the last daemon process of this identity refused to start (#1360).
+/// The spawned daemon has no stderr channel, so this file is the only way
+/// its frontend learns the cause.
+const STARTUP_FAILURE_FILE_NAME: &str = "startup-failure.txt";
+/// Upper bound of the recorded reason; a longer one is cut at a character.
+const MAX_STARTUP_FAILURE_REASON_BYTES: usize = 2_048;
 
 /// The one daemon wire protocol this core speaks; it names the state
 /// directory (`daemon-p5-…`) and the identity digest.
@@ -194,7 +200,6 @@ impl<'de> Deserialize<'de> for CoreIdentity {
 
 #[derive(Debug)]
 pub(crate) struct DaemonStateDirectory {
-    #[cfg(test)]
     path: PathBuf,
     directory: File,
     retained_directory: RetainedDirectoryCapability,
@@ -282,7 +287,6 @@ impl DaemonStateDirectory {
             .validate_named_identity()
             .map_err(|error| daemon_io_error("validate named daemon identity directory", error))?;
         Ok(Some(Self {
-            #[cfg(test)]
             path,
             directory,
             retained_directory,
@@ -290,7 +294,6 @@ impl DaemonStateDirectory {
         }))
     }
 
-    #[cfg(test)]
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
@@ -588,6 +591,82 @@ impl DaemonStateDirectory {
         self.remove_v5_endpoint_if_owned(&current)
     }
 
+    /// Records why the daemon process `pid` refused to start. The record is
+    /// replaced atomically: a reader sees either the previous record or this
+    /// one, and only the one naming its own child's pid is believed.
+    pub(crate) fn publish_startup_failure(&self, pid: u32, reason: &str) -> Result<(), String> {
+        self.verify_identity()?;
+        let bytes = startup_failure_bytes(pid, reason);
+        let temporary_name = format!(".startup-failure.{}.tmp", Uuid::new_v4());
+        let temporary_name = OsStr::new(&temporary_name);
+        let mut file = create_owner_only_file_child(&self.directory, temporary_name)
+            .map_err(|error| daemon_io_error("create startup failure staging file", error))?;
+        let staged_identity = file_identity(&file)
+            .map_err(|error| daemon_io_error("identify startup failure staging file", error))?;
+        if let Err(error) = restrict_stage_to_owner(&file)
+            .and_then(|_| file.write_all(&bytes))
+            .and_then(|_| file.sync_all())
+        {
+            let _ = remove_identity_bound_regular_child(
+                &self.directory,
+                temporary_name,
+                staged_identity,
+                &file,
+            );
+            return Err(daemon_io_error("write startup failure staging file", error));
+        }
+        replace_identity_bound_regular_child(
+            &self.directory,
+            temporary_name,
+            staged_identity,
+            &file,
+            OsStr::new(STARTUP_FAILURE_FILE_NAME),
+        )
+        .map_err(|error| daemon_io_error("publish startup failure record", error))?;
+        sync_directory(&self.directory)
+            .map_err(|error| daemon_io_error("sync startup failure record", error))
+    }
+
+    /// The reason the daemon process `pid` recorded, if this very process
+    /// wrote the current record. A record of another process is stale.
+    pub(crate) fn read_startup_failure(&self, pid: u32) -> Option<String> {
+        self.verify_identity().ok()?;
+        let mut file =
+            open_regular_child_nofollow(&self.directory, OsStr::new(STARTUP_FAILURE_FILE_NAME))
+                .ok()?;
+        verify_owner_only_acl(&file).ok()?;
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut file)
+            .take((MAX_STARTUP_FAILURE_RECORD_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        parse_startup_failure(&bytes, pid)
+    }
+
+    /// Removes the startup failure record, whoever wrote it.
+    pub(crate) fn remove_startup_failure(&self) -> Result<(), String> {
+        self.verify_identity()?;
+        let file = match open_regular_child_nofollow(
+            &self.directory,
+            OsStr::new(STARTUP_FAILURE_FILE_NAME),
+        ) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(daemon_io_error("open startup failure record", error)),
+        };
+        let identity = file_identity(&file)
+            .map_err(|error| daemon_io_error("identify startup failure record", error))?;
+        remove_identity_bound_regular_child(
+            &self.directory,
+            OsStr::new(STARTUP_FAILURE_FILE_NAME),
+            identity,
+            &file,
+        )
+        .map_err(|error| daemon_io_error("remove startup failure record", error))?;
+        sync_directory(&self.directory)
+            .map_err(|error| daemon_io_error("sync startup failure removal", error))
+    }
+
     fn verify_identity(&self) -> Result<(), String> {
         self.retained_directory
             .validate_named_identity()
@@ -639,6 +718,41 @@ fn lock_is_contended(error: &io::Error) -> bool {
             .is_some_and(|(actual, expected)| actual == expected)
 }
 
+const STARTUP_FAILURE_PID_PREFIX: &str = "pid=";
+const MAX_STARTUP_FAILURE_RECORD_BYTES: usize =
+    STARTUP_FAILURE_PID_PREFIX.len() + 10 + 1 + MAX_STARTUP_FAILURE_REASON_BYTES;
+
+/// `pid=<pid>` on the first line, then the reason on one line: control
+/// characters become spaces and the text is cut at the byte bound.
+fn startup_failure_bytes(pid: u32, reason: &str) -> Vec<u8> {
+    let mut text = String::new();
+    for character in reason.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if text.len() + character.len_utf8() > MAX_STARTUP_FAILURE_REASON_BYTES {
+            break;
+        }
+        text.push(character);
+    }
+    format!("{STARTUP_FAILURE_PID_PREFIX}{pid}\n{text}").into_bytes()
+}
+
+fn parse_startup_failure(bytes: &[u8], pid: u32) -> Option<String> {
+    if bytes.len() > MAX_STARTUP_FAILURE_RECORD_BYTES {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let (header, reason) = text.split_once('\n')?;
+    let recorded = header
+        .strip_prefix(STARTUP_FAILURE_PID_PREFIX)?
+        .parse::<u32>()
+        .ok()?;
+    (recorded == pid && !reason.trim().is_empty()).then(|| reason.to_owned())
+}
+
 fn daemon_io_error(operation: &str, error: io::Error) -> String {
     format!("{operation}: {error}")
 }
@@ -646,6 +760,40 @@ fn daemon_io_error(operation: &str, error: io::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_failure_record_is_bounded_single_line_and_bound_to_its_pid() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = std::fs::canonicalize(root.path()).unwrap();
+        let state = DaemonStateDirectory::open(&physical, &CoreIdentity::production_v5()).unwrap();
+        assert_eq!(state.read_startup_failure(7), None);
+
+        state.publish_startup_failure(7, "first\nrefusal").unwrap();
+        assert_eq!(
+            state.read_startup_failure(7).as_deref(),
+            Some("first refusal")
+        );
+        assert_eq!(
+            state.read_startup_failure(8),
+            None,
+            "another pid's record is stale"
+        );
+
+        let long = "ж".repeat(MAX_STARTUP_FAILURE_REASON_BYTES);
+        state.publish_startup_failure(8, &long).unwrap();
+        assert_eq!(
+            state.read_startup_failure(7),
+            None,
+            "the newer record replaced it"
+        );
+        let bounded = state.read_startup_failure(8).unwrap();
+        assert!(bounded.len() <= MAX_STARTUP_FAILURE_REASON_BYTES);
+        assert!(bounded.chars().all(|character| character == 'ж'));
+
+        state.remove_startup_failure().unwrap();
+        assert_eq!(state.read_startup_failure(8), None);
+        state.remove_startup_failure().unwrap();
+    }
 
     #[test]
     fn production_identity_is_the_frozen_v5_digest_and_the_only_daemon_protocol() {

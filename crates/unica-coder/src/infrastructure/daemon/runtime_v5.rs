@@ -1978,6 +1978,36 @@ fn project_bound_task_for_read(
     record
 }
 
+/// The Task row and TaskBound link a dead predecessor wrote for an unstaged
+/// handoff it did not complete.
+type BoundStartupHandoff = (V5StoredInvocationRecord, TaskBoundReceipt);
+
+/// The TaskBound link of an unstaged handoff whose receipt was not completed
+/// yet. `None` when the link is still only reserved or absent; an error when
+/// the Task's lifecycle entry belongs to another owner.
+fn exact_handoff_task_bound<'a>(
+    handoff: &TaskHandoffActorBoundReceipt,
+    entries: &'a [TaskLifecycleLinkCatalogEntry],
+) -> Result<Option<&'a TaskBoundReceipt>, &'static str> {
+    let matching = entries
+        .iter()
+        .filter(|entry| lifecycle_entry_task_id(entry) == handoff.task().task_id())
+        .collect::<Vec<_>>();
+    let [TaskLifecycleLinkCatalogEntry::Record(TaskLifecycleLinkRecord::TaskBound(bound))] =
+        matching.as_slice()
+    else {
+        return Ok(None);
+    };
+    if bound.key() != handoff.key()
+        || bound.key_digest() != handoff.key_digest()
+        || bound.link() != handoff.link()
+        || bound.phase() != handoff.phase()
+    {
+        return Err("preexisting handoff TaskBound link differs from its receipt");
+    }
+    Ok(Some(bound))
+}
+
 fn lifecycle_entry_task_id(
     entry: &TaskLifecycleLinkCatalogEntry,
 ) -> crate::domain::invocation::TaskId {
@@ -2464,8 +2494,9 @@ impl V5ReceiptRuntime {
             hooks,
         };
         if !config.skips_v5_startup_reconciliation() {
-            runtime.preflight_existing_handoff_tasks(&recovery_keys, startup_deadline)?;
-            runtime.reconcile_pre_task_startup(recovery_keys, startup_deadline)?;
+            let bound_handoffs =
+                runtime.preflight_existing_handoff_tasks(&recovery_keys, startup_deadline)?;
+            runtime.reconcile_pre_task_startup(recovery_keys, bound_handoffs, startup_deadline)?;
             runtime
                 .task_projection
                 .reconcile_materialized_startup(startup_deadline)
@@ -2477,11 +2508,16 @@ impl V5ReceiptRuntime {
         Ok(runtime)
     }
 
+    /// Validates every unstaged handoff before startup changes any store.
+    /// Returns the handoffs whose predecessor already bound the exact
+    /// lifecycle link and Task (#1360): the receipt loop completes them with
+    /// that link instead of reserving a second one.
     fn preflight_existing_handoff_tasks(
         &self,
         recovery_keys: &[ReceiptKey],
         deadline: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<HashMap<crate::domain::invocation::TaskId, BoundStartupHandoff>, String> {
+        let mut bound_handoffs = HashMap::new();
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let lifecycle = self
             .task_projection
@@ -2539,6 +2575,35 @@ impl V5ReceiptRuntime {
             else {
                 continue;
             };
+            if let Some(bound) =
+                exact_handoff_task_bound(&handoff, lifecycle.entries()).map_err(str::to_owned)?
+            {
+                // The predecessor died after the link became TaskBound and
+                // before the receipt took it over (#1360): the receipt loop
+                // adopts this exact link instead of reserving a new one.
+                let record = self
+                    .task_projection
+                    .task_store
+                    .get(handoff.task().task_id(), provider_deadline)
+                    .map_err(|error| {
+                        format!("read preexisting protocol-v5 bound handoff Task: {error}")
+                    })?;
+                let bound_matches = task_bound_matches_record(bound, &record)
+                    .map_err(|failure| failure.error.to_string())?;
+                if !recovery.identity().matches_record(&record)
+                    || recovery.version() != record.version
+                    || recovery.status() != record.task.status()
+                    || recovery.cancel_requested() != record.cancel_requested
+                    || !bound_matches
+                    || !matches!(record.task, V5StoredTask::Queued | V5StoredTask::Working)
+                {
+                    return Err(
+                        "preexisting handoff Task contradicts its TaskBound link".to_owned()
+                    );
+                }
+                bound_handoffs.insert(handoff.task().task_id(), (record, bound.clone()));
+                continue;
+            }
             let matching = lifecycle
                 .entries()
                 .iter()
@@ -2593,12 +2658,13 @@ impl V5ReceiptRuntime {
                 return Err("preexisting handoff Task contradicts its exact receipt".to_owned());
             }
         }
-        Ok(())
+        Ok(bound_handoffs)
     }
 
     fn reconcile_pre_task_startup(
         &self,
         recovery_keys: Vec<ReceiptKey>,
+        mut bound_handoffs: HashMap<crate::domain::invocation::TaskId, BoundStartupHandoff>,
         deadline: Instant,
     ) -> Result<(), String> {
         let terminal_epoch_ms = self.epoch_ms();
@@ -2743,18 +2809,29 @@ impl V5ReceiptRuntime {
                     }
                     let receipt_version = handoff.record_version();
                     let phase = handoff.phase();
-                    let (record, task_bound) = self
-                        .task_projection
-                        .materialize_recovered_handoff(
-                            &handoff,
-                            terminal_epoch_ms,
-                            deadline,
-                            self.hooks.as_ref(),
-                        )
-                        .map_err(|failure| {
-                            let error = self.project_task_failure(failure);
-                            format!("materialize protocol-v5 startup Task handoff: {error}")
-                        })?;
+                    let (record, task_bound) =
+                        match bound_handoffs.remove(&handoff.task().task_id()) {
+                            Some(adopted) => {
+                                eprintln!(
+                                "protocol-v5 startup: Task {} was bound before its predecessor \
+                                 exited; completing its handoff with a recovery terminal",
+                                handoff.task().task_id()
+                            );
+                                adopted
+                            }
+                            None => self
+                                .task_projection
+                                .materialize_recovered_handoff(
+                                    &handoff,
+                                    terminal_epoch_ms,
+                                    deadline,
+                                    self.hooks.as_ref(),
+                                )
+                                .map_err(|failure| {
+                                    let error = self.project_task_failure(failure);
+                                    format!("materialize protocol-v5 startup Task handoff: {error}")
+                                })?,
+                        };
                     let task_bound = self
                         .receipt_ledger
                         .complete_bound_task_handoff(key, receipt_version, task_bound, deadline)
@@ -6024,8 +6101,18 @@ fn run_daemon_configured_until(
         }
     }
     // Receipt ownership and the initial durable generation are established before
-    // a listener can become discoverable.
-    let runtime = Arc::new(configure_runtime(V5ReceiptRuntime::open(&state, &config)?));
+    // a listener can become discoverable. A refusal of the persisted state is
+    // recorded for the frontend, which sees only this process's exit (#1360).
+    let opened = match V5ReceiptRuntime::open(&state, &config) {
+        Ok(opened) => opened,
+        Err(error) => {
+            if let Err(record_error) = state.publish_startup_failure(std::process::id(), &error) {
+                eprintln!("protocol-v5 startup failure could not be recorded: {record_error}");
+            }
+            return Err(error);
+        }
+    };
+    let runtime = Arc::new(configure_runtime(opened));
     runtime.hooks.runtime_opened(&runtime);
     if let Err(error) = runtime.ensure_named_authority() {
         if runtime.restart_required() {
@@ -6044,6 +6131,8 @@ fn run_daemon_configured_until(
         .port();
     let record = V5EndpointRecord::new(config.core_identity.clone(), port)?;
     let published = state.publish_v5_endpoint_record(&record)?;
+    // This process started: an earlier refusal no longer describes the state.
+    let _ = state.remove_startup_failure();
     if let Err(error) = runtime.ensure_named_authority() {
         if runtime.restart_required() {
             drop(listener);

@@ -746,6 +746,12 @@ fn run_cross_store_crash_cases(
             if before_intent {
                 clock.advance(7_001)?;
             }
+            if matches!(
+                case.point,
+                ScenarioCrashPoint::AfterTaskBoundBeforeHandoffReceiptCompletion
+            ) {
+                bind_seeded_handoff_without_completion(state.path(), identity, clock, &key)?;
+            }
             let daemon_state = DaemonStateDirectory::open(state.path(), identity)?;
             let config = scenario_server_config_with_clock(state.path(), identity, None, clock)?;
             let runtime =
@@ -881,6 +887,40 @@ fn run_cross_store_crash_cases(
         }));
     }
     Ok((observations, preparations, publications))
+}
+
+/// The predecessor's last durable steps before it died (#1360): the Task
+/// row and its TaskBound link exist, the receipt still holds the handoff.
+fn bind_seeded_handoff_without_completion(
+    state_root: &Path,
+    identity: &CoreIdentity,
+    clock: &Arc<ScenarioEpochClock>,
+    key: &ReceiptKey,
+) -> Result<(), String> {
+    let control = Arc::new(ReceiptScenarioControl::new());
+    control.arm_skip_next_startup_reconciliation();
+    let daemon_state = DaemonStateDirectory::open(state_root, identity)?;
+    let config = scenario_server_config_with_clock(state_root, identity, Some(&control), clock)?;
+    let runtime = V5ReceiptRuntime::open_with_epoch_clock(&daemon_state, &config, clock.clone())?;
+    let deadline = Instant::now() + SCENARIO_OPERATION_TIMEOUT;
+    let ReceiptState::TaskHandoffActorBound(handoff) = runtime
+        .receipt_ledger
+        .recover(key.clone(), deadline)
+        .map_err(|error| format!("read seeded handoff before TaskBound: {error}"))?
+    else {
+        return Err("seeded crash receipt is not an unstaged handoff".to_owned());
+    };
+    runtime
+        .task_projection
+        .materialize_bound_handoff(
+            &handoff,
+            clock.now_epoch_millis(),
+            deadline,
+            runtime.hooks.as_ref(),
+        )
+        .map_err(|failure| format!("bind seeded handoff Task: {}", failure.error))?;
+    drop(runtime);
+    Ok(())
 }
 
 fn seed_staged_cross_store_terminal(
