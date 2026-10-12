@@ -36,7 +36,8 @@ use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::native_operations::apply::{
-    ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
+    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingErrorKind,
+    PlannedApplyEffects, StagedChangeKind, StagedFileState,
 };
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
@@ -307,13 +308,7 @@ impl CanonicalV13ReadService {
                     "canonical v0.13 apply operation is not implemented",
                 )
             }
-            Err(error) => {
-                return error_result(
-                    error.path().map(str::to_string),
-                    apply_plan_error_code(error.kind()),
-                    error.to_string(),
-                )
-            }
+            Err(error) => return apply_plan_error_result(&error),
             Ok(planned) => planned,
         };
         let borrowing = effects.borrowing().to_vec();
@@ -341,14 +336,9 @@ impl CanonicalV13ReadService {
         let prepared = match admission.prepare_with_effects(staged, effects) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return error_result(
+                return apply_staging_refusal(
                     Some("ops".to_string()),
-                    match error.kind() {
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
-                        _ => RefusalCode::ProviderUnavailable,
-                    },
+                    error.kind(),
                     error.to_string(),
                 )
             }
@@ -3027,16 +3017,46 @@ fn name_search_interruption(
     None
 }
 
-fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
-    match kind {
+fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
+    let at = error.path().map(str::to_string);
+    let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
         ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
         ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,
         ApplyPlanErrorKind::InvalidSource => RefusalCode::InvalidSource,
-        ApplyPlanErrorKind::Staging(_) => RefusalCode::ProviderUnavailable,
+        ApplyPlanErrorKind::Staging(kind) => {
+            return apply_staging_refusal(at, kind, error.to_string())
+        }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
-    }
+    };
+    error_result(at, code, error.to_string())
+}
+
+/// Отказ подготовки staged-исходников называет нарушенное предусловие.
+///
+/// Прежде любой вид сводился к `provider_unavailable` с исходом `needsHuman`,
+/// и агент ждал поставщика там, где надо было создать файл, убрать ссылку
+/// из исходников или подготовить новый предпросмотр (#955, #1332). Поставщик
+/// здесь — файловая система набора: ошибка её чтения остаётся
+/// `provider_unavailable`, но с уточнением `source_unreadable`.
+fn apply_staging_refusal(
+    at: Option<String>,
+    kind: ApplyStagingErrorKind,
+    message: String,
+) -> DomainResult {
+    let code = match kind {
+        ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
+        ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
+        ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
+        ApplyStagingErrorKind::ContainmentIdentity => RefusalCode::ContainmentDenied,
+        ApplyStagingErrorKind::AbsentChainOccupied => RefusalCode::InvalidSource,
+        ApplyStagingErrorKind::Invariant => RefusalCode::InvalidState,
+        ApplyStagingErrorKind::UnsupportedProvider => {
+            return error_result_detailed(at, RefusalDetail::SourceUnreadable, message)
+        }
+    };
+    error_result(at, code, message)
 }
 
 fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
@@ -3065,7 +3085,12 @@ fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> RefusalCode 
         ApplyPublicationErrorKind::Cancelled => RefusalCode::Cancelled,
         ApplyPublicationErrorKind::Deadline => RefusalCode::DeadlineExceeded,
         ApplyPublicationErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::ProviderUnavailable,
+        // Publication re-proves the containment the plan established. A
+        // failure means the sources changed physically after the plan (a
+        // swapped directory, a link or alias that appeared, an occupied
+        // chain); a new preview names the precise cause. The static causes
+        // themselves are refused at planning by `apply_staging_refusal`.
+        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::StaleRevision,
         ApplyPublicationErrorKind::ProviderPostvalidation => RefusalCode::PostconditionFailed,
         ApplyPublicationErrorKind::SourceSelectionChanged => RefusalCode::SourceSelectionChanged,
         ApplyPublicationErrorKind::RollbackIncomplete => RefusalCode::RollbackIncomplete,
@@ -3876,6 +3901,95 @@ mod tests {
             assert_eq!(result.diagnostics[0]["code"], code);
             assert_eq!(result.diagnostics[0]["outcome"], outcome);
         }
+    }
+
+    /// #955, #1332: a staging failure names the violated precondition and
+    /// what to do next. Only a source the filesystem cannot read stays
+    /// `provider_unavailable`, refined to `source_unreadable`.
+    #[test]
+    fn staging_refusals_keep_their_kind_instead_of_an_absent_provider() {
+        use crate::infrastructure::native_operations::apply::{
+            ApplyPlanError, ApplyStagingError, ApplyStagingErrorKind,
+        };
+        for (kind, code, outcome, detail) in [
+            (
+                ApplyStagingErrorKind::Cancelled,
+                "cancelled",
+                "deadEnd",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Deadline,
+                "deadline_exceeded",
+                "retry",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ConcurrentRevision,
+                "stale_revision",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "containment_denied",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::AbsentChainOccupied,
+                "invalid_source",
+                "fixSource",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Invariant,
+                "invalid_state",
+                "needsHuman",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::UnsupportedProvider,
+                "provider_unavailable",
+                "fixSource",
+                Some("source_unreadable"),
+            ),
+        ] {
+            let error = ApplyPlanError::staging(
+                ApplyStagingError::new(kind, "staged replace preimage changed: Documents/A.xml"),
+                "ops[1].args.values.name",
+            );
+            let planned = super::apply_plan_error_result(&error);
+            let prepared =
+                super::apply_staging_refusal(Some("ops".to_string()), kind, "prepared".to_string());
+            for result in [&planned, &prepared] {
+                assert!(!result.ok, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["code"], code, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["outcome"], outcome, "{kind:?}");
+                assert_eq!(
+                    result.diagnostics[0]
+                        .get("detailCode")
+                        .and_then(|v| v.as_str()),
+                    detail,
+                    "{kind:?}"
+                );
+            }
+            assert_eq!(planned.at.as_deref(), Some("ops[1].args.values.name"));
+            let message = planned.diagnostics[0]["message"].as_str().unwrap();
+            assert!(
+                message.contains("staged replace preimage changed: Documents/A.xml"),
+                "{kind:?}: the cause was lost: {message}"
+            );
+            assert!(!message.contains("evidence is unavailable"), "{message}");
+        }
+        // Publication re-proves the plan's containment; a failure there is a
+        // physical change after the plan, answered like a stale plan.
+        assert_eq!(
+            super::apply_publication_error_code(
+                super::ApplyPublicationErrorKind::ContainmentIdentity
+            ),
+            crate::domain::refusal::RefusalCode::StaleRevision
+        );
     }
 
     fn provider_search_test_binding(role: ProviderRole, limit: usize) -> SearchCursorBinding {

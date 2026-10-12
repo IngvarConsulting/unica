@@ -8488,9 +8488,62 @@
       ]
      },
      "expect": [
-      "gap"
+      "ok"
      ],
-     "gap": "Заимствование регистрирует общий модуль без каталога модуля, а первая запись модуля через `apply` его не создаёт: планировщик требует существующий каталог (`MissingParent`), и превью отвечает `provider_unavailable` «staged source evidence is unavailable» (#955, #1245)."
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src-ext/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src-ext/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.GoogleПереводчик.Method.ПриёмочнаяВставка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      }
+     ]
     }
    ]
   },
@@ -32017,6 +32070,382 @@
         "Total amount",
         "Quantity"
        ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S389",
+   "name": "batched-register-creation",
+   "issue": 1332,
+   "area": "Создание и удаление объектов",
+   "task": "Создать одним пакетом три регистра накопления, затем два регистра расчёта, затем регистр вместе с журналом документов при общем документе-регистраторе; каждый пакет проходит предпросмотр и публикацию, документ перечисляет все регистры в движениях",
+   "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Document",
+          "name": "Реализация"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "ChartOfCalculationTypes",
+          "name": "ВидыРасчётов"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/Documents/Реализация.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Продажи"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Остатки"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Обороты"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Продажи.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Остатки.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Обороты.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Configuration.xml",
+       "select": ".//{*}Configuration/{*}ChildObjects/{*}AccumulationRegister",
+       "eq": [
+        "Обороты",
+        "Остатки",
+        "Продажи"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Продажи.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Остатки.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Обороты.xml",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "CalculationRegister",
+          "name": "Начисления"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "CalculationRegister",
+          "name": "Премии"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Начисления.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Премии.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты",
+        "CalculationRegister.Начисления",
+        "CalculationRegister.Премии"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Configuration.xml",
+       "select": ".//{*}Configuration/{*}ChildObjects/{*}CalculationRegister",
+       "eq": [
+        "Начисления",
+        "Премии"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Начисления.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Премии.xml",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Резервы"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "DocumentJournal",
+          "name": "ЖурналПродаж"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/DocumentJournals/ЖурналПродаж.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты",
+        "CalculationRegister.Начисления",
+        "CalculationRegister.Премии",
+        "AccumulationRegister.Резервы"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/DocumentJournals/ЖурналПродаж.xml",
+       "eq": true
       }
      ]
     }

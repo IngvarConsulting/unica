@@ -59,6 +59,25 @@ pub(crate) struct MetadataTemplateFile {
     pub(crate) bytes: Vec<u8>,
     pub(crate) preimage: Option<Vec<u8>>,
     pub(crate) guard_handle: Option<ClosedPlatformXmlTarget>,
+    /// How a `Replace` dependency derives `bytes` from its image. A batch
+    /// re-derives it from the image an earlier operation already staged
+    /// instead of overwriting that operation with the on-disk derivation.
+    pub(crate) edit: Option<MetadataDependencyEdit>,
+}
+
+/// The one change a new object makes to an existing prerequisite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MetadataDependencyEdit {
+    /// The registrar document lists the new register in `RegisterRecords`.
+    AddRegisterRecord(String),
+}
+
+impl MetadataDependencyEdit {
+    pub(crate) fn apply(&self, image: &[u8]) -> Result<Vec<u8>, String> {
+        match self {
+            Self::AddRegisterRecord(register) => add_document_register_record(image, register),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,6 +314,7 @@ fn required_common_module_method(
                 bytes: bytes.clone(),
                 preimage: Some(bytes),
                 guard_handle: Some(resolution.handle),
+                edit: None,
             },
         ));
     }
@@ -355,7 +375,7 @@ fn read_dependency(
     tag: &str,
     name: &str,
     mode: MetadataTemplateFileMode,
-    replacement: Option<Vec<u8>>,
+    edit: Option<MetadataDependencyEdit>,
 ) -> Result<MetadataTemplateFile, MetaFailure> {
     let layout = crate::infrastructure::metadata_kinds::metadata_kind(tag).ok_or_else(|| {
         MetaFailure::from(MetaDiagnostic::error(
@@ -378,13 +398,23 @@ fn read_dependency(
                 "metadata prerequisite identity is invalid",
             ))
         })?;
+    let bytes = match &edit {
+        Some(edit) => edit.apply(&preimage).map_err(|_| {
+            MetaFailure::from(MetaDiagnostic::error(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "registrar document image cannot accept the mandatory register relation",
+            ))
+        })?,
+        None => preimage.clone(),
+    };
     Ok(MetadataTemplateFile {
         role: MetadataTemplateFileRole::Dependency(target),
         mode,
         relative_path,
-        bytes: replacement.unwrap_or_else(|| preimage.clone()),
+        bytes,
         preimage: Some(preimage),
         guard_handle: None,
+        edit,
     })
 }
 
@@ -426,25 +456,14 @@ fn registrar_dependency(
     requested: MetadataKind,
 ) -> Result<MetadataTemplateFile, MetaFailure> {
     let document = required_registered_name(source, "Document", requested)?;
-    let existing = read_dependency(
-        source,
-        "Document",
-        &document,
-        MetadataTemplateFileMode::Guard,
-        None,
-    )?;
-    let replacement = add_document_register_record(&existing.bytes, register).map_err(|_| {
-        MetaFailure::from(MetaDiagnostic::error(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "registrar document image cannot accept the mandatory register relation",
-        ))
-    })?;
     read_dependency(
         source,
         "Document",
         &document,
         MetadataTemplateFileMode::Replace,
-        Some(replacement),
+        Some(MetadataDependencyEdit::AddRegisterRecord(
+            register.to_string(),
+        )),
     )
 }
 
@@ -524,6 +543,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
             bytes: with_utf8_bom(xml.as_bytes()),
             preimage: None,
             guard_handle: None,
+            edit: None,
         }];
         let ext = PathBuf::from(layout.directory).join(name).join("Ext");
         for module in minimal_module_files(kind) {
@@ -534,6 +554,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
                 bytes: with_utf8_bom(&[]),
                 preimage: None,
                 guard_handle: None,
+                edit: None,
             });
         }
         for (file_name, auxiliary_kind, content) in
@@ -546,6 +567,7 @@ impl MetadataTemplateCatalog for PlatformMetadataTemplateCatalog {
                 bytes: with_utf8_bom(content.as_bytes()),
                 preimage: None,
                 guard_handle: None,
+                edit: None,
             });
         }
         files.extend(context.dependencies);
