@@ -2939,10 +2939,16 @@ fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut Strin
                 }) {
                     continue;
                 }
-                replacements.push((
-                    child.range(),
-                    format!("<{tag}>{}</{tag}>", escape_xml(&name)),
-                ));
+                // Keep the element's own qualified name, so an owner that
+                // spells MDClasses elements with a prefix stays in that
+                // namespace.
+                let range = child.range();
+                let open = &post_image[range.start + 1..range.end];
+                let qname_end = open
+                    .find(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+                    .unwrap_or(open.len());
+                let qname = &open[..qname_end];
+                replacements.push((range, format!("<{qname}>{}</{qname}>", escape_xml(&name))));
             }
         }
         replacements
@@ -7697,6 +7703,23 @@ pub(crate) mod tests {
     /// #1325: регистрация, встроенная во владельца прежними версиями Unica,
     /// узнаётся по имени метаданных без учёта регистра и остаётся встроенной;
     /// новая — сворачивается в ссылку по имени.
+    #[test]
+    fn collapse_keeps_the_owner_namespace_prefix_of_a_new_registration() {
+        let pre = r#"<md:MetaDataObject xmlns:md="http://v8.1c.ru/8.3/MDClasses" version="2.20"><md:Catalog uuid="11111111-1111-4111-8111-111111111111"><md:Properties><md:Name>Items</md:Name></md:Properties><md:ChildObjects/></md:Catalog></md:MetaDataObject>"#;
+        let mut post = String::from(
+            r#"<md:MetaDataObject xmlns:md="http://v8.1c.ru/8.3/MDClasses" version="2.20"><md:Catalog uuid="11111111-1111-4111-8111-111111111111"><md:Properties><md:Name>Items</md:Name></md:Properties><md:ChildObjects><md:Template uuid="22222222-2222-4222-8222-222222222222"><md:Properties><md:Name>Print</md:Name></md:Properties></md:Template></md:ChildObjects></md:Catalog></md:MetaDataObject>"#,
+        );
+        collapse_standalone_child_descriptors(pre, &mut post);
+        assert!(
+            post.contains("<md:ChildObjects><md:Template>Print</md:Template></md:ChildObjects>"),
+            "{post}"
+        );
+        let document = Document::parse(&post).unwrap();
+        let object = meta_edit_object_node(&document).unwrap();
+        let children = meta_info_child(object, "ChildObjects").unwrap();
+        assert_eq!(meta_info_children(children, "Template").len(), 1);
+    }
+
     #[test]
     fn collapse_keeps_legacy_inline_registration_matched_case_insensitively() {
         let owner = |children: &str| {

@@ -107,10 +107,12 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 # independent generations agree on the current direct-DCS public contract.
 # The first candidate exposed DCS loss hidden by a stable normalized export.
 # The corrected DCS cases now preserve their full content. The six MXL and
-# empty-template imports that timed out (#1325) were owners carrying a full
-# template descriptor in ChildObjects; with by-name registration the full
-# --jobs 1 run processes all 69 cases without a source error, but nine remain
-# accepted-normalized, so the run is not a pass. Keep LAST_VERIFIED.
+# empty-template imports that timed out (#1325) stopped hanging once the
+# emitter registered forms and templates in the owner by name instead of
+# writing a full descriptor into ChildObjects (the shape platform dumps never
+# use): the same corpus generated with the fix runs all 69 cases under
+# --jobs 1 without a source error. Nine cases remain accepted-normalized
+# (#1369), so the run is not a pass. Keep LAST_VERIFIED.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
     "7c2a66149e33b5a57142dd81e5cd18af3aef7d008503b250338b5dda8c0d5805"
 )
