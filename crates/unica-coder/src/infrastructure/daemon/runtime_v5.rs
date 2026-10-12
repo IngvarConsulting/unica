@@ -1978,6 +1978,30 @@ fn project_bound_task_for_read(
     record
 }
 
+fn log_adopted_bound_handoff(task_id: crate::domain::invocation::TaskId) {
+    eprintln!(
+        "protocol-v5 startup: Task {task_id} was bound before its predecessor exited; \
+         completing its handoff with a recovery terminal"
+    );
+}
+
+/// The immutable Task fields a handoff receipt promises its Task row.
+fn expected_handoff_record(handoff: &TaskHandoffActorBoundReceipt) -> NewV5InvocationRecord {
+    NewV5InvocationRecord::new(
+        V5TaskIdentity::new(
+            handoff.task().task_id(),
+            handoff.task().invocation_id(),
+            handoff.key_digest().clone(),
+        ),
+        handoff.key().tool(),
+        handoff.key().normalized_arguments_hash().clone(),
+        handoff.workspace_identity_hash().clone(),
+        handoff.task().poll_interval_ms(),
+        handoff.task().ttl_ms(),
+    )
+    .with_initial_epoch_ms(handoff.task().created_at_epoch_ms())
+}
+
 /// The Task row and TaskBound link a dead predecessor wrote for an unstaged
 /// handoff it did not complete.
 type BoundStartupHandoff = (V5StoredInvocationRecord, TaskBoundReceipt);
@@ -2590,12 +2614,28 @@ impl V5ReceiptRuntime {
                     })?;
                 let bound_matches = task_bound_matches_record(bound, &record)
                     .map_err(|failure| failure.error.to_string())?;
+                // The receipt still owns the attempt, so nothing started or
+                // finished the Task behind it: NotBegun keeps it Queued, Begun
+                // created it Working. A cancel flag the receipt does not carry
+                // is only the one step a cancel through the link adds.
+                let phase_status = match handoff.phase() {
+                    AttemptPhase::NotBegun => V5StoredTask::Queued,
+                    AttemptPhase::Begun => V5StoredTask::Working,
+                };
+                let cancel_matches = record.cancel_requested == handoff.cancel_requested()
+                    || !record.cancel_requested
+                    || bound
+                        .task_record_version()
+                        .checked_add(1)
+                        .is_some_and(|version| version == record.version);
                 if !recovery.identity().matches_record(&record)
                     || recovery.version() != record.version
                     || recovery.status() != record.task.status()
                     || recovery.cancel_requested() != record.cancel_requested
+                    || !expected_handoff_record(&handoff).matches_record(&record)
                     || !bound_matches
-                    || !matches!(record.task, V5StoredTask::Queued | V5StoredTask::Working)
+                    || record.task != phase_status
+                    || !cancel_matches
                 {
                     return Err(
                         "preexisting handoff Task contradicts its TaskBound link".to_owned()
@@ -2625,19 +2665,7 @@ impl V5ReceiptRuntime {
                 .task_store
                 .get(handoff.task().task_id(), provider_deadline)
                 .map_err(|error| format!("read preexisting protocol-v5 handoff Task: {error}"))?;
-            let expected = NewV5InvocationRecord::new(
-                V5TaskIdentity::new(
-                    handoff.task().task_id(),
-                    handoff.task().invocation_id(),
-                    handoff.key_digest().clone(),
-                ),
-                handoff.key().tool(),
-                handoff.key().normalized_arguments_hash().clone(),
-                handoff.workspace_identity_hash().clone(),
-                handoff.task().poll_interval_ms(),
-                handoff.task().ttl_ms(),
-            )
-            .with_initial_epoch_ms(handoff.task().created_at_epoch_ms());
+            let expected = expected_handoff_record(&handoff);
             let state_matches = match handoff.phase() {
                 AttemptPhase::NotBegun => {
                     record.task == V5StoredTask::Queued
@@ -2812,11 +2840,7 @@ impl V5ReceiptRuntime {
                     let (record, task_bound) =
                         match bound_handoffs.remove(&handoff.task().task_id()) {
                             Some(adopted) => {
-                                eprintln!(
-                                "protocol-v5 startup: Task {} was bound before its predecessor \
-                                 exited; completing its handoff with a recovery terminal",
-                                handoff.task().task_id()
-                            );
+                                log_adopted_bound_handoff(handoff.task().task_id());
                                 adopted
                             }
                             None => self

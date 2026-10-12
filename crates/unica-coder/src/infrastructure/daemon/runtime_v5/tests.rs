@@ -1789,14 +1789,20 @@ fn startup_materializes_handoff_without_replaying_begun_work() {
 /// #1360: the predecessor died after the lifecycle link became `TaskBound`
 /// and before the handoff receipt was completed. The successor must adopt
 /// that exact link, finish the Task with a recovery terminal and start; it
-/// must neither refuse to start nor replay the work.
+/// must neither refuse to start nor replay the work. The second crash point
+/// is inside that recovery: the receipt already handed the Task to its link,
+/// the recovery terminal is not written yet.
 #[test]
 fn startup_completes_handoff_whose_link_is_already_task_bound() {
-    for (phase, cancel_requested) in [
-        (AttemptPhase::NotBegun, false),
-        (AttemptPhase::NotBegun, true),
-        (AttemptPhase::Begun, false),
-        (AttemptPhase::Begun, true),
+    for (phase, cancel_requested, receipt_completed_before_crash) in [
+        (AttemptPhase::NotBegun, false, false),
+        (AttemptPhase::NotBegun, true, false),
+        (AttemptPhase::Begun, false, false),
+        (AttemptPhase::Begun, true, false),
+        (AttemptPhase::NotBegun, false, true),
+        (AttemptPhase::NotBegun, true, true),
+        (AttemptPhase::Begun, false, true),
+        (AttemptPhase::Begun, true, true),
     ] {
         let root = tempfile::tempdir().expect("temporary bound handoff recovery root");
         let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
@@ -1882,11 +1888,25 @@ fn startup_completes_handoff_whose_link_is_already_task_bound() {
             .materialize_bound_handoff(&handoff, 1_010, deadline, runtime.hooks.as_ref())
             .unwrap_or_else(|failure| panic!("materialize bound handoff: {:?}", failure.error));
         assert_eq!(task_bound.phase(), phase);
+        if receipt_completed_before_crash {
+            runtime
+                .receipt_ledger
+                .complete_bound_task_handoff(
+                    key.clone(),
+                    handoff.record_version(),
+                    task_bound,
+                    deadline,
+                )
+                .expect("hand the bound Task over before the recovery terminal");
+        }
         drop(runtime);
 
+        let service = Arc::new(SourceAdmissionProbe::default());
+        let config = config.clone().with_invocation_service(service.clone());
         let reopened = V5ReceiptRuntime::open(&state, &config).unwrap_or_else(|error| {
             panic!(
-                "{phase:?}/{cancel_requested}: startup must recover a TaskBound handoff: {error}"
+                "{phase:?}/{cancel_requested}/{receipt_completed_before_crash}: \
+                 startup must recover a TaskBound handoff: {error}"
             )
         });
         assert_eq!(
@@ -1950,11 +1970,126 @@ fn startup_completes_handoff_whose_link_is_already_task_bound() {
             )
             .expect("read recovered bound handoff Task");
         assert_eq!(terminal.version, created.version + 1, "one recovery step");
+        assert_eq!(
+            service.prepares.load(Ordering::SeqCst),
+            0,
+            "recovery must not replay the work"
+        );
         drop(reopened);
 
         // The recovered state is final: the next process starts as well.
         V5ReceiptRuntime::open(&state, &config).expect("second restart after recovery");
     }
+}
+
+/// A NotBegun handoff never starts its Task before the receipt hands it to
+/// the link. A Working row under such a link is not a crash state: startup
+/// refuses it by name and changes nothing.
+#[test]
+fn startup_refuses_not_begun_handoff_whose_bound_task_is_working() {
+    let root = tempfile::tempdir().expect("temporary contradictory bound handoff root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity)
+        .expect("open contradictory bound handoff daemon state");
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(50),
+    );
+    let runtime = V5ReceiptRuntime::open(&state, &config).expect("open initial runtime");
+    let key = ReceiptKey::new(
+        InvocationId::new(),
+        TaskId::new(),
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(&serde_json::Map::new()),
+            request_scope_hash("workspace-a").expect("request scope"),
+        ),
+    );
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let reserved = runtime
+        .receipt_ledger
+        .reserve(
+            key.clone(),
+            OriginalCutoffDescriptor::new(1_000, 7_000).expect("valid cutoff"),
+            deadline,
+        )
+        .expect("reserve contradictory handoff receipt")
+        .into_reservation()
+        .expect("new contradictory handoff receipt");
+    let bound = runtime
+        .receipt_ledger
+        .bind_reserved_actor(
+            key.clone(),
+            reserved.record_version(),
+            SafeIdentityHash::from_sha256(Sha256::digest(b"contradictory-handoff").into()),
+            deadline,
+        )
+        .expect("bind contradictory handoff actor");
+    let handoff = runtime
+        .receipt_ledger
+        .begin_bound_task_handoff(
+            key.clone(),
+            bound.record_version(),
+            1_009,
+            3_600_000,
+            V5_TASK_POLL_INTERVAL_MS,
+            deadline,
+        )
+        .expect("persist NotBegun handoff");
+    let (queued, _task_bound) = runtime
+        .task_projection
+        .materialize_bound_handoff(&handoff, 1_010, deadline, runtime.hooks.as_ref())
+        .unwrap_or_else(|failure| panic!("materialize NotBegun handoff: {:?}", failure.error));
+    let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
+    runtime
+        .task_projection
+        .task_store
+        .start_working_if_not_cancel_requested(
+            &queued.identity(),
+            queued.version,
+            provider_deadline,
+        )
+        .expect("start the Task behind its link");
+    let working = runtime
+        .task_projection
+        .task_store
+        .get(key.reserved_task_id(), provider_deadline)
+        .expect("read Working Task");
+    assert_eq!(working.task, V5StoredTask::Working);
+    drop(runtime);
+
+    let error = match V5ReceiptRuntime::open(&state, &config) {
+        Ok(_) => panic!("a NotBegun handoff with a Working Task must not be recovered"),
+        Err(error) => error,
+    };
+    assert!(
+        error.contains("preexisting handoff Task contradicts its TaskBound link"),
+        "{error}"
+    );
+    let task_root = RetainedDirectoryCapability::open(&state.path().join("tasks"))
+        .expect("retain TaskStore after refused startup");
+    let (store, _) = FileInvocationStoreV5::open_retained_directory_inspect_only(
+        task_root,
+        Arc::new(SystemEpochMillisClock),
+        crate::domain::code_intelligence::ProviderDeadline::new(
+            Instant::now() + Duration::from_secs(2),
+        ),
+    )
+    .expect("inspect TaskStore after refused startup");
+    assert_eq!(
+        store
+            .get(
+                key.reserved_task_id(),
+                crate::domain::code_intelligence::ProviderDeadline::new(
+                    Instant::now() + Duration::from_secs(2),
+                ),
+            )
+            .expect("read unchanged Task"),
+        working
+    );
 }
 
 #[derive(Default)]

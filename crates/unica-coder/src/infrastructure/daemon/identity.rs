@@ -596,8 +596,9 @@ impl DaemonStateDirectory {
     /// one, and only the one naming its own child's pid is believed.
     pub(crate) fn publish_startup_failure(&self, pid: u32, reason: &str) -> Result<(), String> {
         self.verify_identity()?;
+        self.sweep_startup_failure_stages();
         let bytes = startup_failure_bytes(pid, reason);
-        let temporary_name = format!(".startup-failure.{}.tmp", Uuid::new_v4());
+        let temporary_name = format!("{STARTUP_FAILURE_STAGE_PREFIX}{}.tmp", Uuid::new_v4());
         let temporary_name = OsStr::new(&temporary_name);
         let mut file = create_owner_only_file_child(&self.directory, temporary_name)
             .map_err(|error| daemon_io_error("create startup failure staging file", error))?;
@@ -646,6 +647,7 @@ impl DaemonStateDirectory {
     /// Removes the startup failure record, whoever wrote it.
     pub(crate) fn remove_startup_failure(&self) -> Result<(), String> {
         self.verify_identity()?;
+        self.sweep_startup_failure_stages();
         let file = match open_regular_child_nofollow(
             &self.directory,
             OsStr::new(STARTUP_FAILURE_FILE_NAME),
@@ -665,6 +667,30 @@ impl DaemonStateDirectory {
         .map_err(|error| daemon_io_error("remove startup failure record", error))?;
         sync_directory(&self.directory)
             .map_err(|error| daemon_io_error("sync startup failure removal", error))
+    }
+
+    /// Best effort: removes staging files a process left when it died
+    /// between creating and publishing its startup failure record.
+    fn sweep_startup_failure_stages(&self) {
+        let Ok(entries) = std::fs::read_dir(&self.path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let is_stage = name.to_str().is_some_and(|name| {
+                name.starts_with(STARTUP_FAILURE_STAGE_PREFIX) && name.ends_with(".tmp")
+            });
+            if !is_stage {
+                continue;
+            }
+            let Ok(file) = open_regular_child_nofollow(&self.directory, &name) else {
+                continue;
+            };
+            let Ok(identity) = file_identity(&file) else {
+                continue;
+            };
+            let _ = remove_identity_bound_regular_child(&self.directory, &name, identity, &file);
+        }
     }
 
     fn verify_identity(&self) -> Result<(), String> {
@@ -719,6 +745,7 @@ fn lock_is_contended(error: &io::Error) -> bool {
 }
 
 const STARTUP_FAILURE_PID_PREFIX: &str = "pid=";
+const STARTUP_FAILURE_STAGE_PREFIX: &str = ".startup-failure.";
 const MAX_STARTUP_FAILURE_RECORD_BYTES: usize =
     STARTUP_FAILURE_PID_PREFIX.len() + 10 + 1 + MAX_STARTUP_FAILURE_REASON_BYTES;
 
@@ -727,7 +754,7 @@ const MAX_STARTUP_FAILURE_RECORD_BYTES: usize =
 fn startup_failure_bytes(pid: u32, reason: &str) -> Vec<u8> {
     let mut text = String::new();
     for character in reason.chars() {
-        let character = if character.is_control() {
+        let character = if is_hidden_or_line_breaking(character) {
             ' '
         } else {
             character
@@ -738,6 +765,37 @@ fn startup_failure_bytes(pid: u32, reason: &str) -> Vec<u8> {
         text.push(character);
     }
     format!("{STARTUP_FAILURE_PID_PREFIX}{pid}\n{text}").into_bytes()
+}
+
+/// Characters that must not reach the one-line message a host shows: control
+/// characters (Cc), invisible format and bidi controls (Cf) and the Unicode
+/// line and paragraph separators (Zl, Zp).
+fn is_hidden_or_line_breaking(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            u32::from(character),
+            0x00AD
+                | 0x0600..=0x0605
+                | 0x061C
+                | 0x06DD
+                | 0x070F
+                | 0x0890..=0x0891
+                | 0x08E2
+                | 0x180E
+                | 0x200B..=0x200F
+                | 0x2028..=0x202E
+                | 0x2060..=0x2064
+                | 0x2066..=0x206F
+                | 0xFEFF
+                | 0xFFF9..=0xFFFB
+                | 0x110BD
+                | 0x110CD
+                | 0x13430..=0x1343F
+                | 0x1BCA0..=0x1BCA3
+                | 0x1D173..=0x1D17A
+                | 0xE0001
+                | 0xE0020..=0xE007F
+        )
 }
 
 fn parse_startup_failure(bytes: &[u8], pid: u32) -> Option<String> {
@@ -793,6 +851,53 @@ mod tests {
         state.remove_startup_failure().unwrap();
         assert_eq!(state.read_startup_failure(8), None);
         state.remove_startup_failure().unwrap();
+    }
+
+    #[test]
+    fn startup_failure_record_flattens_hidden_and_line_breaking_characters() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = std::fs::canonicalize(root.path()).unwrap();
+        let state = DaemonStateDirectory::open(&physical, &CoreIdentity::production_v5()).unwrap();
+        state
+            .publish_startup_failure(
+                9,
+                "a\u{202E}b\u{2028}c\u{2029}d\u{200B}e\u{FEFF}f\u{2066}g\u{00AD}h\re",
+            )
+            .unwrap();
+        assert_eq!(
+            state.read_startup_failure(9).as_deref(),
+            Some("a b c d e f g h e")
+        );
+    }
+
+    #[test]
+    fn startup_failure_record_sweeps_orphaned_staging_files() {
+        let root = tempfile::tempdir().unwrap();
+        let physical = std::fs::canonicalize(root.path()).unwrap();
+        let state = DaemonStateDirectory::open(&physical, &CoreIdentity::production_v5()).unwrap();
+        let stages = |state: &DaemonStateDirectory| {
+            std::fs::read_dir(state.path())
+                .unwrap()
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.starts_with(STARTUP_FAILURE_STAGE_PREFIX))
+                })
+                .count()
+        };
+        let orphan = state
+            .path()
+            .join(format!("{STARTUP_FAILURE_STAGE_PREFIX}orphan.tmp"));
+        std::fs::write(&orphan, b"pid=1\nhalf").unwrap();
+        state.publish_startup_failure(10, "refusal").unwrap();
+        assert_eq!(stages(&state), 0, "publication swept the orphaned stage");
+
+        std::fs::write(&orphan, b"pid=1\nhalf").unwrap();
+        state.remove_startup_failure().unwrap();
+        assert_eq!(stages(&state), 0, "removal swept the orphaned stage");
+        assert_eq!(state.read_startup_failure(10), None);
     }
 
     #[test]
