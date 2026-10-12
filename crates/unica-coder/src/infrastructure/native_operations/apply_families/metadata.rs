@@ -101,7 +101,10 @@ impl AddressedFields {
     /// caller's argument path; `None` when it is the member selector itself,
     /// which the address names.
     fn caller_field(self, field: &str) -> Option<String> {
-        if field == "names[0]" || field == "elements[0].name" || field.starts_with("scope") {
+        // In `items` the caller wrote every name, the first included; only a
+        // member that the address names has its selector dropped.
+        let addressed_selector = field == "elements[0].name" && !matches!(self, Self::Items);
+        if field == "names[0]" || addressed_selector || field.starts_with("scope") {
             return None;
         }
         Some(match self {
@@ -2998,6 +3001,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_first_new_item_name_stays_the_callers_field() {
+        use super::AddressedFields;
+        assert_eq!(
+            AddressedFields::Items
+                .caller_field("elements[0].name")
+                .as_deref(),
+            Some("items[0].name")
+        );
+        assert_eq!(
+            AddressedFields::Items
+                .caller_field("elements[1].name")
+                .as_deref(),
+            Some("items[1].name")
+        );
+        assert_eq!(
+            AddressedFields::Values.caller_field("elements[0].name"),
+            None
+        );
+        assert_eq!(AddressedFields::None.caller_field("elements[0].name"), None);
+        assert_eq!(AddressedFields::Items.caller_field("names[0]"), None);
+    }
     #[test]
     fn metadata_parser_rejects_unknown_and_misplaced_fields_at_the_exact_operation_path() {
         let fixture = MetadataFixture::new();
