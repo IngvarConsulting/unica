@@ -93,6 +93,16 @@ const CUTOFF_HANDOFF_COMMIT_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
 /// the answer: a write the store already began is never declared uncertain,
 /// and the daemon never fail-stops, because the caller was in a hurry (#1387).
 const DURABLE_STEP_BUDGET: Duration = TASK_RECONCILIATION_BUDGET;
+
+/// The bound of a durable step that carries out a decision already
+/// committed: the Task exists and the key has moved to its link, so the step
+/// must not fail only because the request, the startup or an earlier step
+/// spent the deadline. It gets [`DURABLE_STEP_BUDGET`] from its own start.
+fn committed_decision_step_deadline(deadline: Instant) -> Instant {
+    Instant::now()
+        .checked_add(DURABLE_STEP_BUDGET)
+        .map_or(deadline, |floor| deadline.max(floor))
+}
 const V5_TASK_POLL_INTERVAL_MS: u64 = 100;
 static NEXT_RETIREMENT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// Pause before an expired Task whose retirement failed is tried again. Each
@@ -1504,6 +1514,7 @@ impl V5TaskProjection {
         reason: RecoveryTerminalReason,
         deadline: Instant,
     ) -> Result<TaskTerminalBoundReceipt, V5TaskProjectionFailure> {
+        let deadline = committed_decision_step_deadline(deadline);
         let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
         let identity = record.identity();
         let receipt_key_digest = record.receipt_key_digest.clone();
@@ -2983,7 +2994,7 @@ impl V5ReceiptRuntime {
         // Waiting for the key lock spends the caller's deadline. The Task is
         // already materialized, so its completion gets the daemon's own
         // durable step budget from now instead of an elapsed deadline.
-        let deadline = deadline.max(Instant::now() + DURABLE_STEP_BUDGET);
+        let deadline = committed_decision_step_deadline(deadline);
         self.receipt_ledger.complete_bound_task_handoff(
             key,
             expected_version,
@@ -3025,7 +3036,7 @@ impl V5ReceiptRuntime {
         // Waiting for the key lock spends the caller's deadline. The Task is
         // already materialized, so its completion gets the daemon's own
         // durable step budget from now instead of an elapsed deadline.
-        let deadline = deadline.max(Instant::now() + DURABLE_STEP_BUDGET);
+        let deadline = committed_decision_step_deadline(deadline);
         self.receipt_ledger.complete_staged_task_handoff(
             key,
             expected_version,
@@ -4822,6 +4833,9 @@ impl V5ReceiptRuntime {
         epoch_ms: u64,
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        // The handoff is committed: the rest of the attempt is no longer
+        // bounded by what its request had left.
+        let deadline = committed_decision_step_deadline(deadline);
         self.hooks.bound_task(&task_record, &bound);
         self.hooks
             .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);

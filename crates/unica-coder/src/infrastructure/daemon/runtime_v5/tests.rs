@@ -7618,3 +7618,240 @@ fn bound_handoff_completion_waits_for_the_key_lock() {
         Err(ReceiptLedgerError::ReceiptNotFound)
     ));
 }
+
+/// Shortens the bound of the known-long handoff and spends it while the Task
+/// is materialized, so the committed handoff is left with an elapsed deadline.
+#[derive(Default)]
+struct SpentHandoffDeadlineHooks {
+    fail_stopped: AtomicBool,
+}
+
+impl V5RuntimeHooks for SpentHandoffDeadlineHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn commit_deadline_at(&self, point: V5PausePoint, deadline: Instant) -> Instant {
+        // Enough for the re-read and the materialization even under load;
+        // the sleep at its end then spends the rest.
+        if point == V5PausePoint::BeforeTaskStoreCreate {
+            Instant::now() + Duration::from_millis(1_000)
+        } else {
+            deadline
+        }
+    }
+
+    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
+        if event == V5ReceiptRuntimeEventKind::TaskLinkReservationConverted {
+            thread::sleep(Duration::from_millis(1_300));
+        }
+    }
+
+    fn forced_process_exit(&self, _grace: Option<Duration>) {
+        self.fail_stopped.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Once the handoff of a known-long call is committed, completing it gets
+/// the daemon's own step budget. A deadline the materialization already
+/// spent leaves no Task unexecuted. (A begun handoff materializes its Task
+/// already working, so no separate start step needs a budget here.)
+#[test]
+fn committed_handoff_starts_its_task_after_the_deadline_was_spent() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, root) = catalog_workspace();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let service = Arc::new(CountedKnownLongService {
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered: Mutex::new(entered_tx),
+        release: Mutex::new(release_rx),
+    });
+    let hooks = Arc::new(SpentHandoffDeadlineHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(60),
+    )
+    .with_invocation_service(service.clone())
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    let task_id = TaskId::new();
+
+    let first =
+        submitted_task_snapshot(owner.submit_invocation(view_catalog_request(task_id, &root)));
+    assert_eq!(first.task_id(), task_id);
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the Task starts its execution");
+    release_tx.send(()).expect("release the execution");
+    let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. } if result.ok),
+        "the committed Task completes: {terminal:?}"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    assert!(!hooks.fail_stopped.load(Ordering::SeqCst));
+    drop(owner);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+/// Recovery terminalizes a bound Task it found interrupted even when the
+/// startup deadline it inherited is already spent.
+#[test]
+fn recovery_terminalizes_a_bound_task_after_the_startup_deadline_was_spent() {
+    let root = tempfile::tempdir().expect("temporary recovery root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical recovery root");
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity).expect("open recovery state");
+    let config = DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50))
+        .with_invocation_service(Arc::new(CountingService::default()));
+    let clock = Arc::new(ManualEpochClock::new(1_009));
+    let runtime = V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock)
+        .expect("open recovery runtime");
+    let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (record, task_bound) = runtime
+        .task_projection
+        .materialize_bound_handoff(&handoff, 1_009, deadline, runtime.hooks.as_ref())
+        .unwrap_or_else(|failure| panic!("materialize TaskBound: {}", failure.error));
+    let task_bound = runtime
+        .complete_bound_task_handoff(
+            handoff.key().clone(),
+            handoff.record_version(),
+            task_bound,
+            deadline,
+        )
+        .expect("complete the handoff");
+
+    let spent = Instant::now();
+    thread::sleep(Duration::from_millis(5));
+    let terminal = runtime
+        .task_projection
+        .terminalize_recovered_bound(
+            &task_bound,
+            record,
+            RecoveryTerminalReason::OutcomeUncertain,
+            spent,
+        )
+        .unwrap_or_else(|failure| panic!("terminalize after a spent deadline: {}", failure.error));
+    assert_eq!(terminal.key(), handoff.key());
+    assert!(matches!(
+        retirement_link(&runtime, handoff.key().reserved_task_id()),
+        Some(TaskLifecycleLinkRecord::TaskTerminalBound(_))
+    ));
+}
+
+/// The same on the continuation of a promised Task: an admission that
+/// outlived the handoff moment commits the handoff with a spent deadline, and
+/// the continuation still starts, executes and completes the one attempt.
+#[test]
+fn promised_continuation_runs_its_task_after_the_deadline_was_spent() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, root) = catalog_workspace();
+    let admission =
+        crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
+            root.clone(),
+        );
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let service = Arc::new(CountedKnownLongService {
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        entered: Mutex::new(entered_tx),
+        release: Mutex::new(release_rx),
+    });
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        service.clone(),
+        clock.clone(),
+    ));
+    let hooks = Arc::new(SpentHandoffDeadlineHooks::default());
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(600),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity,
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    let task_id = TaskId::new();
+    let request = view_catalog_request(task_id, &root);
+    let submit = thread::spawn(move || {
+        let mut owner = owner;
+        let response = owner.submit_invocation(request);
+        (owner, response)
+    });
+    admission.wait_until_entered();
+    clock.elapsed_ms.store(7_000, Ordering::SeqCst);
+    let (mut owner, promised) = submit.join().expect("submit thread");
+    assert_eq!(
+        submitted_task_snapshot(promised.map_err(|error| error.to_string())).task_id(),
+        task_id
+    );
+    admission.release();
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the continuation executes the Task");
+    release_tx.send(()).expect("release the execution");
+    let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. } if result.ok),
+        "the promised Task completes: {terminal:?}"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    assert!(!hooks.fail_stopped.load(Ordering::SeqCst));
+    drop(owner);
+    drop(admission);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
