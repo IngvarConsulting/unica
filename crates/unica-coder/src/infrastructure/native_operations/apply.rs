@@ -17,10 +17,21 @@ use std::sync::Arc;
 
 const MAX_APPLY_FILE_BYTES: usize = 32 * 1024 * 1024;
 
-fn generated_component_identity_error(error: std::io::Error) -> ApplyStagingError {
+/// A filesystem call on the planned route failed: access denied, I/O, or
+/// a retained name that no longer resolves. The source cannot be read, which
+/// is not a containment violation (links and aliases are rejected by kind).
+fn source_route_io_error(error: std::io::Error) -> ApplyStagingError {
     ApplyStagingError::new(
-        ApplyStagingErrorKind::ContainmentIdentity,
-        format!("generated source component identity cannot be proven: {error}"),
+        ApplyStagingErrorKind::UnsupportedProvider,
+        format!("source route cannot be read: {error}"),
+    )
+}
+
+/// A planned path whose identity bytes cannot be derived for the plan hash.
+fn path_identity_error(error: impl std::fmt::Display) -> ApplyStagingError {
+    ApplyStagingError::new(
+        ApplyStagingErrorKind::UnsupportedProvider,
+        format!("source path identity cannot be derived: {error}"),
     )
 }
 
@@ -33,7 +44,7 @@ fn reject_generated_component(
     };
     if comparator
         .names_equivalent(component, OsStr::new(GENERATED_DIR_NAME))
-        .map_err(generated_component_identity_error)?
+        .map_err(source_route_io_error)?
     {
         return Err(ApplyStagingError::new(
             ApplyStagingErrorKind::ContainmentIdentity,
@@ -48,7 +59,6 @@ pub(crate) enum ApplyStagingErrorKind {
     Cancelled,
     Deadline,
     ContainmentIdentity,
-    MissingParent,
     AbsentChainOccupied,
     UnsupportedProvider,
     ConcurrentRevision,
@@ -153,10 +163,29 @@ impl ApplyPlanError {
         self
     }
 
+    /// Keeps the staging kind for the refusal code and names its cause:
+    /// the agent needs to know what to fix, not that "evidence" is missing.
     pub(crate) fn staging(error: ApplyStagingError, path: impl Into<String>) -> Self {
+        let cause = match error.kind() {
+            ApplyStagingErrorKind::Cancelled => "apply planning was cancelled",
+            ApplyStagingErrorKind::Deadline => "apply planning deadline elapsed",
+            ApplyStagingErrorKind::ContainmentIdentity => {
+                "a staged path is a link, a hard-link alias, outside the source root or in the generated subtree"
+            }
+            ApplyStagingErrorKind::AbsentChainOccupied => {
+                "a staged path has another kind of entry in the sources than the plan needs"
+            }
+            ApplyStagingErrorKind::UnsupportedProvider => {
+                "a staged source cannot be read within the apply bounds"
+            }
+            ApplyStagingErrorKind::ConcurrentRevision => {
+                "sources changed while the plan was prepared; prepare a new preview"
+            }
+            ApplyStagingErrorKind::Invariant => "the staged apply plan is inconsistent",
+        };
         Self::new(
             ApplyPlanErrorKind::Staging(error.kind()),
-            "staged source evidence is unavailable",
+            format!("{cause}: {error}"),
         )
         .at_path(path)
     }
@@ -374,7 +403,7 @@ impl RetainedNamespaceGuard {
         let mut directory = self.root.as_ref().clone();
         directory
             .validate_named_identity()
-            .map_err(generated_component_identity_error)?;
+            .map_err(source_route_io_error)?;
         for component in self.relative.components() {
             self.checkpoint()?;
             let Component::Normal(name) = component else {
@@ -386,13 +415,19 @@ impl RetainedNamespaceGuard {
             match directory.retain_immediate_child_nofollow(name) {
                 Ok(RetainedChildCapability::Directory(child)) => directory = child,
                 Err(error) if error.kind() == ErrorKind::NotFound => return Ok((None, None)),
-                Ok(_) => {
+                Ok(RetainedChildCapability::ReparsePoint) => {
                     return Err(ApplyStagingError::new(
                         ApplyStagingErrorKind::ContainmentIdentity,
+                        "namespace input is a link/reparse point",
+                    ))
+                }
+                Ok(_) => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::AbsentChainOccupied,
                         "namespace input is not a directory",
                     ))
                 }
-                Err(error) => return Err(generated_component_identity_error(error)),
+                Err(error) => return Err(source_route_io_error(error)),
             }
         }
         let mut stopped = None;
@@ -406,31 +441,35 @@ impl RetainedNamespaceGuard {
                     })
                 },
             )
-            .map_err(|error| {
-                stopped.unwrap_or_else(|| generated_component_identity_error(error))
-            })?;
+            .map_err(|error| stopped.unwrap_or_else(|| source_route_io_error(error)))?;
         let comparator = directory
             .child_name_comparator()
-            .map_err(generated_component_identity_error)?;
+            .map_err(source_route_io_error)?;
         let mut children = std::collections::BTreeMap::new();
         for name in names {
             self.checkpoint()?;
             if comparator
                 .names_equivalent(&name, OsStr::new(GENERATED_DIR_NAME))
-                .map_err(generated_component_identity_error)?
+                .map_err(source_route_io_error)?
             {
                 continue;
             }
             let kind = match directory
                 .retain_immediate_child_nofollow(&name)
-                .map_err(generated_component_identity_error)?
+                .map_err(source_route_io_error)?
             {
                 RetainedChildCapability::Directory(_) => 1,
                 RetainedChildCapability::RegularFile(_) => 2,
-                _ => {
+                RetainedChildCapability::ReparsePoint => {
                     return Err(ApplyStagingError::new(
                         ApplyStagingErrorKind::ContainmentIdentity,
-                        "enumerated input contains a link or unsupported entry",
+                        "enumerated input contains a link/reparse point",
+                    ))
+                }
+                RetainedChildCapability::Unsupported => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::AbsentChainOccupied,
+                        "enumerated input contains an unsupported entry",
                     ))
                 }
             };
@@ -438,7 +477,7 @@ impl RetainedNamespaceGuard {
         }
         directory
             .validate_named_identity()
-            .map_err(generated_component_identity_error)?;
+            .map_err(source_route_io_error)?;
         self.checkpoint()?;
         Ok((Some(directory.identity()), Some(children)))
     }
@@ -466,7 +505,7 @@ impl RetainedNamespaceGuard {
         let (identity, actual) = self.observe(deltas.len())?;
         if self.identity.is_some() && self.identity != identity {
             return Err(ApplyStagingError::new(
-                ApplyStagingErrorKind::ContainmentIdentity,
+                ApplyStagingErrorKind::ConcurrentRevision,
                 "enumerated directory identity changed",
             ));
         }
@@ -507,9 +546,7 @@ impl RetainedNamespaceGuard {
         self.checkpoint()?;
         let path =
             crate::infrastructure::platform::filesystem::stable_path_identity_bytes(&self.relative)
-                .map_err(|error| {
-                    ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
-                })?;
+                .map_err(path_identity_error)?;
         hash.update((path.len() as u64).to_be_bytes());
         hash.update(path);
         match &self.children {
@@ -523,12 +560,7 @@ impl RetainedNamespaceGuard {
                         crate::infrastructure::platform::filesystem::stable_path_identity_bytes(
                             Path::new(name),
                         )
-                        .map_err(|error| {
-                            ApplyStagingError::new(
-                                ApplyStagingErrorKind::ContainmentIdentity,
-                                error,
-                            )
-                        })?;
+                        .map_err(path_identity_error)?;
                     hash.update((name.len() as u64).to_be_bytes());
                     hash.update(name);
                     hash.update([*kind]);
@@ -701,7 +733,7 @@ impl ApplyStagedState {
             if self.generated_subtree_forbidden {
                 let policy = parent
                     .child_name_comparator()
-                    .map_err(generated_component_identity_error)?;
+                    .map_err(source_route_io_error)?;
                 reject_generated_component(Some(&policy), component)?;
             }
             parent = match parent.retain_immediate_child_nofollow(component) {
@@ -709,19 +741,32 @@ impl ApplyStagedState {
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     return self.read_bounded(&relative, limit);
                 }
-                _ => {
+                Ok(RetainedChildCapability::ReparsePoint) => {
                     return Err(ApplyStagingError::new(
                         ApplyStagingErrorKind::ContainmentIdentity,
-                        format!("reference input parent changed: {}", relative.display()),
+                        format!(
+                            "reference input parent is a link/reparse point: {}",
+                            relative.display()
+                        ),
                     ))
                 }
+                Ok(_) => {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::AbsentChainOccupied,
+                        format!(
+                            "reference input parent is not a directory: {}",
+                            relative.display()
+                        ),
+                    ))
+                }
+                Err(error) => return Err(source_route_io_error(error)),
             };
         }
         let name = components.last().expect("strict path has a name").clone();
         if self.generated_subtree_forbidden {
             let policy = parent
                 .child_name_comparator()
-                .map_err(generated_component_identity_error)?;
+                .map_err(source_route_io_error)?;
             reject_generated_component(Some(&policy), &name)?;
         }
         let file = match parent.retain_immediate_child_nofollow(&name) {
@@ -729,15 +774,25 @@ impl ApplyStagedState {
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 return self.read_bounded(&relative, limit);
             }
-            _ => {
+            Ok(RetainedChildCapability::ReparsePoint) => {
                 return Err(ApplyStagingError::new(
                     ApplyStagingErrorKind::ContainmentIdentity,
+                    format!(
+                        "reference input is a link/reparse point: {}",
+                        relative.display()
+                    ),
+                ))
+            }
+            Ok(_) => {
+                return Err(ApplyStagingError::new(
+                    ApplyStagingErrorKind::AbsentChainOccupied,
                     format!(
                         "reference input is not a regular file: {}",
                         relative.display()
                     ),
                 ))
             }
+            Err(error) => return Err(source_route_io_error(error)),
         };
         if file.hard_link_count().map_err(|error| {
             ApplyStagingError::new(
@@ -827,36 +882,6 @@ impl ApplyStagedState {
         Ok(())
     }
 
-    /// Stages one absent terminal only when its immediate parent was retained
-    /// as an existing directory. Family planners that do not own topology
-    /// creation use this instead of the generic multi-component create path.
-    pub(crate) fn create_leaf_below_retained_parent(
-        &mut self,
-        relative: impl AsRef<Path>,
-        bytes: Vec<u8>,
-    ) -> Result<(), ApplyStagingError> {
-        let relative = strict_relative(relative.as_ref())?;
-        let index = self.ensure_loaded(&relative)?;
-        let entry = &mut self.entries[index];
-        if !entry.missing_parent_chain.is_empty() {
-            return Err(ApplyStagingError::new(
-                ApplyStagingErrorKind::MissingParent,
-                "staged leaf requires an already retained immediate parent",
-            ));
-        }
-        if entry.current != StagedFileState::Absent {
-            return Err(ApplyStagingError::new(
-                ApplyStagingErrorKind::Invariant,
-                format!(
-                    "staged create target already exists: {}",
-                    relative.display()
-                ),
-            ));
-        }
-        entry.current = StagedFileState::Bytes(bytes);
-        Ok(())
-    }
-
     pub(crate) fn replace(
         &mut self,
         relative: impl AsRef<Path>,
@@ -910,9 +935,7 @@ impl ApplyStagedState {
             let path = crate::infrastructure::platform::filesystem::stable_path_identity_bytes(
                 &entry.relative_path,
             )
-            .map_err(|error| {
-                ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
-            })?;
+            .map_err(path_identity_error)?;
             hash.update((path.len() as u64).to_be_bytes());
             hash.update(path);
             for state in [&entry.original, &entry.current] {
@@ -937,9 +960,7 @@ impl ApplyStagedState {
             let path = crate::infrastructure::platform::filesystem::stable_path_identity_bytes(
                 &guard.relative_path,
             )
-            .map_err(|error| {
-                ApplyStagingError::new(ApplyStagingErrorKind::ContainmentIdentity, error)
-            })?;
+            .map_err(path_identity_error)?;
             hash.update((path.len() as u64).to_be_bytes());
             hash.update(path);
             hash.update(guard.expected_len.to_be_bytes());
@@ -1073,7 +1094,7 @@ impl ApplyStagedState {
             .generated_subtree_forbidden
             .then(|| ancestor.child_name_comparator())
             .transpose()
-            .map_err(generated_component_identity_error)?;
+            .map_err(source_route_io_error)?;
         for (index, component) in components[..components.len() - 1].iter().enumerate() {
             reject_generated_component(generated_name_comparator.as_ref(), component)?;
             match ancestor.retain_immediate_child_nofollow(component) {
@@ -1083,7 +1104,7 @@ impl ApplyStagedState {
                         .generated_subtree_forbidden
                         .then(|| ancestor.child_name_comparator())
                         .transpose()
-                        .map_err(generated_component_identity_error)?;
+                        .map_err(source_route_io_error)?;
                 }
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     missing_parent_chain
@@ -1214,7 +1235,7 @@ impl ApplyStagedState {
                 RetainedChildCapability::Directory(_) | RetainedChildCapability::Unsupported,
             )) => {
                 return Err(ApplyStagingError::new(
-                    ApplyStagingErrorKind::ContainmentIdentity,
+                    ApplyStagingErrorKind::AbsentChainOccupied,
                     format!(
                         "staged target is not a regular file: {}",
                         relative.display()
@@ -2574,22 +2595,35 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// `ContainmentIdentity` means links, hard-link aliases, paths outside the
+    /// root and the generated subtree. A wrong kind of entry is a source
+    /// defect and a failed filesystem call is an unreadable source.
     #[test]
-    fn retained_parent_leaf_create_is_narrower_than_generic_topology_staging() {
-        let root = temp_root("retained-parent-leaf-create");
-        std::fs::create_dir_all(root.join("Existing")).unwrap();
+    fn staging_separates_wrong_entry_kinds_and_io_failures_from_containment() {
+        let root = temp_root("staging-kinds");
+        std::fs::create_dir_all(root.join("Ext")).unwrap();
+        std::fs::write(root.join("Flat"), b"file").unwrap();
+        std::fs::write(root.join("Ext/Module.bsl"), b"module").unwrap();
         let mut state = staged(&root);
 
-        state
-            .create_leaf_below_retained_parent("Existing/Module.bsl", b"leaf".to_vec())
-            .unwrap();
-        let error = state
-            .create_leaf_below_retained_parent("Missing/Module.bsl", b"leaf".to_vec())
-            .unwrap_err();
-
-        assert_eq!(error.kind(), ApplyStagingErrorKind::MissingParent);
-        assert!(!root.join("Existing/Module.bsl").exists());
-        assert!(!root.join("Missing").exists());
+        let file_as_directory = state.enumerate_tree(Path::new("Flat")).unwrap_err();
+        assert_eq!(
+            file_as_directory.kind(),
+            ApplyStagingErrorKind::AbsentChainOccupied,
+            "{file_as_directory}"
+        );
+        let directory_as_file = state.read(Path::new("Ext")).unwrap_err();
+        assert_eq!(
+            directory_as_file.kind(),
+            ApplyStagingErrorKind::AbsentChainOccupied,
+            "{directory_as_file}"
+        );
+        let io = super::source_route_io_error(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ));
+        assert_eq!(io.kind(), ApplyStagingErrorKind::UnsupportedProvider);
+        let escape = state.read(Path::new("../outside.bsl")).unwrap_err();
+        assert_eq!(escape.kind(), ApplyStagingErrorKind::ContainmentIdentity);
         std::fs::remove_dir_all(root).unwrap();
     }
 

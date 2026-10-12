@@ -320,7 +320,10 @@ pub(crate) fn task_tool_error_result(error: TaskToolError) -> DomainResult {
 /// place a failed invocation gets words.
 pub(crate) fn closed_task_failure(reason: V5SafeFailureReason) -> (&'static str, &'static str) {
     match reason {
-        V5SafeFailureReason::InvocationFailed => ("invocation_failed", "daemon invocation failed"),
+        V5SafeFailureReason::InvocationFailed => (
+            "invocation_failed",
+            "daemon invocation stopped without a result. Repeat the call; if the problem persists, report this reason.",
+        ),
         V5SafeFailureReason::ResultTooLarge => (
             "result_too_large",
             "daemon invocation result exceeded the canonical byte limit",
@@ -348,6 +351,10 @@ pub(crate) fn closed_task_failure(reason: V5SafeFailureReason) -> (&'static str,
         V5SafeFailureReason::WorkspaceRegistryFailed => (
             "workspace_registry_failed",
             "workspace registry is unavailable",
+        ),
+        V5SafeFailureReason::WorkspaceChanged => (
+            "workspace_changed",
+            "the workspace changed while the call ran, so its result was not published. Repeat the call.",
         ),
     }
 }

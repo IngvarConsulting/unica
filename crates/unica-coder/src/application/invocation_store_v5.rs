@@ -21,10 +21,13 @@ pub(crate) enum V5SafeFailureReason {
     TaskCapacity,
     WorkspaceCapacity,
     WorkspaceRegistryFailed,
+    /// The workspace changed under the call, so its staged result was not
+    /// published; the same call can be repeated.
+    WorkspaceChanged,
 }
 
 impl V5SafeFailureReason {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::InvocationFailed,
         Self::ResultTooLarge,
         Self::Interrupted,
@@ -34,6 +37,7 @@ impl V5SafeFailureReason {
         Self::TaskCapacity,
         Self::WorkspaceCapacity,
         Self::WorkspaceRegistryFailed,
+        Self::WorkspaceChanged,
     ];
 
     pub(crate) const fn wire_name(self) -> &'static str {
@@ -47,6 +51,20 @@ impl V5SafeFailureReason {
             Self::TaskCapacity => "task_capacity",
             Self::WorkspaceCapacity => "workspace_capacity",
             Self::WorkspaceRegistryFailed => "workspace_registry_failed",
+            Self::WorkspaceChanged => "workspace_changed",
+        }
+    }
+
+    /// The closed reason of an execution that returned an error instead of
+    /// a result. The failure's text stays inside the daemon; only its closed
+    /// code chooses the reason (#1338).
+    pub(crate) fn of_execution_failure(
+        failure: &crate::domain::invocation::InvocationFailure,
+    ) -> Self {
+        if failure.code == crate::domain::invocation::WORKSPACE_CHANGED_FAILURE {
+            Self::WorkspaceChanged
+        } else {
+            Self::InvocationFailed
         }
     }
 }
@@ -868,6 +886,7 @@ mod tests {
                 V5SafeFailureReason::WorkspaceRegistryFailed,
                 "workspace_registry_failed",
             ),
+            (V5SafeFailureReason::WorkspaceChanged, "workspace_changed"),
         ];
         assert_eq!(V5SafeFailureReason::ALL, expected.map(|(reason, _)| reason));
         for (reason, wire_name) in expected {

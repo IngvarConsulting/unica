@@ -8,6 +8,9 @@ check:
   - crates/unica-coder/src/application/invocation_store_v5.rs::record_rejects_wrong_schema_unknown_duplicate_and_every_missing_root_field
   - crates/unica-coder/src/application/invocation_store_v5.rs::every_task_status_rejects_unknown_missing_wrong_case_and_cross_variant_fields
   - crates/unica-coder/src/application/invocation_store_v5.rs::v5_safe_failure_reason_is_closed_and_converts_every_legacy_reason
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::execution_boundary_names_a_changed_workspace_only_for_a_lost_binding
+  - crates/unica-coder/src/infrastructure/daemon/mod.rs::canonical_invocation_authority_keeps_root_capabilities_without_source_revision
+  - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_failure_is_delivered_as_the_closed_reason_without_its_text
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---
 
@@ -23,6 +26,13 @@ gap: https://github.com/IngvarConsulting/unica/issues/984
 
 Причина ошибки выбирается из закрытого перечня `V5SafeFailureReason`.
 Произвольный текст вместо причины не принимается.
+
+Сбой исполнения получает `workspace_changed`, только когда привязка вызова
+больше не принадлежит актору рабочего пространства: другой актор,
+заменённый или перемещённый корень. Такой вызов можно повторить. Прочие
+сбои на границе исполнения — нарушение инварианта — дают `invocation_failed`.
+Изменённый выбор исходников при публикации чтения — это отказ
+`source_selection_changed` в результате вызова, а не сбой задания.
 
 Повторное открытие хранилища сохраняет номер версии записи и признак
 отмены; оно само не переписывает незавершённые записи. Последующее

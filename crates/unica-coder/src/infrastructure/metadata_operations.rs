@@ -211,7 +211,7 @@ pub(crate) mod tests {
     use crate::domain::events::DomainEvent;
     use crate::domain::metadata::{
         MetaCollection, MetaEditOperation, MetaElementInput, MetaElementUpdateInput,
-        MetaEventSource, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
+        MetaEventSource, MetaPosition, MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue,
         MetaPublicationAction, MetaPublicationResource, MetaRelation, MetaRelationTarget,
         MetaScope, MetaValidationStatus, MetadataKind, MetadataReference, RelationEditMode,
     };
@@ -594,6 +594,10 @@ pub(crate) mod tests {
             .unwrap()
             .publish(&cancellation)
             .unwrap();
+            // #1325: как и макет, форма регистрируется во владельце по имени.
+            let owner = fs::read_to_string(&self.descriptor).unwrap();
+            assert!(owner.contains(&format!("<Form>{name}</Form>")), "{owner}");
+            assert!(!owner.contains("<Form uuid="), "{owner}");
         }
     }
 
@@ -2026,6 +2030,15 @@ pub(crate) mod tests {
                 templates_dir.join(&name).join(primary).exists(),
                 "{kind}: primary payload missing"
             );
+            let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+            assert!(
+                owner.contains(&format!("<Template>{name}</Template>")),
+                "{kind}: owner must register the template by name: {owner}"
+            );
+            assert!(
+                !owner.contains("<Template uuid="),
+                "{kind}: owner must not inline a template descriptor: {owner}"
+            );
         }
 
         let defaulted = add_template(json!({"name": "TemplateDefault"})).unwrap();
@@ -2462,12 +2475,8 @@ pub(crate) mod tests {
     fn ordinary_edit_validates_the_complete_unchanged_final_child_graph() {
         let fixture = Fixture::new("ordinary-edit-complete-child-graph");
         let cancellation = CancellationToken::new();
+        // The add already registers the form by name, as the platform does.
         fixture.publish_form_add("Existing");
-        let mut owner = String::from_utf8(fs::read(&fixture.descriptor).unwrap()).unwrap();
-        let form_start = owner.find("<Form uuid=").unwrap();
-        let form_end = owner[form_start..].find("</Form>").unwrap() + form_start + "</Form>".len();
-        owner.replace_range(form_start..form_end, "<Form>Existing</Form>");
-        fs::write(&fixture.descriptor, owner.as_bytes()).unwrap();
         let child_descriptor = fixture
             .root
             .join("src/Catalogs/Editable/Forms/Existing.xml");
@@ -3511,6 +3520,13 @@ pub(crate) mod tests {
         let object_root = fixture.root.join("src/Catalogs/Editable");
         let template_content = object_root.join("Templates/Print/Ext/Template.xml");
         assert!(object_root.join("Templates/Print.xml").is_file());
+        // #1325: ibcmd 8.3.27 зацикливается на импорте владельца, в
+        // `ChildObjects` которого макет описан целиком; платформа ждёт там
+        // только имя, а описание — в `Templates/<Имя>.xml`.
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(owner.contains("<Template>Print</Template>"), "{owner}");
+        assert!(!owner.contains("<Template uuid="), "{owner}");
+        assert!(owner.contains("<Command uuid="), "{owner}");
         assert!(template_content.is_file());
         assert!(
             !object_root.join("Commands/Run.xml").exists(),
@@ -3583,6 +3599,14 @@ pub(crate) mod tests {
         prepared.publish(&cancellation).unwrap();
         assert!(!object_root.join("Templates/Print.xml").exists());
         assert!(!object_root.join("Commands/Run.xml").exists());
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(owner.contains("<Template>PrintNew</Template>"), "{owner}");
+        assert!(!owner.contains("<Template uuid="), "{owner}");
+        assert!(
+            fs::read_to_string(object_root.join("Templates/PrintNew.xml"))
+                .unwrap()
+                .contains("<Name>PrintNew</Name>")
+        );
         assert_eq!(
             fs::read(object_root.join("Templates/PrintNew/Ext/Template.xml")).unwrap(),
             template_bytes
@@ -3608,6 +3632,315 @@ pub(crate) mod tests {
         assert!(!object_root.join("Commands/RunNew").exists());
         assert!(!object_root.join("Templates").exists());
         assert!(!object_root.join("Commands").exists());
+    }
+
+    /// #1325: выгрузка платформы регистрирует макет во владельце только
+    /// именем. Правка и удаление такого макета работают с его отдельным
+    /// описанием и сохраняют регистрацию по имени; нетронутые байты описания
+    /// (BOM, объявления корня) остаются прежними.
+    #[test]
+    fn typed_template_update_and_remove_work_on_platform_name_registration() {
+        let fixture = Fixture::new("template-platform-reference");
+        let cancellation = CancellationToken::new();
+        let publish = |operations: Vec<MetaEditOperation>| {
+            MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(operations),
+                &fixture.context,
+                &cancellation,
+            )
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        };
+        publish(vec![MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementInput::named("Print")],
+        )
+        .unwrap()]);
+        let child_descriptor = fixture
+            .root
+            .join("src/Catalogs/Editable/Templates/Print.xml");
+        let mut platform_child = b"\xef\xbb\xbf".to_vec();
+        platform_child.extend_from_slice(&fs::read(&child_descriptor).unwrap());
+        fs::write(&child_descriptor, &platform_child).unwrap();
+        let owner_before = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(owner_before.contains("<Template>Print</Template>"));
+
+        let noop = MetadataOperations::prepare_mutation(
+            &fixture.typed_edit(vec![MetaEditOperation::update(
+                MetaCollection::Templates,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Print".into(),
+                    synonym: Some("Print".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()]),
+            &fixture.context,
+            &cancellation,
+        )
+        .unwrap();
+        assert!(!noop.preview().changed);
+        noop.publish(&cancellation).unwrap();
+        assert_eq!(fs::read(&child_descriptor).unwrap(), platform_child);
+        assert_eq!(
+            fs::read_to_string(&fixture.descriptor).unwrap(),
+            owner_before
+        );
+
+        publish(vec![MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Print".into(),
+                synonym: Some("Печатная форма".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert_eq!(owner, owner_before);
+        let child = fs::read(&child_descriptor).unwrap();
+        assert!(child.starts_with(b"\xef\xbb\xbf<?xml"));
+        let child = String::from_utf8(child).unwrap();
+        assert!(child.contains("Печатная форма"), "{child}");
+        assert!(child.contains("<Name>Print</Name>"), "{child}");
+
+        publish(vec![MetaEditOperation::remove(
+            MetaCollection::Templates,
+            None,
+            vec!["Print".into()],
+        )
+        .unwrap()]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(!owner.contains("<Template"), "{owner}");
+        assert!(!child_descriptor.exists());
+    }
+
+    /// #1325: исходники, порождённые прежними версиями Unica, описывают макет
+    /// во владельце целиком. Правка такого владельца не ломается и не
+    /// переписывает чужую регистрацию; новые макеты рядом с ним регистрируются
+    /// по имени, как в выгрузке платформы.
+    #[test]
+    fn typed_template_edits_keep_legacy_inline_owner_registration() {
+        let fixture = Fixture::new("template-legacy-inline");
+        let cancellation = CancellationToken::new();
+        let publish = |operations: Vec<MetaEditOperation>| {
+            MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(operations),
+                &fixture.context,
+                &cancellation,
+            )
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        };
+        publish(vec![MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementInput::named("Print")],
+        )
+        .unwrap()]);
+        let child_descriptor = fixture
+            .root
+            .join("src/Catalogs/Editable/Templates/Print.xml");
+        let child = fs::read_to_string(&child_descriptor).unwrap();
+        let start = child.find("<Template uuid=").unwrap();
+        let end = child.rfind("</Template>").unwrap() + "</Template>".len();
+        let inline = &child[start..end];
+        let legacy_owner = fs::read_to_string(&fixture.descriptor)
+            .unwrap()
+            .replace("<Template>Print</Template>", inline);
+        assert!(legacy_owner.contains("<Template uuid="), "{legacy_owner}");
+        fs::write(&fixture.descriptor, &legacy_owner).unwrap();
+
+        publish(vec![MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Print".into(),
+                synonym: Some("Печатная форма".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(owner.contains("<Template uuid="), "{owner}");
+        assert!(!owner.contains("<Template>Print</Template>"), "{owner}");
+        let child = fs::read_to_string(&child_descriptor).unwrap();
+        assert!(child.contains("Печатная форма"), "{child}");
+        assert!(child.contains("<Name>Print</Name>"), "{child}");
+
+        publish(vec![MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementInput::named("Second")],
+        )
+        .unwrap()]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(owner.contains("<Template>Second</Template>"), "{owner}");
+        assert_eq!(owner.matches("<Template uuid=").count(), 1, "{owner}");
+
+        publish(vec![MetaEditOperation::remove(
+            MetaCollection::Templates,
+            None,
+            vec!["Print".into()],
+        )
+        .unwrap()]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(!owner.contains("<Template uuid="), "{owner}");
+        assert!(owner.contains("<Template>Second</Template>"), "{owner}");
+        assert!(!child_descriptor.exists());
+    }
+
+    fn template_add_at(name: &str, position: Option<MetaPosition>) -> MetaEditOperation {
+        MetaEditOperation::add(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementInput {
+                position,
+                ..MetaElementInput::named(name)
+            }],
+        )
+        .unwrap()
+    }
+
+    fn owner_template_order(fixture: &Fixture) -> Vec<String> {
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        let mut names = Vec::new();
+        let mut rest = owner.as_str();
+        while let Some(start) = rest.find("<Template>") {
+            let tail = &rest[start + "<Template>".len()..];
+            let end = tail.find("</Template>").unwrap();
+            names.push(tail[..end].to_string());
+            rest = &tail[end..];
+        }
+        names
+    }
+
+    /// #1325: соседа для позиции ищут и среди макетов, зарегистрированных во
+    /// владельце только именем, — при добавлении и при перемещении.
+    #[test]
+    fn typed_template_position_resolves_name_registered_siblings() {
+        let fixture = Fixture::new("template-position-by-name");
+        let cancellation = CancellationToken::new();
+        let publish = |operations: Vec<MetaEditOperation>| {
+            MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(operations),
+                &fixture.context,
+                &cancellation,
+            )
+            .unwrap_or_else(|failure| panic!("{:?}", failure.diagnostics))
+            .publish(&cancellation)
+            .unwrap();
+        };
+        publish(vec![template_add_at("A", None)]);
+        publish(vec![template_add_at(
+            "B",
+            Some(MetaPosition::new(Some("A".into()), None).unwrap()),
+        )]);
+        assert_eq!(owner_template_order(&fixture), ["B", "A"]);
+        publish(vec![template_add_at(
+            "C",
+            Some(MetaPosition::new(None, Some("b".into())).unwrap()),
+        )]);
+        assert_eq!(owner_template_order(&fixture), ["B", "C", "A"]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(!owner.contains("<Template uuid="), "{owner}");
+    }
+
+    /// #1325: перемещение макета ищет якорь среди макетов, зарегистрированных
+    /// во владельце только именем.
+    #[test]
+    fn typed_template_update_position_resolves_name_registered_anchor() {
+        let fixture = Fixture::new("template-update-position-by-name");
+        let cancellation = CancellationToken::new();
+        let publish = |operations: Vec<MetaEditOperation>| {
+            MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(operations),
+                &fixture.context,
+                &cancellation,
+            )
+            .unwrap_or_else(|failure| panic!("{:?}", failure.diagnostics))
+            .publish(&cancellation)
+            .unwrap();
+        };
+        for name in ["A", "B", "C"] {
+            publish(vec![template_add_at(name, None)]);
+        }
+        assert_eq!(owner_template_order(&fixture), ["A", "B", "C"]);
+        publish(vec![MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "A".into(),
+                position: Some(MetaPosition::new(None, Some("c".into())).unwrap()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap()]);
+        assert_eq!(owner_template_order(&fixture), ["B", "C", "A"]);
+        let owner = fs::read_to_string(&fixture.descriptor).unwrap();
+        assert!(!owner.contains("<Template uuid="), "{owner}");
+    }
+
+    /// #1325: повтор имени макета, зарегистрированного ссылкой, отклоняется
+    /// как `already_exists` до публикации — при добавлении, переименовании и
+    /// в другом регистре.
+    #[test]
+    fn typed_template_duplicate_of_name_registration_is_already_exists() {
+        let fixture = Fixture::new("template-duplicate-by-name");
+        let cancellation = CancellationToken::new();
+        for name in ["Print", "Other"] {
+            MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(vec![template_add_at(name, None)]),
+                &fixture.context,
+                &cancellation,
+            )
+            .unwrap()
+            .publish(&cancellation)
+            .unwrap();
+        }
+        let owner_before = fs::read(&fixture.descriptor).unwrap();
+        let rename = MetaEditOperation::update(
+            MetaCollection::Templates,
+            None,
+            vec![MetaElementUpdateInput {
+                name: "Other".into(),
+                new_name: Some("Print".into()),
+                ..MetaElementUpdateInput::default()
+            }],
+        )
+        .unwrap();
+        for operation in [
+            template_add_at("Print", None),
+            template_add_at("PRINT", None),
+            rename,
+        ] {
+            let failure = match MetadataOperations::prepare_mutation(
+                &fixture.typed_edit(vec![operation]),
+                &fixture.context,
+                &cancellation,
+            ) {
+                Ok(_) => panic!("duplicate template name unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+            assert_eq!(
+                failure.diagnostics[0].code,
+                MetaDiagnosticCode::AlreadyExists,
+                "{:?}",
+                failure.diagnostics
+            );
+            assert_eq!(
+                failure.diagnostics[0].field.as_deref(),
+                Some("operations[0].elements[0].name"),
+                "{:?}",
+                failure.diagnostics
+            );
+        }
+        assert_eq!(fs::read(&fixture.descriptor).unwrap(), owner_before);
     }
 
     #[test]

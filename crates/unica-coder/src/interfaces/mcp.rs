@@ -529,7 +529,9 @@ fn compatibility_task_exchange_error(error: V5TaskExchangeError) -> TaskToolErro
         }
         V5TaskExchangeError::Transport => TaskToolError::TaskTransportFailed,
         V5TaskExchangeError::SessionPoisoned => TaskToolError::TaskSessionClosed,
-        V5TaskExchangeError::UnexpectedResponse => TaskToolError::TaskProtocolFailed,
+        V5TaskExchangeError::UnexpectedResponse | V5TaskExchangeError::MalformedResponse => {
+            TaskToolError::TaskProtocolFailed
+        }
     }
 }
 
@@ -1237,7 +1239,9 @@ fn project_task_exchange_error(error: V5TaskExchangeError) -> ErrorData {
         V5TaskExchangeError::Protocol(code) => task_internal_error_detailed(backend_detail(code)),
         V5TaskExchangeError::Transport => task_internal_error("task_transport_failed"),
         V5TaskExchangeError::SessionPoisoned => task_internal_error("task_session_closed"),
-        V5TaskExchangeError::UnexpectedResponse => task_internal_error("task_protocol_failed"),
+        V5TaskExchangeError::UnexpectedResponse | V5TaskExchangeError::MalformedResponse => {
+            task_internal_error("task_protocol_failed")
+        }
     }
 }
 
@@ -3899,6 +3903,216 @@ mod tests {
             }
             client.shutdown().await;
         }
+    }
+
+    use crate::infrastructure::daemon::protocol_v5::task_frame_fixtures::{
+        completed_task_response as daemon_task_frame_value, frame as daemon_frame_bytes,
+        malformed_task_frames as malformed_daemon_task_frames, RESULT_MARKER,
+    };
+
+    /// A fake daemon that answers every Task frame with `frame` and counts the
+    /// Task operations it saw; any other request closes the session.
+    fn task_frame_fake(frame: Vec<u8>) -> FakeDaemon {
+        FakeDaemon::start_with_raw_script(Box::new(move |_, request, writer| {
+            use std::io::Write as _;
+            match request {
+                V5ClientRequest::GetTask { .. }
+                | V5ClientRequest::WaitTask { .. }
+                | V5ClientRequest::CancelTask { .. } => {
+                    let _ = writer.write_all(&frame);
+                    let _ = writer.flush();
+                    true
+                }
+                _ => false,
+            }
+        }))
+    }
+
+    /// Calls every Task read through the real exchange: the three
+    /// compatibility tools and the native `tasks/get` and `tasks/cancel`.
+    /// Returns the public code of each call, or `None` for a success.
+    async fn task_read_codes(
+        owner: impl Fn() -> V5DaemonProcessOwner,
+        task_id: crate::domain::invocation::TaskId,
+    ) -> Vec<(&'static str, Option<String>, String)> {
+        let mut codes = Vec::new();
+        let (mut compat, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            owner(),
+            "/workspace".to_string(),
+        ));
+        for (id, name, arguments) in [
+            (1, "unica.task.get", json!({"taskId": task_id.to_string()})),
+            (
+                2,
+                "unica.task.result",
+                json!({"taskId": task_id.to_string(), "waitMs": 0}),
+            ),
+            (
+                3,
+                "unica.task.cancel",
+                json!({"taskId": task_id.to_string()}),
+            ),
+        ] {
+            compat
+                .send(json!({
+                    "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                    "params":{"name":name, "arguments":arguments, "_meta":modern_meta()}
+                }))
+                .await;
+            let response = compat.receive().await;
+            let result = &response["result"]["structuredContent"];
+            let code = (result["ok"] != true).then(|| {
+                result["diagnostics"][0]["code"]
+                    .as_str()
+                    .unwrap_or("<missing>")
+                    .to_owned()
+            });
+            codes.push((name, code, response.to_string()));
+        }
+        compat.shutdown().await;
+
+        let (mut native, _) = spawn_unica_server(UnicaServer::with_canonical_daemon(
+            owner(),
+            "/workspace".to_string(),
+        ));
+        for (id, method) in [(4, "tasks/get"), (5, "tasks/cancel")] {
+            native
+                .send(json!({
+                    "jsonrpc":"2.0", "id":id, "method":method,
+                    "params":{"taskId":task_id.to_string(), "_meta":modern_tasks_meta()}
+                }))
+                .await;
+            let response = native.receive().await;
+            let code = response.get("error").map(|error| {
+                error["data"]["code"]
+                    .as_str()
+                    .unwrap_or("<missing>")
+                    .to_owned()
+            });
+            codes.push((method, code, response.to_string()));
+        }
+        native.shutdown().await;
+        codes
+    }
+
+    #[tokio::test]
+    async fn task_reads_report_complete_malformed_daemon_frames_as_protocol_failures() {
+        let task_id = crate::domain::invocation::TaskId::new();
+        // Positive control: the same exchange publishes a strict frame.
+        let valid = task_frame_fake(daemon_frame_bytes(&daemon_task_frame_value(task_id)));
+        for (operation, code, response) in task_read_codes(|| valid.owner(), task_id).await {
+            assert_eq!(code, None, "{operation} refused a strict frame: {response}");
+        }
+
+        for (case, frame) in malformed_daemon_task_frames(task_id) {
+            let fake = task_frame_fake(frame);
+            let codes = task_read_codes(|| fake.owner(), task_id).await;
+            for (operation, code, response) in &codes {
+                assert_eq!(
+                    code.as_deref(),
+                    Some("task_protocol_failed"),
+                    "{case} via {operation}: {response}"
+                );
+                assert!(
+                    !response.contains(RESULT_MARKER),
+                    "{case} via {operation} published the rejected payload: {response}"
+                );
+            }
+            // One request per operation: the refusal neither retries the read
+            // nor executes the subject operation again.
+            let seen = fake.seen();
+            assert_eq!(seen.len(), codes.len(), "{case}: {seen:?}");
+            assert!(
+                seen.iter().all(|request| matches!(
+                    request,
+                    V5ClientRequest::GetTask { .. }
+                        | V5ClientRequest::WaitTask { .. }
+                        | V5ClientRequest::CancelTask { .. }
+                )),
+                "{case}: {seen:?}"
+            );
+        }
+    }
+
+    /// An anchor session whose daemon stops listening right after the
+    /// handshake: every later operation connection is refused.
+    fn anchor_of_vanished_daemon() -> (V5DaemonProcessOwner, std::net::TcpStream) {
+        use crate::infrastructure::daemon::identity::CoreIdentity;
+        use crate::infrastructure::daemon::protocol_v5::{
+            read_bounded_v5_request_frame, V5EndpointRecord, V5HandshakeServerResponse,
+        };
+        use std::net::{Ipv4Addr, TcpListener};
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let record = V5EndpointRecord::new(
+            CoreIdentity::production_v5(),
+            listener.local_addr().unwrap().port(),
+        )
+        .unwrap();
+        let ready = V5HandshakeServerResponse::ready(&record);
+        let daemon = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            read_bounded_v5_request_frame(&mut reader).unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            crate::interfaces::daemon_router::test_support::write_frame(&mut writer, &ready);
+            stream
+        });
+        let owner =
+            V5DaemonProcessOwner::connect_before(record, Instant::now() + Duration::from_secs(5))
+                .unwrap();
+        (owner, daemon.join().unwrap())
+    }
+
+    #[tokio::test]
+    async fn task_reads_report_unreachable_or_truncated_daemon_as_transport_failures() {
+        let task_id = crate::domain::invocation::TaskId::new();
+        let complete = daemon_frame_bytes(&daemon_task_frame_value(task_id));
+
+        let (anchor, _anchor_stream) = anchor_of_vanished_daemon();
+        let anchor = std::sync::Mutex::new(Some(anchor));
+        let unreachable = task_read_codes(
+            || {
+                anchor
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .unwrap_or_else(|| anchor_of_vanished_daemon().0)
+            },
+            task_id,
+        )
+        .await;
+
+        let closed = FakeDaemon::start_with_raw_script(Box::new(|_, _, _| false));
+        let closed_codes = task_read_codes(|| closed.owner(), task_id).await;
+
+        let prefix = complete[..complete.len() / 2].to_vec();
+        let truncated = FakeDaemon::start_with_raw_script(Box::new(move |_, _, writer| {
+            use std::io::Write as _;
+            let _ = writer.write_all(&prefix);
+            let _ = writer.flush();
+            false
+        }));
+        let truncated_codes = task_read_codes(|| truncated.owner(), task_id).await;
+
+        for (case, codes) in [
+            ("connection refused", unreachable),
+            ("closed before any byte", closed_codes),
+            ("closed inside the frame", truncated_codes),
+        ] {
+            for (operation, code, response) in codes {
+                assert_eq!(
+                    code.as_deref(),
+                    Some("task_transport_failed"),
+                    "{case} via {operation}: {response}"
+                );
+            }
+        }
+        assert_eq!(
+            truncated.submissions() + closed.submissions(),
+            0,
+            "a failed read never executes the subject operation"
+        );
     }
 
     #[tokio::test]

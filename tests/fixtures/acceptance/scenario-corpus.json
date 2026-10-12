@@ -8494,9 +8494,62 @@
       ]
      },
      "expect": [
-      "gap"
+      "ok"
      ],
-     "gap": "Заимствование регистрирует общий модуль без каталога модуля, а первая запись модуля через `apply` его не создаёт: планировщик требует существующий каталог (`MissingParent`), и превью отвечает `provider_unavailable` «staged source evidence is unavailable» (#955, #1245)."
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src-ext/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src-ext/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.GoogleПереводчик.Method.ПриёмочнаяВставка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/kind",
+       "eq": "Method"
+      }
+     ]
     }
    ]
   },
@@ -32054,6 +32107,605 @@
   },
   {
    "id": "S389",
+   "name": "diagnostics-engine-exit-failure",
+   "issue": 1338,
+   "area": "Код BSL",
+   "task": "Движок анализа завершился ошибкой: отказ называет причину и действие без stderr движка",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-jsonl-fault",
+   "evaluation": "exit-failure",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.Пример"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "da18d3716215544b1e445b278655aa80ab824ae1c3c14e45bdd582fc11a941a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример.xml",
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "204a6fb52d776b9bfad625cb1960346b45aec1caaba9bada50a16fcfaae057f2"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "BSL analysis did not complete, so the module is unproven: bsl-analyzer: analysis engine exited with an error before producing a result. Repeat the call; if the problem persists, report this reason."
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "absent": true
+      },
+      {
+       "pointer": "/data",
+       "absent": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S390",
+   "name": "diagnostics-engine-missing",
+   "issue": 1338,
+   "area": "Код BSL",
+   "task": "Движка анализа нет на машине: check сам запускает доставку и при её отказе называет класс сбоя и действие, а не голое unproven",
+   "workspace": "tests/fixtures/acceptance/workspace-diagnostics",
+   "profile": "fault-injection",
+   "driver": "analyzer-jsonl-fault",
+   "evaluation": "missing-engine",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.Пример"
+     },
+     "expect": [
+      "provider"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример/Ext/Module.bsl",
+       "eq": "da18d3716215544b1e445b278655aa80ab824ae1c3c14e45bdd582fc11a941a6"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/Пример.xml",
+       "eq": "bc2e1752bc200e8bcc151411637acf42daa7e676a7b0b7e271f7b61cc7cc7453"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Configuration.xml",
+       "eq": "204a6fb52d776b9bfad625cb1960346b45aec1caaba9bada50a16fcfaae057f2"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Languages/Русский.xml",
+       "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "provider_absent"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "delivery of bsl-analyzer failed (configuration); check the runtime manifest and plugin installation"
+      },
+      {
+       "pointer": "/data/delivery/artifact",
+       "eq": "bsl-analyzer"
+      },
+      {
+       "pointer": "/data/delivery/status",
+       "eq": "failed"
+      },
+      {
+       "pointer": "/data/delivery/failureClass",
+       "eq": "configuration"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S391",
+   "name": "batched-register-creation",
+   "issue": 1332,
+   "area": "Создание и удаление объектов",
+   "task": "Создать одним пакетом три регистра накопления, затем два регистра расчёта, затем регистр вместе с журналом документов при общем документе-регистраторе; каждый пакет проходит предпросмотр и публикацию, документ перечисляет все регистры в движениях",
+   "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "Document",
+          "name": "Реализация"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "ChartOfCalculationTypes",
+          "name": "ВидыРасчётов"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/Documents/Реализация.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Продажи"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Остатки"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Обороты"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Продажи.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Остатки.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Обороты.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Configuration.xml",
+       "select": ".//{*}Configuration/{*}ChildObjects/{*}AccumulationRegister",
+       "eq": [
+        "Обороты",
+        "Остатки",
+        "Продажи"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Продажи.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Остатки.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/AccumulationRegisters/Обороты.xml",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "CalculationRegister",
+          "name": "Начисления"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "CalculationRegister",
+          "name": "Премии"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Начисления.xml",
+       "eq": false
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Премии.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты",
+        "CalculationRegister.Начисления",
+        "CalculationRegister.Премии"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Configuration.xml",
+       "select": ".//{*}Configuration/{*}ChildObjects/{*}CalculationRegister",
+       "eq": [
+        "Начисления",
+        "Премии"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Начисления.xml",
+       "eq": true
+      },
+      {
+       "kind": "exists",
+       "path": "src/CalculationRegisters/Премии.xml",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Configuration",
+      "ops": [
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "AccumulationRegister",
+          "name": "Резервы"
+         }
+        }
+       },
+       {
+        "op": "object.create",
+        "args": {
+         "values": {
+          "kind": "DocumentJournal",
+          "name": "ЖурналПродаж"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/DocumentJournals/ЖурналПродаж.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Documents/Реализация.xml",
+       "select": ".//{*}Document/{*}Properties/{*}RegisterRecords/{*}Item",
+       "eq": [
+        "AccumulationRegister.Продажи",
+        "AccumulationRegister.Остатки",
+        "AccumulationRegister.Обороты",
+        "CalculationRegister.Начисления",
+        "CalculationRegister.Премии",
+        "AccumulationRegister.Резервы"
+       ]
+      },
+      {
+       "kind": "exists",
+       "path": "src/DocumentJournals/ЖурналПродаж.xml",
+       "eq": true
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S392",
+   "name": "text-search-hit-opens-its-module",
+   "issue": 1298,
+   "area": "Код BSL",
+   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку",
+   "workspace": "tests/fixtures/acceptance/workspace",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция ВалютаПоКоду",
+      "limit": 50
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/scope",
+       "eq": "main:Configuration"
+      },
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "main:Catalog.Валюты.Module.Manager"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/data/matches/0/line",
+       "eq": 13
+      }
+     ],
+     "captures": {
+      "moduleAt": {
+       "pointer": "/data/matches/0/at"
+      },
+      "hitLine": {
+       "pointer": "/data/matches/0/line"
+      },
+      "hitSnippet": {
+       "pointer": "/data/matches/0/snippet"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "$capture.moduleAt"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Module.Manager"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/12/line",
+       "eq": "$capture.hitLine"
+      },
+      {
+       "pointer": "/data/items/12/text",
+       "eq": "$capture.hitSnippet"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S393",
    "name": "misplaced-element-add-routes-to-form-can",
    "issue": 1351,
    "area": "Формы",
