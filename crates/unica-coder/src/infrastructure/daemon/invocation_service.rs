@@ -561,7 +561,7 @@ impl ActorBoundInvocation {
     pub(super) fn begin_execution(
         self,
         cancellation: &CancellationToken,
-    ) -> Result<ActorBoundExecution, String> {
+    ) -> Result<ActorBoundExecution, ExecutionBoundaryError> {
         // Логическое чтение идёт до конечного исхода: срок ему не задан,
         // остановить его может только явная отмена (#1251).
         let logical_deadline = ProviderDeadline::no_deadline();
@@ -667,9 +667,7 @@ impl ActorBoundInvocation {
                     ),
                 };
                 if matches!(route, ActorLogicalReadRoute::Admitted) && selected.is_empty() {
-                    return Err(
-                        "logical read admission selected no actor-owned source sets".to_string()
-                    );
+                    return Err("logical read admission selected no actor-owned source sets".into());
                 }
                 let sources = selected
                     .into_iter()
@@ -1129,14 +1127,15 @@ impl ActorBoundExecution {
         self,
         staged: Result<DomainResult, InvocationFailure>,
         cancellation: &CancellationToken,
-    ) -> Result<Result<DomainResult, InvocationFailure>, String> {
+    ) -> Result<Result<DomainResult, InvocationFailure>, ExecutionBoundaryError> {
         match self.revision {
             #[cfg(test)]
             ActorExecutionRevision::Legacy(revision) => self
                 .invocation
                 .actor
                 .begin_publication(&revision, ProviderDeadline::no_deadline(), cancellation)?
-                .publish(staged, ProviderDeadline::no_deadline(), cancellation),
+                .publish(staged, ProviderDeadline::no_deadline(), cancellation)
+                .map_err(ExecutionBoundaryError::from),
             // A layout directory publishes no revision state: `find` neither
             // captures a lease nor confirms one, so its result stands as read.
             ActorExecutionRevision::LayoutRead(lease) => {
@@ -1144,7 +1143,10 @@ impl ActorBoundExecution {
                     return Ok(staged);
                 }
                 for binding in &lease.bindings {
-                    self.invocation.actor.validate_binding(binding)?;
+                    self.invocation
+                        .actor
+                        .validate_binding(binding)
+                        .map_err(ExecutionBoundaryError::binding_changed)?;
                 }
                 if matches!(
                     self.invocation.tool,
@@ -1168,8 +1170,7 @@ impl ActorBoundExecution {
                 if let ActorLogicalReadRoute::Rejected(expected) = lease.route {
                     let is_closed_typed_rejection = staged.as_ref() == Ok(expected.as_ref());
                     return is_closed_typed_rejection.then_some(staged).ok_or_else(|| {
-                        "logical view input rejection produced an unexpected terminal result"
-                            .to_string()
+                        "logical view input rejection produced an unexpected terminal result".into()
                     });
                 }
                 if staged.is_err() {
@@ -1185,15 +1186,38 @@ impl ActorBoundExecution {
                         .parent_source_selection
                         .validate(lease.deadline, cancellation)
                     {
-                        return if error.kind() == SourceSelectionEvidenceErrorKind::Deadline {
-                            Ok(Ok(logical_read_deadline_result()))
-                        } else {
-                            Err(error.to_string())
+                        // A changed selection and a cancellation are the
+                        // caller's typed refusals, as at apply publication;
+                        // only a provider failure is internal (#1338).
+                        return match error.kind() {
+                            SourceSelectionEvidenceErrorKind::Deadline => {
+                                Ok(Ok(logical_read_deadline_result()))
+                            }
+                            SourceSelectionEvidenceErrorKind::Changed => {
+                                Ok(Ok(DomainResult::canonical_rejection(
+                                    None,
+                                    RefusalCode::SourceSelectionChanged,
+                                    "The project source selection changed while the read ran; repeat the call.",
+                                )))
+                            }
+                            SourceSelectionEvidenceErrorKind::Cancelled => {
+                                Ok(Ok(DomainResult::canonical_rejection(
+                                    None,
+                                    RefusalCode::Cancelled,
+                                    "Logical source read was cancelled before publishing its result.",
+                                )))
+                            }
+                            SourceSelectionEvidenceErrorKind::Provider => {
+                                Err(error.to_string().into())
+                            }
                         };
                     }
                 }
                 for source in lease.sources.into_iter().chain(parent_sources) {
-                    self.invocation.actor.validate_binding(&source.binding)?;
+                    self.invocation
+                        .actor
+                        .validate_binding(&source.binding)
+                        .map_err(ExecutionBoundaryError::binding_changed)?;
                 }
                 if cancellation.is_cancelled() {
                     return Ok(Ok(DomainResult::canonical_rejection(
@@ -1230,12 +1254,62 @@ impl ActorBoundExecution {
                 };
                 if requires_actor_publication {
                     return Err(
-                        "unpublished Apply result requires real actor apply publication"
-                            .to_string(),
+                        "unpublished Apply result requires real actor apply publication".into(),
                     );
                 }
                 Ok(staged)
             }
+        }
+    }
+}
+
+/// Why an actor-bound execution could not begin or publish its result.
+///
+/// Only a binding that no longer belongs to this workspace actor — another
+/// actor, a replaced or moved root — is a changed workspace the caller may
+/// repeat the call for. Every other boundary error is an internal invariant
+/// failure; a plain message is one by default (#1338).
+pub(crate) enum ExecutionBoundaryError {
+    BindingChanged(String),
+    Internal(String),
+}
+
+impl ExecutionBoundaryError {
+    pub(crate) fn binding_changed(message: String) -> Self {
+        Self::BindingChanged(message)
+    }
+}
+
+impl From<String> for ExecutionBoundaryError {
+    fn from(message: String) -> Self {
+        Self::Internal(message)
+    }
+}
+
+impl From<&str> for ExecutionBoundaryError {
+    fn from(message: &str) -> Self {
+        Self::Internal(message.to_string())
+    }
+}
+
+// Written by hand: the actor capability audit forbids generated impls in
+// this module.
+impl std::fmt::Debug for ExecutionBoundaryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BindingChanged(message) => formatter
+                .debug_tuple("BindingChanged")
+                .field(message)
+                .finish(),
+            Self::Internal(message) => formatter.debug_tuple("Internal").field(message).finish(),
+        }
+    }
+}
+
+impl std::fmt::Display for ExecutionBoundaryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BindingChanged(message) | Self::Internal(message) => formatter.write_str(message),
         }
     }
 }

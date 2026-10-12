@@ -275,6 +275,10 @@ pub(crate) enum InvocationStatus {
     Cancelled,
 }
 
+/// Execution failure code: the workspace actor changed before the call ran or
+/// before its result was published.
+pub(crate) const WORKSPACE_CHANGED_FAILURE: &str = "workspace_changed";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InvocationFailure {
     pub(crate) code: String,

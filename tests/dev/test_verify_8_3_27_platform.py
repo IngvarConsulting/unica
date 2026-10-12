@@ -1037,7 +1037,7 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual(
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "5b5159540280fdb99bb8c8e282c03777e21fe0ad2aed9ba1ad658546d85dac25",
+            "7c2a66149e33b5a57142dd81e5cd18af3aef7d008503b250338b5dda8c0d5805",
         )
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
