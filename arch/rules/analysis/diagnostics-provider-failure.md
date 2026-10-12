@@ -15,6 +15,12 @@ check:
   - crates/unica-coder/src/infrastructure/diagnostics_baseline.rs::cli_names_every_broken_baseline_it_reports_before_start
   - crates/unica-coder/src/infrastructure/diagnostics_baseline.rs::baseline_detail_hides_a_spaced_physical_path_whole
   - crates/unica-coder/src/infrastructure/internal_adapters.rs::analyze_names_a_broken_baseline_the_cli_refused_before_start
+  - crates/unica-coder/src/infrastructure/internal_adapters.rs::analyze_failure_names_where_the_run_stopped
+  - crates/unica-coder/src/infrastructure/diagnostics.rs::backend_failure_keeps_where_the_run_stopped_and_drops_its_text
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::bsl_check_names_why_the_engine_gave_no_result_and_how_to_recover
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::module_check_names_why_the_analyzer_gave_no_result
+  - crates/unica-coder/src/infrastructure/internal_adapters.rs::streaming_runner_reports_a_spawn_failure_as_such
+  - crates/unica-coder/src/application/diagnostics.rs::absent_engine_reason_is_published_only_in_its_canonical_shape
 ---
 
 # Сбой диагностического движка не стирает доказанные находки
@@ -53,3 +59,15 @@ check:
 Такой отказ остаётся `provider_unavailable`, а не бизнес-вердиктом `failed`
 проверяемого BSL. Корпус с управляемым producer проверяет настоящий process
 pipeline и весь публичный ответ; он не подменяет проверку опубликованного движка.
+
+Неполный анализ в отказе `check` всегда называет причину и действие
+восстановления. Прогон анализатора без результата различает место остановки:
+движка нет на машине, движок не прошёл проверку поставки, процесс
+не запустился, превысил срок или завершился ошибкой. Вид определяется
+местом остановки и состоянием диска, а не текстом ошибки. Каждый случай
+получает свой код секции и фиксированную формулировку по коду; текст и stderr
+движка наружу не выходят. Отсутствующий движок называет инструмент, цель
+и следующий шаг по режиму установки, но не ожидаемый путь. Отсутствие,
+непрошедшая проверка и незапуск движка уточняются `provider_absent`.
+Если движка нет, `check` сначала запускает его доставку, как поиск с ролью,
+и отвечает её состоянием.

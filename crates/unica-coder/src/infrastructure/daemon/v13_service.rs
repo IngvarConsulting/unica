@@ -36,7 +36,8 @@ use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
 use crate::infrastructure::metadata_kinds::metadata_kind;
 use crate::infrastructure::native_operations::apply::{
-    ApplyPlanErrorKind, ApplyStagedState, PlannedApplyEffects, StagedChangeKind, StagedFileState,
+    ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState, ApplyStagingErrorKind,
+    PlannedApplyEffects, StagedChangeKind, StagedFileState,
 };
 use crate::infrastructure::native_operations::apply_families::plan_hidden_v13_apply;
 use crate::infrastructure::v13_find::{
@@ -307,13 +308,7 @@ impl CanonicalV13ReadService {
                     "canonical v0.13 apply operation is not implemented",
                 )
             }
-            Err(error) => {
-                return error_result(
-                    error.path().map(str::to_string),
-                    apply_plan_error_code(error.kind()),
-                    error.to_string(),
-                )
-            }
+            Err(error) => return apply_plan_error_result(&error),
             Ok(planned) => planned,
         };
         let borrowing = effects.borrowing().to_vec();
@@ -341,14 +336,9 @@ impl CanonicalV13ReadService {
         let prepared = match admission.prepare_with_effects(staged, effects) {
             Ok(prepared) => prepared,
             Err(error) => {
-                return error_result(
+                return apply_staging_refusal(
                     Some("ops".to_string()),
-                    match error.kind() {
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
-                        crate::infrastructure::native_operations::apply::ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
-                        _ => RefusalCode::ProviderUnavailable,
-                    },
+                    error.kind(),
                     error.to_string(),
                 )
             }
@@ -1531,28 +1521,10 @@ impl CanonicalV13ReadService {
         #[cfg(test)]
         let engine = engine.filter(|_| self.search_providers.is_none());
         if let Some(engine) = engine {
-            if let Some(plugin_root) =
-                crate::infrastructure::plugin_runtime::find_plugin_root(&context.cwd)
+            if let Some(result) =
+                deliver_missing_engine(invocation, engine, cancellation, "role search cancelled")
             {
-                let progress =
-                    crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
-                let state = crate::infrastructure::engine_delivery::deliver_if_missing(
-                    invocation.delivery_work(),
-                    &plugin_root,
-                    engine,
-                    cancellation,
-                    &progress,
-                );
-                if cancellation.is_cancelled() {
-                    return error_result(None, RefusalCode::Cancelled, "role search cancelled");
-                }
-                if let Some(result) =
-                    crate::infrastructure::engine_delivery::canonical_delivery_result(
-                        state, &progress,
-                    )
-                {
-                    return result;
-                }
+                return result;
             }
         }
         let request = SearchRequest {
@@ -2335,10 +2307,44 @@ impl CanonicalV13ReadService {
     }
 }
 
+/// The bundled engine behind BSL diagnostics and symbol search.
+const BSL_ANALYZER_ENGINE: &str = "bsl-analyzer";
+
+/// Delivers an engine the call needs before it starts its provider. `None`
+/// means the engine is in place or this installation has nothing to deliver;
+/// otherwise the answer is the delivery's typed state — still working,
+/// failed with its class — or the caller's cancellation.
+fn deliver_missing_engine(
+    invocation: &ActorBoundExecution,
+    engine: &str,
+    cancellation: &CancellationToken,
+    cancelled_message: &'static str,
+) -> Option<DomainResult> {
+    let plugin_root = crate::infrastructure::plugin_runtime::find_plugin_root(
+        &invocation.workspace_context().cwd,
+    )?;
+    let progress = crate::infrastructure::engine_delivery::CanonicalDeliveryProgress::default();
+    let state = crate::infrastructure::engine_delivery::deliver_if_missing(
+        invocation.delivery_work(),
+        &plugin_root,
+        engine,
+        cancellation,
+        &progress,
+    );
+    if cancellation.is_cancelled() {
+        return Some(error_result(
+            None,
+            RefusalCode::Cancelled,
+            cancelled_message,
+        ));
+    }
+    crate::infrastructure::engine_delivery::canonical_delivery_result(state, &progress)
+}
+
 fn selected_role_engine(role: ProviderRole) -> Option<&'static str> {
     match role {
         ProviderRole::Lexical => None,
-        ProviderRole::Symbol => Some("bsl-analyzer"),
+        ProviderRole::Symbol => Some(BSL_ANALYZER_ENGINE),
         ProviderRole::Semantic => Some("rlm-bsl-mcp"),
     }
 }
@@ -3027,16 +3033,46 @@ fn name_search_interruption(
     None
 }
 
-fn apply_plan_error_code(kind: ApplyPlanErrorKind) -> RefusalCode {
-    match kind {
+fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
+    let at = error.path().map(str::to_string);
+    let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
         ApplyPlanErrorKind::NotFound => RefusalCode::NotFound,
         ApplyPlanErrorKind::ProviderUnavailable => RefusalCode::ProviderUnavailable,
         ApplyPlanErrorKind::InvalidState => RefusalCode::InvalidState,
         ApplyPlanErrorKind::InvalidSource => RefusalCode::InvalidSource,
-        ApplyPlanErrorKind::Staging(_) => RefusalCode::ProviderUnavailable,
+        ApplyPlanErrorKind::Staging(kind) => {
+            return apply_staging_refusal(at, kind, error.to_string())
+        }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
-    }
+    };
+    error_result(at, code, error.to_string())
+}
+
+/// Отказ подготовки staged-исходников называет нарушенное предусловие.
+///
+/// Прежде любой вид сводился к `provider_unavailable` с исходом `needsHuman`,
+/// и агент ждал поставщика там, где надо было создать файл, убрать ссылку
+/// из исходников или подготовить новый предпросмотр (#955, #1332). Поставщик
+/// здесь — файловая система набора: ошибка её чтения остаётся
+/// `provider_unavailable`, но с уточнением `source_unreadable`.
+fn apply_staging_refusal(
+    at: Option<String>,
+    kind: ApplyStagingErrorKind,
+    message: String,
+) -> DomainResult {
+    let code = match kind {
+        ApplyStagingErrorKind::Cancelled => RefusalCode::Cancelled,
+        ApplyStagingErrorKind::Deadline => RefusalCode::DeadlineExceeded,
+        ApplyStagingErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
+        ApplyStagingErrorKind::ContainmentIdentity => RefusalCode::ContainmentDenied,
+        ApplyStagingErrorKind::AbsentChainOccupied => RefusalCode::InvalidSource,
+        ApplyStagingErrorKind::Invariant => RefusalCode::InvalidState,
+        ApplyStagingErrorKind::UnsupportedProvider => {
+            return error_result_detailed(at, RefusalDetail::SourceUnreadable, message)
+        }
+    };
+    error_result(at, code, message)
 }
 
 fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
@@ -3065,7 +3101,12 @@ fn apply_publication_error_code(kind: ApplyPublicationErrorKind) -> RefusalCode 
         ApplyPublicationErrorKind::Cancelled => RefusalCode::Cancelled,
         ApplyPublicationErrorKind::Deadline => RefusalCode::DeadlineExceeded,
         ApplyPublicationErrorKind::ConcurrentRevision => RefusalCode::StaleRevision,
-        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::ProviderUnavailable,
+        // Publication re-proves the containment the plan established. A
+        // failure means the sources changed physically after the plan (a
+        // swapped directory, a link or alias that appeared, an occupied
+        // chain); a new preview names the precise cause. The static causes
+        // themselves are refused at planning by `apply_staging_refusal`.
+        ApplyPublicationErrorKind::ContainmentIdentity => RefusalCode::StaleRevision,
         ApplyPublicationErrorKind::ProviderPostvalidation => RefusalCode::PostconditionFailed,
         ApplyPublicationErrorKind::SourceSelectionChanged => RefusalCode::SourceSelectionChanged,
         ApplyPublicationErrorKind::RollbackIncomplete => RefusalCode::RollbackIncomplete,
@@ -3088,9 +3129,9 @@ fn bounded_usize(value: &Value) -> Option<usize> {
 ///
 /// Провайдеры собраны в продуктовом реестре давно, но канонический провод до
 /// них не доходил: `check` отвечал «читается» и молчал о находках, ради
-/// которых его и зовут. Порты здесь строятся свои — путь диагностик стола
-/// доставок не трогает, бинарь анализатора берётся из поставляемых
-/// инструментов, — и потому общий стол сервера не нужен.
+/// которых его и зовут. Порты здесь строятся свои, а недоставленный
+/// анализатор доставляется через стол доставок демона до запуска анализа,
+/// как у поиска с ролью.
 fn run_bsl_diagnostics(
     ports: &crate::infrastructure::application_ports::InfrastructureApplicationPorts,
     address: &QualifiedAddress,
@@ -3141,6 +3182,25 @@ fn run_bsl_diagnostics(
             )))
         }
     };
+    // Анализатор, которого ещё нет на машине, доставляется этим же вызовом,
+    // как у поиска с ролью: незавершённая поставка отвечает `working`
+    // с повтором, неудачная — своим классом и действием (#1338).
+    let deliver = true;
+    #[cfg(test)]
+    let deliver = deliver
+        && crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+            .with(|slot| slot.borrow().is_none());
+    if deliver {
+        if let Some(mut result) = deliver_missing_engine(
+            invocation,
+            BSL_ANALYZER_ENGINE,
+            cancellation,
+            "BSL analysis cancelled while waiting for engine delivery",
+        ) {
+            result.at = Some(address.to_string());
+            return Err(Box::new(result));
+        }
+    }
     let metadata_path = mapping.target().metadata_path.clone();
     let request = DiagnosticRequest {
         action: DiagnosticAction::Analyze,
@@ -3180,14 +3240,23 @@ fn run_bsl_diagnostics(
             // «проверено и чисто» — худшее направление ошибки для инструмента
             // проверки.
             if !bsl_result_proves_full_verdict(&result) {
-                // Прогон начался и не завершился — это не отсутствие
-                // поставщика: уточнения у такого случая нет, и код отвечает
-                // своим умолчанием. Причину, которую поставщик назвал
-                // (сломанная базовая линия), сообщение передаёт дальше.
+                // Движок не доставлен, не прошёл проверку поставки или не
+                // запустился — поставщика нет, и уточнение это называет.
+                // Прогон, который начался и не завершился, отвечает
+                // умолчанием кода. В обоих случаях сообщение называет
+                // причину и действие восстановления (#1338).
+                let message = bsl_incomplete_message(&result);
+                if bsl_provider_absent(&result) {
+                    return Err(Box::new(error_result_detailed(
+                        Some(address.to_string()),
+                        RefusalDetail::ProviderAbsent,
+                        message,
+                    )));
+                }
                 return Err(Box::new(error_result(
                     Some(address.to_string()),
                     RefusalCode::ProviderUnavailable,
-                    bsl_incomplete_message(&result),
+                    message,
                 )));
             }
             let findings: Vec<Value> = result
@@ -3259,53 +3328,83 @@ impl From<(bool, Vec<Value>)> for CheckStepVerdict {
 
 const BSL_INCOMPLETE_MESSAGE: &str = "BSL analysis did not complete, so the module is unproven";
 
-/// Named incomplete causes retain their own sanitization boundary; JSONL
-/// failures cross only through the existing closed stream-error formatter.
+/// Names why the analysis is incomplete and what restores it (#1338).
+///
+/// Named baseline causes and canonical JSONL failures keep their own
+/// sanitization boundary. Every other provider or resource failure is named
+/// by its closed code through the coordinator's fixed public wording, never
+/// by the provider's text; an incompleteness nobody named still says so and
+/// what to do.
 fn bsl_incomplete_message(result: &crate::domain::diagnostics::DiagnosticResult) -> String {
-    let mut reasons: Vec<String> = result
+    use crate::application::diagnostics::public_diagnostic_error_message;
+    let mut reasons: Vec<String> = Vec::new();
+    let mut push = |reason: String| {
+        if !reasons.contains(&reason) {
+            reasons.push(reason);
+        }
+    };
+    for suppression in result
         .providers
         .iter()
         .flat_map(|section| section.suppressions.iter())
-        .filter_map(|suppression| {
-            let reason = suppression.reason()?;
-            Some(match &reason.detail {
+    {
+        if let Some(reason) = suppression.reason() {
+            push(match &reason.detail {
                 Some(detail) => format!("diagnostics baseline {}: {detail}", reason.code),
                 None => format!("diagnostics baseline {}", reason.code),
-            })
-        })
-        .collect();
+            });
+        }
+    }
     for section in &result.providers {
         if let Some(error) = &section.error {
-            if error.code == "diagnostics_invalid" {
-                if let Some(message) =
+            // Two closed formatters may name the cause in their own words:
+            // a JSONL failure, and an absent engine with the next step its
+            // install mode chooses. Anything else is named by its code.
+            let canonical = match error.code.as_str() {
+                "diagnostics_invalid" => {
                     crate::domain::diagnostics::stream_error::canonical_stream_error(&error.message)
-                {
-                    if !reasons.contains(&message) {
-                        reasons.push(message);
-                    }
                 }
-            }
+                crate::domain::engine::BUNDLED_TOOL_MISSING => {
+                    crate::application::diagnostics::canonical_missing_engine_reason(&error.message)
+                }
+                _ => None,
+            };
+            push(canonical.unwrap_or_else(|| {
+                format!(
+                    "{}: {}",
+                    section.id,
+                    public_diagnostic_error_message(&error.code)
+                )
+            }));
         }
     }
     for item in &result.items {
         if let crate::domain::diagnostics::DiagnosticItem::ResourceFailure { error, .. } = item {
-            if matches!(
-                error.code.as_str(),
-                "analysis_out_of_scope"
-                    | "analysis_filter_unproven"
-                    | "analysis_scope_unproven"
-                    | "analysis_config_unproven"
-            ) && !reasons.contains(&error.message)
-            {
-                reasons.push(error.message.clone());
-            }
+            push(public_diagnostic_error_message(&error.code).to_string());
         }
     }
     if reasons.is_empty() {
-        BSL_INCOMPLETE_MESSAGE.to_string()
+        format!("{BSL_INCOMPLETE_MESSAGE}: {BSL_UNNAMED_INCOMPLETENESS}")
     } else {
         format!("{BSL_INCOMPLETE_MESSAGE}: {}", reasons.join("; "))
     }
+}
+
+const BSL_UNNAMED_INCOMPLETENESS: &str = "the analyzer did not name a cause. Repeat the call; if the problem persists, report this reason.";
+
+/// The engine is not on this machine, failed its install checks or could not
+/// be started: the provider is absent rather than broken mid-run.
+fn bsl_provider_absent(result: &crate::domain::diagnostics::DiagnosticResult) -> bool {
+    result.providers.iter().any(|section| {
+        section.error.as_ref().is_some_and(|error| {
+            matches!(
+                error.code.as_str(),
+                crate::domain::engine::BUNDLED_TOOL_MISSING
+                    | "provider_install_invalid"
+                    | "provider_start_failed"
+            )
+        })
+    })
 }
 
 /// Подавление по настройке пользователя называется фактом рядом с
@@ -3878,6 +3977,95 @@ mod tests {
         }
     }
 
+    /// #955, #1332: a staging failure names the violated precondition and
+    /// what to do next. Only a source the filesystem cannot read stays
+    /// `provider_unavailable`, refined to `source_unreadable`.
+    #[test]
+    fn staging_refusals_keep_their_kind_instead_of_an_absent_provider() {
+        use crate::infrastructure::native_operations::apply::{
+            ApplyPlanError, ApplyStagingError, ApplyStagingErrorKind,
+        };
+        for (kind, code, outcome, detail) in [
+            (
+                ApplyStagingErrorKind::Cancelled,
+                "cancelled",
+                "deadEnd",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Deadline,
+                "deadline_exceeded",
+                "retry",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ConcurrentRevision,
+                "stale_revision",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "containment_denied",
+                "fixCall",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::AbsentChainOccupied,
+                "invalid_source",
+                "fixSource",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::Invariant,
+                "invalid_state",
+                "needsHuman",
+                None,
+            ),
+            (
+                ApplyStagingErrorKind::UnsupportedProvider,
+                "provider_unavailable",
+                "fixSource",
+                Some("source_unreadable"),
+            ),
+        ] {
+            let error = ApplyPlanError::staging(
+                ApplyStagingError::new(kind, "staged replace preimage changed: Documents/A.xml"),
+                "ops[1].args.values.name",
+            );
+            let planned = super::apply_plan_error_result(&error);
+            let prepared =
+                super::apply_staging_refusal(Some("ops".to_string()), kind, "prepared".to_string());
+            for result in [&planned, &prepared] {
+                assert!(!result.ok, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["code"], code, "{kind:?}");
+                assert_eq!(result.diagnostics[0]["outcome"], outcome, "{kind:?}");
+                assert_eq!(
+                    result.diagnostics[0]
+                        .get("detailCode")
+                        .and_then(|v| v.as_str()),
+                    detail,
+                    "{kind:?}"
+                );
+            }
+            assert_eq!(planned.at.as_deref(), Some("ops[1].args.values.name"));
+            let message = planned.diagnostics[0]["message"].as_str().unwrap();
+            assert!(
+                message.contains("staged replace preimage changed: Documents/A.xml"),
+                "{kind:?}: the cause was lost: {message}"
+            );
+            assert!(!message.contains("evidence is unavailable"), "{message}");
+        }
+        // Publication re-proves the plan's containment; a failure there is a
+        // physical change after the plan, answered like a stale plan.
+        assert_eq!(
+            super::apply_publication_error_code(
+                super::ApplyPublicationErrorKind::ContainmentIdentity
+            ),
+            crate::domain::refusal::RefusalCode::StaleRevision
+        );
+    }
+
     fn provider_search_test_binding(role: ProviderRole, limit: usize) -> SearchCursorBinding {
         SearchCursorBinding {
             workspace_identity: "workspace".into(),
@@ -4254,12 +4442,16 @@ mod tests {
              diagnostics baseline invalid_schema: baseline schema 7 is newer"
         );
 
-        // Без названной причины отказ остаётся прежним.
+        // Без названной причины отказ всё равно говорит, что делать.
         let mut unnamed = result(false, None);
         unnamed.providers[0].suppressions.clear();
         assert_eq!(
             super::bsl_incomplete_message(&unnamed),
-            super::BSL_INCOMPLETE_MESSAGE
+            format!(
+                "{}: {}",
+                super::BSL_INCOMPLETE_MESSAGE,
+                super::BSL_UNNAMED_INCOMPLETENESS
+            )
         );
     }
 
@@ -4318,6 +4510,8 @@ mod tests {
                 format!("{}: {safe}", super::BSL_INCOMPLETE_MESSAGE)
             );
         }
+        // A message that is not the closed formatter's whole output is never
+        // published; the closed code still names the cause in fixed words.
         let safe = StreamErrorKind::InvalidEvent.message(2);
         for (code, message) in [
             ("provider_failed", safe.clone()),
@@ -4328,10 +4522,145 @@ mod tests {
             ),
             ("diagnostics_invalid", safe.replace("line 2:", "line 02:")),
         ] {
+            let published = super::bsl_incomplete_message(&result(code, message));
             assert_eq!(
-                super::bsl_incomplete_message(&result(code, message)),
-                super::BSL_INCOMPLETE_MESSAGE
+                published,
+                format!(
+                    "{}: bsl-analyzer: {}",
+                    super::BSL_INCOMPLETE_MESSAGE,
+                    crate::application::diagnostics::public_diagnostic_error_message(code)
+                )
             );
+            assert!(!published.contains("line 2"), "{published}");
+            assert!(!published.contains("private"), "{published}");
+        }
+    }
+
+    /// A provider that did not run names which engine, what happened to it
+    /// and what restores it; the provider's own text is never the reason
+    /// (#1338).
+    #[test]
+    fn bsl_check_names_why_the_engine_gave_no_result_and_how_to_recover() {
+        use crate::domain::diagnostics::{
+            DiagnosticAction, DiagnosticError, DiagnosticProviderSection, DiagnosticProviderStatus,
+            DiagnosticResult, DiagnosticResultState, DiagnosticSelection,
+        };
+        let failed = |code: &str| DiagnosticResult {
+            ok: false,
+            action: DiagnosticAction::Analyze,
+            selection: DiagnosticSelection {
+                source_set: "erf".to_string(),
+                metadata_path: None,
+                target_kind: None,
+                providers: vec!["bsl-analyzer"],
+                filter: None,
+                limit: None,
+            },
+            state: DiagnosticResultState::Failed,
+            complete: false,
+            providers: vec![DiagnosticProviderSection {
+                id: "bsl-analyzer",
+                status: DiagnosticProviderStatus::Unavailable,
+                complete: false,
+                version: None,
+                capabilities: None,
+                readiness: None,
+                items_total: Some(0),
+                items_returned: Some(0),
+                resource_failures: Some(0),
+                truncated: Some(false),
+                suppressions: Vec::new(),
+                error: Some(DiagnosticError {
+                    code: code.to_string(),
+                    message: "private-token /private/engine stderr".to_string(),
+                    retryable: false,
+                }),
+            }],
+            items_total: Some(0),
+            items_returned: Some(0),
+            truncated: Some(false),
+            items: Vec::new(),
+        };
+        for (code, cause, recovery, absent) in [
+            (
+                "bundled_tool_missing",
+                "could not locate its plugin installation",
+                "Reinstall the Unica plugin",
+                true,
+            ),
+            (
+                "provider_install_invalid",
+                "failed verification",
+                "Reinstall the Unica plugin",
+                true,
+            ),
+            (
+                "provider_start_failed",
+                "could not be started",
+                "then repeat the call",
+                true,
+            ),
+            (
+                "provider_timeout",
+                "exceeded its time limit",
+                "raise the configured diagnostics time limit",
+                false,
+            ),
+            (
+                "provider_exited",
+                "exited with an error",
+                "Repeat the call",
+                false,
+            ),
+            (
+                "provider_unavailable",
+                "unclassified reason",
+                "Repeat the call",
+                false,
+            ),
+        ] {
+            let result = failed(code);
+            assert!(!super::bsl_result_proves_full_verdict(&result));
+            let message = super::bsl_incomplete_message(&result);
+            assert!(
+                message.starts_with(&format!(
+                    "{}: bsl-analyzer: ",
+                    super::BSL_INCOMPLETE_MESSAGE
+                )),
+                "{code}: {message}"
+            );
+            assert!(message.contains(cause), "{code}: {message}");
+            assert!(message.contains(recovery), "{code}: {message}");
+            assert!(!message.contains("private"), "{code}: {message}");
+            assert_eq!(super::bsl_provider_absent(&result), absent, "{code}");
+        }
+
+        // An absent engine described by its install mode keeps that next
+        // step; the expected path never reaches the answer.
+        for mode in [
+            crate::domain::engine::InstallMode::Source,
+            crate::domain::engine::InstallMode::Marketplace,
+        ] {
+            let missing = crate::domain::engine::MissingEngine::new(
+                "bsl-analyzer",
+                "win-x64",
+                "C:/private/engine/bsl-analyzer.exe",
+                None,
+                mode,
+            );
+            let mut result = failed("bundled_tool_missing");
+            result.providers[0].error.as_mut().unwrap().message =
+                crate::application::diagnostics::missing_engine_public_reason(&missing);
+            let message = super::bsl_incomplete_message(&result);
+            assert_eq!(
+                message,
+                format!(
+                    "{}: bsl-analyzer is not installed on this machine for win-x64; {}",
+                    super::BSL_INCOMPLETE_MESSAGE,
+                    missing.next_step
+                )
+            );
+            assert!(!message.contains("private"), "{message}");
         }
     }
 

@@ -632,7 +632,7 @@ impl CompileTransaction {
                     Kind::ContainmentIdentity | Kind::AbsentChainOccupied => {
                         RetainedApplyValidationErrorKind::ContainmentIdentity
                     }
-                    Kind::UnsupportedProvider | Kind::MissingParent => {
+                    Kind::UnsupportedProvider => {
                         RetainedApplyValidationErrorKind::UnsupportedProvider
                     }
                     Kind::Invariant => RetainedApplyValidationErrorKind::Invariant,

@@ -73,8 +73,28 @@ pub struct ProcessStreamOutput {
     pub line_error: Option<(usize, String)>,
 }
 
+/// Where a streaming process run failed: before the process existed, or while
+/// it was being waited for or stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProcessStreamFailure {
+    Spawn(String),
+    Run(String),
+}
+
 pub trait ProcessRunner {
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String>;
+
+    /// [`ProcessRunner::run_streaming`] that keeps whether the process was
+    /// ever started. A runner that cannot tell reports a failure after start.
+    fn run_streaming_staged(
+        &self,
+        command: &ProcessCommand,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
+    ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
+        self.run_streaming(command, max_line_bytes, on_line)
+            .map_err(ProcessStreamFailure::Run)
+    }
 
     fn run_pending_handoff(
         &self,
@@ -1462,6 +1482,84 @@ fn process_exit_code_is(status: &str, code: i32) -> bool {
     status == code.to_string() || status.ends_with(&format!(": {code}"))
 }
 
+/// Почему прогон анализатора не дал пакета диагностик.
+///
+/// Вид определяется местом, где прогон остановился, а не разбором текста
+/// процесса: только так «движок не доставлен», «не запустился», «превысил
+/// срок» и «завершился ошибкой» не схлопываются в одно «недоступен» (#1338).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnalyzerRunFailureKind {
+    /// Движка нет на машине: не доставлен, не собран, нет манифеста.
+    EngineMissing,
+    /// Движок на месте, но не прошёл проверку поставки: контрольная сумма,
+    /// манифест, платформа.
+    EngineInvalid,
+    /// Процесс движка не удалось запустить.
+    StartFailed,
+    /// Процесс превысил заданный пользователем срок.
+    TimedOut,
+    /// Процесс запустился и завершился ошибкой до результата.
+    Exited,
+    Cancelled,
+    /// Остальное: подготовка запроса, резидентный сеанс и прочее.
+    Other,
+}
+
+/// Отказ прогона анализатора: закрытый вид и внутренний текст. Текст
+/// остаётся внутри адаптера; наружу причина выходит только видом.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AnalyzerRunFailure {
+    pub(crate) kind: AnalyzerRunFailureKind,
+    pub(crate) message: String,
+    /// Чего не хватает, когда движка нет: инструмент, цель, путь, версия
+    /// и следующий шаг по режиму установки. Есть только у `EngineMissing`.
+    pub(crate) missing: Option<Box<crate::domain::engine::MissingEngine>>,
+}
+
+impl AnalyzerRunFailure {
+    pub(crate) fn new(kind: AnalyzerRunFailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            missing: None,
+        }
+    }
+
+    /// Движка нет на диске: вид и типизированное описание отсутствия.
+    pub(crate) fn engine_missing(
+        missing: Option<crate::domain::engine::MissingEngine>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            missing: missing.map(Box::new),
+            ..Self::new(AnalyzerRunFailureKind::EngineMissing, message)
+        }
+    }
+
+    /// Ошибка разрешения поставляемого движка. Отсутствие определяется
+    /// состоянием диска через типизированный [`MissingEngine`], а не текстом
+    /// ошибки; поставка, которая есть, но не прошла проверку, — отдельный вид.
+    ///
+    /// [`MissingEngine`]: crate::domain::engine::MissingEngine
+    pub(crate) fn bundled_tool(plugin_root: &Path, tool: &str, error: String) -> Self {
+        match crate::infrastructure::bundled_tools::missing_engine(plugin_root, tool) {
+            Some(missing) => Self::engine_missing(Some(missing), error),
+            None => Self::new(AnalyzerRunFailureKind::EngineInvalid, error),
+        }
+    }
+}
+
+impl From<String> for AnalyzerRunFailure {
+    fn from(message: String) -> Self {
+        let kind = if message.starts_with(crate::domain::cancellation::CANCELLED_PREFIX) {
+            AnalyzerRunFailureKind::Cancelled
+        } else {
+            AnalyzerRunFailureKind::Other
+        };
+        Self::new(kind, message)
+    }
+}
+
 impl<'a> BslAnalyzerMcpAdapter<'a> {
     pub fn new() -> Self {
         Self {
@@ -1493,7 +1591,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         module: Option<&Path>,
         timeout: Option<Duration>,
         cancellation: &CancellationToken,
-    ) -> Result<AnalyzerDiagnosticsBatch, String> {
+    ) -> Result<AnalyzerDiagnosticsBatch, AnalyzerRunFailure> {
         let mut args = Map::new();
         args.insert(
             "sourceDir".to_string(),
@@ -1513,12 +1611,15 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             module,
         )?;
         result.diagnostics.ok_or_else(|| {
-            result
-                .outcome
-                .errors
-                .first()
-                .cloned()
-                .unwrap_or(result.outcome.summary)
+            AnalyzerRunFailure::new(
+                result.run_failure.unwrap_or(AnalyzerRunFailureKind::Other),
+                result
+                    .outcome
+                    .errors
+                    .first()
+                    .cloned()
+                    .unwrap_or(result.outcome.summary),
+            )
         })
     }
 
@@ -1664,6 +1765,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             },
             data,
             diagnostics: None,
+            run_failure: None,
         })
     }
 
@@ -1677,9 +1779,12 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         operational_config: Option<&OperationalConfig>,
         cancellation: &CancellationToken,
         module: Option<&Path>,
-    ) -> Result<BslAnalyzerOutcome, String> {
+    ) -> Result<BslAnalyzerOutcome, AnalyzerRunFailure> {
         let plugin_root = find_plugin_root(&context.cwd).ok_or_else(|| {
-            "could not locate Unica plugin root for diagnostics adapter lookup".to_string()
+            AnalyzerRunFailure::engine_missing(
+                None,
+                "could not locate Unica plugin root for diagnostics adapter lookup",
+            )
         })?;
         let source_dir = resolve_source_dir(context, args)?;
         let mut normalized_args = diagnostics_analyze_args(args);
@@ -1687,14 +1792,18 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
         // A JSON file preserves commas and spaces in physical module paths.
         let _scope_file = if let Some(module) = module {
             if !module.is_absolute() {
-                return Err("diagnostics module path must be absolute".to_string());
+                return Err("diagnostics module path must be absolute"
+                    .to_string()
+                    .into());
             }
             let module = module
                 .to_str()
                 .ok_or_else(|| "diagnostics module path must be UTF-8".to_string())?;
             let scratch_root = normalize_path_identity(&std::env::temp_dir())?;
             if scratch_root.starts_with(normalize_path_identity(&source_dir)?) {
-                return Err("diagnostics scope file would be inside source root".to_string());
+                return Err("diagnostics scope file would be inside source root"
+                    .to_string()
+                    .into());
             }
             let mut scope = tempfile::NamedTempFile::new_in(scratch_root)
                 .map_err(|_| "cannot create diagnostics scope file".to_string())?;
@@ -1720,7 +1829,10 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             None
         };
         let process_timeout = diagnostics_analyze_timeout(args, operational_config)?;
-        let bundled_tool = resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run)?;
+        let bundled_tool =
+            resolve_bundled_tool(&plugin_root, "bsl-analyzer", !dry_run).map_err(|error| {
+                AnalyzerRunFailure::bundled_tool(&plugin_root, "bsl-analyzer", error)
+            })?;
         let reported_args = cli_args(&normalized_args, true)?;
         let execution_args = cli_args(&normalized_args, false)?;
         let mut reported_command = vec![bundled_tool.program.display().to_string()];
@@ -1765,20 +1877,40 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             explicit_config.as_deref(),
             module.is_some(),
         );
-        let output = self.process_runner.run_streaming(
-            &ProcessCommand {
-                program: bundled_tool.program,
-                args: process_args,
-                cwd: context.cwd.clone(),
-                env: Vec::new(),
-                env_remove: Vec::new(),
-                capture_limits: None,
-                timeout: process_timeout,
-                cancellation: cancellation.clone(),
-            },
-            MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
-            &mut consume,
-        )?;
+        let started = std::time::Instant::now();
+        let output = self
+            .process_runner
+            .run_streaming_staged(
+                &ProcessCommand {
+                    program: bundled_tool.program,
+                    args: process_args,
+                    cwd: context.cwd.clone(),
+                    env: Vec::new(),
+                    env_remove: Vec::new(),
+                    capture_limits: None,
+                    timeout: process_timeout,
+                    cancellation: cancellation.clone(),
+                },
+                MAX_DIAGNOSTICS_JSONL_LINE_BYTES,
+                &mut consume,
+            )
+            .map_err(|failure| match failure {
+                // The process never existed: the engine could not be started.
+                ProcessStreamFailure::Spawn(error) => {
+                    AnalyzerRunFailure::new(AnalyzerRunFailureKind::StartFailed, error)
+                }
+                // Waiting for or stopping a started process failed. Past the
+                // user's deadline that is a timeout whose stop failed;
+                // otherwise the run failed for a reason Unica cannot name.
+                ProcessStreamFailure::Run(error) => AnalyzerRunFailure::new(
+                    if process_timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                        AnalyzerRunFailureKind::TimedOut
+                    } else {
+                        AnalyzerRunFailureKind::Other
+                    },
+                    error,
+                ),
+            })?;
         if let Some((line_number, reason)) = &output.line_error {
             use crate::domain::diagnostics::stream_error::StreamErrorKind;
             let kind = if reason == STREAM_LINE_TOO_LONG_ERROR {
@@ -1793,7 +1925,9 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             let mut outcome = AdapterOutcome::cancelled(format!("{tool_name} process stopped"));
             outcome.stderr = (!stderr.trim().is_empty()).then_some(stderr);
             outcome.command = Some(reported_command);
-            return Ok(BslAnalyzerOutcome::plain(outcome));
+            let mut outcome = BslAnalyzerOutcome::plain(outcome);
+            outcome.run_failure = Some(AnalyzerRunFailureKind::Cancelled);
+            return Ok(outcome);
         }
         if !output.status_success {
             // A broken `[diagnostics.baseline]` stops the analyzer before
@@ -1833,6 +1967,11 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                 stderr: (!stderr.trim().is_empty()).then_some(stderr),
                 command: Some(reported_command),
             };
+            let kind = if output.timed_out {
+                AnalyzerRunFailureKind::TimedOut
+            } else {
+                AnalyzerRunFailureKind::Exited
+            };
             return Ok(BslAnalyzerOutcome {
                 outcome,
                 data: None,
@@ -1846,6 +1985,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
                     diagnostics_reported: None,
                     elapsed_seconds: None,
                 }),
+                run_failure: Some(kind),
             });
         }
 
@@ -1896,6 +2036,7 @@ impl<'a> BslAnalyzerMcpAdapter<'a> {
             outcome,
             data: None,
             diagnostics: Some(batch),
+            run_failure: None,
         })
     }
 }
@@ -1907,6 +2048,8 @@ pub struct BslAnalyzerOutcome {
     pub outcome: AdapterOutcome,
     pub data: Option<Value>,
     pub(crate) diagnostics: Option<AnalyzerDiagnosticsBatch>,
+    /// Where the analyze run stopped when it produced no diagnostics batch.
+    pub(crate) run_failure: Option<AnalyzerRunFailureKind>,
 }
 
 impl BslAnalyzerOutcome {
@@ -1915,6 +2058,7 @@ impl BslAnalyzerOutcome {
             outcome,
             data: None,
             diagnostics: None,
+            run_failure: None,
         }
     }
 }
@@ -2170,6 +2314,20 @@ impl ProcessRunner for SystemProcessRunner {
         max_line_bytes: usize,
         on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
     ) -> Result<ProcessStreamOutput, String> {
+        self.run_streaming_staged(command, max_line_bytes, on_line)
+            .map_err(|failure| match failure {
+                ProcessStreamFailure::Spawn(message) | ProcessStreamFailure::Run(message) => {
+                    message
+                }
+            })
+    }
+
+    fn run_streaming_staged(
+        &self,
+        command: &ProcessCommand,
+        max_line_bytes: usize,
+        on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
+    ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
         let mut child = ManagedChild::spawn(ManagedCommand {
             program: command.program.clone(),
             args: command.args.iter().map(Into::into).collect(),
@@ -2179,8 +2337,11 @@ impl ProcessRunner for SystemProcessRunner {
             capture_limits: command.capture_limits,
             timeout: command.timeout,
             cancellation: command.cancellation.clone(),
-        })?;
-        let output = child.wait_for_line_output(max_line_bytes, on_line)?;
+        })
+        .map_err(ProcessStreamFailure::Spawn)?;
+        let output = child
+            .wait_for_line_output(max_line_bytes, on_line)
+            .map_err(ProcessStreamFailure::Run)?;
         Ok(map_managed_line_output(output))
     }
 }
@@ -5884,6 +6045,125 @@ analyze_timeout_seconds = 900
         assert!(run(stderr, true).is_err());
         assert!(run("Error: \"metadata is unreadable\"\n", false).is_err());
         cleanup_context(&context);
+    }
+
+    /// A run that gives no diagnostics batch says where it stopped: the
+    /// engine is absent, failed its install checks, could not start, ran out
+    /// of time or exited with an error (#1338).
+    #[test]
+    fn analyze_failure_names_where_the_run_stopped() {
+        struct StagedFailure(ProcessStreamFailure);
+        impl ProcessRunner for StagedFailure {
+            fn run(&self, _: &ProcessCommand) -> Result<ProcessOutput, String> {
+                panic!("streaming runner expected")
+            }
+
+            fn run_streaming_staged(
+                &self,
+                _: &ProcessCommand,
+                _: usize,
+                _: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
+            ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
+                Err(self.0.clone())
+            }
+        }
+        let context = temp_context("run failure kinds, анализ");
+        let root = normalize_path_identity(&context.cwd).unwrap();
+        let analyze = |runner: &dyn ProcessRunner| {
+            BslAnalyzerMcpAdapter::with_process_runner(runner)
+                .analyze_diagnostic_batch(
+                    &context,
+                    &root,
+                    None,
+                    Some(Duration::from_secs(30)),
+                    &CancellationToken::new(),
+                )
+                .expect_err("a failed run has no batch")
+        };
+        let failed = |timed_out: bool| {
+            let mut output = analyze_process_output("");
+            output.status_success = false;
+            output.status = "exit status: 3".to_string();
+            output.stderr = "panic at private-token".to_string();
+            output.timed_out = timed_out;
+            FakeProcessRunner { output }
+        };
+
+        assert_eq!(
+            analyze(&StagedFailure(ProcessStreamFailure::Spawn(
+                "Permission denied (os error 13)".to_string()
+            )))
+            .kind,
+            AnalyzerRunFailureKind::StartFailed
+        );
+        // A failure while waiting for or stopping a started process before
+        // its deadline is not a failed start.
+        assert_eq!(
+            analyze(&StagedFailure(ProcessStreamFailure::Run(
+                "try_wait failed".to_string()
+            )))
+            .kind,
+            AnalyzerRunFailureKind::Other
+        );
+        assert_eq!(
+            analyze(&failed(true)).kind,
+            AnalyzerRunFailureKind::TimedOut
+        );
+        assert_eq!(analyze(&failed(false)).kind, AnalyzerRunFailureKind::Exited);
+        assert!(analyze(&failed(false)).missing.is_none());
+
+        let plugin_bin = context.cwd.join("plugins/unica/bin");
+        let analyzers = fs::read_dir(&plugin_bin)
+            .unwrap()
+            .flat_map(|target| fs::read_dir(target.unwrap().path()).unwrap())
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.file_stem().is_some_and(|stem| stem == "bsl-analyzer"))
+            .collect::<Vec<_>>();
+        assert!(!analyzers.is_empty());
+        for analyzer in &analyzers {
+            fs::write(analyzer, "tampered").unwrap();
+        }
+        let tampered = analyze(&failed(false));
+        assert_eq!(
+            tampered.kind,
+            AnalyzerRunFailureKind::EngineInvalid,
+            "a checksum mismatch is not an absent engine"
+        );
+        assert!(tampered.missing.is_none());
+        for analyzer in &analyzers {
+            fs::remove_file(analyzer).unwrap();
+        }
+        let absent = analyze(&failed(false));
+        assert_eq!(absent.kind, AnalyzerRunFailureKind::EngineMissing);
+        let missing = absent.missing.expect("an absent engine is described");
+        assert_eq!(missing.tool, "bsl-analyzer");
+        assert_eq!(missing.code, crate::domain::engine::BUNDLED_TOOL_MISSING);
+        cleanup_context(&context);
+    }
+
+    /// The real runner tells a process that never started from one that did.
+    #[test]
+    fn streaming_runner_reports_a_spawn_failure_as_such() {
+        let failure = SYSTEM_PROCESS_RUNNER
+            .run_streaming_staged(
+                &ProcessCommand {
+                    program: std::env::temp_dir().join("unica-1338-no-such-engine"),
+                    args: Vec::new(),
+                    cwd: std::env::temp_dir(),
+                    env: Vec::new(),
+                    env_remove: Vec::new(),
+                    capture_limits: None,
+                    timeout: None,
+                    cancellation: CancellationToken::new(),
+                },
+                1024,
+                &mut |_, _| StreamControl::Continue,
+            )
+            .expect_err("an absent program cannot start");
+        assert!(
+            matches!(failure, ProcessStreamFailure::Spawn(_)),
+            "{failure:?}"
+        );
     }
 
     #[test]

@@ -1763,28 +1763,43 @@ mod tests {
 
     #[test]
     fn live_daemon_failure_is_delivered_as_the_closed_reason_without_its_text() {
-        let service = Arc::new(ScriptedService {
-            delay: Duration::ZERO,
-            known_long: false,
-            outcome: Mutex::new(Some(Err(
-                crate::domain::invocation::InvocationFailure::new(
-                    "provider_exploded",
-                    "/private/workspace bearer-secret",
-                ),
-            ))),
-            executions: AtomicUsize::new(0),
-        });
-        let daemon = LiveDaemon::start(service.clone());
-        let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
+        // A workspace that changed under the call keeps that cause and its
+        // remedy (#1338); any other failure stays the internal one.
+        for (failure_code, code, message) in [
+            (
+                "provider_exploded",
+                "invocation_failed",
+                "daemon invocation stopped without a result. Repeat the call; if the problem persists, report this reason.",
+            ),
+            (
+                crate::domain::invocation::WORKSPACE_CHANGED_FAILURE,
+                "workspace_changed",
+                "the workspace changed while the call ran, so its result was not published. Repeat the call.",
+            ),
+        ] {
+            let service = Arc::new(ScriptedService {
+                delay: Duration::ZERO,
+                known_long: false,
+                outcome: Mutex::new(Some(Err(
+                    crate::domain::invocation::InvocationFailure::new(
+                        failure_code,
+                        "/private/workspace bearer-secret",
+                    ),
+                ))),
+                executions: AtomicUsize::new(0),
+            });
+            let daemon = LiveDaemon::start(service.clone());
+            let router = canonical_daemon_router(daemon.owner(), daemon.workspace_hint.clone());
 
-        let refusal = call(&router, None).expect_err("failed execution is an error");
+            let refusal = call(&router, None).expect_err("failed execution is an error");
 
-        assert_eq!(refusal.code, ErrorCode::INTERNAL_ERROR);
-        assert_eq!(refusal.message, "daemon invocation failed");
-        assert_eq!(refusal.data, Some(json!({"code": "invocation_failed"})));
-        assert!(!format!("{refusal:?}").contains("bearer-secret"));
-        drop(router);
-        daemon.finish();
+            assert_eq!(refusal.code, ErrorCode::INTERNAL_ERROR);
+            assert_eq!(refusal.message, message);
+            assert_eq!(refusal.data, Some(json!({"code": code})));
+            assert!(!format!("{refusal:?}").contains("bearer-secret"));
+            drop(router);
+            daemon.finish();
+        }
     }
 
     #[test]

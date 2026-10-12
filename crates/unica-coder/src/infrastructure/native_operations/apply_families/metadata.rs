@@ -1349,7 +1349,14 @@ pub(super) fn stage_object_create(
                     .read(&relative)
                     .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
                 let expected = file.preimage.as_deref().unwrap_or(&file.bytes);
-                if current.as_deref() != Some(expected) {
+                // An earlier operation of this batch may have staged its own
+                // change of the guarded prerequisite (a register adds itself
+                // to the registrar a journal then guards). The guard binds the
+                // on-disk image the template read, so it holds while that
+                // image is still the one this plan retained (#1332).
+                let unchanged_on_disk =
+                    current.is_some() && staged.original_image(&relative) == Some(expected);
+                if current.as_deref() != Some(expected) && !unchanged_on_disk {
                     return Err(ApplyPlanError::new(
                         ApplyPlanErrorKind::InvalidState,
                         format!(
@@ -1361,9 +1368,46 @@ pub(super) fn stage_object_create(
                 }
             }
             MetadataTemplateFileMode::Replace => {
-                let expected = file.preimage.as_deref().unwrap_or(&file.bytes).to_vec();
+                let preimage = file.preimage.as_deref().unwrap_or(&file.bytes);
+                let current = staged
+                    .read(&relative)
+                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+                // The template derived its replacement from the file on disk.
+                // An earlier operation of this batch may already have staged
+                // its own change of the same prerequisite (#1332): two new
+                // registers share one registrar document. Re-derive the edit
+                // from that staged image, but only while the on-disk image the
+                // template read is still the one this plan retained.
+                let replacement = match (current.as_deref(), &file.edit) {
+                    (Some(current), _) if current == preimage => file.bytes.clone(),
+                    (Some(current), Some(edit))
+                        if staged.original_image(&relative) == Some(preimage) =>
+                    {
+                        edit.apply(current).map_err(|_| {
+                            ApplyPlanError::new(
+                                ApplyPlanErrorKind::InvalidState,
+                                format!(
+                                    "prerequisite `{}` cannot accept the change of the new object",
+                                    relative.display()
+                                ),
+                            )
+                            .at_path(at_path.clone())
+                        })?
+                    }
+                    _ => {
+                        return Err(ApplyPlanError::new(
+                            ApplyPlanErrorKind::InvalidState,
+                            format!(
+                                "prerequisite `{}` changed while planning the new object",
+                                relative.display()
+                            ),
+                        )
+                        .at_path(at_path));
+                    }
+                };
+                let current = current.expect("a matched prerequisite image is present");
                 staged
-                    .replace(&relative, &expected, file.bytes.clone())
+                    .replace(&relative, &current, replacement)
                     .map_err(|error| ApplyPlanError::staging(error, at_path))?;
                 touched.push(relative);
             }
@@ -2656,6 +2700,168 @@ mod tests {
             owner_text.contains("<Document>Order</Document>"),
             "{owner_text}"
         );
+    }
+
+    /// #1332: registers of one batch share the registrar document. Each
+    /// operation adds its record to the image the previous one staged
+    /// instead of refusing because the disk preimage no longer matches.
+    #[test]
+    fn object_create_batches_registers_that_share_one_registrar_document() {
+        let order = ORDER_XML.replace(
+            "<BasedOn/></Properties>",
+            "<BasedOn/><RegisterRecords/></Properties>",
+        );
+        let configuration = RU_CONFIGURATION_XML.replace(
+            "<Document>Order</Document>",
+            "<Document>Order</Document><ChartOfCalculationTypes>Kinds</ChartOfCalculationTypes>",
+        );
+        let chart = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><ChartOfCalculationTypes uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>Kinds</Name></Properties><ChildObjects/></ChartOfCalculationTypes></MetaDataObject>"#;
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &configuration),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", &order),
+            ("ChartsOfCalculationTypes/Kinds.xml", chart),
+        ]);
+        let registers = [
+            ("AccumulationRegister", "Продажи"),
+            ("AccumulationRegister", "Остатки"),
+            ("AccumulationRegister", "Обороты"),
+            ("CalculationRegister", "Начисления"),
+            ("CalculationRegister", "Премии"),
+        ];
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = registers
+            .iter()
+            .enumerate()
+            .map(|(index, (kind, name))| {
+                fixture.parse(
+                    "object.create",
+                    json!({"at": "main:Configuration", "values": {"kind": kind, "name": name}}),
+                    index,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let (staged, effects) = plan_metadata_batch(staged, authority, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+
+        assert_eq!(effects.len(), registers.len());
+        let changes = staged.planned_changes();
+        let document = changes
+            .iter()
+            .find(|change| change.relative_path == Path::new("Documents/Order.xml"))
+            .expect("the registrar document is staged once");
+        assert_eq!(
+            document.original,
+            StagedFileState::Bytes(order.clone().into_bytes())
+        );
+        let StagedFileState::Bytes(bytes) = &document.current else {
+            panic!("registrar keeps bytes");
+        };
+        let records = registers
+            .iter()
+            .map(|(kind, name)| {
+                format!("<xr:Item xsi:type=\"xr:MDObjectRef\">{kind}.{name}</xr:Item>")
+            })
+            .collect::<String>();
+        assert_eq!(
+            String::from_utf8(bytes.clone()).unwrap(),
+            order.replace(
+                "<RegisterRecords/>",
+                &format!("<RegisterRecords>{records}</RegisterRecords>")
+            )
+        );
+        for (kind, name) in registers {
+            let directory = if kind == "AccumulationRegister" {
+                "AccumulationRegisters"
+            } else {
+                "CalculationRegisters"
+            };
+            let descriptor = PathBuf::from(directory).join(format!("{name}.xml"));
+            assert!(
+                changes
+                    .iter()
+                    .any(|change| change.relative_path == descriptor
+                        && change.kind == StagedChangeKind::Create),
+                "{descriptor:?} is not staged"
+            );
+        }
+        assert_eq!(fixture.disk_bytes(), order.as_bytes());
+    }
+
+    /// A journal guards the registrar document that a register of the same
+    /// batch has already changed; the order of the two must not matter.
+    #[test]
+    fn object_create_guards_a_registrar_changed_earlier_in_the_batch() {
+        let order = ORDER_XML.replace(
+            "<BasedOn/></Properties>",
+            "<BasedOn/><RegisterRecords/></Properties>",
+        );
+        for objects in [
+            [
+                ("AccumulationRegister", "Продажи"),
+                ("DocumentJournal", "Журнал"),
+            ],
+            [
+                ("DocumentJournal", "Журнал"),
+                ("AccumulationRegister", "Продажи"),
+            ],
+        ] {
+            let fixture = MetadataFixture::with_files(&[
+                ("Configuration.xml", RU_CONFIGURATION_XML),
+                ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+                ("Documents/Order.xml", &order),
+            ]);
+            let admission = fixture.admission();
+            let staged = admission.staged_state().unwrap();
+            let authority = admission
+                .metadata_planning_authority(&fixture.binding)
+                .unwrap();
+            let operations = objects
+                .iter()
+                .enumerate()
+                .map(|(index, (kind, name))| {
+                    fixture.parse(
+                        "object.create",
+                        json!({"at": "main:Configuration", "values": {"kind": kind, "name": name}}),
+                        index,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let (staged, effects) = plan_metadata_batch(staged, authority, &operations)
+                .unwrap_or_else(|error| panic!("{objects:?}: {error:?} at {:?}", error.path()));
+
+            assert_eq!(effects.len(), 2, "{objects:?}");
+            let changes = staged.planned_changes();
+            for descriptor in [
+                "AccumulationRegisters/Продажи.xml",
+                "DocumentJournals/Журнал.xml",
+            ] {
+                assert!(
+                    changes
+                        .iter()
+                        .any(|change| change.relative_path == Path::new(descriptor)),
+                    "{objects:?}: {descriptor} is not staged"
+                );
+            }
+            let document = changes
+                .iter()
+                .find(|change| change.relative_path == Path::new("Documents/Order.xml"))
+                .expect("the registrar document is staged");
+            let StagedFileState::Bytes(bytes) = &document.current else {
+                panic!("registrar keeps bytes");
+            };
+            assert!(
+                String::from_utf8_lossy(bytes).contains("AccumulationRegister.Продажи"),
+                "{objects:?}"
+            );
+            assert_eq!(fixture.disk_bytes(), order.as_bytes());
+        }
     }
 
     #[test]

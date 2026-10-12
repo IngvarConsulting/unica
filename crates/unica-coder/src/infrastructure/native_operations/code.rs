@@ -600,7 +600,7 @@ fn plan_one_code_operation(
             .replace(&relative, before, postimage.after.clone())
             .map_err(|error| staged_code_error(error, &at_path))?,
         None => staged
-            .create_leaf_below_retained_parent(&relative, postimage.after.clone())
+            .create(&relative, postimage.after.clone())
             .map_err(|error| staged_code_error(error, &at_path))?,
     }
     if staged
@@ -4541,41 +4541,102 @@ pub(super) mod tests {
         writer.cleanup();
     }
 
+    /// #955: a registered owner's module exists logically without its file.
+    /// A dumped empty common module keeps an empty `Ext/` without the file;
+    /// `object.borrow` registers a common module without its directory.
+    /// The first write materializes the missing chain on publication only.
     #[test]
-    fn staged_code_rejects_absent_leaf_below_missing_parent_topology() {
-        for (name, missing_parent) in [
+    fn staged_code_first_body_materializes_a_missing_module_chain() {
+        for (name, missing) in [
+            ("missing-file", "CommonModules/Sample/Ext/Module.bsl"),
             ("missing-ext", "CommonModules/Sample/Ext"),
             ("missing-owner-directory", "CommonModules/Sample"),
         ] {
             let fixture = staged_code_fixture(name, b"Procedure Base()\nEndProcedure\n");
-            fs::remove_dir_all(fixture.source.join(missing_parent)).unwrap();
-            let admission = staged_code_admission(&fixture, true);
-            let source_before = snapshot_staged_code_tree(&fixture.source);
-            let cache_before = snapshot_staged_code_tree(&fixture.root.join(".build/unica"));
+            let removed = fixture.source.join(missing);
+            if removed.is_dir() {
+                fs::remove_dir_all(&removed).unwrap();
+            } else {
+                fs::remove_file(&removed).unwrap();
+            }
+            let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
             let operation = [staged_insert(
                 "main:CommonModule.Sample",
                 "Procedure Added()\nEndProcedure",
                 None,
                 None,
             )];
+            let source_before = snapshot_staged_code_tree(&fixture.source);
+            let cache_before = snapshot_staged_code_tree(&fixture.root.join(".build/unica"));
 
-            let result = plan_admitted_code(&admission, &fixture.binding, &operation);
-
-            let error = result.expect_err(&format!(
-                "planner returned effects for missing parent topology: {missing_parent}"
-            ));
+            let preview = staged_code_admission(&fixture, true);
+            let (mut state, effects) = plan_admitted_code(&preview, &fixture.binding, &operation)
+                .unwrap_or_else(|error| panic!("{missing}: {error:?}"));
+            let changes = state.planned_changes();
+            assert_eq!(changes.len(), 1, "{missing}");
+            assert_eq!(changes[0].relative_path, relative, "{missing}");
+            assert_eq!(changes[0].original, StagedFileState::Absent, "{missing}");
+            let expected = state.read(relative).unwrap().expect("staged first body");
+            assert!(
+                String::from_utf8_lossy(&expected).contains("Procedure Added()"),
+                "{missing}"
+            );
             assert_eq!(
-                error.kind(),
-                ApplyPlanErrorKind::Staging(ApplyStagingErrorKind::MissingParent)
+                effects.events(),
+                &[DomainEvent::new(
+                    DomainEventKind::ModuleChanged,
+                    "main:CommonModule.Sample"
+                )]
             );
             assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
             assert_eq!(
                 snapshot_staged_code_tree(&fixture.root.join(".build/unica")),
                 cache_before
             );
-            assert!(!fixture.root.join(".build/unica/state.json").exists());
+            drop(state);
+
+            let admission = staged_code_admission(&fixture, false);
+            let (state, effects) =
+                plan_admitted_code(&admission, &fixture.binding, &operation).unwrap();
+            fixture
+                .actor
+                .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+                .unwrap_or_else(|error| panic!("{missing}: {error:?}"));
+            assert_eq!(fs::read(fixture.source.join(relative)).unwrap(), expected);
+
+            let repeated = staged_code_admission(&fixture, true);
+            let (state, effects) =
+                plan_admitted_code(&repeated, &fixture.binding, &operation).unwrap();
+            assert!(state.planned_changes().is_empty(), "{missing}");
+            assert!(effects.events().is_empty(), "{missing}");
             fixture.cleanup();
         }
+    }
+
+    /// A module chain that appears after planning belongs to someone else:
+    /// publication refuses and keeps the foreign file instead of overwriting it.
+    #[test]
+    fn staged_code_missing_module_chain_keeps_a_foreign_appearance() {
+        let fixture = staged_code_fixture("foreign-chain", b"Procedure Base()\nEndProcedure\n");
+        fs::remove_dir_all(fixture.source.join("CommonModules/Sample")).unwrap();
+        let operation = [staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\nEndProcedure",
+            None,
+            None,
+        )];
+        let admission = staged_code_admission(&fixture, false);
+        let (state, effects) =
+            plan_admitted_code(&admission, &fixture.binding, &operation).unwrap();
+        let prepared = admission.prepare_with_effects(state, effects).unwrap();
+        let foreign = fixture.source.join("CommonModules/Sample/Ext/Module.bsl");
+        fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+        fs::write(&foreign, b"// foreign body\n").unwrap();
+
+        assert!(fixture.actor.publish_prepared_apply(prepared).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(), b"// foreign body\n");
+        assert!(!fixture.root.join(".build/unica/state.json").exists());
+        fixture.cleanup();
     }
 
     #[test]
@@ -5459,6 +5520,7 @@ pub(super) mod tests {
         );
 
         fs::remove_dir_all(fixture.source.join("CommonModules/Sample/Ext")).unwrap();
+        fs::write(fixture.source.join("CommonModules/Sample/Ext"), b"occupied").unwrap();
         let admission = staged_code_admission(&fixture, true);
         let staging = plan_admitted_code(
             &admission,
@@ -5473,7 +5535,7 @@ pub(super) mod tests {
         .unwrap_err();
         assert_closed_code_error(
             &staging,
-            ApplyPlanErrorKind::Staging(ApplyStagingErrorKind::MissingParent),
+            ApplyPlanErrorKind::Staging(ApplyStagingErrorKind::AbsentChainOccupied),
             Some("ops[0].args.at"),
             &fixture.root,
         );

@@ -17,6 +17,10 @@ fn main() {
             println!(r#"{{"type":"start","total_files":1,"version":"0.0.0-test-fixture"}}"#);
             println!(r#"{{"type":"file","path":"CommonModules/Пример/Ext/Module.bsl","diagnostics":[{{"code":"X","message":"private-severity-token-1064 /private/fault-source-1064","severity":"private-severity-token-1064 /private/fault-source-1064","start_line":0,"start_column":0,"end_line":0,"end_column":1,"tags":[]}}]}}"#);
         }
+        "exit-failure" => {
+            eprintln!("private-severity-token-1064 /private/fault-source-1064");
+            std::process::exit(2);
+        }
         _ => panic!("unknown closed fixture case"),
     }
 }

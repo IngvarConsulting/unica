@@ -43,6 +43,8 @@ use uuid::Uuid;
 
 const RECORD_SCHEMA_VERSION: u8 = 1;
 const RUNTIME_RECORD_BYTES: usize = 256 * 1024;
+/// A cancellation marker is one small JSON object; anything larger is corrupt.
+const CANCEL_MARKER_BYTES: usize = 4 * 1024;
 const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
 const FALLBACK_RECEIPT_BYTES: usize = STDOUT_CAPTURE_LIMIT;
 const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -1631,13 +1633,66 @@ impl RuntimeJobStore {
         atomic_write(&path, &bytes)
     }
 
-    fn write_logs(&self, id: &str, output: &RuntimeJobOutput) -> JobResult<()> {
-        let stdout = bounded_redacted_tail(&output.stdout, OUTPUT_TAIL_BYTES);
-        let stderr = bounded_redacted_tail(&output.stderr, OUTPUT_TAIL_BYTES);
-        fs::write(self.stdout_path(id)?, stdout)
-            .map_err(|error| io_error("write runtime job stdout log", &error))?;
-        fs::write(self.stderr_path(id)?, stderr)
-            .map_err(|error| io_error("write runtime job stderr log", &error))
+    fn read_record_in_retained_job(
+        &self,
+        id: &str,
+        job_directory: &RetainedDirectoryCapability,
+    ) -> JobResult<RuntimeJobRecord> {
+        let record = job_directory
+            .retain_regular_child(std::ffi::OsStr::new("record.json"))
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    redacted_error(&format!("runtime job {id} record is missing"))
+                } else {
+                    io_error("retain runtime job record", &error)
+                }
+            })?;
+        self.read_retained_record(id, &record)
+    }
+
+    /// Rewrites both log tails through the retained job directory handle, so a
+    /// directory installed later under the job name never receives them.
+    fn write_logs_in_retained_job(
+        &self,
+        job_directory: &RetainedDirectoryCapability,
+        output: &RuntimeJobOutput,
+    ) -> JobResult<()> {
+        use std::io::{Seek, SeekFrom};
+
+        for (name, text, context) in [
+            ("stdout.log", &output.stdout, "write runtime job stdout log"),
+            ("stderr.log", &output.stderr, "write runtime job stderr log"),
+        ] {
+            let tail = bounded_redacted_tail(text, OUTPUT_TAIL_BYTES);
+            job_directory
+                .retain_or_create_regular_child(std::ffi::OsStr::new(name))
+                .and_then(|log| log.try_clone_file())
+                .and_then(|mut log| {
+                    log.set_len(0)?;
+                    log.seek(SeekFrom::Start(0))?;
+                    log.write_all(tail.as_bytes())
+                })
+                .map_err(|error| io_error(context, &error))?;
+        }
+        Ok(())
+    }
+
+    fn has_cancel_marker_in_retained_job(
+        &self,
+        job_directory: &RetainedDirectoryCapability,
+    ) -> JobResult<bool> {
+        let marker = match job_directory.retain_regular_child(std::ffi::OsStr::new("cancel.json")) {
+            Ok(marker) => marker,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(io_error("read runtime job cancellation", &error)),
+        };
+        let contents = marker
+            .read_bounded(CANCEL_MARKER_BYTES)
+            .map_err(|error| io_error("read runtime job cancellation", &error))?;
+        serde_json::from_slice::<CancelMarker>(&contents).map_err(|error| {
+            redacted_error(&format!("runtime job cancellation is corrupt: {error}"))
+        })?;
+        Ok(true)
     }
 
     fn write_cancel_marker(&self, id: &str) -> JobResult<()> {
@@ -1779,7 +1834,26 @@ pub(crate) struct RuntimeJobService {
     processes: Mutex<HashMap<String, ActiveRuntimeJobProcess>>,
     #[cfg(test)]
     test_admission: Option<TestServiceAdmission>,
+    /// Lets a test act exactly at one directory-authority boundary of a poll.
+    #[cfg(test)]
+    directory_hook: Mutex<Option<DirectoryAuthorityHook>>,
 }
+
+/// Boundaries inside a poll where the retained job directory is relied on
+/// again after an earlier proof. Production code never observes them.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DirectoryAuthorityHookPoint {
+    /// Logs are written; the fallback or finish decision has not started.
+    LogsWritten,
+    /// `record.json` was replaced, its post-publication proof has not run.
+    RecordReplaced,
+    /// The terminal record is confirmed; `active.lock` is still held.
+    TerminalPublished,
+}
+
+#[cfg(test)]
+type DirectoryAuthorityHook = Box<dyn FnMut(DirectoryAuthorityHookPoint) + Send>;
 
 impl Drop for RuntimeJobService {
     fn drop(&mut self) {
@@ -2312,6 +2386,8 @@ impl RuntimeJobService {
         Self {
             #[cfg(test)]
             test_admission: acquire_test_service_admission(&cache_root),
+            #[cfg(test)]
+            directory_hook: Mutex::new(None),
             store: RuntimeJobStore::new(cache_root, stale_after),
             runner,
             processes: Mutex::new(HashMap::new()),
@@ -2444,7 +2520,7 @@ impl RuntimeJobService {
         // worker killed between the spawn and the `Running` write would otherwise
         // leave a queued record that wrongly proves the workspace is childless.
         record.child_spawn_attempted = Some(true);
-        if let Err(error) = self.write_record_with_authority(&retained_authority, &record) {
+        if let Err(error) = self.publish_record_with_authority(&retained_authority, &record) {
             let _ = self.fail_start_with_authority_guarded(
                 &mut record,
                 &error,
@@ -2481,7 +2557,7 @@ impl RuntimeJobService {
         record.started_at_ms = Some(now_millis());
         record.heartbeat_at_ms = Some(now_millis());
         record.transition(RuntimeJobPhase::Running)?;
-        if let Err(error) = self.write_record_with_authority(&retained_authority, &record) {
+        if let Err(error) = self.publish_record_with_authority(&retained_authority, &record) {
             self.cleanup_activation_failure_guarded(
                 &mut record,
                 process,
@@ -2563,9 +2639,22 @@ impl RuntimeJobService {
         store.snapshot_with_cancel_intent(&record, false)
     }
 
+    /// Once this service owns the job's process, every read and write of the
+    /// poll goes through the job directory retained at process admission. A
+    /// directory installed later under `jobs/<id>` is never read, written or
+    /// unlocked; losing the name keeps the process under observation.
     pub(crate) fn poll(&self, id: &str) -> JobResult<RuntimeJobSnapshot> {
         let lifecycle_lock = self.store.acquire_active_lifecycle_lock()?;
-        let mut record = self.store.read_record(id)?;
+        let admitted = self.retained_authority(id)?;
+        if let Some(authority) = &admitted {
+            self.confirm_retained_authority(id, authority, &lifecycle_lock)?;
+        }
+        let mut record = match &admitted {
+            Some(authority) => self
+                .store
+                .read_record_in_retained_job(id, &authority.job_directory)?,
+            None => self.store.read_record(id)?,
+        };
         if record.phase.is_terminal() {
             return Ok(record.snapshot(false));
         }
@@ -2573,11 +2662,16 @@ impl RuntimeJobService {
             record.transition(RuntimeJobPhase::Lost)?;
             record.finished_at_ms = Some(now_millis());
             record.warnings.push("stale heartbeat".to_string());
-            self.store.write_record(&record)?;
+            self.write_poll_record(admitted.as_ref(), &record)?;
             return Ok(record.snapshot(false));
         }
 
-        let cancel_requested = self.store.has_cancel_marker(id)?;
+        let cancel_requested = match &admitted {
+            Some(authority) => self
+                .store
+                .has_cancel_marker_in_retained_job(&authority.job_directory)?,
+            None => self.store.has_cancel_marker(id)?,
+        };
         let request_safe_cancel = cancel_requested
             && record.cancel_policy == CancelPolicy::Safe
             && !record.cancel_attempted;
@@ -2587,7 +2681,7 @@ impl RuntimeJobService {
             }
             record.cancel_attempted = true;
             record.heartbeat_at_ms = Some(now_millis());
-            self.store.write_record(&record)?;
+            self.write_poll_record(admitted.as_ref(), &record)?;
         }
         if cancel_requested && record.cancel_policy == CancelPolicy::Critical {
             match record.phase {
@@ -2608,7 +2702,7 @@ impl RuntimeJobService {
             record.cancel_deferred = true;
             record.unsafe_phase = Some(record.operation.clone());
             record.heartbeat_at_ms = Some(now_millis());
-            self.store.write_record(&record)?;
+            self.write_poll_record(admitted.as_ref(), &record)?;
         }
         let RuntimeJobObservation {
             state: process_state,
@@ -2621,7 +2715,19 @@ impl RuntimeJobService {
                 return Err(self.quarantine_observation_failure_guarded(&mut record, &error));
             }
         };
-        self.store.write_logs(&record.id, &output)?;
+        // An attach admits the process and its directory inside the observation;
+        // from here on the poll holds that exact directory.
+        let authority = match admitted {
+            Some(authority) => authority,
+            None => self.retained_authority(id)?.ok_or_else(|| {
+                redacted_error(&format!("runtime job {id} process is unavailable"))
+            })?,
+        };
+        self.confirm_retained_authority(id, &authority, &lifecycle_lock)?;
+        self.store
+            .write_logs_in_retained_job(&authority.job_directory, &output)?;
+        #[cfg(test)]
+        self.directory_hook(DirectoryAuthorityHookPoint::LogsWritten);
         if output.output_incomplete {
             record.warnings.push(
                 "runtime job output reader was abandoned before end of stream; the persisted tail \
@@ -2633,7 +2739,7 @@ impl RuntimeJobService {
         match process_state {
             RuntimeJobProcessState::Running => {
                 record.heartbeat_at_ms = Some(now_millis());
-                self.store.write_record(&record)?;
+                self.publish_record_with_authority(&authority, &record)?;
                 Ok(record.snapshot(false))
             }
             RuntimeJobProcessState::Exited { exit_code } => {
@@ -2654,6 +2760,7 @@ impl RuntimeJobService {
                                 &mut record,
                                 &output,
                                 exit_code,
+                                &lifecycle_lock,
                             )? {
                                 return Ok(snapshot);
                             }
@@ -2672,15 +2779,110 @@ impl RuntimeJobService {
                 } else {
                     RuntimeJobPhase::Failed
                 };
-                self.finish_guarded(&mut record, phase, Some(exit_code), None)
+                self.finish_guarded(
+                    &mut record,
+                    &authority,
+                    &lifecycle_lock,
+                    phase,
+                    Some(exit_code),
+                    None,
+                )
             }
             RuntimeJobProcessState::TimedOut { reason } => self.finish_guarded(
                 &mut record,
+                &authority,
+                &lifecycle_lock,
                 RuntimeJobPhase::TimedOut,
                 None,
                 Some(redact_text(&reason)),
             ),
         }
+    }
+
+    #[cfg(test)]
+    fn set_directory_hook(&self, hook: impl FnMut(DirectoryAuthorityHookPoint) + Send + 'static) {
+        *self.directory_hook.lock().unwrap() = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    fn directory_hook(&self, point: DirectoryAuthorityHookPoint) {
+        if let Some(hook) = self.directory_hook.lock().unwrap().as_mut() {
+            hook(point);
+        }
+    }
+
+    /// The directory authority of the process this service owns for `id`, if
+    /// any. Cloning shares the admitted handles; nothing is resolved by name.
+    fn retained_authority(&self, id: &str) -> JobResult<Option<RetainedRuntimeJobAuthority>> {
+        Ok(self
+            .lock_processes()?
+            .get(id)
+            .map(|active| RetainedRuntimeJobAuthority {
+                jobs_root: active.jobs_root.clone(),
+                job_directory: active.job_directory.clone(),
+            }))
+    }
+
+    /// Proves that `jobs/<id>` still names the directory admitted with the
+    /// process and that the lifecycle guard covers the same jobs root. A
+    /// failure leaves the process, its record and `active.lock` untouched: the
+    /// caller keeps the process under observation instead of finishing it.
+    fn confirm_retained_authority(
+        &self,
+        id: &str,
+        authority: &RetainedRuntimeJobAuthority,
+        lifecycle: &ActiveLifecycleLock,
+    ) -> JobResult<()> {
+        let confirmed = if lifecycle.jobs_root.identity() == authority.jobs_root.identity() {
+            authority.job_directory.validate_named_identity()
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "lifecycle guard covers a different jobs directory",
+            ))
+        };
+        confirmed.map_err(|error| {
+            redacted_error(&format!(
+                "runtime job {id} no longer owns its admitted job directory; the process stays \
+                 under observation and active.lock is retained: {error}"
+            ))
+        })
+    }
+
+    /// Before the process is admitted the poll has no retained directory and
+    /// writes by name; afterwards it never does.
+    fn write_poll_record(
+        &self,
+        authority: Option<&RetainedRuntimeJobAuthority>,
+        record: &RuntimeJobRecord,
+    ) -> JobResult<()> {
+        match authority {
+            Some(authority) => self.publish_record_with_authority(authority, record),
+            None => self.store.write_record(record),
+        }
+    }
+
+    /// Publishes the record inside the retained directory and confirms that
+    /// the published file is still `record.json` of that same directory.
+    fn publish_record_with_authority(
+        &self,
+        authority: &RetainedRuntimeJobAuthority,
+        record: &RuntimeJobRecord,
+    ) -> JobResult<()> {
+        authority
+            .job_directory
+            .validate_named_identity()
+            .map_err(|error| io_error("validate retained runtime job directory", &error))?;
+        let published = self
+            .store
+            .write_record_in_retained_job(&authority.job_directory, record)?;
+        #[cfg(test)]
+        self.directory_hook(DirectoryAuthorityHookPoint::RecordReplaced);
+        authority
+            .job_directory
+            .validate_named_identity()
+            .and_then(|()| published.validate_named_identity())
+            .map_err(|error| io_error("confirm retained runtime job record", &error))
     }
 
     #[cfg(test)]
@@ -2865,6 +3067,7 @@ impl RuntimeJobService {
         record: &mut RuntimeJobRecord,
         first_output: &RuntimeJobOutput,
         first_exit_code: i32,
+        lifecycle: &ActiveLifecycleLock,
     ) -> JobResult<Option<RuntimeJobSnapshot>> {
         let (fallback, retained_authority) = {
             let mut processes = self.lock_processes()?;
@@ -2882,6 +3085,19 @@ impl RuntimeJobService {
         let Some(fallback) = fallback else {
             return Ok(None);
         };
+        // The full rebuild belongs to the same job directory. Without proof that
+        // the name still holds it, no second process is started; the first one
+        // stays under observation with its directory and lock.
+        if let Err(error) =
+            self.confirm_retained_authority(&record.id, &retained_authority, lifecycle)
+        {
+            if let Ok(mut processes) = self.lock_processes() {
+                if let Some(active) = processes.get_mut(&record.id) {
+                    active.fallback = Some(fallback);
+                }
+            }
+            return Err(error);
+        }
 
         if let Some(preflight) = &fallback.build_preflight {
             if let Err(error) = preflight.reauthorize_current_workspace() {
@@ -2889,7 +3105,14 @@ impl RuntimeJobService {
                     "full rebuild fallback was not started because build identity changed: {error}"
                 )));
                 return self
-                    .finish_guarded(record, RuntimeJobPhase::Failed, Some(first_exit_code), None)
+                    .finish_guarded(
+                        record,
+                        &retained_authority,
+                        lifecycle,
+                        RuntimeJobPhase::Failed,
+                        Some(first_exit_code),
+                        None,
+                    )
                     .map(Some);
             }
         }
@@ -2901,7 +3124,14 @@ impl RuntimeJobService {
                     "full rebuild fallback was not started because v8-runner failed to spawn: {error}"
                 )));
                 return self
-                    .finish_guarded(record, RuntimeJobPhase::Failed, Some(first_exit_code), None)
+                    .finish_guarded(
+                        record,
+                        &retained_authority,
+                        lifecycle,
+                        RuntimeJobPhase::Failed,
+                        Some(first_exit_code),
+                        None,
+                    )
                     .map(Some);
             }
             Err(RuntimeJobSpawnFailure::OwnershipRetained { error, process }) => {
@@ -2921,7 +3151,7 @@ impl RuntimeJobService {
         record.redacted_argv = redact_argv(&fallback.raw_argv);
         record.heartbeat_at_ms = Some(now_millis());
         record.warnings.push(PARTIAL_FALLBACK_WARNING.to_string());
-        if let Err(error) = self.write_record_with_authority(&retained_authority, record) {
+        if let Err(error) = self.publish_record_with_authority(&retained_authority, record) {
             self.cleanup_activation_failure_guarded(
                 record,
                 next,
@@ -2993,7 +3223,7 @@ impl RuntimeJobService {
         record.warnings.push(redacted_error(&format!(
             "runtime process ownership is uncertain after spawn: {error}; active.lock remains quarantined"
         )));
-        let persist = self.write_record_with_authority(&retained_authority, record);
+        let persist = self.publish_record_with_authority(&retained_authority, record);
         let retain = self.lock_processes().map(|mut processes| {
             processes.insert(
                 record.id.clone(),
@@ -3033,7 +3263,14 @@ impl RuntimeJobService {
         record.warnings.push(redacted_error(&format!(
             "runtime process observation is uncertain; ownership remains quarantined: {error}"
         )));
-        match self.store.write_record(record) {
+        // An attach may have admitted the directory before the observation
+        // failed; the quarantine record then belongs to that directory only.
+        let persisted = match self.retained_authority(&record.id) {
+            Ok(Some(authority)) => self.publish_record_with_authority(&authority, record),
+            Ok(None) => self.store.write_record(record),
+            Err(error) => Err(error),
+        };
+        match persisted {
             Ok(()) => redacted_error(error),
             Err(persist) => redacted_error(&format!(
                 "{error}; persist retained runtime quarantine: {persist}"
@@ -3041,9 +3278,14 @@ impl RuntimeJobService {
         }
     }
 
+    /// Publishes the terminal record in the retained job directory and only
+    /// then releases `active.lock` through the retained jobs root. Any failure
+    /// keeps the process in this service and the lock in place.
     fn finish_guarded(
         &self,
         record: &mut RuntimeJobRecord,
+        authority: &RetainedRuntimeJobAuthority,
+        lifecycle: &ActiveLifecycleLock,
         phase: RuntimeJobPhase,
         exit_code: Option<i32>,
         timeout_reason: Option<String>,
@@ -3055,24 +3297,15 @@ impl RuntimeJobService {
         }
         record.finished_at_ms = Some(now_millis());
         record.heartbeat_at_ms = Some(now_millis());
-        self.store.write_record(record)?;
-        self.store.release_active_lock_guarded(&record.id, || {})?;
+        self.publish_record_with_authority(authority, record)?;
+        #[cfg(test)]
+        self.directory_hook(DirectoryAuthorityHookPoint::TerminalPublished);
+        self.confirm_retained_authority(&record.id, authority, lifecycle)?;
+        lifecycle
+            .release_active_lock_for(&record.id, || {})
+            .map_err(|error| io_error("release finished runtime job lock", &error))?;
         self.remove_process(&record.id)?;
         Ok(record.snapshot(false))
-    }
-
-    fn write_record_with_authority(
-        &self,
-        authority: &RetainedRuntimeJobAuthority,
-        record: &RuntimeJobRecord,
-    ) -> JobResult<()> {
-        authority
-            .job_directory
-            .validate_named_identity()
-            .map_err(|error| io_error("validate retained runtime job directory", &error))?;
-        self.store
-            .write_record_in_retained_job(&authority.job_directory, record)
-            .map(|_| ())
     }
 
     fn fail_start_with_authority_guarded(
@@ -3085,7 +3318,7 @@ impl RuntimeJobService {
         record.transition(RuntimeJobPhase::Failed)?;
         record.finished_at_ms = Some(now_millis());
         record.warnings.push(redact_text(error));
-        self.write_record_with_authority(authority, record)?;
+        self.publish_record_with_authority(authority, record)?;
         authority
             .job_directory
             .validate_named_identity()
@@ -3115,7 +3348,7 @@ impl RuntimeJobService {
                     "worker activation failed after child spawn: {activation_error}"
                 )));
                 if self
-                    .write_record_with_authority(&retained_authority, record)
+                    .publish_record_with_authority(&retained_authority, record)
                     .is_ok()
                 {
                     let _ = self
@@ -3151,7 +3384,7 @@ impl RuntimeJobService {
                     "worker activation lost child ownership: {activation_error}; cleanup: {cleanup_error}"
                 )));
                 // The lock intentionally remains: the child tree may still be mutating.
-                let _ = self.write_record_with_authority(&retained_authority, record);
+                let _ = self.publish_record_with_authority(&retained_authority, record);
                 // Ownership moves to the same map consumed by canonical worker
                 // quarantine supervision. Drop is not allowed to become the
                 // last owner after an uncertain cleanup.
@@ -3176,11 +3409,24 @@ impl RuntimeJobService {
         }
     }
 
-    fn append_warning(&self, id: &str, warning: &str) -> JobResult<()> {
-        let mut record = self.store.read_record(id)?;
+    /// Adds a late warning to the terminal record of the directory the job
+    /// finished in; a directory installed later under the job name is refused.
+    fn append_warning(
+        &self,
+        authority: &RetainedRuntimeJobAuthority,
+        id: &str,
+        warning: &str,
+    ) -> JobResult<()> {
+        authority
+            .job_directory
+            .validate_named_identity()
+            .map_err(|error| io_error("validate finished runtime job directory", &error))?;
+        let mut record = self
+            .store
+            .read_record_in_retained_job(id, &authority.job_directory)?;
         if record.phase.is_terminal() {
             record.warnings.push(redact_text(warning));
-            self.store.write_record(&record)?;
+            self.publish_record_with_authority(authority, &record)?;
         }
         Ok(())
     }
@@ -3646,6 +3892,9 @@ fn run_worker_request_with_lifecycle_hooks(
     }
 
     loop {
+        // The poll that finishes the job releases its process; keep the
+        // directory it was admitted with for the success effects below.
+        let authority = service.retained_authority(&job_id)?;
         let snapshot = match service.poll(&job_id) {
             Ok(snapshot) => snapshot,
             Err(_error) if service.has_retained_process(&job_id) => {
@@ -3665,7 +3914,9 @@ fn run_worker_request_with_lifecycle_hooks(
         if snapshot.phase.is_terminal() {
             if snapshot.phase == RuntimeJobPhase::Succeeded {
                 if let Err(error) = apply_runtime_success_effects(&worker_cwd, operation, &job_id) {
-                    let _ = service.append_warning(&job_id, &error);
+                    if let Some(authority) = &authority {
+                        let _ = service.append_warning(authority, &job_id, &error);
+                    }
                 }
             }
             return Ok(());
@@ -6129,6 +6380,464 @@ pub(crate) mod tests {
         assert!(service.store.active_lock_path().exists());
 
         service.lock_processes().unwrap().remove(&job_id);
+    }
+
+    type DirectorySwap = Box<dyn FnOnce() + Send>;
+
+    /// Runs the injected directory swap the first time any of its processes
+    /// reports a terminal state: the swap lands inside the poll, after the
+    /// process was observed and before its result is published.
+    struct SwapOnTerminalRunner {
+        inner: Arc<dyn RuntimeJobRunner>,
+        swap: Arc<Mutex<Option<DirectorySwap>>>,
+    }
+
+    struct SwapOnTerminalProcess {
+        inner: Box<dyn RuntimeJobProcess>,
+        swap: Arc<Mutex<Option<DirectorySwap>>>,
+    }
+
+    impl SwapOnTerminalRunner {
+        fn wrap(&self, inner: Box<dyn RuntimeJobProcess>) -> Box<dyn RuntimeJobProcess> {
+            Box::new(SwapOnTerminalProcess {
+                inner,
+                swap: Arc::clone(&self.swap),
+            })
+        }
+    }
+
+    impl RuntimeJobRunner for SwapOnTerminalRunner {
+        fn spawn(&self, request: &RuntimeJobRequest) -> RuntimeJobSpawnResult {
+            self.inner.spawn(request).map(|process| self.wrap(process))
+        }
+
+        fn attach(&self, process_id: u32) -> JobResult<Box<dyn RuntimeJobProcess>> {
+            self.inner
+                .attach(process_id)
+                .map(|process| self.wrap(process))
+        }
+    }
+
+    impl RuntimeJobProcess for SwapOnTerminalProcess {
+        fn id(&self) -> u32 {
+            self.inner.id()
+        }
+
+        fn try_wait(&mut self) -> JobResult<RuntimeJobProcessState> {
+            let state = self.inner.try_wait()?;
+            if !matches!(state, RuntimeJobProcessState::Running) {
+                if let Some(swap) = self.swap.lock().unwrap().take() {
+                    swap();
+                }
+            }
+            Ok(state)
+        }
+
+        fn cancel(&mut self) -> JobResult<()> {
+            self.inner.cancel()
+        }
+
+        fn output_tails(&mut self, max_bytes: usize) -> JobResult<RuntimeJobOutput> {
+            self.inner.output_tails(max_bytes)
+        }
+
+        fn prepare_controlled_test_supervision(&mut self) -> bool {
+            self.inner.prepare_controlled_test_supervision()
+        }
+    }
+
+    /// One admitted job directory displaced by a byte-identical replacement
+    /// installed under the same `jobs/<id>` name.
+    struct ReplacedJobDirectory {
+        canonical: PathBuf,
+        admitted: PathBuf,
+        installed: std::collections::BTreeMap<PathBuf, Vec<u8>>,
+    }
+
+    impl ReplacedJobDirectory {
+        fn install(jobs_root: &Path, job_id: &str) -> Self {
+            let canonical = jobs_root.join(job_id);
+            let admitted = jobs_root.join(format!("{job_id}-admitted"));
+            fs::rename(&canonical, &admitted).expect("displace admitted job directory");
+            fs::create_dir(&canonical).expect("install replacement job directory");
+            for entry in fs::read_dir(&admitted).expect("list admitted job directory") {
+                let entry = entry.expect("admitted job entry");
+                if entry.file_type().expect("admitted entry type").is_file() {
+                    fs::copy(entry.path(), canonical.join(entry.file_name()))
+                        .expect("copy admitted job file into the replacement");
+                }
+            }
+            let installed = crate::test_support::tree_snapshot(&canonical);
+            assert!(installed.contains_key(Path::new("record.json")));
+            Self {
+                canonical,
+                admitted,
+                installed,
+            }
+        }
+
+        fn deferred(
+            jobs_root: PathBuf,
+            job_id: Arc<Mutex<String>>,
+        ) -> (DirectorySwap, mpsc::Receiver<Self>) {
+            let (installed, receiver) = mpsc::channel();
+            let swap: DirectorySwap = Box::new(move || {
+                let job_id = job_id.lock().unwrap().clone();
+                installed
+                    .send(Self::install(&jobs_root, &job_id))
+                    .expect("report installed replacement");
+            });
+            (swap, receiver)
+        }
+
+        /// The replacement keeps exactly the bytes it was installed with, and
+        /// the admitted directory still holds an unfinished record.
+        fn assert_untouched(&self, store: &RuntimeJobStore, job_id: &str) {
+            self.assert_replacement_and_lock_kept(store, job_id);
+            assert!(
+                !self.admitted_record(store, job_id).phase.is_terminal(),
+                "a finish was published without proof of directory ownership"
+            );
+        }
+
+        fn assert_replacement_and_lock_kept(&self, store: &RuntimeJobStore, job_id: &str) {
+            assert_eq!(
+                crate::test_support::tree_snapshot(&self.canonical),
+                self.installed,
+                "the replacement job directory received runtime writes"
+            );
+            assert_eq!(
+                fs::read_to_string(store.active_lock_path()).expect("active.lock is retained"),
+                job_id
+            );
+        }
+
+        fn admitted_record(&self, store: &RuntimeJobStore, job_id: &str) -> RuntimeJobRecord {
+            store
+                .decode_record(
+                    job_id,
+                    &fs::read(self.admitted.join("record.json")).unwrap(),
+                )
+                .expect("admitted record stays readable")
+        }
+
+        /// Puts the admitted directory back under its name; the replacement
+        /// moves aside and must stay byte-identical from here on.
+        fn restore(self) -> (PathBuf, std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+            let aside = self.canonical.with_file_name(format!(
+                "{}-replacement-{}",
+                self.canonical.file_name().unwrap().to_string_lossy(),
+                Uuid::new_v4()
+            ));
+            fs::rename(&self.canonical, &aside).expect("move replacement aside");
+            fs::rename(&self.admitted, &self.canonical).expect("restore admitted directory");
+            (aside, self.installed)
+        }
+    }
+
+    fn assert_finished_in_admitted_directory(
+        service: &RuntimeJobService,
+        job_id: &str,
+        snapshot: &RuntimeJobSnapshot,
+        expected: RuntimeJobPhase,
+    ) {
+        assert_eq!(snapshot.phase, expected);
+        assert_eq!(service.store.read_record(job_id).unwrap().phase, expected);
+        assert!(
+            !service.store.active_lock_path().exists(),
+            "the proven finish must release the job lock"
+        );
+        assert!(!service.has_retained_process(job_id));
+    }
+
+    #[test]
+    fn ordinary_poll_and_finish_never_follow_a_replaced_job_directory() {
+        // Control: without a replacement the same job finishes and unlocks.
+        let control_cache = TestCache::new();
+        let control =
+            RuntimeJobService::new(control_cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let job = control
+            .start(fake_request(RuntimeJobOperation::Test))
+            .unwrap();
+        assert_eq!(
+            control.poll(&job.id).unwrap().phase,
+            RuntimeJobPhase::Running
+        );
+        let finished = control.poll(&job.id).unwrap();
+        assert_finished_in_admitted_directory(
+            &control,
+            &job.id,
+            &finished,
+            RuntimeJobPhase::Succeeded,
+        );
+
+        let cache = TestCache::new();
+        let jobs_root = cache.path().join("jobs");
+        let job_id = Arc::new(Mutex::new(String::new()));
+        let (swap, installed) =
+            ReplacedJobDirectory::deferred(jobs_root.clone(), Arc::clone(&job_id));
+        let service = RuntimeJobService::new(
+            cache.path(),
+            Arc::new(SwapOnTerminalRunner {
+                inner: Arc::new(FakeRunner::success_after(2)),
+                swap: Arc::new(Mutex::new(Some(swap))),
+            }),
+        );
+        let job = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .unwrap();
+        *job_id.lock().unwrap() = job.id.clone();
+
+        // Swap between two polls of a running process.
+        let between = ReplacedJobDirectory::install(&jobs_root, &job.id);
+        service
+            .poll(&job.id)
+            .expect_err("a replaced job directory must not be polled");
+        between.assert_untouched(&service.store, &job.id);
+        assert!(service.has_retained_process(&job.id));
+        let (aside, installed_bytes) = between.restore();
+        assert_eq!(
+            service.poll(&job.id).unwrap().phase,
+            RuntimeJobPhase::Running
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&aside), installed_bytes);
+
+        // Swap inside the poll that observes the exit, before its publication.
+        service
+            .poll(&job.id)
+            .expect_err("the finish must not follow a replaced job directory");
+        let during = installed.try_recv().expect("the swap ran inside the poll");
+        during.assert_untouched(&service.store, &job.id);
+        assert!(service.has_retained_process(&job.id));
+
+        // The process stayed under observation: once the admitted directory is
+        // proven again, the same job finishes there.
+        let (aside, installed_bytes) = during.restore();
+        let finished = service.poll(&job.id).unwrap();
+        assert_finished_in_admitted_directory(
+            &service,
+            &job.id,
+            &finished,
+            RuntimeJobPhase::Succeeded,
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&aside), installed_bytes);
+    }
+
+    #[test]
+    fn attached_process_poll_and_finish_never_follow_a_replaced_job_directory() {
+        let cache = TestCache::new();
+        let jobs_root = cache.path().join("jobs");
+        let job_id = Arc::new(Mutex::new(String::new()));
+        let (swap, installed) =
+            ReplacedJobDirectory::deferred(jobs_root.clone(), Arc::clone(&job_id));
+        let runner = Arc::new(SwapOnTerminalRunner {
+            inner: Arc::new(FakeRunner::success_after(3)),
+            swap: Arc::new(Mutex::new(Some(swap))),
+        });
+        let first = RuntimeJobService::new(cache.path(), runner.clone());
+        let job = first
+            .start(fake_request(RuntimeJobOperation::Test))
+            .unwrap();
+        *job_id.lock().unwrap() = job.id.clone();
+        assert_eq!(first.poll(&job.id).unwrap().phase, RuntimeJobPhase::Running);
+
+        // A new service attaches to the running process and admits its directory.
+        let attached = RuntimeJobService::new(cache.path(), runner);
+        assert_eq!(
+            attached.poll(&job.id).unwrap().phase,
+            RuntimeJobPhase::Running
+        );
+
+        attached
+            .poll(&job.id)
+            .expect_err("the attached finish must not follow a replaced job directory");
+        let during = installed.try_recv().expect("the swap ran inside the poll");
+        during.assert_untouched(&attached.store, &job.id);
+        assert!(attached.has_retained_process(&job.id));
+        attached
+            .poll(&job.id)
+            .expect_err("a later poll keeps refusing the replacement");
+        during.assert_untouched(&attached.store, &job.id);
+
+        let (aside, installed_bytes) = during.restore();
+        let finished = attached.poll(&job.id).unwrap();
+        assert_finished_in_admitted_directory(
+            &attached,
+            &job.id,
+            &finished,
+            RuntimeJobPhase::Succeeded,
+        );
+        assert_eq!(crate::test_support::tree_snapshot(&aside), installed_bytes);
+        drop(attached);
+        drop(first);
+        cache.drain_supervisors();
+    }
+
+    type ArmedDirectorySwap = Arc<Mutex<Option<(DirectoryAuthorityHookPoint, DirectorySwap)>>>;
+
+    /// Installs a hook that runs the armed swap the first time the poll reaches
+    /// its boundary; every other boundary passes untouched.
+    fn arm_directory_swaps(service: &RuntimeJobService) -> ArmedDirectorySwap {
+        let armed: ArmedDirectorySwap = Arc::new(Mutex::new(None));
+        let hook_armed = Arc::clone(&armed);
+        service.set_directory_hook(move |point| {
+            let swap = {
+                let mut slot = hook_armed.lock().unwrap();
+                match slot.as_ref() {
+                    Some((armed_point, _)) if *armed_point == point => slot.take(),
+                    _ => None,
+                }
+            };
+            if let Some((_, swap)) = swap {
+                swap();
+            }
+        });
+        armed
+    }
+
+    #[test]
+    fn full_rebuild_fallback_never_follows_a_replaced_job_directory() {
+        let cache = TestCache::new();
+        let jobs_root = cache.path().join("jobs");
+        let sequence = Arc::new(SequenceRunner::new(vec![
+            FakeProcessState {
+                polls_until_exit: 1,
+                result: FakeResult::Exit(4),
+                stdout: completed_partial_failure_json(),
+                stderr: String::new(),
+                cancel_calls: 0,
+            },
+            FakeProcessState {
+                polls_until_exit: 1,
+                result: FakeResult::Exit(0),
+                stdout: "full rebuild done".to_string(),
+                stderr: String::new(),
+                cancel_calls: 0,
+            },
+        ]));
+        let service = RuntimeJobService::new(cache.path(), sequence.clone());
+        let job = service
+            .start(fallback_build_request(&cache.path()))
+            .unwrap();
+        let armed = arm_directory_swaps(&service);
+        let (swap, installed) =
+            ReplacedJobDirectory::deferred(jobs_root.clone(), Arc::new(Mutex::new(job.id.clone())));
+        *armed.lock().unwrap() = Some((DirectoryAuthorityHookPoint::LogsWritten, swap));
+
+        // The partial attempt exited and its logs are written; the directory
+        // is swapped before the fallback decision. The fallback itself must
+        // refuse: no second process may start for the replacement.
+        service
+            .poll(&job.id)
+            .expect_err("the fallback must not follow a replaced job directory");
+        let during = installed
+            .try_recv()
+            .expect("the swap ran before the fallback");
+        during.assert_untouched(&service.store, &job.id);
+        assert_eq!(sequence.requests.lock().unwrap().len(), 1);
+        assert!(service.has_retained_process(&job.id));
+        let (aside, installed_bytes) = during.restore();
+
+        // Restored, the same retained authority still holds the pending full
+        // rebuild and carries the job into it.
+        assert_eq!(
+            service.poll(&job.id).unwrap().phase,
+            RuntimeJobPhase::Running
+        );
+        assert_eq!(sequence.requests.lock().unwrap().len(), 2);
+
+        // Swapped again while the full rebuild runs.
+        let between = ReplacedJobDirectory::install(&jobs_root, &job.id);
+        service
+            .poll(&job.id)
+            .expect_err("the full rebuild poll must not follow a replaced job directory");
+        between.assert_untouched(&service.store, &job.id);
+        let (second_aside, second_installed) = between.restore();
+
+        let finished = service.poll(&job.id).unwrap();
+        assert_finished_in_admitted_directory(
+            &service,
+            &job.id,
+            &finished,
+            RuntimeJobPhase::Succeeded,
+        );
+        assert_eq!(sequence.requests.lock().unwrap().len(), 2);
+        assert_eq!(crate::test_support::tree_snapshot(&aside), installed_bytes);
+        assert_eq!(
+            crate::test_support::tree_snapshot(&second_aside),
+            second_installed
+        );
+    }
+
+    #[test]
+    fn record_publication_and_lock_release_never_follow_a_replaced_job_directory() {
+        let cache = TestCache::new();
+        let jobs_root = cache.path().join("jobs");
+        let service = RuntimeJobService::new(cache.path(), Arc::new(FakeRunner::success_after(2)));
+        let job = service
+            .start(fake_request(RuntimeJobOperation::Test))
+            .unwrap();
+        let job_id = Arc::new(Mutex::new(job.id.clone()));
+        let armed = arm_directory_swaps(&service);
+
+        // Swapped right after the heartbeat record replaced `record.json`:
+        // the post-publication proof must notice it.
+        let (swap, installed) =
+            ReplacedJobDirectory::deferred(jobs_root.clone(), Arc::clone(&job_id));
+        *armed.lock().unwrap() = Some((DirectoryAuthorityHookPoint::RecordReplaced, swap));
+        service
+            .poll(&job.id)
+            .expect_err("a record published into a replaced name is not confirmed");
+        let published = installed
+            .try_recv()
+            .expect("the swap ran after the publication");
+        published.assert_untouched(&service.store, &job.id);
+        assert!(service.has_retained_process(&job.id));
+        let (first_aside, first_installed) = published.restore();
+
+        // Swapped after the terminal record is confirmed and before the lock
+        // is released: the result stays in the admitted directory, the lock
+        // stays held.
+        let (swap, installed) = ReplacedJobDirectory::deferred(jobs_root.clone(), job_id);
+        *armed.lock().unwrap() = Some((DirectoryAuthorityHookPoint::TerminalPublished, swap));
+        service
+            .poll(&job.id)
+            .expect_err("the lock must not be released for a replaced job directory");
+        let finishing = installed
+            .try_recv()
+            .expect("the swap ran before the release");
+        finishing.assert_replacement_and_lock_kept(&service.store, &job.id);
+        assert_eq!(
+            finishing.admitted_record(&service.store, &job.id).phase,
+            RuntimeJobPhase::Succeeded,
+            "the terminal result belongs to the admitted directory"
+        );
+        assert!(service.has_retained_process(&job.id));
+        let (second_aside, second_installed) = finishing.restore();
+
+        // The process stays under observation; once the directory is proven
+        // again the retained supervision releases the lock.
+        drop(service);
+        cache.drain_supervisors();
+        assert!(
+            !jobs_root.join("active.lock").exists(),
+            "the proven terminal job must release its lock"
+        );
+        assert_eq!(
+            RuntimeJobStore::new(cache.path(), DEFAULT_STALE_AFTER)
+                .read_record(&job.id)
+                .unwrap()
+                .phase,
+            RuntimeJobPhase::Succeeded
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&first_aside),
+            first_installed
+        );
+        assert_eq!(
+            crate::test_support::tree_snapshot(&second_aside),
+            second_installed
+        );
     }
 
     #[test]

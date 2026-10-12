@@ -327,7 +327,8 @@ pub(super) fn meta_edit_ensure_top_child_name_free(
     let object = meta_edit_object_node(&doc)?;
     if let Some(child_objects) = meta_info_child(object, "ChildObjects") {
         for child in meta_info_children(child_objects, tag) {
-            if meta_edit_child_object_name(child)
+            // Forms and templates may be registered by name only (#1325).
+            if typed_physical_owner_child_name(child)
                 .is_some_and(|candidate| metadata_name_eq(&candidate, name))
             {
                 return Err(format!("{tag} '{name}' already exists"));
@@ -446,10 +447,11 @@ pub(super) fn meta_edit_insert_top_child_object_with_position(
     let (target_name, after) = position
         .target()
         .ok_or_else(|| "Position target must be non-empty".to_string())?;
+    // A form or template anchor may be registered by name only (#1325).
     let target = meta_info_children(child_objects, tag)
         .into_iter()
         .find(|child| {
-            meta_edit_child_object_name(*child)
+            typed_physical_owner_child_name(*child)
                 .is_some_and(|candidate| metadata_name_eq(&candidate, target_name))
         })
         .ok_or_else(|| format!("{tag} '{target_name}' not found for positional insert"))?;
@@ -928,6 +930,7 @@ pub(super) fn build_typed_operation_post_image(
         },
     )
     .map_err(|diagnostic| MetaFailure::from(diagnostic.with_metadata_path(target.clone())))?;
+    expand_standalone_children_for_operations(&mut xml, descriptor_path, operations);
     let applied = apply_typed_operations(&mut xml, operations, &lang).map_err(|mut failure| {
         for diagnostic in &mut failure.diagnostics {
             diagnostic.metadata_path = Some(target.clone());
@@ -953,6 +956,10 @@ pub(super) fn build_typed_operation_post_image(
         operations,
         &xml,
     )?;
+    // #1325: описания форм и макетов уже вынесены планом в отдельные файлы;
+    // во владельце платформа ждёт только имя. Встроенное описание приводит
+    // ibcmd 8.3.27 к бесконечному импорту.
+    collapse_standalone_child_descriptors(&normalized_preimage, &mut xml);
     // Вид вне закрытого набора по-прежнему пропускает проверки, которым нужен
     // typed-профиль; жёстко он требуется только предопределённым
     // данным ниже.
@@ -1321,17 +1328,20 @@ pub(super) fn plan_typed_child_resources(
         }
 
         let final_descriptor = if let Some(final_name) = &state.current_name {
-            let bytes = typed_child_descriptor_image(
-                post_image,
-                collection_tag(state.collection),
-                final_name,
-            )
-            .or_else(|failure| match &state.origin {
-                Origin::Existing(initial_name) if initial_name == final_name => {
-                    initial_descriptor.clone().ok_or(failure)
-                }
-                Origin::Existing(_) | Origin::Added => Err(failure),
-            })?;
+            let tag = collection_tag(state.collection);
+            let bytes = typed_child_element_xml(post_image, tag, final_name)
+                .map(|child_xml| {
+                    initial_descriptor
+                        .as_deref()
+                        .and_then(|initial| splice_standalone_descriptor(initial, tag, &child_xml))
+                        .unwrap_or_else(|| wrap_standalone_descriptor(&child_xml))
+                })
+                .or_else(|failure| match &state.origin {
+                    Origin::Existing(initial_name) if initial_name == final_name => {
+                        initial_descriptor.clone().ok_or(failure)
+                    }
+                    Origin::Existing(_) | Origin::Added => Err(failure),
+                })?;
             if profile.descriptor == TypedChildDescriptorStorage::Standalone {
                 final_files.insert(
                     collection_dir.join(format!("{final_name}.xml")),
@@ -2481,6 +2491,39 @@ fn typed_child_descriptor_image(
     tag: &str,
     name: &str,
 ) -> Result<Vec<u8>, MetaFailure> {
+    typed_child_element_xml(owner_xml, tag, name)
+        .map(|child_xml| wrap_standalone_descriptor(&child_xml))
+}
+
+fn wrap_standalone_descriptor(child_xml: &str) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
+        super::template_catalog::meta_xmlns_decl(),
+        child_xml
+    )
+    .into_bytes()
+}
+
+/// Replace the child element of an existing standalone descriptor and keep
+/// its preamble, root declarations and trailer byte-for-byte.
+fn splice_standalone_descriptor(initial: &[u8], tag: &str, child_xml: &str) -> Option<Vec<u8>> {
+    let text = std::str::from_utf8(initial).ok()?;
+    let body_start = if text.starts_with('\u{feff}') { 3 } else { 0 };
+    let body = &text[body_start..];
+    let document = Document::parse(body).ok()?;
+    let child = document
+        .root_element()
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == tag)?;
+    let range = child.range();
+    let mut spliced = String::with_capacity(text.len() + child_xml.len());
+    spliced.push_str(&text[..body_start + range.start]);
+    spliced.push_str(child_xml);
+    spliced.push_str(&body[range.end..]);
+    Some(spliced.into_bytes())
+}
+
+fn typed_child_element_xml(owner_xml: &str, tag: &str, name: &str) -> Result<String, MetaFailure> {
     let document = Document::parse(owner_xml.trim_start_matches('\u{feff}')).map_err(|_| {
         MetaFailure::from(typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -2499,13 +2542,7 @@ fn typed_child_descriptor_image(
                 Some("elements"),
             ))
         })?;
-    let child_xml = &owner_xml[child.range()];
-    Ok(format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
-        super::template_catalog::meta_xmlns_decl(),
-        child_xml
-    )
-    .into_bytes())
+    Ok(owner_xml[child.range()].to_string())
 }
 
 fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> String {
@@ -2747,6 +2784,180 @@ fn restore_initial_empty_top_child_objects(pre_image: &str, post_image: &mut Str
     let post_range = post_children.range();
     drop(post_document);
     post_image.replace_range(post_range, pre_source);
+}
+
+/// Top-level owner `ChildObjects` children whose descriptors live in their
+/// own files (`Forms/<Name>.xml`, `Templates/<Name>.xml`).
+const STANDALONE_CHILD_TAGS: [(MetaCollection, &str); 2] = [
+    (MetaCollection::Forms, "Form"),
+    (MetaCollection::Templates, "Template"),
+];
+
+/// Names of standalone children that an owner image describes inline.
+fn inline_standalone_child_names(owner_xml: &str) -> BTreeSet<(&'static str, String)> {
+    let mut names = BTreeSet::new();
+    let Ok(document) = Document::parse(owner_xml.trim_start_matches('\u{feff}')) else {
+        return names;
+    };
+    let Ok(object) = meta_edit_object_node(&document) else {
+        return names;
+    };
+    let Some(children) = meta_info_child(object, "ChildObjects") else {
+        return names;
+    };
+    for (_, tag) in STANDALONE_CHILD_TAGS {
+        for child in meta_info_children(children, tag) {
+            if let Some(name) = meta_edit_child_object_name(child) {
+                names.insert((tag, name));
+            }
+        }
+    }
+    names
+}
+
+/// The platform registers forms and templates in the owner by name only. A
+/// typed update or removal edits the element's `Properties`, so the working
+/// image temporarily carries the standalone descriptor in place of the name;
+/// [`collapse_standalone_child_descriptors`] restores the reference after the
+/// child resources are planned. A child whose descriptor cannot be read or
+/// spliced keeps its reference and fails later as an unknown element.
+fn expand_standalone_children_for_operations(
+    xml: &mut String,
+    descriptor_path: &Path,
+    operations: &[MetaEditOperation],
+) {
+    let mut targets = Vec::<(MetaCollection, String)>::new();
+    for operation in operations {
+        match operation {
+            MetaEditOperation::Update {
+                collection,
+                scope: None,
+                elements,
+            } => targets.extend(
+                elements
+                    .iter()
+                    .map(|element| (*collection, element.name.clone())),
+            ),
+            MetaEditOperation::Remove {
+                collection,
+                scope: None,
+                names,
+            } => targets.extend(names.iter().map(|name| (*collection, name.clone()))),
+            _ => {}
+        }
+    }
+    let object_dir = descriptor_path.with_extension("");
+    for (collection, name) in targets {
+        let Some((_, tag)) = STANDALONE_CHILD_TAGS
+            .iter()
+            .find(|(candidate, _)| *candidate == collection)
+        else {
+            continue;
+        };
+        let Some(profile) = typed_child_storage_profile(collection) else {
+            continue;
+        };
+        let reference = {
+            let Ok(document) = Document::parse(xml.as_str()) else {
+                return;
+            };
+            let Ok(object) = meta_edit_object_node(&document) else {
+                return;
+            };
+            let Some(children) = meta_info_child(object, "ChildObjects") else {
+                return;
+            };
+            meta_info_children(children, tag)
+                .into_iter()
+                .filter(|child| !child.children().any(|node| node.is_element()))
+                .find_map(|child| {
+                    let text = meta_info_inner_text(child).trim().to_string();
+                    metadata_name_eq(&text, &name).then(|| (child.range(), text))
+                })
+        };
+        let Some((range, physical_name)) = reference else {
+            continue;
+        };
+        let path = object_dir
+            .join(profile.directory)
+            .join(format!("{physical_name}.xml"));
+        let Ok(bytes) = fs::read(&path) else {
+            continue;
+        };
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        let text = text.trim_start_matches('\u{feff}');
+        let element = {
+            let Ok(document) = Document::parse(text) else {
+                continue;
+            };
+            let Some(child) = document
+                .root_element()
+                .children()
+                .find(|node| node.is_element() && node.tag_name().name() == *tag)
+            else {
+                continue;
+            };
+            if meta_edit_child_object_name(child)
+                .is_none_or(|candidate| !metadata_name_eq(&candidate, &physical_name))
+            {
+                continue;
+            }
+            text[child.range()].to_string()
+        };
+        let mut expanded = xml.clone();
+        expanded.replace_range(range, &element);
+        if Document::parse(&expanded).is_ok() {
+            *xml = expanded;
+        }
+    }
+}
+
+/// Replace every inline form or template that the initial owner image did not
+/// already describe inline with the platform's by-name registration.
+fn collapse_standalone_child_descriptors(pre_image: &str, post_image: &mut String) {
+    let initially_inline = inline_standalone_child_names(pre_image);
+    let replacements = {
+        let Ok(document) = Document::parse(post_image.as_str()) else {
+            return;
+        };
+        let Ok(object) = meta_edit_object_node(&document) else {
+            return;
+        };
+        let Some(children) = meta_info_child(object, "ChildObjects") else {
+            return;
+        };
+        let mut replacements = Vec::new();
+        for (_, tag) in STANDALONE_CHILD_TAGS {
+            for child in meta_info_children(children, tag) {
+                let Some(name) = meta_edit_child_object_name(child) else {
+                    continue;
+                };
+                if initially_inline.iter().any(|(inline_tag, inline_name)| {
+                    *inline_tag == tag && metadata_name_eq(inline_name, &name)
+                }) {
+                    continue;
+                }
+                // Keep the element's own qualified name, so an owner that
+                // spells MDClasses elements with a prefix stays in that
+                // namespace.
+                let range = child.range();
+                let open = &post_image[range.start + 1..range.end];
+                let qname_end = open
+                    .find(|ch: char| ch.is_whitespace() || ch == '>' || ch == '/')
+                    .unwrap_or(open.len());
+                let qname = &open[..qname_end];
+                replacements.push((range, format!("<{qname}>{}</{qname}>", escape_xml(&name))));
+            }
+        }
+        replacements
+    };
+    let mut replacements = replacements;
+    replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    for (range, reference) in replacements {
+        post_image.replace_range(range, &reference);
+    }
 }
 
 fn resolve_typed_relation_dependencies(
@@ -7486,6 +7697,50 @@ pub(crate) mod tests {
                 .contains("mixed line endings"),
             "{:?}",
             failure.diagnostics
+        );
+    }
+
+    /// #1325: регистрация, встроенная во владельца прежними версиями Unica,
+    /// узнаётся по имени метаданных без учёта регистра и остаётся встроенной;
+    /// новая — сворачивается в ссылку по имени.
+    #[test]
+    fn collapse_keeps_the_owner_namespace_prefix_of_a_new_registration() {
+        let pre = r#"<md:MetaDataObject xmlns:md="http://v8.1c.ru/8.3/MDClasses" version="2.20"><md:Catalog uuid="11111111-1111-4111-8111-111111111111"><md:Properties><md:Name>Items</md:Name></md:Properties><md:ChildObjects/></md:Catalog></md:MetaDataObject>"#;
+        let mut post = String::from(
+            r#"<md:MetaDataObject xmlns:md="http://v8.1c.ru/8.3/MDClasses" version="2.20"><md:Catalog uuid="11111111-1111-4111-8111-111111111111"><md:Properties><md:Name>Items</md:Name></md:Properties><md:ChildObjects><md:Template uuid="22222222-2222-4222-8222-222222222222"><md:Properties><md:Name>Print</md:Name></md:Properties></md:Template></md:ChildObjects></md:Catalog></md:MetaDataObject>"#,
+        );
+        collapse_standalone_child_descriptors(pre, &mut post);
+        assert!(
+            post.contains("<md:ChildObjects><md:Template>Print</md:Template></md:ChildObjects>"),
+            "{post}"
+        );
+        let document = Document::parse(&post).unwrap();
+        let object = meta_edit_object_node(&document).unwrap();
+        let children = meta_info_child(object, "ChildObjects").unwrap();
+        assert_eq!(meta_info_children(children, "Template").len(), 1);
+    }
+
+    #[test]
+    fn collapse_keeps_legacy_inline_registration_matched_case_insensitively() {
+        let owner = |children: &str| {
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\"><Catalog uuid=\"11111111-1111-4111-8111-111111111111\"><Properties><Name>Owner</Name></Properties><ChildObjects>{children}</ChildObjects></Catalog></MetaDataObject>"
+            )
+        };
+        let inline = |name: &str| {
+            format!(
+                "<Template uuid=\"22222222-2222-4222-8222-222222222222\"><Properties><Name>{name}</Name></Properties></Template>"
+            )
+        };
+        let pre_image = owner(&inline("Print"));
+        let mut post_image = owner(&format!(
+            "{}<Template uuid=\"33333333-3333-4333-8333-333333333333\"><Properties><Name>Other</Name></Properties></Template>",
+            inline("PRINT")
+        ));
+        collapse_standalone_child_descriptors(&pre_image, &mut post_image);
+        assert_eq!(
+            post_image,
+            owner(&format!("{}<Template>Other</Template>", inline("PRINT")))
         );
     }
 
