@@ -645,6 +645,19 @@ impl Drop for ForkedInheritedDescriptorForTest {
     }
 }
 
+/// Clear the execute bits of a fixture file so the OS refuses to start it.
+/// Windows decides executability by the file contents, not by a mode bit.
+#[cfg(unix)]
+pub(crate) fn clear_execute_permission_for_test(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn clear_execute_permission_for_test(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

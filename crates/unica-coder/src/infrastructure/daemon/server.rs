@@ -3217,22 +3217,17 @@ pub(crate) mod actor_capacity_tests {
                         std::fs::create_dir_all(plugin.join(format!("bin/{target}"))).unwrap();
                         for tool in ["v8-runner", "bsl-analyzer"] {
                             std::fs::write(binary(tool), unstartable).unwrap();
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                std::fs::set_permissions(
-                                    binary(tool),
-                                    std::fs::Permissions::from_mode(0o644),
-                                )
-                                .unwrap();
-                            }
+                            crate::infrastructure::platform::testing::clear_execute_permission_for_test(
+                                &binary(tool),
+                            )
+                            .unwrap();
                         }
                     }
                     _ => write_manifest(flat(&|_| unstartable_sha.clone())),
                 }
                 for (route, tool, identity, arguments) in &routes {
                     let result = call(*identity, arguments.clone());
-                    let case = format!("{route} at {stage}: {result:?}");
+                    let case = format!("{route} at {stage}");
                     assert!(!result.ok, "{case}");
                     assert_eq!(result.diagnostics.len(), 1, "{case}");
                     let diagnostic = &result.diagnostics[0];
