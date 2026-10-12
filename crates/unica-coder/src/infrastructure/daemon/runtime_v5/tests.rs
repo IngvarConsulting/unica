@@ -6078,6 +6078,28 @@ fn materialize_completed_task(
     terminal_epoch_ms: u64,
     summary: &str,
 ) -> TaskId {
+    materialize_completed_task_key(
+        runtime,
+        identity,
+        clock,
+        workspace,
+        created_epoch_ms,
+        terminal_epoch_ms,
+        summary,
+    )
+    .reserved_task_id()
+}
+
+/// [`materialize_completed_task`], answering with the call's full key.
+fn materialize_completed_task_key(
+    runtime: &V5ReceiptRuntime,
+    identity: &CoreIdentity,
+    clock: &ManualEpochClock,
+    workspace: &str,
+    created_epoch_ms: u64,
+    terminal_epoch_ms: u64,
+    summary: &str,
+) -> ReceiptKey {
     clock.set(created_epoch_ms);
     let key = ReceiptKey::new(
         InvocationId::new(),
@@ -6148,7 +6170,7 @@ fn materialize_completed_task(
             runtime.hooks.as_ref(),
         )
         .unwrap_or_else(|failure| panic!("publish completed Task: {}", failure.error));
-    key.reserved_task_id()
+    key
 }
 
 fn retirement_link(runtime: &V5ReceiptRuntime, task_id: TaskId) -> Option<TaskLifecycleLinkRecord> {
@@ -7177,4 +7199,195 @@ fn exact_repeat_racing_the_handoff_completion_reads_the_same_task() {
         .join()
         .expect("daemon thread did not panic")
         .expect("daemon exits cleanly");
+}
+
+/// Counts every domain callback; none may run in these tests.
+#[derive(Default)]
+struct CountingService {
+    prepares: AtomicUsize,
+    executions: AtomicUsize,
+}
+
+impl CanonicalInvocationService for CountingService {
+    fn prepare(
+        &self,
+        _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        self.prepares.fetch_add(1, Ordering::SeqCst);
+        Ok(ExecutionClass::KnownLong(KnownLongReason::ExternalProcess))
+    }
+
+    fn execute(
+        &self,
+        _invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+        _cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        Ok(DomainResult::success("ran again"))
+    }
+}
+
+/// #1384: the Task of a call is being retired by its TTL — the link holds a
+/// committed retirement intent, the Task record is already deleted. The exact
+/// repeat of the call finds no answer left to read: it is refused as not
+/// found, the key is not reserved again and no domain code runs.
+#[test]
+fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
+    let root = tempfile::tempdir().expect("temporary retirement state root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical retirement state root");
+    let identity = CoreIdentity::production_v5();
+    let clock = Arc::new(ManualEpochClock::new(1_000));
+    let service = Arc::new(CountingService::default());
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(50),
+    )
+    .with_invocation_service(service.clone())
+    .with_v5_epoch_clock_for_test(clock.clone());
+    let state =
+        DaemonStateDirectory::open(&state_root, &identity).expect("open retirement daemon state");
+    let runtime =
+        Arc::new(V5ReceiptRuntime::open(&state, &config).expect("open retirement runtime"));
+    let key = materialize_completed_task_key(
+        &runtime,
+        &identity,
+        &clock,
+        "workspace-a",
+        1_000,
+        2_000,
+        "expired",
+    );
+    let task_id = key.reserved_task_id();
+    clock.set(RETIREMENT_TEST_OBSERVED_EPOCH_MS);
+    // The delete lands but its sync is uncertain: the record stays retiring,
+    // its Task gone, until the retry pause ends.
+    runtime
+        .task_projection
+        .task_store
+        .inject_next_publication_failure(PublicationFailure::AfterDeleteBeforeSync);
+    let _ = runtime.resolve_task(task_id, Instant::now() + Duration::from_secs(5));
+    assert!(
+        matches!(
+            retirement_link(&runtime, task_id),
+            Some(TaskLifecycleLinkRecord::TaskRetirementPending(_))
+        ) && !retirement_task_present(&runtime, task_id),
+        "the fixture leaves the Task retiring"
+    );
+
+    let invocation = V5InvocationRequest::new(
+        key.invocation_id(),
+        task_id,
+        V5ToolIdentity::View,
+        serde_json::Map::new(),
+        unica_bootstrap::ResolvedWorkspace::launch_cwd("workspace-a".to_owned()),
+        7_000,
+    )
+    .expect("valid exact repeat");
+    let decoded = decode_v5_request_frame(
+        serde_json::to_vec(&V5ClientRequest::SubmitInvocation { invocation })
+            .expect("serialize the exact repeat"),
+    )
+    .expect("decode the exact repeat");
+    let repeat = runtime.submit_invocation(
+        decoded,
+        RETIREMENT_TEST_OBSERVED_EPOCH_MS,
+        Instant::now() + Duration::from_secs(5),
+    );
+
+    assert!(
+        matches!(repeat, Err(ReceiptLedgerError::ReceiptNotFound)),
+        "a retiring Task has no answer left: {:?}",
+        repeat.as_ref().map(|_| "reply")
+    );
+    assert!(
+        matches!(
+            runtime
+                .receipt_ledger
+                .recover(key, Instant::now() + Duration::from_secs(5)),
+            Err(ReceiptLedgerError::ReceiptNotFound)
+        ),
+        "the key was reserved again"
+    );
+    runtime.join_task_executions();
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 0);
+    assert!(!runtime.restart_required());
+}
+
+/// #1384: the staged handoff completion removes the call's receipt row only
+/// under the key's lock, the same lock an exact repeat holds between its Task
+/// link lookup and its reservation. While the lock is held the row stays.
+#[test]
+fn staged_handoff_completion_waits_for_the_key_lock() {
+    let root = tempfile::tempdir().expect("temporary staged root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical staged root");
+    let identity = CoreIdentity::production_v5();
+    let state = DaemonStateDirectory::open(&state_root, &identity).expect("open staged state");
+    let service = Arc::new(CountingService::default());
+    let config = DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50))
+        .with_invocation_service(service.clone());
+    let clock = Arc::new(ManualEpochClock::new(1_009));
+    let runtime = Arc::new(
+        V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock)
+            .expect("open staged runtime"),
+    );
+    let handoff = prepare_staged_startup_handoff(&runtime, &identity, AttemptPhase::Begun);
+    let key = handoff.key().clone();
+    let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+    let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+        result: Box::new(DomainResult::success("staged winner")),
+    })
+    .expect("canonical staged winner");
+
+    let lock = runtime.submit_fences.stripe(&digest);
+    let publisher = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || {
+            runtime.publish_staged_handoff_terminal_reply(
+                handoff,
+                winner,
+                1_009,
+                Instant::now() + Duration::from_secs(10),
+            )
+        })
+    };
+    // Long enough for the Task, its terminal and the link to be published.
+    let until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < until
+        && !matches!(
+            retirement_link(&runtime, key.reserved_task_id()),
+            Some(TaskLifecycleLinkRecord::TaskTerminalBound(_))
+        )
+    {
+        thread::sleep(Duration::from_millis(10));
+    }
+    thread::sleep(Duration::from_millis(200));
+    let held = runtime
+        .receipt_ledger
+        .recover(key.clone(), Instant::now() + Duration::from_secs(5));
+    assert!(
+        matches!(held, Ok(ReceiptState::TaskHandoffActorBound(_))),
+        "the receipt row left the ledger while its key was locked: {held:?}"
+    );
+    assert!(!publisher.is_finished());
+    drop(lock);
+
+    let reply = publisher
+        .join()
+        .expect("publisher thread")
+        .expect("the staged handoff completes");
+    assert!(matches!(
+        reply,
+        V5RuntimeReply::Json(V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Task { .. }
+        })
+    ));
+    assert!(matches!(
+        runtime
+            .receipt_ledger
+            .recover(key, Instant::now() + Duration::from_secs(5)),
+        Err(ReceiptLedgerError::ReceiptNotFound)
+    ));
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
 }
