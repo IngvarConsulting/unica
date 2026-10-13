@@ -3643,6 +3643,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn staged_xdto_named_property_preserves_legacy_inline_and_mixed_eol_layouts() {
+        let header = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:test">"#;
+        for ending in ["\n", "\r\n"] {
+            let before = format!("{header}<objectType name=\"T\">\n\t\t<property name=\"Old\" type=\"xs:string\"/>\n\t</objectType></package>{ending}");
+            let legacy = writer::plan(
+                &before,
+                &args(&[
+                    ("typeName", json!("T")),
+                    ("property", json!({"name":"Added", "type":"xs:string"})),
+                ]),
+                "add-property",
+            )
+            .expect("legacy layout is supported");
+            assert!(!legacy.blocks());
+            let fixture = staged_xdto_fixture("named-legacy-layout", before.as_bytes());
+            let operation = add_property(
+                "main:XDTOPackage.Sample.Type.T",
+                "Added",
+                "xs:string",
+                None,
+                None,
+            );
+            let admission = staged_xdto_admission(&fixture, None, true);
+            let (mut state, _) = plan_admitted_xdto(&admission, &fixture.binding, &[operation])
+                .expect("plain properties must retain the legacy layout support");
+            assert_eq!(
+                state
+                    .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+                    .unwrap()
+                    .unwrap(),
+                legacy.after.as_bytes()
+            );
+            assert_eq!(fs::read(&fixture.package).unwrap(), before.as_bytes());
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
     fn staged_xdto_anonymous_property_tree_is_atomic_and_repeatable() {
         use super::{model, parse, staged_writer_operation};
         let fixture = staged_xdto_fixture("anonymous-tree", PACKAGE.as_bytes());
