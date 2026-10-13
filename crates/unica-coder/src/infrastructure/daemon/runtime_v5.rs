@@ -141,6 +141,53 @@ pub(crate) struct V5ReceiptRuntime {
     /// Lost-submit frames this process must never run (#1376); memory only,
     /// like the frames themselves.
     submit_fences: SubmitFences,
+    /// Task ids whose attempt runs in this process, while its pipeline
+    /// worker runs: such a Task is ended by its attempt, not
+    /// by a cancel that names it (#1399).
+    live_attempts: V5LiveAttempts,
+}
+
+/// The Task ids of the attempts this process is running.
+#[derive(Default)]
+struct V5LiveAttempts {
+    attempts: Mutex<HashMap<crate::domain::invocation::TaskId, usize>>,
+}
+
+impl V5LiveAttempts {
+    fn lock(&self) -> MutexGuard<'_, HashMap<crate::domain::invocation::TaskId, usize>> {
+        self.attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn enter(&self, task_id: crate::domain::invocation::TaskId) -> V5LiveAttemptGuard<'_> {
+        *self.lock().entry(task_id).or_default() += 1;
+        V5LiveAttemptGuard {
+            attempts: self,
+            task_id,
+        }
+    }
+
+    fn contains(&self, task_id: crate::domain::invocation::TaskId) -> bool {
+        self.lock().contains_key(&task_id)
+    }
+}
+
+struct V5LiveAttemptGuard<'a> {
+    attempts: &'a V5LiveAttempts,
+    task_id: crate::domain::invocation::TaskId,
+}
+
+impl Drop for V5LiveAttemptGuard<'_> {
+    fn drop(&mut self) {
+        let mut attempts = self.attempts.lock();
+        if let Some(count) = attempts.get_mut(&self.task_id) {
+            *count -= 1;
+            if *count == 0 {
+                attempts.remove(&self.task_id);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -249,6 +296,16 @@ struct PipelineSlotState {
     owner_materialized: Option<(V5StoredInvocationRecord, TaskBoundReceipt)>,
 }
 
+/// What the worker's drive learns when it claims the cutoff.
+#[allow(clippy::large_enum_variant)]
+enum CutoffClaim {
+    /// The drive owns the cutoff from here.
+    Claimed,
+    /// The handler promoted the begun receipt first, with the Task it
+    /// materialized for this attempt, if it got that far.
+    Promoted(Option<(V5StoredInvocationRecord, TaskBoundReceipt)>),
+}
+
 /// One attempt shared between the session handler that owns the reply and
 /// the pre-`Begun` cutoff and the worker that runs the pipeline.
 struct PipelineSlot {
@@ -276,10 +333,13 @@ impl PipelineSlot {
     }
 
     /// The worker's inline drive claims the cutoff before it starts timing:
-    /// from here the drive answers the seventh second. `false` when the
-    /// handler already promoted the receipt — the drive then hands off at
-    /// once into that intent.
-    fn claim_cutoff(&self) -> bool {
+    /// from here the drive answers the seventh second. When the handler
+    /// already promoted the receipt the drive continues that promotion
+    /// instead, and takes the Task the handler materialized in the same
+    /// step: the handler stores it before it publishes the promotion, so a
+    /// worker that looked for it earlier, while the handler was still
+    /// materializing, finds it here (#1399).
+    fn claim_cutoff(&self) -> CutoffClaim {
         let mut state = self.lock();
         while matches!(state.decision, PipelineDecision::HandoffInProgress) {
             state = self
@@ -288,11 +348,11 @@ impl PipelineSlot {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         if matches!(state.decision, PipelineDecision::PromotedByOwner) {
-            return false;
+            return CutoffClaim::Promoted(state.owner_materialized.take());
         }
         state.begun = true;
         self.changed.notify_all();
-        true
+        CutoffClaim::Claimed
     }
 
     /// The session handler records the Task it materialized at the begun
@@ -2013,20 +2073,30 @@ impl V5TaskProjection {
         }
     }
 
+    /// The lifecycle link of a Task id, if it has one.
+    fn read_link(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<Option<TaskLifecycleLinkRecord>, V5TaskProjectionFailure> {
+        match self.lifecycle_links.read_by_task_id(
+            task_id,
+            crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+        ) {
+            Ok(link) => Ok(Some(link)),
+            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => Ok(None),
+            Err(error) => Err(V5TaskProjectionFailure::from_link_store(error)),
+        }
+    }
+
     fn cancel_exact_bound_task(
         &self,
         key: &ReceiptKey,
         deadline: Instant,
         hooks: &dyn V5RuntimeHooks,
     ) -> Result<Option<V5StoredInvocationRecord>, V5TaskProjectionFailure> {
-        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
-        let link = match self
-            .lifecycle_links
-            .read_by_task_id(key.reserved_task_id(), provider_deadline)
-        {
-            Ok(link) => link,
-            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(None),
-            Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
+        let Some(link) = self.read_link(key.reserved_task_id(), deadline)? else {
+            return Ok(None);
         };
         if link.key() != key {
             // Another call naming this Task id: the caller's identity is
@@ -2046,14 +2116,8 @@ impl V5TaskProjection {
         key: &ReceiptKey,
         deadline: Instant,
     ) -> Result<ExactBoundTask, V5TaskProjectionFailure> {
-        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
-        let link = match self
-            .lifecycle_links
-            .read_by_task_id(key.reserved_task_id(), provider_deadline)
-        {
-            Ok(link) => link,
-            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(ExactBoundTask::Absent),
-            Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
+        let Some(link) = self.read_link(key.reserved_task_id(), deadline)? else {
+            return Ok(ExactBoundTask::Absent);
         };
         if link.key() != key {
             return Err(V5TaskProjectionFailure {
@@ -2630,6 +2694,7 @@ impl V5ReceiptRuntime {
             joins: JoinRegistry::default(),
             receipt_handles: ReceiptHandles::default(),
             submit_fences: SubmitFences::default(),
+            live_attempts: V5LiveAttempts::default(),
         };
         if !config.skips_v5_startup_reconciliation() {
             let bound_handoffs =
@@ -3636,6 +3701,10 @@ impl V5ReceiptRuntime {
             thread::Builder::new()
                 .name("unica-v5-invocation-pipeline".to_owned())
                 .spawn(move || {
+                    // Until this attempt returns, it ends its Task itself.
+                    let _live_attempt = runtime
+                        .live_attempts
+                        .enter(reservation.key().reserved_task_id());
                     let outcome = runtime.run_reserved_pipeline(
                         reservation.clone(),
                         invocation,
@@ -3887,6 +3956,40 @@ impl V5ReceiptRuntime {
                 Ok(Some(reply))
             }
         }
+    }
+
+    /// Executes the Task the session handler materialized when it promoted
+    /// this begun attempt: nobody else runs it. A cancel that reached the
+    /// Task before the attempt prepared ends it unstarted (#1395).
+    fn execute_owner_materialized_task(
+        self: &Arc<Self>,
+        actor_bound: super::server::V5ActorBoundCanonicalInvocation,
+        task_record: V5StoredInvocationRecord,
+        bound: TaskBoundReceipt,
+        invocation_id: crate::domain::invocation::InvocationId,
+        epoch_ms: u64,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let deadline = Self::continuation_deadline();
+        let (cancellation, cancellation_guard, cancel_requested) =
+            self.register_bound_task_cancellation(&task_record, deadline)?;
+        if cancel_requested {
+            return self.cancel_unstarted_bound_task(
+                &bound,
+                task_record.task_id,
+                cancellation_guard,
+                deadline,
+            );
+        }
+        self.drive_prepared_bound_task(
+            actor_bound,
+            task_record,
+            bound,
+            invocation_id,
+            cancellation,
+            cancellation_guard,
+            epoch_ms,
+            deadline,
+        )
     }
 
     /// A promoted attempt failed after the handler answered with its Task:
@@ -4210,29 +4313,15 @@ impl V5ReceiptRuntime {
         // The session handler may have materialized this Task at the begun
         // cutoff while the attempt was between `Begun` and the drive. Nobody
         // else executes it, so this attempt does — with or without an observer.
+        // Looked for here before the observer re-reads the receipt; a Task the
+        // handler stores only after this look is taken with the cutoff claim.
         if let Some((task_record, bound)) = slot.take_owner_materialized() {
-            let deadline = Self::continuation_deadline();
-            let (cancellation, cancellation_guard, cancel_requested) =
-                self.register_bound_task_cancellation(&task_record, deadline)?;
-            if cancel_requested {
-                // The Task was cancelled before this attempt prepared: it
-                // never starts (#1395).
-                return self.cancel_unstarted_bound_task(
-                    &bound,
-                    task_record.task_id,
-                    cancellation_guard,
-                    deadline,
-                );
-            }
-            return self.drive_prepared_bound_task(
+            return self.execute_owner_materialized_task(
                 actor_bound,
                 task_record,
                 bound,
                 reservation.key().invocation_id(),
-                cancellation,
-                cancellation_guard,
                 epoch_ms,
-                deadline,
             );
         }
         if self.hooks.observing() {
@@ -4257,16 +4346,33 @@ impl V5ReceiptRuntime {
                 return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
             }
         }
-        if !slot.claim_cutoff() {
-            // The handler promoted this begun attempt at the cutoff before the
-            // drive claimed it: continue the handoff the handler committed.
-            let deadline = Self::continuation_deadline();
-            return match self.receipt_ledger.recover(begun.key().clone(), deadline)? {
-                ReceiptState::TaskHandoffActorBound(handoff) => {
-                    self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline)
-                }
-                other => self.reply_for_existing_state(other, deadline),
-            };
+        self.hooks
+            .pause(V5PausePoint::BeforeCutoffClaim, deadline)?;
+        match slot.claim_cutoff() {
+            CutoffClaim::Claimed => {}
+            CutoffClaim::Promoted(Some((task_record, bound))) => {
+                // The handler materialized the Task after the early look:
+                // this attempt executes it, as if it had found it there.
+                return self.execute_owner_materialized_task(
+                    actor_bound,
+                    task_record,
+                    bound,
+                    reservation.key().invocation_id(),
+                    epoch_ms,
+                );
+            }
+            CutoffClaim::Promoted(None) => {
+                // The handler promoted this begun attempt at the cutoff before
+                // the drive claimed it and left the Task to it: continue the
+                // handoff the handler committed.
+                let deadline = Self::continuation_deadline();
+                return match self.receipt_ledger.recover(begun.key().clone(), deadline)? {
+                    ReceiptState::TaskHandoffActorBound(handoff) => {
+                        self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline)
+                    }
+                    other => self.reply_for_existing_state(other, deadline),
+                };
+            }
         }
         let (prepared, direct_outcome) = match self.drive_inline_invocation(actor_bound, &begun)? {
             InlineDrive::Rejected(result) => {
@@ -6192,6 +6298,61 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// The digest of the receipt key a Task id belongs to, read from its
+    /// Task link or, before the handoff completion moved the key there, from
+    /// the receipt ledger. The key leaves the ledger only once its link
+    /// stands, so a key missed by both reads moved in between: the link is
+    /// read once more. A receipt still inline is found by the handle its
+    /// reservation left in this process; a handle evicted from the full
+    /// handle table leaves such a cancel without the key's lock, as before
+    /// #1399. `None` when nothing knows the Task.
+    fn stored_task_key_digest(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<Option<crate::application::receipt_ledger::ReceiptKeyDigest>, ReceiptLedgerError>
+    {
+        let link_digest = || {
+            self.task_projection
+                .read_link(task_id, deadline)
+                .map(|link| {
+                    link.map(|link| {
+                        crate::application::receipt_ledger::receipt_key_digest(link.key())
+                    })
+                })
+                .map_err(|failure| self.project_task_failure(failure))
+        };
+        if let Some(digest) = link_digest()? {
+            return Ok(Some(digest));
+        }
+        let key = match self.receipt_ledger.resolve_task(task_id, deadline) {
+            Ok(ReceiptState::TaskPromisedUnbound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskPromisedActorBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskHandoffActorBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskReceiptOwnedActorBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskTerminalReceiptBacked(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskTerminalBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskRetirementPending(receipt)) => receipt.key().clone(),
+            Ok(_) | Err(ReceiptLedgerError::ReceiptNotFound) => {
+                if let Some(digest) = link_digest()? {
+                    return Ok(Some(digest));
+                }
+                // A receipt this process reserved and still runs inline is
+                // not a Task for the ledger yet, but its handler may hand it
+                // off at any moment: its key is known here.
+                match self.receipt_handles.get(task_id) {
+                    Some(key) => key,
+                    None => return Ok(None),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Some(
+            crate::application::receipt_ledger::receipt_key_digest(&key),
+        ))
+    }
+
     fn cancel_stored_task(
         &self,
         task_id: crate::domain::invocation::TaskId,
@@ -6200,6 +6361,21 @@ impl V5ReceiptRuntime {
         self.task_projection
             .retire_expired_terminal_tasks(deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
+        // A cancel by Task id takes the key's lock like the exact-key cancel:
+        // the handoff completion materializes the Task, publishes its link,
+        // stages its terminal and moves the key under that lock, so this
+        // cancel either marks the ledger row before it or reaches the Task
+        // through its link after it, never a half-published Task (#1399).
+        // Taken before the terminal gate, never inside it.
+        let digest = self.stored_task_key_digest(task_id, deadline)?;
+        let _key_lock = digest
+            .as_ref()
+            .map(|digest| self.submit_fences.stripe(digest));
+        // An attempt still running in this process ends a Task that has not
+        // begun itself once it hears the cancel, as after an exact-key cancel:
+        // a terminal published here would move the Task under it. Only a Task
+        // no attempt runs any more is ended here.
+        let attempt_live = self.live_attempts.contains(task_id);
         {
             let _task_terminal_gate = self
                 .task_terminal_coordinator
@@ -6221,7 +6397,10 @@ impl V5ReceiptRuntime {
                         self.project_task_failure(V5TaskProjectionFailure::from_link_store(error))
                     })?;
                 if let TaskLifecycleLinkRecord::TaskBound(bound) = link {
-                    if bound.phase() == AttemptPhase::NotBegun && record.cancel_requested {
+                    if !attempt_live
+                        && bound.phase() == AttemptPhase::NotBegun
+                        && record.cancel_requested
+                    {
                         let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
                             .map_err(|_| {
                                 ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
@@ -6262,11 +6441,12 @@ impl V5ReceiptRuntime {
             ReceiptState::TaskPromisedUnbound(receipt) => {
                 (TaskCancellationReceipt::PromisedUnbound(receipt), true)
             }
-            ReceiptState::TaskPromisedActorBound(receipt) => {
-                (TaskCancellationReceipt::PromisedActorBound(receipt), true)
-            }
+            ReceiptState::TaskPromisedActorBound(receipt) => (
+                TaskCancellationReceipt::PromisedActorBound(receipt),
+                !attempt_live,
+            ),
             ReceiptState::TaskHandoffActorBound(receipt) => {
-                let terminalize = receipt.phase() == AttemptPhase::NotBegun;
+                let terminalize = receipt.phase() == AttemptPhase::NotBegun && !attempt_live;
                 (
                     TaskCancellationReceipt::HandoffActorBound(receipt),
                     terminalize,
@@ -6306,6 +6486,10 @@ impl V5ReceiptRuntime {
             );
             return self.resolve_task(task_id, deadline);
         }
+        // An attempt already running toward this handoff learns of the
+        // cancel now; its Task is materialized with it, as for the exact-key
+        // cancel (#1395, #1399).
+        self.active_task_cancellations.cancel(task_id);
         Ok(queued_receipt_task_snapshot(
             cancelled.task(),
             crate::application::receipt_ledger::receipt_key_digest(cancelled.key()),

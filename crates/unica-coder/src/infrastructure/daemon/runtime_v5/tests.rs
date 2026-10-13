@@ -8006,6 +8006,23 @@ impl CanonicalInvocationService for CancelRaceService {
 /// cancel reads the continued Task, the Task starts, and only then the cancel
 /// writes: it reads the Task again and ends the running attempt.
 fn cancel_during_task_materialization(race: MaterializationRace, cancel_races_start: bool) {
+    cancel_during_task_materialization_by(race, cancel_races_start, CancelBy::ExactKey);
+}
+
+/// How the racing cancel names the call (#1399).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancelBy {
+    /// The exact receipt key of the call.
+    ExactKey,
+    /// Only the `taskId` of its Task.
+    TaskId,
+}
+
+fn cancel_during_task_materialization_by(
+    race: MaterializationRace,
+    cancel_races_start: bool,
+    cancel_by: CancelBy,
+) {
     let state = tempfile::tempdir().expect("temporary daemon state");
     let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
     let (_workspace, root) = catalog_workspace();
@@ -8148,7 +8165,10 @@ fn cancel_during_task_materialization(race: MaterializationRace, cancel_races_st
         .connect_peer_before(Instant::now() + Duration::from_secs(2))
         .expect("connect the cancel session");
     let cancel_key = key.clone();
-    let cancel = thread::spawn(move || cancel_session.cancel_invocation(cancel_key));
+    let cancel = thread::spawn(move || match cancel_by {
+        CancelBy::ExactKey => cancel_session.cancel_invocation(cancel_key),
+        CancelBy::TaskId => cancel_session.cancel_task(task_id),
+    });
     // A cancel that does not wait for the handoff lands in the window now.
     thread::sleep(Duration::from_millis(200));
     MaterializationRaceHooks::open_gate(&hooks.materialize_gate);
@@ -8180,14 +8200,15 @@ fn cancel_during_task_materialization(race: MaterializationRace, cancel_races_st
             &cancelled,
             V5ServerResponse::Invocation {
                 outcome: V5InvocationResponse::Task { snapshot }
-            } if snapshot.task_id() == task_id && snapshot.cancel_requested()
+            } | V5ServerResponse::Task { snapshot }
+                if snapshot.task_id() == task_id && snapshot.cancel_requested()
         ),
-        "{race:?}: the cancel reaches the Task: {cancelled:?}"
+        "{race:?}/{cancel_by:?}: the cancel reaches the Task: {cancelled:?}"
     );
     let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
     assert!(
         matches!(terminal, V5DaemonTaskSnapshot::Cancelled { .. }),
-        "{race:?}: the Task ends cancelled: {terminal:?}"
+        "{race:?}/{cancel_by:?}: the Task ends cancelled: {terminal:?}"
     );
     let recovered = owner
         .recover_invocation_receipt(key)
@@ -8219,7 +8240,7 @@ fn cancel_during_task_materialization(race: MaterializationRace, cancel_races_st
     }
     assert!(
         !hooks.fail_stopped.load(Ordering::SeqCst),
-        "{race:?}: the daemon stopped"
+        "{race:?}/{cancel_by:?}: the daemon stopped"
     );
     drop(owner);
     drop(admission);
@@ -8260,4 +8281,296 @@ fn exact_cancel_marking_the_inline_handoff_cancels_the_running_task() {
 #[test]
 fn exact_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled() {
     cancel_during_task_materialization(MaterializationRace::PromotedActorBound, true);
+}
+
+/// #1399: a cancel by `taskId` alone, landing in the same handoff windows,
+/// waits for the handoff completion like the exact-key cancel: it reaches
+/// the Task, an unstarted attempt never starts, and the daemon keeps serving.
+#[test]
+fn task_id_cancel_during_the_begun_promotion_cancels_the_unstarted_task() {
+    cancel_during_task_materialization_by(
+        MaterializationRace::PromotedBegun,
+        false,
+        CancelBy::TaskId,
+    );
+}
+
+#[test]
+fn task_id_cancel_during_the_handoff_continuation_cancels_the_unstarted_task() {
+    cancel_during_task_materialization_by(
+        MaterializationRace::PromotedActorBound,
+        false,
+        CancelBy::TaskId,
+    );
+}
+
+#[test]
+fn task_id_cancel_during_the_inline_cutoff_cancels_the_running_task() {
+    cancel_during_task_materialization_by(
+        MaterializationRace::InlineCutoff,
+        false,
+        CancelBy::TaskId,
+    );
+}
+
+#[test]
+fn task_id_cancel_marking_the_inline_handoff_cancels_the_running_task() {
+    cancel_during_task_materialization_by(
+        MaterializationRace::InlineCutoffMarkedBeforeTask,
+        false,
+        CancelBy::TaskId,
+    );
+}
+
+#[test]
+fn task_id_cancel_during_the_promised_continuation_cancels_the_unstarted_task() {
+    cancel_during_task_materialization_by(
+        MaterializationRace::PromisedAdmission,
+        false,
+        CancelBy::TaskId,
+    );
+}
+
+#[test]
+fn task_id_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled() {
+    cancel_during_task_materialization_by(
+        MaterializationRace::PromotedActorBound,
+        true,
+        CancelBy::TaskId,
+    );
+}
+
+/// Holds the staged handoff completion after its Task link is published and
+/// before the staged terminal is: the window a `taskId` cancel used to land
+/// in without the key's lock (#1399).
+struct StagedLinkWindowHooks {
+    armed: AtomicBool,
+    linked: Mutex<mpsc::Sender<()>>,
+    gate: (Mutex<bool>, std::sync::Condvar),
+    fail_stopped: AtomicBool,
+}
+
+impl V5RuntimeHooks for StagedLinkWindowHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
+        if event == V5ReceiptRuntimeEventKind::TaskLinkReservationConverted
+            && self.armed.swap(false, Ordering::SeqCst)
+        {
+            let _ = self.linked.lock().unwrap().send(());
+            MaterializationRaceHooks::wait_gate(&self.gate);
+        }
+    }
+
+    fn forced_process_exit(&self, _grace: Option<Duration>) {
+        self.fail_stopped.store(true, Ordering::SeqCst);
+    }
+}
+
+/// #1399: a staged handoff has published its Task link, not yet its staged
+/// terminal, and a cancel names only the `taskId`. The cancel waits for the
+/// completion under the key's lock: the staged terminal wins, the cancel
+/// reads it, and the daemon keeps serving. Without the lock the cancel ended
+/// the not-begun Task itself and the staged publication found a moved Task.
+#[test]
+fn task_id_cancel_waits_for_the_staged_handoff_completion() {
+    for phase in [AttemptPhase::NotBegun, AttemptPhase::Begun] {
+        let root = tempfile::tempdir().expect("temporary staged root");
+        let state_root = std::fs::canonicalize(root.path()).expect("physical staged root");
+        let identity = CoreIdentity::production_v5();
+        let state = DaemonStateDirectory::open(&state_root, &identity).expect("open staged state");
+        let (linked_tx, linked_rx) = mpsc::channel();
+        let hooks = Arc::new(StagedLinkWindowHooks {
+            armed: AtomicBool::new(true),
+            linked: Mutex::new(linked_tx),
+            gate: (Mutex::new(false), std::sync::Condvar::new()),
+            fail_stopped: AtomicBool::new(false),
+        });
+        let service = Arc::new(CountingService::default());
+        let config =
+            DaemonServerConfig::new(state_root, identity.clone(), Duration::from_millis(50))
+                .with_invocation_service(service.clone())
+                .with_runtime_hooks_for_test(hooks.clone());
+        let clock = Arc::new(ManualEpochClock::new(1_009));
+        let runtime = Arc::new(
+            V5ReceiptRuntime::open_with_epoch_clock(&state, &config, clock)
+                .expect("open staged runtime"),
+        );
+        let handoff = prepare_staged_startup_handoff(&runtime, &identity, phase);
+        let task_id = handoff.key().reserved_task_id();
+        let winner = canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+            result: Box::new(DomainResult::success("staged winner")),
+        })
+        .expect("canonical staged winner");
+
+        let publisher = {
+            let runtime = Arc::clone(&runtime);
+            thread::spawn(move || {
+                runtime.publish_staged_handoff_terminal_reply(
+                    handoff,
+                    winner,
+                    1_009,
+                    Instant::now() + Duration::from_secs(10),
+                )
+            })
+        };
+        linked_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the staged Task link is published");
+        let canceller = {
+            let runtime = Arc::clone(&runtime);
+            thread::spawn(move || {
+                runtime.cancel_task(task_id, Instant::now() + Duration::from_secs(10))
+            })
+        };
+        // A cancel that ignores the key's lock finishes in the window now.
+        let until = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < until && !canceller.is_finished() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        MaterializationRaceHooks::open_gate(&hooks.gate);
+
+        let published = publisher.join().expect("publisher thread");
+        assert!(
+            published.is_ok(),
+            "{phase:?}: the staged handoff completes: {:?}",
+            published.as_ref().map(|_| "reply")
+        );
+        let cancelled = canceller
+            .join()
+            .expect("cancel thread")
+            .unwrap_or_else(|error| panic!("{phase:?}: the cancel is answered: {error}"));
+        assert!(
+            matches!(&cancelled, V5DaemonTaskSnapshot::Completed { .. })
+                && cancelled.task_id() == task_id,
+            "{phase:?}: the cancel reads the staged terminal: {cancelled:?}"
+        );
+        assert!(
+            !runtime.restart_required() && !hooks.fail_stopped.load(Ordering::SeqCst),
+            "{phase:?}: the daemon stopped"
+        );
+        assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
+        assert_eq!(service.executions.load(Ordering::SeqCst), 0);
+    }
+}
+
+/// Holds a begun attempt after its early look for a Task the handler
+/// materialized and before it claims the cutoff (#1399).
+struct CutoffClaimRaceHooks {
+    held: Mutex<mpsc::Sender<()>>,
+    gate: (Mutex<bool>, std::sync::Condvar),
+    passes: AtomicUsize,
+    fail_stopped: AtomicBool,
+}
+
+impl V5RuntimeHooks for CutoffClaimRaceHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn pause(&self, point: V5PausePoint, _deadline: Instant) -> Result<(), ReceiptLedgerError> {
+        if point == V5PausePoint::BeforeCutoffClaim
+            && self.passes.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            let _ = self.held.lock().unwrap().send(());
+            MaterializationRaceHooks::wait_gate(&self.gate);
+        }
+        Ok(())
+    }
+
+    fn forced_process_exit(&self, _grace: Option<Duration>) {
+        self.fail_stopped.store(true, Ordering::SeqCst);
+    }
+}
+
+/// #1399: the begun attempt looked for a materialized Task before the
+/// handler made one, then the cutoff passed and the handler materialized
+/// the working Task and answered with it. The attempt, claiming the cutoff
+/// only now, takes that Task and executes it once; the daemon keeps serving.
+#[test]
+fn begun_promotion_after_the_early_look_executes_the_materialized_task() {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, root) = catalog_workspace();
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let service = Arc::new(CountingService::default());
+    let (held_tx, held_rx) = mpsc::channel();
+    let hooks = Arc::new(CutoffClaimRaceHooks {
+        held: Mutex::new(held_tx),
+        gate: (Mutex::new(false), std::sync::Condvar::new()),
+        passes: AtomicUsize::new(0),
+        fail_stopped: AtomicBool::new(false),
+    });
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        service.clone(),
+        clock.clone(),
+    ));
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(600),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    let task_id = TaskId::new();
+    let call = view_catalog_request(task_id, &root);
+
+    let mut submit_session = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .expect("connect the submit session");
+    let submit = thread::spawn(move || submit_session.submit_invocation(call));
+    held_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the begun attempt passed its early look");
+    clock.elapsed_ms.store(7_000, Ordering::SeqCst);
+    // The handler promotes the begun attempt and answers with the working
+    // Task it materialized while the attempt still stands before its claim.
+    let answered = submitted_task_snapshot(submit.join().expect("submit thread"));
+    assert_eq!(answered.task_id(), task_id);
+    assert!(
+        matches!(answered, V5DaemonTaskSnapshot::Working { .. }),
+        "the handler materialized the working Task: {answered:?}"
+    );
+    MaterializationRaceHooks::open_gate(&hooks.gate);
+
+    let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
+    assert!(
+        matches!(&terminal, V5DaemonTaskSnapshot::Completed { result, .. } if result.ok),
+        "the materialized Task runs to its outcome: {terminal:?}"
+    );
+    assert_eq!(service.prepares.load(Ordering::SeqCst), 1);
+    assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+    assert!(
+        !hooks.fail_stopped.load(Ordering::SeqCst),
+        "the daemon stopped"
+    );
+    drop(owner);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
 }
