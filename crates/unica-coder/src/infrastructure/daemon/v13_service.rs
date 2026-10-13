@@ -3979,6 +3979,22 @@ pub(super) fn preflight_apply_operations_with(
     let registry = OperationRegistry::closed();
     for (index, operation) in request.ops().iter().enumerate() {
         let Some(descriptor) = registry.lookup(operation.name()) else {
+            // Снятая операция ведёт к заменившей на узле-родителе (#1354).
+            if let Some(retired) = crate::domain::apply::RetiredOperation::lookup(operation.name())
+            {
+                let target = retired.replacement_at(operation.at());
+                return Err(Box::new(with_node_dictionary(
+                    error_result(
+                        Some(format!("ops[{index}].op")),
+                        RefusalCode::BadValue,
+                        format!(
+                            "apply operation `{}` is retired: call `{}` at `{target}`; {}",
+                            retired.op, retired.replacement, retired.arguments
+                        ),
+                    ),
+                    &target.to_string(),
+                )));
+            }
             return Err(Box::new(with_node_dictionary(
                 error_result(
                     Some(format!("ops[{index}].op")),
@@ -4068,7 +4084,7 @@ pub(super) fn preflight_apply_operations_with(
             };
             let branch = format!("{branch}.{}", member.kind().as_str());
             // Аргумент, повторявший сам адрес вызова, просто лишний.
-            let message = if redirect.at == *operation.at() {
+            let mut message = if redirect.at == *operation.at() {
                 format!(
                     "`{}` takes its subject from `at`; remove `{}` and call it at `{}`",
                     operation.name(),
@@ -4083,19 +4099,34 @@ pub(super) fn preflight_apply_operations_with(
                     redirect.at
                 )
             };
+            // `*.set` пишет только в существующий узел: отсутствующий
+            // создаёт операция родителя (#1354).
+            if let Some(creator) = descriptor.creator() {
+                message.push_str(&format!(
+                    "; a missing one is created by `{creator}` on its parent"
+                ));
+            }
             let refusal = error_result(location, RefusalCode::BadValue, message);
-            // Узел, который операция создаёт, ещё не существует: к нему
-            // `next` не ведёт, остаётся ветвь с существующими именами.
-            let mut refusal = if descriptor.creates_its_subject() {
-                refusal
-            } else {
-                with_operation_dictionary(refusal, &redirect.at.to_string(), descriptor)
-            };
+            let mut refusal =
+                with_operation_dictionary(refusal, &redirect.at.to_string(), descriptor);
             refusal.next.push(json!({
                 "tool": "unica.view",
                 "args": {"at": branch},
                 "reason": "существующие узлы этого вида у владельца",
             }));
+            // Узла с этим именем может не быть: третьим шагом — контракт
+            // операции родителя, которая его создаёт (#1354).
+            if let Some(creator) = descriptor.creator() {
+                let parent = QualifiedAddress {
+                    source_set: redirect.at.source_set().to_string(),
+                    segments: owner.to_vec(),
+                };
+                refusal.next.push(json!({
+                    "tool": "unica.view",
+                    "args": {"at": format!("{parent}.Can.{creator}")},
+                    "reason": format!("отсутствующий узел создаёт `{creator}` на родителе"),
+                }));
+            }
             return Err(Box::new(refusal));
         }
         if descriptor.applies_at(&site) {

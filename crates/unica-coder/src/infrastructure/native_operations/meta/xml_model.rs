@@ -84,6 +84,149 @@ pub(crate) fn parse_meta_borrowing(bytes: &[u8]) -> Result<MetaBorrowing, String
     Ok(MetaBorrowing { extends, overrides })
 }
 
+/// Order in which the 8.3.27 export writes the kinds of an owner's top-level
+/// `ChildObjects` entries. The export groups the entries by kind in this order
+/// and keeps the order of entries inside a kind, so an entry written in any
+/// other slot is moved by the first load and export (#1385).
+///
+/// Settled by loading descriptors with the kinds in reverse order into 8.3.27
+/// (`ibcmd infobase create --import`, then `config export`) and by the
+/// reference configuration dumps. The kinds differ per owner: a document puts
+/// its forms before its tabular sections, an accounting register starts with
+/// its dimensions. `None` leaves the placement to the caller.
+pub(crate) fn platform_child_object_order(owner_kind: &str) -> Option<&'static [&'static str]> {
+    const OBJECT: &[&str] = &["Attribute", "TabularSection", "Form", "Template", "Command"];
+    Some(match owner_kind {
+        "Catalog"
+        | "ChartOfCharacteristicTypes"
+        | "ChartOfCalculationTypes"
+        | "ExchangePlan"
+        | "BusinessProcess"
+        | "Report"
+        | "DataProcessor"
+        | "ExternalReport"
+        | "ExternalDataProcessor" => OBJECT,
+        "Document" => &["Attribute", "Form", "TabularSection", "Template", "Command"],
+        "ChartOfAccounts" => &[
+            "Attribute",
+            "TabularSection",
+            "AccountingFlag",
+            "ExtDimensionAccountingFlag",
+            "Form",
+            "Template",
+            "Command",
+        ],
+        "Task" => &[
+            "Attribute",
+            "TabularSection",
+            "Form",
+            "Template",
+            "AddressingAttribute",
+            "Command",
+        ],
+        "InformationRegister" | "AccumulationRegister" => &[
+            "Resource",
+            "Attribute",
+            "Dimension",
+            "Form",
+            "Template",
+            "Command",
+        ],
+        "CalculationRegister" => &[
+            "Resource",
+            "Attribute",
+            "Dimension",
+            "Recalculation",
+            "Form",
+            "Template",
+            "Command",
+        ],
+        "AccountingRegister" => &[
+            "Dimension",
+            "Resource",
+            "Attribute",
+            "Form",
+            "Template",
+            "Command",
+        ],
+        "Enum" => &["EnumValue", "Form", "Template", "Command"],
+        "DocumentJournal" => &["Column", "Form", "Template", "Command"],
+        _ => return None,
+    })
+}
+
+/// The first top-level entry of `child_objects` whose kind the export writes
+/// after `tag`: a new `tag` entry goes right before it. `None` means the new
+/// entry belongs at the end. Entries of kinds outside the owner's order are
+/// never an anchor.
+pub(crate) fn platform_child_object_successor<'a, 'input>(
+    owner_kind: &str,
+    child_objects: roxmltree::Node<'a, 'input>,
+    tag: &str,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    let order = platform_child_object_order(owner_kind)?;
+    let slot = order.iter().position(|kind| *kind == tag)?;
+    child_objects
+        .children()
+        .filter(|child| child.is_element())
+        .find(|child| {
+            order
+                .iter()
+                .position(|kind| *kind == child.tag_name().name())
+                .is_some_and(|existing| existing > slot)
+        })
+}
+
+/// Text form of [`platform_child_object_successor`] for the registrars that
+/// edit a descriptor as text: the byte offset in `text` where the line of a
+/// new top-level `tag` entry is inserted, when an entry of a later kind
+/// exists.
+pub(crate) fn platform_child_object_insertion_offset(text: &str, tag: &str) -> Option<usize> {
+    top_child_object_line_offset(text, |owner_kind, child_objects| {
+        platform_child_object_successor(owner_kind, child_objects, tag)
+    })
+}
+
+/// Byte offset of the line of the first top-level `ChildObjects` entry named
+/// `tag`, for owners whose platform order is not known.
+pub(crate) fn first_top_child_object_offset(text: &str, tag: &str) -> Option<usize> {
+    top_child_object_line_offset(text, |_, child_objects| {
+        child_objects
+            .children()
+            .find(|child| child.is_element() && child.tag_name().name() == tag)
+    })
+}
+
+fn top_child_object_line_offset<'t>(
+    text: &'t str,
+    anchor: impl for<'a> Fn(&str, roxmltree::Node<'a, 't>) -> Option<roxmltree::Node<'a, 't>>,
+) -> Option<usize> {
+    let body = text.trim_start_matches('\u{feff}');
+    let shift = text.len() - body.len();
+    let doc = roxmltree::Document::parse(body).ok()?;
+    let root = doc.root_element();
+    if root.tag_name().name() != "MetaDataObject" {
+        return None;
+    }
+    let object = root.children().find(|node| node.is_element())?;
+    let child_objects = meta_info_child(object, "ChildObjects")?;
+    let start = shift
+        + anchor(object.tag_name().name(), child_objects)?
+            .range()
+            .start;
+    let line_start = text[..start].rfind('\n').map_or(0, |index| index + 1);
+    Some(
+        if text[line_start..start]
+            .chars()
+            .all(|ch| ch == '\t' || ch == ' ')
+        {
+            line_start
+        } else {
+            start
+        },
+    )
+}
+
 /// Дескриптор указывает родителя: `ExtendedConfigurationObject` с UUID.
 ///
 /// Это признак заимствования; `ObjectBelonging=Adopted` без родителя есть и у

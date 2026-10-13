@@ -19,6 +19,9 @@ use crate::infrastructure::native_operations::meta::{
     meta_edit_object_identity, meta_mltext_property_replacement, predefined_item_id,
     predefined_post_image, typed_operations_write_multilingual_text, EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
+use crate::infrastructure::native_operations::text_snapshot::{
+    LineEnding, LineEndingProfile, SourceTextSnapshot,
+};
 use crate::infrastructure::workspace_actor::{MetadataApplyAuthority, ProviderRootBinding};
 use serde_json::{json, Map, Value};
 use sha2::Digest;
@@ -1399,6 +1402,19 @@ pub(crate) fn plan_metadata_batch(
             };
             ApplyPlanError::new(kind, diagnostic.message).at_path(path)
         })?;
+        // The typed writer inserts `\n`-separated lines. A descriptor with one
+        // observed line ending keeps it (a platform export writes CRLF); a
+        // mixed or line-free one is left as written, never normalized
+        // (INV.SOURCE.OBSERVED-BYTES).
+        let postimage = match SourceTextSnapshot::from_bytes(&preimage)
+            .map(|snapshot| snapshot.line_endings())
+        {
+            Ok(LineEndingProfile::Uniform(LineEnding::CrLf)) => {
+                postimage.replace("\r\n", "\n").replace('\n', "\r\n")
+            }
+            Ok(LineEndingProfile::Uniform(LineEnding::Cr)) => postimage.replace('\n', "\r"),
+            _ => postimage,
+        };
         let mut postimage = {
             let mut bytes = Vec::with_capacity(bom.len() + postimage.len());
             bytes.extend_from_slice(bom);
@@ -2281,11 +2297,20 @@ fn empty_data_composition_schema_xml() -> String {
 }
 
 /// Adds `<Tag>Name</Tag>` to the owner's outer `ChildObjects` (the block
-/// closed at two tabs), after the last sibling of the same tag when there
-/// is one.
+/// closed at two tabs) in the platform slot of its kind (#1385): before the
+/// first entry of a kind the export writes later, else after the last
+/// sibling of the same tag when there is one.
 fn register_owner_child_ref(text: &str, tag: &str, name: &str) -> Option<String> {
     let entry = format!("\t\t\t<{tag}>{name}</{tag}>\n");
     let mut updated = text.to_string();
+    if let Some(offset) =
+        crate::infrastructure::native_operations::meta::platform_child_object_insertion_offset(
+            text, tag,
+        )
+    {
+        updated.insert_str(offset, &entry);
+        return Some(updated);
+    }
     if let Some(index) = text.rfind(&format!("\n\t\t\t<{tag}>")) {
         let line_end = text[index + 1..].find('\n')? + index + 2;
         updated.insert_str(line_end, &entry);
@@ -3265,6 +3290,149 @@ mod tests {
             );
             assert_eq!(fixture.disk_bytes(), order.as_bytes());
         }
+    }
+
+    /// #1385: on a platform-shaped CRLF document the new header attribute
+    /// lands before the tabular sections and forms, the new template before
+    /// the commands, and every inserted line keeps the descriptor's CRLF.
+    #[test]
+    fn member_and_template_adds_take_their_platform_slot_and_line_ending() {
+        let order = ORDER_XML
+            .replace(
+                "\t\t<ChildObjects/>\n",
+                concat!(
+                    "\t\t<ChildObjects>\n",
+                    "\t\t\t<Attribute uuid=\"22222222-2222-4222-8222-222222222221\">\n",
+                    "\t\t\t\t<Properties><Name>Number2</Name><Synonym/><Comment/></Properties>\n",
+                    "\t\t\t</Attribute>\n",
+                    "\t\t\t<Form>Main</Form>\n",
+                    "\t\t\t<TabularSection uuid=\"22222222-2222-4222-8222-222222222222\">\n",
+                    "\t\t\t\t<Properties><Name>Rows</Name><Synonym/><Comment/></Properties>\n",
+                    "\t\t\t\t<ChildObjects/>\n",
+                    "\t\t\t</TabularSection>\n",
+                    "\t\t\t<Command uuid=\"22222222-2222-4222-8222-222222222223\">\n",
+                    "\t\t\t\t<Properties><Name>Open</Name><Synonym/><Comment/></Properties>\n",
+                    "\t\t\t</Command>\n",
+                    "\t\t</ChildObjects>\n",
+                ),
+            )
+            .replace('\n', "\r\n");
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", RU_CONFIGURATION_XML),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", &order),
+        ]);
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let attribute = fixture.parse(
+            "attribute.add",
+            json!({
+                "at": "main:Document.Order",
+                "items": [{
+                    "name": "Comment2",
+                    "type": {"variants": [{"kind": "string", "length": 25, "allowedLength": "variable"}]}
+                }]
+            }),
+            0,
+        );
+        let template = fixture.parse(
+            "template.add",
+            json!({
+                "at": "main:Document.Order",
+                "items": [{"name": "Print", "templateType": "SpreadsheetDocument"}]
+            }),
+            1,
+        );
+        let (staged, _) = plan_metadata_batch(staged, authority, &[attribute, template])
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let descriptor = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path == Path::new("Documents/Order.xml"))
+            .expect("the owner descriptor is staged");
+        let StagedFileState::Bytes(bytes) = descriptor.current else {
+            panic!("descriptor keeps bytes");
+        };
+        let text = String::from_utf8(bytes).unwrap();
+        let bare_lf = text
+            .match_indices('\n')
+            .filter(|(index, _)| *index == 0 || text.as_bytes()[index - 1] != b'\r')
+            .count();
+        assert_eq!(bare_lf, 0, "inserted lines must keep the CRLF line ending");
+        let document = roxmltree::Document::parse(&text).unwrap();
+        let children = document
+            .descendants()
+            .find(|node| node.has_tag_name("ChildObjects"))
+            .unwrap()
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| {
+                let name = node
+                    .descendants()
+                    .find(|inner| inner.has_tag_name("Name"))
+                    .and_then(|inner| inner.text())
+                    .or_else(|| node.text())
+                    .unwrap_or_default();
+                format!("{}:{name}", node.tag_name().name())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            children,
+            [
+                "Attribute:Number2",
+                "Attribute:Comment2",
+                "Form:Main",
+                "TabularSection:Rows",
+                "Template:Print",
+                "Command:Open",
+            ]
+        );
+    }
+
+    /// A descriptor with mixed line endings is not normalized by a member
+    /// add: no line ending is chosen for its author (INV.SOURCE.OBSERVED-BYTES).
+    #[test]
+    fn member_add_leaves_a_mixed_line_ending_descriptor_unnormalized() {
+        let order = ORDER_XML.replace('\n', "\r\n").replacen(
+            "<Name>Order</Name>",
+            "<Name>Order</Name>\n",
+            1,
+        );
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", RU_CONFIGURATION_XML),
+            ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+            ("Documents/Order.xml", &order),
+        ]);
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let attribute = fixture.parse(
+            "attribute.add",
+            json!({"at": "main:Document.Order", "items": [{"name": "Comment2"}]}),
+            0,
+        );
+        let (staged, _) = plan_metadata_batch(staged, authority, &[attribute])
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let descriptor = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path == Path::new("Documents/Order.xml"))
+            .expect("the owner descriptor is staged");
+        let StagedFileState::Bytes(bytes) = descriptor.current else {
+            panic!("descriptor keeps bytes");
+        };
+        let text = String::from_utf8(bytes).unwrap();
+        let untouched = order.split("<ChildObjects/>").next().unwrap();
+        assert!(
+            text.starts_with(untouched),
+            "the lines before the change keep their bytes"
+        );
+        assert!(text.contains("<Name>Comment2</Name>"));
     }
 
     #[test]

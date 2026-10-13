@@ -130,6 +130,16 @@ class FileAndCaptureTests(FileFixtureTests):
         for value in [["first", "second", "second"], [" first ", "second"], ["second", " first ", "second"]]:
             self.assertTrue(self.check_file({**assertion, "eq": value}))
 
+    def test_xml_tags_observe_element_order_across_kinds(self):
+        (self.workspace / "data.xml").write_text('<r xmlns="urn:test"><a>x</a><b>x</b><a>y</a></r>')
+        assertion = {"path": "data.xml", "kind": "xmlTags", "select": "./*", "eq": ["a", "b", "a"]}
+        self.assertEqual(self.check_file(assertion), [])
+        for value in [["a", "a", "b"], ["x", "x", "y"], ["a", "b"]]:
+            self.assertTrue(self.check_file({**assertion, "eq": value}))
+        for invalid in [{**assertion, "eq": "a"}, {"path": "data.xml", "kind": "xmlTags", "select": "./*", "contains": "a"}]:
+            with self.subTest(assertion=invalid), self.assertRaises(ValueError):
+                validate_controls({"fileAssertions": [invalid]})
+
     def test_file_controls_refuse_missing_paths_traversal_and_symlinks(self):
         (self.workspace / "real").write_bytes(b"data")
         (self.workspace / "link").symlink_to(self.workspace / "real")

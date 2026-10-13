@@ -102,7 +102,10 @@ pub(crate) use edit::{
     resolve_typed_metadata_object, typed_operations_write_multilingual_text,
     EXTERNAL_SOURCE_TEXT_LANGUAGE,
 };
-pub(crate) use xml_model::{meta_default_text_language, meta_mltext_property_replacement};
+pub(crate) use xml_model::{
+    first_top_child_object_offset, meta_default_text_language, meta_mltext_property_replacement,
+    platform_child_object_insertion_offset, platform_child_object_order,
+};
 pub(crate) fn apply_typed_operations_to_image_with_seed(
     xml_text: &mut String,
     operations: &[crate::domain::metadata::MetaEditOperation],

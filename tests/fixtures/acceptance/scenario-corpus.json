@@ -3868,14 +3868,17 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаПодбора",
+      "at": "main:Catalog.Валюты",
       "ops": [
        {
-        "op": "form.create",
+        "op": "form.add",
         "args": {
-         "values": {
-          "type": "ChoiceForm"
-         }
+         "items": [
+          {
+           "name": "ФормаПодбора",
+           "type": "ChoiceForm"
+          }
+         ]
         }
        }
       ]
@@ -4537,15 +4540,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик",
+      "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
       "ops": [
        {
         "op": "code.insert",
         "args": {
          "text": "// приёмочная вставка после ДоступныеЯзыки",
-         "selector": {
-          "method": "ДоступныеЯзыки"
-         },
          "position": "after"
         }
        }
@@ -4632,15 +4632,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик",
+      "at": "main:CommonModule.GoogleПереводчик.Method.НастройкиАвторизации",
       "ops": [
        {
         "op": "code.insert",
         "args": {
          "text": "// приёмочная вставка",
-         "selector": {
-          "method": "НастройкиАвторизации"
-         },
          "position": "after"
         }
        }
@@ -4808,13 +4805,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.SalesReader",
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты",
       "ops": [
        {
         "op": "right.set",
         "args": {
          "values": {
-          "object": "Catalog.Валюты",
           "right": "Read",
           "value": true
          }
@@ -4836,13 +4832,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.SalesReader",
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты",
       "ops": [
        {
         "op": "right.set",
         "args": {
          "values": {
-          "object": "Catalog.Валюты",
           "right": "InteractiveDelete",
           "value": false
          }
@@ -4893,10 +4888,24 @@
       "at": "main:Role.SalesReader",
       "ops": [
        {
+        "op": "right.add",
+        "args": {
+         "at": "main:Role.SalesReader",
+         "items": [
+          {
+           "object": "InformationRegister.АдминистративнаяИерархия",
+           "rights": {
+            "Read": true
+           }
+          }
+         ]
+        }
+       },
+       {
         "op": "right.set",
         "args": {
+         "at": "main:Role.SalesReader.Right.InformationRegister_АдминистративнаяИерархия",
          "values": {
-          "object": "InformationRegister.АдминистративнаяИерархия",
           "right": "Read",
           "rls": "ГДЕ КодСубъектаРФ = &Код"
          }
@@ -4918,13 +4927,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.SalesReader",
+      "at": "main:Role.SalesReader.Right.Document_АктОбУничтоженииПерсональныхДанных",
       "ops": [
        {
         "op": "right.set",
         "args": {
          "values": {
-          "object": "Document.АктОбУничтоженииПерсональныхДанных",
           "right": "Posting",
           "value": true
          }
@@ -4949,13 +4957,16 @@
       "at": "main:Role.SalesReader",
       "ops": [
        {
-        "op": "right.set",
+        "op": "right.add",
         "args": {
-         "values": {
-          "object": "Report.АнализВерсийОбъектов",
-          "right": "Use",
-          "value": true
-         }
+         "items": [
+          {
+           "object": "Report.АнализВерсийОбъектов",
+           "rights": {
+            "Use": true
+           }
+          }
+         ]
         }
        }
       ]
@@ -5022,8 +5033,8 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "right.set",
-        "args": "values",
+        "op": "right.add",
+        "args": "items",
         "implemented": true
        }
       }
@@ -5049,13 +5060,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.SalesReader",
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты",
       "ops": [
        {
         "op": "right.set",
         "args": {
          "values": {
-          "object": "Catalog.Валюты",
           "right": "Update",
           "value": true
          }
@@ -5159,13 +5169,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Количество",
       "ops": [
        {
         "op": "field.set",
         "args": {
          "values": {
-          "field": "Количество",
           "title": "Число версий"
          }
         }
@@ -5252,8 +5261,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Parameter.Период",
          "values": {
-          "name": "Период",
           "value": "ThisMonth"
          }
         }
@@ -5628,16 +5637,18 @@
         }
        },
        {
-        "op": "mxl.set",
+        "op": "area.add",
         "args": {
          "at": "main:Catalog.Валюты.Template.ПФ_MXL_СписокВалют",
-         "values": {
-          "area": "Шапка",
-          "cells": {
-           "R1C1": "Валюта",
-           "R1C2": "Курс"
+         "items": [
+          {
+           "name": "Шапка",
+           "cells": {
+            "R1C1": "Валюта",
+            "R1C2": "Курс"
+           }
           }
-         }
+         ]
         }
        }
       ]
@@ -7462,13 +7473,16 @@
       "at": "newer:Role.SalesReader",
       "ops": [
        {
-        "op": "right.set",
+        "op": "right.add",
         "args": {
-         "values": {
-          "object": "Catalog.Валюты",
-          "right": "Read",
-          "value": true
-         }
+         "items": [
+          {
+           "object": "Catalog.Валюты",
+           "rights": {
+            "Read": true
+           }
+          }
+         ]
         }
        }
       ]
@@ -11222,16 +11236,16 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F06Report.Template.Reported.Can.mxl.set"
+      "at": "cf:Report.F06Report.Template.Reported.Can.area.add"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/props/contract/argsSchema/properties/values/required",
+       "pointer": "/data/props/contract/argsSchema/properties/items/items/required",
        "eq": [
-        "area",
+        "name",
         "cells"
        ]
       }
@@ -11243,15 +11257,17 @@
       "at": "cf:Report.F06Report.Template.Reported",
       "ops": [
        {
-        "op": "mxl.set",
+        "op": "area.add",
         "args": {
-         "values": {
-          "area": "Header",
-          "cells": {
-           "R1C1": "Номенклатура",
-           "R1C2": "Сумма"
+         "items": [
+          {
+           "name": "Header",
+           "cells": {
+            "R1C1": "Номенклатура",
+            "R1C2": "Сумма"
+           }
           }
-         }
+         ]
         }
        }
       ]
@@ -11388,13 +11404,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Stale"
           }
@@ -11432,13 +11447,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C2": "ConvertedParam",
            "R1C3": "ConvertedTemplate",
@@ -11626,13 +11640,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R01C+02": "ConvertedParam"
           },
@@ -11744,15 +11757,17 @@
       "at": "cf:Report.F06Report.Template.F06Template",
       "ops": [
        {
-        "op": "mxl.set",
+        "op": "area.add",
         "args": {
-         "values": {
-          "area": "C",
-          "cells": {
-           "R1C1": "NewArea",
-           "R2C2": "Footer"
+         "items": [
+          {
+           "name": "C",
+           "cells": {
+            "R1C1": "NewArea",
+            "R2C2": "Footer"
+           }
           }
-         }
+         ]
         }
        }
       ]
@@ -11886,13 +11901,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeOutsideRow",
+      "at": "cf:Report.F06Report.Template.UnsafeOutsideRow.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -11925,13 +11939,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeOverlappingAreas",
+      "at": "cf:Report.F06Report.Template.UnsafeOverlappingAreas.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -11964,13 +11977,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafePhysicalAreaOrder",
+      "at": "cf:Report.F06Report.Template.UnsafePhysicalAreaOrder.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12003,13 +12015,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeCellTranslations",
+      "at": "cf:Report.F06Report.Template.UnsafeCellTranslations.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12042,13 +12053,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeMultipleColumnSets",
+      "at": "cf:Report.F06Report.Template.UnsafeMultipleColumnSets.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12081,13 +12091,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeColumnsId",
+      "at": "cf:Report.F06Report.Template.UnsafeColumnsId.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12120,13 +12129,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeLanguageSettings",
+      "at": "cf:Report.F06Report.Template.UnsafeLanguageSettings.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12159,13 +12167,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeDrawing",
+      "at": "cf:Report.F06Report.Template.UnsafeDrawing.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12198,13 +12205,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeColumnArea",
+      "at": "cf:Report.F06Report.Template.UnsafeColumnArea.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12237,13 +12243,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeFormatTranslations",
+      "at": "cf:Report.F06Report.Template.UnsafeFormatTranslations.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12276,13 +12281,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeCompressedOutsideRow",
+      "at": "cf:Report.F06Report.Template.UnsafeCompressedOutsideRow.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12310,7 +12314,7 @@
    "name": "mxl-contract-refusals-preserve-source",
    "issue": 1311,
    "area": "Макеты",
-   "task": "Массив/пустые cells, координаты/типы, оформление, дробная ширина и адрес Area отказывают без записи",
+   "task": "Массив/пустые cells, координаты/типы, оформление, дробная ширина и область в аргументах вместо адреса Area отказывают без записи",
    "workspace": "tests/fixtures/acceptance/workspace-mxl",
    "wire": [
     {
@@ -12331,13 +12335,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": []
          }
         }
@@ -12359,13 +12362,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {}
          }
         }
@@ -12387,13 +12389,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R0C1": "x"
           }
@@ -12417,13 +12418,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": {}
           }
@@ -12447,13 +12447,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "x"
           },
@@ -12478,13 +12477,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "x"
           },
@@ -12509,7 +12507,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+      "at": "cf:Report.F06Report.Template.F06Template",
       "ops": [
        {
         "op": "mxl.set",
@@ -12527,7 +12525,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `mxl.set` does not apply to Area `cf:Report.F06Report.Template.F06Template.Area.A`; it applies at `cf:Report.F06Report.Template.F06Template`",
+     "refusal": "bad_value: `mxl.set` names its subject by address, not by `values.area`; call it at `cf:Report.F06Report.Template.F06Template.Area.A`; a missing one is created by `area.ad",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -12537,8 +12535,16 @@
      ],
      "assertions": [
       {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.area"
+      },
+      {
        "pointer": "/next/0/args/at",
-       "eq": "cf:Report.F06Report.Template.F06Template.Can.mxl.set"
+       "eq": "cf:Report.F06Report.Template.F06Template.Area.A.Can.mxl.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template.Area"
       }
      ]
     }
@@ -15259,10 +15265,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример",
-         "selector": {
-          "method": "ОбработатьПример"
-         },
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "position": "before",
          "text": "Процедура ПередМетодом() Экспорт\nКонецПроцедуры\n\n"
         }
@@ -15419,10 +15422,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример",
-         "selector": {
-          "method": "ОбработатьПример"
-         },
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "position": "before",
          "text": "Процедура ПередМетодом() Экспорт\nКонецПроцедуры\n\n"
         }
@@ -15579,10 +15579,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример",
-         "selector": {
-          "method": "ОбработатьПример"
-         },
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "position": "after",
          "text": "\nПроцедура ПослеМетода() Экспорт\nКонецПроцедуры\n"
         }
@@ -15739,10 +15736,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример",
-         "selector": {
-          "method": "ОбработатьПример"
-         },
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "position": "after",
          "text": "\nПроцедура ПослеМетода() Экспорт\nКонецПроцедуры\n"
         }
@@ -15898,7 +15892,7 @@
    "name": "code-insert-refusal-and-method-body-replace",
    "pr": 1292,
    "area": "Код BSL",
-   "task": "Method/Method.Body insert, Body+selector и неполные position/selector отказывают без записи; замена Method.Body сохраняет подпись/BOM/CRLF/соседей и повтор",
+   "task": "Method без position, Method.Body insert, Body+selector и неполные position/selector отказывают без записи; замена Method.Body сохраняет подпись/BOM/CRLF/соседей и повтор",
    "workspace": "tests/fixtures/acceptance/workspace-code",
    "wire": [
     {
@@ -15918,7 +15912,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `code.insert` does not apply to Method `main:CommonModule.Пример.Method.ОбработатьПример`; it applies at `main:CommonModule.Пример`",
+     "refusal": "bad_value: code.insert at a method needs `position`: before or after it",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -15973,8 +15967,8 @@
      ],
      "assertions": [
       {
-       "pointer": "/next/0/args/at",
-       "eq": "main:CommonModule.Пример"
+       "pointer": "/at",
+       "eq": "ops[0].args.position"
       }
      ]
     },
@@ -15995,7 +15989,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `code.insert` does not apply to Body `main:CommonModule.Пример.Method.ОбработатьПример.Body`; it applies at `main:CommonModule.Пример`",
+     "refusal": "bad_value: apply operation `code.insert` does not apply to Body `main:CommonModule.Пример.Method.ОбработатьПример.Body`; it applies at `main:CommonModule.Пример.Method.Обр",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -16051,7 +16045,7 @@
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:CommonModule.Пример"
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример"
       }
      ]
     },
@@ -16065,7 +16059,7 @@
         "args": {
          "at": "main:CommonModule.Пример.Body",
          "selector": {
-          "method": "ОбработатьПример"
+          "anchor": "// insertion point"
          },
          "position": "after",
          "text": "// отказ"
@@ -21659,9 +21653,8 @@
        {
         "op": "field.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData",
+         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Field.Amount",
          "values": {
-          "field": "Amount",
           "title": {
            "ru": "Сумма [шт]",
            "en": "Amount @work"
@@ -21673,9 +21666,8 @@
        {
         "op": "fieldRole.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData",
+         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Field.Amount",
          "values": {
-          "field": "Amount",
           "role": {
            "dimension": true,
            "required": true
@@ -22220,8 +22212,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveParameters.Parameter.First",
          "values": {
-          "name": "First",
           "title": {
            "ru": "Изменённый",
            "en": "Updated"
@@ -22236,8 +22228,8 @@
        {
         "op": "parameter.rename",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveParameters.Parameter.First",
          "values": {
-          "name": "First",
           "newName": "Renamed"
          }
         }
@@ -22817,8 +22809,8 @@
        {
         "op": "variant.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
          "values": {
-          "name": "Work",
           "presentation": {
            "ru": "Новый",
            "en": "New"
@@ -23064,15 +23056,11 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.PrimitiveSettings",
+      "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
       "ops": [
        {
         "op": "variant.remove",
-        "args": {
-         "values": {
-          "name": "Work"
-         }
-        }
+        "args": {}
        }
       ]
      },
@@ -27711,8 +27699,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Choice",
          "values": {
-          "name": "Choice",
           "value": "Перечисление.Округления.Окр1000"
          }
         }
@@ -27720,8 +27708,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.List",
          "values": {
-          "name": "List",
           "values": [
            "B",
            "C"
@@ -27732,8 +27720,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.CustomPeriod",
          "values": {
-          "name": "CustomPeriod",
           "value": "Today"
          }
         }
@@ -27858,8 +27846,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Choice",
          "values": {
-          "name": "Choice",
           "value": "Перечисление.Округления.Окр1000"
          }
         }
@@ -27867,8 +27855,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.List",
          "values": {
-          "name": "List",
           "values": [
            "B",
            "C"
@@ -27879,8 +27867,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Empty",
          "values": {
-          "name": "Empty",
           "value": null
          }
         }
@@ -27888,8 +27876,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.EmptyComposite",
          "values": {
-          "name": "EmptyComposite",
           "value": null
          }
         }
@@ -29496,8 +29484,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.Parameter.Text",
          "values": {
-          "name": "Text",
           "title": "",
           "value": "",
           "expression": ""
@@ -29507,9 +29495,8 @@
        {
         "op": "field.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData",
+         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData.Field.Amount",
          "values": {
-          "field": "Amount",
           "title": "",
           "presentationExpression": ""
          }
@@ -29619,8 +29606,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.Parameter.Text",
          "values": {
-          "name": "Text",
           "title": "",
           "value": "",
           "expression": ""
@@ -29630,9 +29617,8 @@
        {
         "op": "field.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData",
+         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData.Field.Amount",
          "values": {
-          "field": "Amount",
           "title": "",
           "presentationExpression": ""
          }
@@ -32422,9 +32408,8 @@
        {
         "op": "field.set",
         "args": {
-         "at": "cf:Report.Sales.Template.SalesSchema.DataSet.SalesData",
+         "at": "cf:Report.Sales.Template.SalesSchema.DataSet.SalesData.Field.Amount",
          "values": {
-          "field": "Amount",
           "title": "Total amount"
          }
         }
@@ -32443,8 +32428,8 @@
        {
         "op": "variant.set",
         "args": {
+         "at": "cf:Report.Sales.Template.SalesSchema.Setting.Main",
          "values": {
-          "name": "Main",
           "title": "Main variant"
          }
         }
@@ -35359,13 +35344,16 @@
       "at": "ext:Role.SalesReader",
       "ops": [
        {
-        "op": "right.set",
+        "op": "right.add",
         "args": {
-         "values": {
-          "object": "DataProcessor.Обработка",
-          "right": "Use",
-          "value": true
-         }
+         "items": [
+          {
+           "object": "DataProcessor.Обработка",
+           "rights": {
+            "Use": true
+           }
+          }
+         ]
         }
        }
       ]
@@ -35373,7 +35361,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "not_found: apply operation `right.set` writes content of `ext:Role.SalesReader` that is inherited from the parent: the extension does not hold its `Rights.xml`; read the p",
+     "refusal": "not_found: apply operation `right.add` writes content of `ext:Role.SalesReader` that is inherited from the parent: the extension does not hold its `Rights.xml`; read the p",
      "assertions": [
       {
        "pointer": "/next/0/args/at",
@@ -36097,7 +36085,7 @@
    "name": "retired-duplicate-arguments-route-to-the-address",
    "issue": 1353,
    "area": "СКД",
-   "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, имя формы, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора",
+   "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора; снятая form.create ведёт к form.add на владельце, и форма создаётся там",
    "wire": [
     {
      "tool": "unica.view",
@@ -36296,13 +36284,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
+      "at": "main:Catalog.Валюты.Form.ФормаПодбора",
       "ops": [
        {
         "op": "form.create",
         "args": {
          "values": {
-          "name": "ФормаПодбора",
           "type": "ChoiceForm"
          }
         }
@@ -36312,11 +36299,11 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: `form.create` names its subject by address, not by `values.name`; call it at `main:Catalog.Валюты.Form.ФормаПодбора`",
+     "refusal": "bad_value: apply operation `form.create` is retired: call `form.add` at `main:Catalog.Валюты`; `items: [{name, type}]` names the form and its type",
      "assertions": [
       {
        "pointer": "/at",
-       "eq": "ops[0].args.values.name"
+       "eq": "ops[0].op"
       },
       {
        "pointer": "/next",
@@ -36324,9 +36311,9 @@
         {
          "tool": "unica.view",
          "args": {
-          "at": "main:Catalog.Валюты.Form"
+          "at": "main:Catalog.Валюты"
          },
-         "reason": "существующие узлы этого вида у владельца"
+         "reason": "какие операции применимы к этому узлу"
         }
        ]
       }
@@ -36342,14 +36329,17 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаПодбора",
+      "at": "main:Catalog.Валюты",
       "ops": [
        {
-        "op": "form.create",
+        "op": "form.add",
         "args": {
-         "values": {
-          "type": "ChoiceForm"
-         }
+         "items": [
+          {
+           "name": "ФормаПодбора",
+           "type": "ChoiceForm"
+          }
+         ]
         }
        }
       ]
@@ -36442,6 +36432,1265 @@
   },
   {
    "id": "S413",
+   "name": "code-replace-above-former-frame-limit",
+   "issue": 1309,
+   "area": "Код BSL",
+   "task": "Заменить функцию модуля текстом крупнее 16 КиБ одним вызовом, без нарезки",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "text": "Функция МаксимальныйРазмерПорции()\n\t// Замена крупнее прежнего кадра демона в 16 КиБ (#1309).\n\tПорции = Новый Массив;\n\tПорции.Добавить(1); // порция номер 1\n\tПорции.Добавить(2); // порция номер 2\n\tПорции.Добавить(3); // порция номер 3\n\tПорции.Добавить(4); // порция номер 4\n\tПорции.Добавить(5); // порция номер 5\n\tПорции.Добавить(6); // порция номер 6\n\tПорции.Добавить(7); // порция номер 7\n\tПорции.Добавить(8); // порция номер 8\n\tПорции.Добавить(9); // порция номер 9\n\tПорции.Добавить(10); // порция номер 10\n\tПорции.Добавить(11); // порция номер 11\n\tПорции.Добавить(12); // порция номер 12\n\tПорции.Добавить(13); // порция номер 13\n\tПорции.Добавить(14); // порция номер 14\n\tПорции.Добавить(15); // порция номер 15\n\tПорции.Добавить(16); // порция номер 16\n\tПорции.Добавить(17); // порция номер 17\n\tПорции.Добавить(18); // порция номер 18\n\tПорции.Добавить(19); // порция номер 19\n\tПорции.Добавить(20); // порция номер 20\n\tПорции.Добавить(21); // порция номер 21\n\tПорции.Добавить(22); // порция номер 22\n\tПорции.Добавить(23); // порция номер 23\n\tПорции.Добавить(24); // порция номер 24\n\tПорции.Добавить(25); // порция номер 25\n\tПорции.Добавить(26); // порция номер 26\n\tПорции.Добавить(27); // порция номер 27\n\tПорции.Добавить(28); // порция номер 28\n\tПорции.Добавить(29); // порция номер 29\n\tПорции.Добавить(30); // порция номер 30\n\tПорции.Добавить(31); // порция номер 31\n\tПорции.Добавить(32); // порция номер 32\n\tПорции.Добавить(33); // порция номер 33\n\tПорции.Добавить(34); // порция номер 34\n\tПорции.Добавить(35); // порция номер 35\n\tПорции.Добавить(36); // порция номер 36\n\tПорции.Добавить(37); // порция номер 37\n\tПорции.Добавить(38); // порция номер 38\n\tПорции.Добавить(39); // порция номер 39\n\tПорции.Добавить(40); // порция номер 40\n\tПорции.Добавить(41); // порция номер 41\n\tПорции.Добавить(42); // порция номер 42\n\tПорции.Добавить(43); // порция номер 43\n\tПорции.Добавить(44); // порция номер 44\n\tПорции.Добавить(45); // порция номер 45\n\tПорции.Добавить(46); // порция номер 46\n\tПорции.Добавить(47); // порция номер 47\n\tПорции.Добавить(48); // порция номер 48\n\tПорции.Добавить(49); // порция номер 49\n\tПорции.Добавить(50); // порция номер 50\n\tПорции.Добавить(51); // порция номер 51\n\tПорции.Добавить(52); // порция номер 52\n\tПорции.Добавить(53); // порция номер 53\n\tПорции.Добавить(54); // порция номер 54\n\tПорции.Добавить(55); // порция номер 55\n\tПорции.Добавить(56); // порция номер 56\n\tПорции.Добавить(57); // порция номер 57\n\tПорции.Добавить(58); // порция номер 58\n\tПорции.Добавить(59); // порция номер 59\n\tПорции.Добавить(60); // порция номер 60\n\tПорции.Добавить(61); // порция номер 61\n\tПорции.Добавить(62); // порция номер 62\n\tПорции.Добавить(63); // порция номер 63\n\tПорции.Добавить(64); // порция номер 64\n\tПорции.Добавить(65); // порция номер 65\n\tПорции.Добавить(66); // порция номер 66\n\tПорции.Добавить(67); // порция номер 67\n\tПорции.Добавить(68); // порция номер 68\n\tПорции.Добавить(69); // порция номер 69\n\tПорции.Добавить(70); // порция номер 70\n\tПорции.Добавить(71); // порция номер 71\n\tПорции.Добавить(72); // порция номер 72\n\tПорции.Добавить(73); // порция номер 73\n\tПорции.Добавить(74); // порция номер 74\n\tПорции.Добавить(75); // порция номер 75\n\tПорции.Добавить(76); // порция номер 76\n\tПорции.Добавить(77); // порция номер 77\n\tПорции.Добавить(78); // порция номер 78\n\tПорции.Добавить(79); // порция номер 79\n\tПорции.Добавить(80); // порция номер 80\n\tПорции.Добавить(81); // порция номер 81\n\tПорции.Добавить(82); // порция номер 82\n\tПорции.Добавить(83); // порция номер 83\n\tПорции.Добавить(84); // порция номер 84\n\tПорции.Добавить(85); // порция номер 85\n\tПорции.Добавить(86); // порция номер 86\n\tПорции.Добавить(87); // порция номер 87\n\tПорции.Добавить(88); // порция номер 88\n\tПорции.Добавить(89); // порция номер 89\n\tПорции.Добавить(90); // порция номер 90\n\tПорции.Добавить(91); // порция номер 91\n\tПорции.Добавить(92); // порция номер 92\n\tПорции.Добавить(93); // порция номер 93\n\tПорции.Добавить(94); // порция номер 94\n\tПорции.Добавить(95); // порция номер 95\n\tПорции.Добавить(96); // порция номер 96\n\tПорции.Добавить(97); // порция номер 97\n\tПорции.Добавить(98); // порция номер 98\n\tПорции.Добавить(99); // порция номер 99\n\tПорции.Добавить(100); // порция номер 100\n\tПорции.Добавить(101); // порция номер 101\n\tПорции.Добавить(102); // порция номер 102\n\tПорции.Добавить(103); // порция номер 103\n\tПорции.Добавить(104); // порция номер 104\n\tПорции.Добавить(105); // порция номер 105\n\tПорции.Добавить(106); // порция номер 106\n\tПорции.Добавить(107); // порция номер 107\n\tПорции.Добавить(108); // порция номер 108\n\tПорции.Добавить(109); // порция номер 109\n\tПорции.Добавить(110); // порция номер 110\n\tПорции.Добавить(111); // порция номер 111\n\tПорции.Добавить(112); // порция номер 112\n\tПорции.Добавить(113); // порция номер 113\n\tПорции.Добавить(114); // порция номер 114\n\tПорции.Добавить(115); // порция номер 115\n\tПорции.Добавить(116); // порция номер 116\n\tПорции.Добавить(117); // порция номер 117\n\tПорции.Добавить(118); // порция номер 118\n\tПорции.Добавить(119); // порция номер 119\n\tПорции.Добавить(120); // порция номер 120\n\tПорции.Добавить(121); // порция номер 121\n\tПорции.Добавить(122); // порция номер 122\n\tПорции.Добавить(123); // порция номер 123\n\tПорции.Добавить(124); // порция номер 124\n\tПорции.Добавить(125); // порция номер 125\n\tПорции.Добавить(126); // порция номер 126\n\tПорции.Добавить(127); // порция номер 127\n\tПорции.Добавить(128); // порция номер 128\n\tПорции.Добавить(129); // порция номер 129\n\tПорции.Добавить(130); // порция номер 130\n\tПорции.Добавить(131); // порция номер 131\n\tПорции.Добавить(132); // порция номер 132\n\tПорции.Добавить(133); // порция номер 133\n\tПорции.Добавить(134); // порция номер 134\n\tПорции.Добавить(135); // порция номер 135\n\tПорции.Добавить(136); // порция номер 136\n\tПорции.Добавить(137); // порция номер 137\n\tПорции.Добавить(138); // порция номер 138\n\tПорции.Добавить(139); // порция номер 139\n\tПорции.Добавить(140); // порция номер 140\n\tПорции.Добавить(141); // порция номер 141\n\tПорции.Добавить(142); // порция номер 142\n\tПорции.Добавить(143); // порция номер 143\n\tПорции.Добавить(144); // порция номер 144\n\tПорции.Добавить(145); // порция номер 145\n\tПорции.Добавить(146); // порция номер 146\n\tПорции.Добавить(147); // порция номер 147\n\tПорции.Добавить(148); // порция номер 148\n\tПорции.Добавить(149); // порция номер 149\n\tПорции.Добавить(150); // порция номер 150\n\tПорции.Добавить(151); // порция номер 151\n\tПорции.Добавить(152); // порция номер 152\n\tПорции.Добавить(153); // порция номер 153\n\tПорции.Добавить(154); // порция номер 154\n\tПорции.Добавить(155); // порция номер 155\n\tПорции.Добавить(156); // порция номер 156\n\tПорции.Добавить(157); // порция номер 157\n\tПорции.Добавить(158); // порция номер 158\n\tПорции.Добавить(159); // порция номер 159\n\tПорции.Добавить(160); // порция номер 160\n\tПорции.Добавить(161); // порция номер 161\n\tПорции.Добавить(162); // порция номер 162\n\tПорции.Добавить(163); // порция номер 163\n\tПорции.Добавить(164); // порция номер 164\n\tПорции.Добавить(165); // порция номер 165\n\tПорции.Добавить(166); // порция номер 166\n\tПорции.Добавить(167); // порция номер 167\n\tПорции.Добавить(168); // порция номер 168\n\tПорции.Добавить(169); // порция номер 169\n\tПорции.Добавить(170); // порция номер 170\n\tПорции.Добавить(171); // порция номер 171\n\tПорции.Добавить(172); // порция номер 172\n\tПорции.Добавить(173); // порция номер 173\n\tПорции.Добавить(174); // порция номер 174\n\tПорции.Добавить(175); // порция номер 175\n\tПорции.Добавить(176); // порция номер 176\n\tПорции.Добавить(177); // порция номер 177\n\tПорции.Добавить(178); // порция номер 178\n\tПорции.Добавить(179); // порция номер 179\n\tПорции.Добавить(180); // порция номер 180\n\tПорции.Добавить(181); // порция номер 181\n\tПорции.Добавить(182); // порция номер 182\n\tПорции.Добавить(183); // порция номер 183\n\tПорции.Добавить(184); // порция номер 184\n\tПорции.Добавить(185); // порция номер 185\n\tПорции.Добавить(186); // порция номер 186\n\tПорции.Добавить(187); // порция номер 187\n\tПорции.Добавить(188); // порция номер 188\n\tПорции.Добавить(189); // порция номер 189\n\tПорции.Добавить(190); // порция номер 190\n\tПорции.Добавить(191); // порция номер 191\n\tПорции.Добавить(192); // порция номер 192\n\tПорции.Добавить(193); // порция номер 193\n\tПорции.Добавить(194); // порция номер 194\n\tПорции.Добавить(195); // порция номер 195\n\tПорции.Добавить(196); // порция номер 196\n\tПорции.Добавить(197); // порция номер 197\n\tПорции.Добавить(198); // порция номер 198\n\tПорции.Добавить(199); // порция номер 199\n\tПорции.Добавить(200); // порция номер 200\n\tПорции.Добавить(201); // порция номер 201\n\tПорции.Добавить(202); // порция номер 202\n\tПорции.Добавить(203); // порция номер 203\n\tПорции.Добавить(204); // порция номер 204\n\tПорции.Добавить(205); // порция номер 205\n\tПорции.Добавить(206); // порция номер 206\n\tПорции.Добавить(207); // порция номер 207\n\tПорции.Добавить(208); // порция номер 208\n\tПорции.Добавить(209); // порция номер 209\n\tПорции.Добавить(210); // порция номер 210\n\tПорции.Добавить(211); // порция номер 211\n\tПорции.Добавить(212); // порция номер 212\n\tПорции.Добавить(213); // порция номер 213\n\tПорции.Добавить(214); // порция номер 214\n\tПорции.Добавить(215); // порция номер 215\n\tПорции.Добавить(216); // порция номер 216\n\tПорции.Добавить(217); // порция номер 217\n\tПорции.Добавить(218); // порция номер 218\n\tПорции.Добавить(219); // порция номер 219\n\tПорции.Добавить(220); // порция номер 220\n\tПорции.Добавить(221); // порция номер 221\n\tПорции.Добавить(222); // порция номер 222\n\tПорции.Добавить(223); // порция номер 223\n\tПорции.Добавить(224); // порция номер 224\n\tПорции.Добавить(225); // порция номер 225\n\tПорции.Добавить(226); // порция номер 226\n\tПорции.Добавить(227); // порция номер 227\n\tПорции.Добавить(228); // порция номер 228\n\tПорции.Добавить(229); // порция номер 229\n\tПорции.Добавить(230); // порция номер 230\n\tПорции.Добавить(231); // порция номер 231\n\tПорции.Добавить(232); // порция номер 232\n\tПорции.Добавить(233); // порция номер 233\n\tПорции.Добавить(234); // порция номер 234\n\tПорции.Добавить(235); // порция номер 235\n\tПорции.Добавить(236); // порция номер 236\n\tПорции.Добавить(237); // порция номер 237\n\tПорции.Добавить(238); // порция номер 238\n\tПорции.Добавить(239); // порция номер 239\n\tПорции.Добавить(240); // порция номер 240\n\tПорции.Добавить(241); // порция номер 241\n\tПорции.Добавить(242); // порция номер 242\n\tПорции.Добавить(243); // порция номер 243\n\tПорции.Добавить(244); // порция номер 244\n\tПорции.Добавить(245); // порция номер 245\n\tПорции.Добавить(246); // порция номер 246\n\tПорции.Добавить(247); // порция номер 247\n\tПорции.Добавить(248); // порция номер 248\n\tПорции.Добавить(249); // порция номер 249\n\tПорции.Добавить(250); // порция номер 250\n\tПорции.Добавить(251); // порция номер 251\n\tПорции.Добавить(252); // порция номер 252\n\tПорции.Добавить(253); // порция номер 253\n\tПорции.Добавить(254); // порция номер 254\n\tПорции.Добавить(255); // порция номер 255\n\tПорции.Добавить(256); // порция номер 256\n\tПорции.Добавить(257); // порция номер 257\n\tПорции.Добавить(258); // порция номер 258\n\tПорции.Добавить(259); // порция номер 259\n\tПорции.Добавить(260); // порция номер 260\n\tПорции.Добавить(261); // порция номер 261\n\tПорции.Добавить(262); // порция номер 262\n\tПорции.Добавить(263); // порция номер 263\n\tПорции.Добавить(264); // порция номер 264\n\tПорции.Добавить(265); // порция номер 265\n\tПорции.Добавить(266); // порция номер 266\n\tПорции.Добавить(267); // порция номер 267\n\tПорции.Добавить(268); // порция номер 268\n\tПорции.Добавить(269); // порция номер 269\n\tПорции.Добавить(270); // порция номер 270\n\tПорции.Добавить(271); // порция номер 271\n\tПорции.Добавить(272); // порция номер 272\n\tПорции.Добавить(273); // порция номер 273\n\tПорции.Добавить(274); // порция номер 274\n\tПорции.Добавить(275); // порция номер 275\n\tПорции.Добавить(276); // порция номер 276\n\tПорции.Добавить(277); // порция номер 277\n\tПорции.Добавить(278); // порция номер 278\n\tПорции.Добавить(279); // порция номер 279\n\tПорции.Добавить(280); // порция номер 280\n\tПорции.Добавить(281); // порция номер 281\n\tПорции.Добавить(282); // порция номер 282\n\tПорции.Добавить(283); // порция номер 283\n\tПорции.Добавить(284); // порция номер 284\n\tПорции.Добавить(285); // порция номер 285\n\tПорции.Добавить(286); // порция номер 286\n\tПорции.Добавить(287); // порция номер 287\n\tПорции.Добавить(288); // порция номер 288\n\tПорции.Добавить(289); // порция номер 289\n\tПорции.Добавить(290); // порция номер 290\n\tПорции.Добавить(291); // порция номер 291\n\tПорции.Добавить(292); // порция номер 292\n\tПорции.Добавить(293); // порция номер 293\n\tПорции.Добавить(294); // порция номер 294\n\tПорции.Добавить(295); // порция номер 295\n\tПорции.Добавить(296); // порция номер 296\n\tПорции.Добавить(297); // порция номер 297\n\tПорции.Добавить(298); // порция номер 298\n\tПорции.Добавить(299); // порция номер 299\n\tПорции.Добавить(300); // порция номер 300\n\tПорции.Добавить(301); // порция номер 301\n\tПорции.Добавить(302); // порция номер 302\n\tПорции.Добавить(303); // порция номер 303\n\tПорции.Добавить(304); // порция номер 304\n\tПорции.Добавить(305); // порция номер 305\n\tПорции.Добавить(306); // порция номер 306\n\tПорции.Добавить(307); // порция номер 307\n\tПорции.Добавить(308); // порция номер 308\n\tПорции.Добавить(309); // порция номер 309\n\tПорции.Добавить(310); // порция номер 310\n\tПорции.Добавить(311); // порция номер 311\n\tПорции.Добавить(312); // порция номер 312\n\tПорции.Добавить(313); // порция номер 313\n\tПорции.Добавить(314); // порция номер 314\n\tПорции.Добавить(315); // порция номер 315\n\tПорции.Добавить(316); // порция номер 316\n\tПорции.Добавить(317); // порция номер 317\n\tПорции.Добавить(318); // порция номер 318\n\tПорции.Добавить(319); // порция номер 319\n\tПорции.Добавить(320); // порция номер 320\n\tПорции.Добавить(321); // порция номер 321\n\tПорции.Добавить(322); // порция номер 322\n\tПорции.Добавить(323); // порция номер 323\n\tПорции.Добавить(324); // порция номер 324\n\tПорции.Добавить(325); // порция номер 325\n\tПорции.Добавить(326); // порция номер 326\n\tПорции.Добавить(327); // порция номер 327\n\tПорции.Добавить(328); // порция номер 328\n\tПорции.Добавить(329); // порция номер 329\n\tПорции.Добавить(330); // порция номер 330\n\tПорции.Добавить(331); // порция номер 331\n\tПорции.Добавить(332); // порция номер 332\n\tПорции.Добавить(333); // порция номер 333\n\tПорции.Добавить(334); // порция номер 334\n\tПорции.Добавить(335); // порция номер 335\n\tПорции.Добавить(336); // порция номер 336\n\tПорции.Добавить(337); // порция номер 337\n\tПорции.Добавить(338); // порция номер 338\n\tПорции.Добавить(339); // порция номер 339\n\tПорции.Добавить(340); // порция номер 340\n\tПорции.Добавить(341); // порция номер 341\n\tПорции.Добавить(342); // порция номер 342\n\tПорции.Добавить(343); // порция номер 343\n\tПорции.Добавить(344); // порция номер 344\n\tПорции.Добавить(345); // порция номер 345\n\tПорции.Добавить(346); // порция номер 346\n\tПорции.Добавить(347); // порция номер 347\n\tПорции.Добавить(348); // порция номер 348\n\tПорции.Добавить(349); // порция номер 349\n\tПорции.Добавить(350); // порция номер 350\n\tПорции.Добавить(351); // порция номер 351\n\tПорции.Добавить(352); // порция номер 352\n\tПорции.Добавить(353); // порция номер 353\n\tПорции.Добавить(354); // порция номер 354\n\tПорции.Добавить(355); // порция номер 355\n\tПорции.Добавить(356); // порция номер 356\n\tПорции.Добавить(357); // порция номер 357\n\tПорции.Добавить(358); // порция номер 358\n\tПорции.Добавить(359); // порция номер 359\n\tПорции.Добавить(360); // порция номер 360\n\tПорции.Добавить(361); // порция номер 361\n\tПорции.Добавить(362); // порция номер 362\n\tПорции.Добавить(363); // порция номер 363\n\tПорции.Добавить(364); // порция номер 364\n\tПорции.Добавить(365); // порция номер 365\n\tПорции.Добавить(366); // порция номер 366\n\tПорции.Добавить(367); // порция номер 367\n\tПорции.Добавить(368); // порция номер 368\n\tПорции.Добавить(369); // порция номер 369\n\tПорции.Добавить(370); // порция номер 370\n\tПорции.Добавить(371); // порция номер 371\n\tПорции.Добавить(372); // порция номер 372\n\tПорции.Добавить(373); // порция номер 373\n\tПорции.Добавить(374); // порция номер 374\n\tПорции.Добавить(375); // порция номер 375\n\tПорции.Добавить(376); // порция номер 376\n\tПорции.Добавить(377); // порция номер 377\n\tПорции.Добавить(378); // порция номер 378\n\tПорции.Добавить(379); // порция номер 379\n\tПорции.Добавить(380); // порция номер 380\n\tПорции.Добавить(381); // порция номер 381\n\tПорции.Добавить(382); // порция номер 382\n\tПорции.Добавить(383); // порция номер 383\n\tПорции.Добавить(384); // порция номер 384\n\tПорции.Добавить(385); // порция номер 385\n\tПорции.Добавить(386); // порция номер 386\n\tПорции.Добавить(387); // порция номер 387\n\tПорции.Добавить(388); // порция номер 388\n\tПорции.Добавить(389); // порция номер 389\n\tПорции.Добавить(390); // порция номер 390\n\tПорции.Добавить(391); // порция номер 391\n\tПорции.Добавить(392); // порция номер 392\n\tПорции.Добавить(393); // порция номер 393\n\tПорции.Добавить(394); // порция номер 394\n\tПорции.Добавить(395); // порция номер 395\n\tПорции.Добавить(396); // порция номер 396\n\tПорции.Добавить(397); // порция номер 397\n\tПорции.Добавить(398); // порция номер 398\n\tПорции.Добавить(399); // порция номер 399\n\tПорции.Добавить(400); // порция номер 400\n\tВозврат Порции.Количество();\nКонецФункции",
+         "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "beforeModule": {
+       "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "kind": "sha256"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "kind": "sha256",
+       "notEq": "$capture.beforeModule"
+      },
+      {
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "kind": "sha256",
+       "eq": "e400fb88bf5b0315072a4798b787c4d0a8fb1a8144ebd4036f4a4547aa18d724"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S414",
+   "name": "tabular-section-rename-renames-generated-types",
+   "issue": 1385,
+   "area": "Реквизиты и состав",
+   "task": "Переименование табличной части через newName переименовывает и её созданные типы (`CatalogTabularSection…`, `CatalogTabularSectionRow…`), сохраняя их TypeId, как это делает выгрузка платформы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.TabularSection.Представления",
+      "ops": [
+       {
+        "op": "tabularSection.set",
+        "args": {
+         "values": {
+          "newName": "Переводы"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}InternalInfo/{*}GeneratedType[@name='CatalogTabularSection.Валюты.Переводы']/{*}TypeId",
+       "eq": [
+        "7c7863ac-88d7-43e6-a7a6-ac2c028d9ce6"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}InternalInfo/{*}GeneratedType[@name='CatalogTabularSectionRow.Валюты.Переводы']/{*}TypeId",
+       "eq": [
+        "d48be48d-cdf3-4bd4-b876-08c8528e8f58"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": ".//{*}GeneratedType[@name='CatalogTabularSection.Валюты.Представления']",
+       "eq": []
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": ".//{*}GeneratedType[@name='CatalogTabularSectionRow.Валюты.Представления']",
+       "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S415",
+   "name": "catalog-members-take-platform-slots",
+   "issue": 1385,
+   "area": "Реквизиты и состав",
+   "task": "Новый реквизит шапки справочника встаёт перед табличными частями, новая табличная часть — после имеющихся и перед формами, а её `Use` предшествует `LineNumberLength`, как в выгрузке платформы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Примечание",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 100,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       },
+       {
+        "op": "tabularSection.add",
+        "args": {
+         "items": [
+          {
+           "name": "ИсторияКурсов",
+           "attributes": [
+            {
+             "name": "Курс",
+             "type": {
+              "variants": [
+               {
+                "kind": "number",
+                "digits": 10,
+                "fraction": 4,
+                "sign": "nonNegative"
+               }
+              ]
+             }
+            }
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": "./{*}Catalog/{*}ChildObjects/*/{*}Properties/{*}Name",
+       "eq": [
+        "ЗагружаетсяИзИнтернета",
+        "НаименованиеПолное",
+        "Наценка",
+        "ОсновнаяВалюта",
+        "ПараметрыПрописи",
+        "ФормулаРасчетаКурса",
+        "СпособУстановкиКурса",
+        "Примечание",
+        "Представления",
+        "ИсторияКурсов"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/*",
+       "eq": [
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "TabularSection",
+        "TabularSection",
+        "Form",
+        "Form"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection[2]/{*}Properties/*",
+       "eq": [
+        "Name",
+        "Synonym",
+        "Comment",
+        "ToolTip",
+        "FillChecking",
+        "StandardAttributes",
+        "Use",
+        "LineNumberLength"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S416",
+   "name": "catalog-form-template-and-command-take-platform-slots",
+   "issue": 1385,
+   "area": "Формы",
+   "task": "Форма справочника регистрируется после его табличных частей и имеющихся форм, а макет — перед командами, как в выгрузке платформы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаНовая",
+           "type": "ObjectForm"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/*",
+       "eq": [
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "TabularSection",
+        "Form",
+        "Form",
+        "Form"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}Form",
+       "eq": [
+        "ФормаЭлемента",
+        "ФормаСписка",
+        "ФормаНовая"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "command.add",
+        "args": {
+         "items": [
+          {
+           "name": "ОткрытьКурсы"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/*",
+       "eq": [
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "TabularSection",
+        "Form",
+        "Form",
+        "Form",
+        "Command"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПечатнаяФорма",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/*",
+       "eq": [
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "TabularSection",
+        "Form",
+        "Form",
+        "Form",
+        "Template",
+        "Command"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S417",
+   "name": "role-rights-entry-is-addressed-and-created-by-right-add",
+   "issue": 1354,
+   "area": "Роли и права",
+   "task": "Объект права в аргументах вместо адреса записи отказывает без записи с next к записи и ветви прав; right.set правит существующую запись по её адресу, опечатка в адресе отвечает not_found с next к роли и ничего не создаёт; новую запись создаёт right.add на роли, а повторное right.add на существующей отказывает; контракт right.add читается по адресу операции",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "right.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
+     ],
+     "captures": {
+      "rights": {
+       "kind": "sha256",
+       "file": "src/Roles/SalesReader/Ext/Rights.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Catalog.Валюты",
+          "right": "Update",
+          "value": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `right.set` names its subject by address, not by `values.object`; call it at `main:Role.SalesReader.Right.Catalog_Валюты`; a missing one is created by `right.ad",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.object"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Role.SalesReader.Right.Catalog_Валюты.Can.right.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Role.SalesReader.Right"
+      },
+      {
+       "pointer": "/next/2/args/at",
+       "eq": "main:Role.SalesReader.Can.right.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "right.set",
+        "args": "values",
+        "implemented": true
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "right": "Update",
+          "value": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader.Right.Catalog_Валютыы",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "right": "Update",
+          "value": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: the role has no rights entry for `Catalog.Валютыы`; create it with right.add at `main:Role.SalesReader`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.at"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Role.SalesReader"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.add",
+        "args": {
+         "items": [
+          {
+           "object": "Report.АнализВерсийОбъектов",
+           "rights": {
+            "Use": true,
+            "View": true
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.add",
+        "args": {
+         "items": [
+          {
+           "object": "Catalog.Валюты",
+           "rights": {
+            "Update": true
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: the role already has a rights entry for `Catalog.Валюты`; change it with right.set at `main:Role.SalesReader.Right.Catalog_Валюты`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].object"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Role.SalesReader.Can.right.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/contract/argsSchema/properties/items/items/required",
+       "eq": [
+        "object",
+        "rights"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S418",
+   "name": "spreadsheet-area-is-addressed-and-created-by-area-add",
+   "issue": 1354,
+   "area": "Макеты",
+   "workspace": "tests/fixtures/acceptance/workspace-mxl",
+   "task": "Область в аргументах вместо адреса Area отказывает без записи; mxl.set правит только существующую область по её адресу, отсутствующая отвечает not_found с next к макету; новую область с начальными ячейками создаёт area.add на макете, повтор имени существующей области отказывает",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "area.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "B",
+          "cells": {
+           "R1C1": "x"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `mxl.set` names its subject by address, not by `values.area`; call it at `cf:Report.F06Report.Template.F06Template.Area.B`; a missing one is created by `area.ad",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template.Area.B.Can.mxl.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template.Area"
+      },
+      {
+       "pointer": "/next/2/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template.Can.area.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.Z",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "cells": {
+           "R1C1": "x"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: the template has no area `Z`; create it with area.add at `cf:Report.F06Report.Template.F06Template`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.at"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "area.add",
+        "args": {
+         "items": [
+          {
+           "name": "Z",
+           "cells": {
+            "R1C1": "Итого",
+            "R1C2": 0
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ],
+     "captures": {
+      "add": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.Z.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 1,
+         "template": false,
+         "text": "Итого"
+        },
+        {
+         "index": 2,
+         "template": false,
+         "text": "0"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "area.add",
+        "args": {
+         "items": [
+          {
+           "name": "A",
+           "cells": {
+            "R1C1": "x"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: the template already has area `A`; change its cells with mxl.set at `cf:Report.F06Report.Template.F06Template.Area.A`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].name"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S419",
+   "name": "schema-subnodes-and-method-insert-are-addressed",
+   "issue": 1354,
+   "area": "СКД",
+   "task": "Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр, а снятая форма поля с составным dataPath ведёт к экранированному адресу Field.Объект\\.Код",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "schema": {
+       "kind": "sha256",
+       "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+      },
+      "module": {
+       "kind": "sha256",
+       "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+      "ops": [
+       {
+        "op": "variant.set",
+        "args": {
+         "values": {
+          "name": "Основной",
+          "title": "Версии"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `variant.set` names its subject by address, not by `values.name`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Ос",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Can.variant.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "variant.set",
+        "args": {
+         "values": {
+          "title": "Версии"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+      "ops": [
+       {
+        "op": "parameter.set",
+        "args": {
+         "values": {
+          "name": "Период",
+          "title": "Период"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `parameter.set` names its subject by address, not by `values.name`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Paramete",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Parameter.Период.Can.parameter.set"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "field": "Количество",
+          "title": "Число версий"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `field.set` names its subject by address, not by `values.field`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.Наб",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Количество.Can.field.set"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Количество",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "title": "Число версий"
+         }
+        }
+       },
+       {
+        "op": "fieldRole.set",
+        "args": {
+         "values": {
+          "role": {
+           "dimension": true
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "field": "Объект.Код",
+          "title": "Код"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `field.set` names its subject by address, not by `values.field`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.Наб",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Объект\\.Код.Can.field.set"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "selector": {
+          "method": "ДоступныеЯзыки"
+         },
+         "position": "after",
+         "text": "// приёмочная вставка"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `code.insert` names its subject by address, not by `selector.method`; call it at `main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.selector.method"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": "$capture.module"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "position": "before",
+         "text": "// приёмочная вставка"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": "$capture.module"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S420",
    "name": "xdto-nested-property-is-addressed",
    "issue": 1356,
    "area": "XDTO и обмены",
@@ -36602,7 +37851,7 @@
    ]
   },
   {
-   "id": "S414",
+   "id": "S421",
    "name": "dcs-composite-field-is-addressed",
    "issue": 1356,
    "area": "СКД",
@@ -36676,7 +37925,7 @@
    ]
   },
   {
-   "id": "S415",
+   "id": "S422",
    "name": "interface-group-with-a-dot-is-addressed",
    "issue": 1356,
    "area": "Подсистемы и интерфейс",

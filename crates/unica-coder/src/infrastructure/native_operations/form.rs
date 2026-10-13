@@ -12804,6 +12804,86 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// #1385: a form is registered in the platform slot of forms, which
+    /// depends on the owner kind: a catalog writes its forms after its tabular
+    /// sections, a document before them; templates and commands follow.
+    #[test]
+    fn form_registration_takes_the_platform_slot_of_its_owner_kind() {
+        fn owner(kind: &str, children: &[&str]) -> String {
+            let mut body = String::new();
+            for child in children {
+                let (tag, name) = child.split_once(':').unwrap();
+                if matches!(tag, "Form" | "Template") {
+                    body.push_str(&format!("\t\t\t<{tag}>{name}</{tag}>\n"));
+                } else {
+                    body.push_str(&format!(
+                        "\t\t\t<{tag} uuid=\"00000000-0000-4000-8000-000000000301\">\n\t\t\t\t<Properties><Name>{name}</Name></Properties>\n\t\t\t\t<ChildObjects>\n\t\t\t\t</ChildObjects>\n\t\t\t</{tag}>\n"
+                    ));
+                }
+            }
+            format!(
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n\t<{kind} uuid=\"00000000-0000-4000-8000-000000000300\">\n\t\t<Properties><Name>Owner</Name></Properties>\n\t\t<ChildObjects>\n{body}\t\t</ChildObjects>\n\t</{kind}>\n</MetaDataObject>\n"
+            )
+        }
+        fn children(xml: &str) -> Vec<String> {
+            let document = roxmltree::Document::parse(xml).unwrap();
+            let object = document.root_element().first_element_child().unwrap();
+            object
+                .children()
+                .find(|node| node.has_tag_name("ChildObjects"))
+                .unwrap()
+                .children()
+                .filter(|node| node.is_element())
+                .map(|node| {
+                    let name = node
+                        .descendants()
+                        .find(|inner| inner.has_tag_name("Name"))
+                        .and_then(|inner| inner.text())
+                        .or_else(|| node.text())
+                        .unwrap_or_default();
+                    format!("{}:{name}", node.tag_name().name())
+                })
+                .collect()
+        }
+        for (kind, existing, expected) in [
+            (
+                "Catalog",
+                &["Attribute:A", "TabularSection:T"][..],
+                &["Attribute:A", "TabularSection:T", "Form:New"][..],
+            ),
+            (
+                "Catalog",
+                &["Attribute:A", "TabularSection:T", "Form:F", "Command:C"][..],
+                &[
+                    "Attribute:A",
+                    "TabularSection:T",
+                    "Form:F",
+                    "Form:New",
+                    "Command:C",
+                ][..],
+            ),
+            (
+                "Document",
+                &["Attribute:A", "TabularSection:T", "Template:M"][..],
+                &["Attribute:A", "Form:New", "TabularSection:T", "Template:M"][..],
+            ),
+            (
+                "InformationRegister",
+                &["Dimension:D", "Command:C"][..],
+                &["Dimension:D", "Form:New", "Command:C"][..],
+            ),
+            // no settled platform order: forms stay before the first template
+            (
+                "SettingsStorage",
+                &["Form:F", "Template:M"][..],
+                &["Form:F", "Form:New", "Template:M"][..],
+            ),
+        ] {
+            let updated = register_form_in_object_text(&owner(kind, existing), "New");
+            assert_eq!(children(&updated), expected, "{kind} {existing:?}");
+        }
+    }
+
     #[test]
     fn validate_form_rejects_bare_type_values() {
         let context = temp_context("bare-type");
