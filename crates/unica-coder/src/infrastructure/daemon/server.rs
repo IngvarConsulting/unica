@@ -1743,7 +1743,7 @@ pub(crate) mod actor_capacity_tests {
         let cases = [
             Case {
                 op: "commandOrder.set",
-                at: administration_at,
+                at: "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
                 key: "commands",
                 group: Some("NavigationPanelImportant"),
                 relative: ADMINISTRATION_INTERFACE,
@@ -1776,10 +1776,8 @@ pub(crate) mod actor_capacity_tests {
         ];
         for case in cases {
             let values = |names: Vec<String>| {
+                // Группа порядка команд — в адресе, а не в аргументах.
                 let mut values = serde_json::Map::new();
-                if let Some(group) = case.group {
-                    values.insert("group".to_string(), serde_json::json!(group));
-                }
                 values.insert(case.key.to_string(), serde_json::json!(names));
                 serde_json::Value::Object(values)
             };
@@ -1875,8 +1873,8 @@ pub(crate) mod actor_capacity_tests {
             workspace.path(),
             interface_op(
                 "commandOrder.set",
-                "main:Subsystem.Администрирование.Interface",
-                serde_json::json!({"group": "NavigationPanelImportant", "commands": reordered}),
+                "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
+                serde_json::json!({"commands": reordered}),
             ),
         );
         assert!(preview.ok, "{preview:?}");
@@ -2030,7 +2028,7 @@ pub(crate) mod actor_capacity_tests {
         let ops = [
             serde_json::json!({"op": "commandVisibility.set", "args": {"at": NESTED_CONTROL_AT, "items": [{"command": commands[0], "visible": false}]}}),
             serde_json::json!({"op": "commandPlacement.set", "args": {"at": NESTED_CONTROL_AT, "items": [{"command": commands[1], "group": "NavigationPanelImportant"}]}}),
-            serde_json::json!({"op": "commandOrder.set", "args": {"at": NESTED_CONTROL_AT, "values": {"group": "NavigationPanelOrdinary", "commands": reversed(&commands)}}}),
+            serde_json::json!({"op": "commandOrder.set", "args": {"at": format!("{NESTED_CONTROL_AT}.Group.NavigationPanelOrdinary"), "values": {"commands": reversed(&commands)}}}),
             serde_json::json!({"op": "groupOrder.set", "args": {"at": NESTED_CONTROL_AT, "values": {"groups": ["NavigationPanelSeeAlso", "NavigationPanelOrdinary", "NavigationPanelImportant"]}}}),
         ];
         let preview = interface_apply_call(
@@ -2124,7 +2122,7 @@ pub(crate) mod actor_capacity_tests {
             (
                 "commandOrder.set",
                 "values",
-                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+                serde_json::json!({"commands": commands}),
             ),
             (
                 "groupOrder.set",
@@ -2139,7 +2137,13 @@ pub(crate) mod actor_capacity_tests {
                 ),
                 (
                     "main:Interface",
-                    "it addresses `Subsystem.Name[.Subsystem.Child].Interface`".to_string(),
+                    // Порядок команд адресует группу этого интерфейса.
+                    if op == "commandOrder.set" {
+                        "it addresses `Subsystem.Name[.Subsystem.Child].Interface.Group.G`"
+                    } else {
+                        "it addresses `Subsystem.Name[.Subsystem.Child].Interface`"
+                    }
+                    .to_string(),
                 ),
             ] {
                 let refused = interface_apply_call(
@@ -2175,8 +2179,8 @@ pub(crate) mod actor_capacity_tests {
             workspace.path(),
             interface_op(
                 "commandOrder.set",
-                NESTED_CONTROL_AT,
-                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+                &format!("{NESTED_CONTROL_AT}.Group.NavigationPanelOrdinary"),
+                serde_json::json!({"commands": commands}),
             ),
         );
         assert!(preview.ok, "{preview:?}");
@@ -2202,11 +2206,37 @@ pub(crate) mod actor_capacity_tests {
             workspace.path(),
             interface_op(
                 "commandOrder.set",
-                NESTED_CONTROL_AT,
-                serde_json::json!({"group": "NavigationPanelOrdinary", "commands": commands}),
+                &format!("{NESTED_CONTROL_AT}.Group.NavigationPanelOrdinary"),
+                serde_json::json!({"commands": commands}),
             ),
         );
         assert_refused_without_trace(&replanned, "bad_value", "CommonCommand.НоваяКоманда");
+    }
+
+    /// Группа — узел адреса: порядок команд правит только группу, которую
+    /// интерфейс объявляет, как её видит чтение. Неизвестная группа отвечает
+    /// `not_found` без записи, а не заводится порядком.
+    #[test]
+    fn canonical_command_order_refuses_an_undeclared_group_without_writing() {
+        let workspace = interface_order_workspace();
+        let runtime =
+            V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock));
+        let before = crate::test_support::tree_snapshot(workspace.path());
+        let refused = interface_apply_call(
+            &runtime,
+            workspace.path(),
+            interface_op(
+                "commandOrder.set",
+                &format!("{NESTED_CONTROL_AT}.Group.CommandGroup\\.НетТакой"),
+                serde_json::json!({"commands": ["CommonCommand.Любая"]}),
+            ),
+        );
+        assert_refused_without_trace(
+            &refused,
+            "not_found",
+            "declares no group `CommandGroup.НетТакой`",
+        );
+        assert_eq!(crate::test_support::tree_snapshot(workspace.path()), before);
     }
 
     #[test]

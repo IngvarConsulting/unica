@@ -6087,15 +6087,10 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия",
       "ops": [
        {
-        "op": "property.remove",
-        "args": {
-         "values": {
-          "name": "Версия"
-         }
-        }
+        "op": "property.remove"
        }
       ]
      },
@@ -8730,13 +8725,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Subsystem.Администрирование.Interface",
+      "at": "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
       "ops": [
        {
         "op": "commandOrder.set",
         "args": {
          "values": {
-          "group": "NavigationPanelImportant",
           "commands": [
            "Catalog.ГруппыДоступа.StandardCommand.OpenList",
            "Catalog.Пользователи.StandardCommand.OpenList",
@@ -8759,13 +8753,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Subsystem.Администрирование.Interface",
+      "at": "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
       "ops": [
        {
         "op": "commandOrder.set",
         "args": {
          "values": {
-          "group": "NavigationPanelImportant",
           "commands": [
            "Catalog.ГруппыДоступа.StandardCommand.OpenList",
            "Catalog.Пользователи.StandardCommand.OpenList",
@@ -36442,6 +36435,350 @@
         "args": "items",
         "implemented": true
        }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S413",
+   "name": "xdto-nested-property-is-addressed",
+   "issue": 1356,
+   "area": "XDTO и обмены",
+   "task": "Свойство вложенного анонимного типа XDTO читается и правится по адресу Type.T.Property.A.Property.B: прежние propertyPath и имя удаляемого свойства отказывают без записи с next к адресу свойства, исправленные вызовы строят предпросмотр",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches/0/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property.Документ_ЗаказКлиента"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+      "ops": [
+       {
+        "op": "property.add",
+        "args": {
+         "values": {
+          "propertyPath": "СсылкаНаОбъект",
+          "property": {
+           "name": "Документ_Новый",
+           "type": "xs:string",
+           "minOccurs": 0
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `property.add` names its subject by address, not by `values.propertyPath`; call it at `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНа",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.propertyPath"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект",
+      "ops": [
+       {
+        "op": "property.add",
+        "args": {
+         "values": {
+          "property": {
+           "name": "Документ_Новый",
+           "type": "xs:string",
+           "minOccurs": 0
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+      "ops": [
+       {
+        "op": "property.remove",
+        "args": {
+         "values": {
+          "name": "СсылкаНаОбъект"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `property.remove` names its subject by address, not by `values.name`; call it at `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъек",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.name"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property.Документ_ЗаказКлиента",
+      "ops": [
+       {
+        "op": "property.remove"
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S414",
+   "name": "dcs-composite-field-is-addressed",
+   "issue": 1356,
+   "area": "СКД",
+   "task": "Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес, и поле читается по нему",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.add",
+        "args": {
+         "items": [
+          {
+           "name": "ТипОбъекта.Представление",
+           "dataPath": "ТипОбъекта.Представление"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/3/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+      },
+      {
+       "pointer": "/data/title",
+       "eq": "ТипОбъекта.Представление"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S415",
+   "name": "interface-group-with-a-dot-is-addressed",
+   "issue": 1356,
+   "area": "Подсистемы и интерфейс",
+   "task": "Группа командного интерфейса CommandGroup.X публикуется адресом с экранированной точкой и читается по нему; порядок её команд задаётся на этом адресе, а прежний values.group отказывает без записи с next к адресу группы",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface.Group"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/5/at",
+       "eq": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+      },
+      {
+       "pointer": "/data/items/5/commands",
+       "eq": 2
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/command",
+       "eq": "CommonCommand.НастройкиПрограммы"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface",
+      "ops": [
+       {
+        "op": "commandOrder.set",
+        "args": {
+         "values": {
+          "group": "CommandGroup.НастройкиПрограммы",
+          "commands": [
+           "CommonCommand.ПараметрыРаботыПрограммы",
+           "CommonCommand.НастройкиПрограммы"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `commandOrder.set` names its subject by address, not by `values.group`; call it at `main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрог",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.group"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Subsystem.Администрирование.Interface.Group"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы",
+      "ops": [
+       {
+        "op": "commandOrder.set",
+        "args": {
+         "values": {
+          "commands": [
+           "CommonCommand.ПараметрыРаботыПрограммы",
+           "CommonCommand.НастройкиПрограммы"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
       }
      ]
     }

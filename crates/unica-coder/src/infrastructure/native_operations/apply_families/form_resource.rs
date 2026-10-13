@@ -175,14 +175,46 @@ fn required_string<'a>(
 /// Адрес несёт интерфейс, а команда лежит в аргументах — тот же приём, что у
 /// `right.set`: предмет операции — пара «интерфейс и ссылка на команду», а
 /// адрес может нести только одно. Приписать факт подсистемы адресу команды,
-/// живущей в другом месте, было бы неверно.
+/// живущей в другом месте, было бы неверно. Порядок команд принадлежит
+/// группе, и группа — узел интерфейса: `commandOrder.set` адресует
+/// `…Interface.Group.<g>`, имя с точкой экранируется (`CommandGroup\.X`).
 fn parse_command_interface_operation(
     section: &str,
     target: &QualifiedAddress,
     args: &Map<String, Value>,
     op_index: usize,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let segments = target.segments();
+    let (segments, group) = match target.segments() {
+        [interface @ .., group] if group.kind() == NodeKind::Group => match group.name() {
+            Some(name) => (interface, Some(name)),
+            // Ветвь групп — коллекция, а не группа: порядок пишется в группу.
+            None => {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    format!("`{section}.set` does not target the group collection; name the group: `Subsystem.Name.Interface.Group.G`"),
+                ))
+            }
+        },
+        segments => (segments, None),
+    };
+    if (section == "commandOrder") != group.is_some() {
+        return Err(bad(
+            op_index,
+            "at",
+            if section == "commandOrder" {
+                "`commandOrder.set` targets a command group: `Subsystem.Name.Interface.Group.G`"
+                    .to_string()
+            } else {
+                format!("`{section}.set` does not target a command group")
+            },
+        ));
+    }
+    let interface = QualifiedAddress {
+        source_set: target.source_set().to_string(),
+        segments: segments.to_vec(),
+    };
+    let target = &interface;
     let (address, relative) = match segments {
         // Порядок подсистем верхнего уровня живёт в корневом документе.
         [root] if root.kind() == NodeKind::Configuration => {
@@ -294,11 +326,13 @@ fn parse_command_interface_operation(
             InterfaceEdit::Placement(values)
         }
         "commandOrder" => {
-            let values = required_values(args, op_index, &["group", "commands"])?;
-            // Порядок команд принадлежит группе: без неё нечего сравнивать
-            // с сохранённым составом.
+            let values = required_values(args, op_index, &["commands"])?;
+            // Порядок команд принадлежит группе адреса: без неё нечего
+            // сравнивать с сохранённым составом.
             InterfaceEdit::CommandOrder {
-                group: required_string(values, "group", op_index, "values")?.to_string(),
+                group: group
+                    .expect("a command order target names its group")
+                    .to_string(),
                 commands: listed_strings(values, "commands", op_index)?,
             }
         }
@@ -2405,6 +2439,21 @@ pub(crate) fn plan_form_resource_batch(
                         }
                     }
                     InterfaceEdit::CommandOrder { group, commands } => {
+                        // Группа — узел адреса, а `*.set` правит только
+                        // существующий узел: группа объявлена в `GroupsOrder`,
+                        // как её видит чтение. Порядок не создаёт группу.
+                        if !interface_text_direct_item_values(&text, "GroupsOrder", "Group")
+                            .iter()
+                            .any(|declared| declared == group)
+                        {
+                            return Err(ApplyPlanError::new(
+                                ApplyPlanErrorKind::NotFound,
+                                format!(
+                                    "the command interface declares no group `{group}`; read its groups at `…Interface.Group`"
+                                ),
+                            )
+                            .at_path(at_path.clone()));
+                        }
                         let commands = commands
                             .iter()
                             .map(|command| normalize_interface_command_name(command, &mut log))

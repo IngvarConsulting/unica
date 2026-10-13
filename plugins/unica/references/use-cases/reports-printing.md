@@ -80,6 +80,11 @@ Choose the dataset kind for the data actually supplied to the schema:
   Union's address. Nested members are addressed by repeating
   `DataSet.<name>` in the logical path.
 
+A field is addressed by its `dataPath`: `DataSet.<name>.Field.<dataPath>`.
+A dot inside a composite `dataPath` is escaped in the address as `\.`, for
+example `Field.Контрагент\.ИНН` (`"Контрагент\\.ИНН"` in JSON). Take the
+address from the `items[].at` of the dataset's `Field` branch.
+
 Links between datasets, calculated expressions and totals are separate
 schema components. A calculated expression derives a field; a total
 aggregates a field, optionally for a specified group. Adding or removing
