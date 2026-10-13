@@ -1569,7 +1569,7 @@ fn apply_item(
             if !string(values, "type").is_empty() {
                 super::dcs_xml::parse_value_type(string(values, "type"))?;
             }
-            let name = string(values, "field");
+            let name = target.terminal.as_deref().ok_or("address a named Field")?;
             named(dataset(root, target)?, S, "field", "dataPath", name)?;
             for key in [
                 "sourceField",
@@ -1631,7 +1631,8 @@ fn apply_item(
         }
         "fieldRole.set" => {
             let ds = dataset(root, target)?;
-            let field = named(ds, S, "field", "dataPath", string(values, "field"))?;
+            let name = target.terminal.as_deref().ok_or("address a named Field")?;
+            let field = named(ds, S, "field", "dataPath", name)?;
             let role = values
                 .get("role")
                 .and_then(Value::as_object)
@@ -1763,7 +1764,11 @@ fn apply_item(
             )
         }
         "parameter.set" => {
-            named(root, S, "parameter", "name", string(values, "name"))?;
+            let name = target
+                .terminal
+                .as_deref()
+                .ok_or("address a named Parameter")?;
+            named(root, S, "parameter", "name", name)?;
             for key in [
                 "title",
                 "type",
@@ -1781,13 +1786,7 @@ fn apply_item(
                     continue;
                 };
                 let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let parameter = named(
-                    document.root_element(),
-                    S,
-                    "parameter",
-                    "name",
-                    string(values, "name"),
-                )?;
+                let parameter = named(document.root_element(), S, "parameter", "name", name)?;
                 let tag = match key {
                     "type" => "valueType",
                     "values" => "value",
@@ -1858,13 +1857,8 @@ fn apply_item(
                     if !fragment.is_empty() {
                         let document =
                             Document::parse(xml_text).map_err(|error| error.to_string())?;
-                        let parameter = named(
-                            document.root_element(),
-                            S,
-                            "parameter",
-                            "name",
-                            string(values, "name"),
-                        )?;
+                        let parameter =
+                            named(document.root_element(), S, "parameter", "name", name)?;
                         insert(
                             xml_text,
                             parameter.range(),
@@ -1899,7 +1893,10 @@ fn apply_item(
             Ok(())
         }
         "parameter.rename" => {
-            let name = string(values, "name");
+            let name = target
+                .terminal
+                .as_deref()
+                .ok_or("address a named Parameter")?;
             let new = string(values, "newName");
             if root
                 .children()
@@ -1957,11 +1954,10 @@ fn apply_item(
             )
         }
         "variant.set" | "variant.remove" => {
-            let name = if string(values, "name").is_empty() {
-                &target.variant
-            } else {
-                string(values, "name")
-            };
+            let name = target.variant.as_str();
+            if name.is_empty() {
+                return Err("address an existing Setting".to_string());
+            }
             let variant = unique(
                 root.children().filter(|node| {
                     is(*node, S, "settingsVariant") && text(*node, T, "name") == name

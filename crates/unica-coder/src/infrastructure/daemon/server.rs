@@ -9887,9 +9887,9 @@ struct ActorLogicalReadLease {"#,
         let at = "main:Document.Order.Form.Main";
         let item_at = "main:Document.Order.Form.Main.Item.Content.Item.Html";
         apply_pair(
-            at,
-            serde_json::json!([{"op": "form.create", "args": {
-                "values": {"type": "ObjectForm"}
+            "main:Document.Order",
+            serde_json::json!([{"op": "form.add", "args": {
+                "items": [{"name": "Main", "type": "ObjectForm"}]
             }}]),
         );
         apply_pair(
