@@ -37689,6 +37689,70 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S420",
+   "area": "XDTO и обмены",
+   "task": "Прочитать типы и явные либо эффективные границы глобального свойства и свойств типов XDTO",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Property.EnterpriseData"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"raw\":\"tns:EnterpriseData\",\"prefix\":\"tns\",\"local\":\"EnterpriseData\",\"namespace\":\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\"}"
+      },
+      {
+       "pointer": "/data/props/bounds",
+       "eq": "{\"lower\":\"1\",\"upper\":\"1\",\"lowerExplicit\":false,\"upperExplicit\":false,\"unbounded\":false}"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"raw\":\"tns:ВерсияФормата\",\"prefix\":\"tns\",\"local\":\"ВерсияФормата\",\"namespace\":\"http://v8.1c.ru/edi/edi_stnd/EnterpriseData/1.17.3\"}"
+      },
+      {
+       "pointer": "/data/props/bounds",
+       "eq": "{\"lower\":\"0\",\"upper\":\"1\",\"lowerExplicit\":true,\"upperExplicit\":false,\"unbounded\":false}"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/type",
+       "eq": "{\"raw\":\"v8:UUID\",\"prefix\":\"v8\",\"local\":\"UUID\",\"namespace\":\"http://v8.1c.ru/8.1/data/core\"}"
+      },
+      {
+       "pointer": "/data/props/bounds",
+       "eq": "{\"lower\":\"1\",\"upper\":\"3\",\"lowerExplicit\":true,\"upperExplicit\":true,\"unbounded\":false}"
+      }
+     ]
+    }
+   ]
   }
  ]
 }
