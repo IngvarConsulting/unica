@@ -2044,13 +2044,21 @@ impl<R> WorkspaceActor<R> {
                 read.map_err(|error| {
                     ApplyPublicationError::new(
                         ApplyPublicationErrorKind::ConcurrentRevision,
-                        format!("apply dependency is no longer the planned input: {error}"),
+                        format!(
+                            "read-only input `{}:{}` changed; the plan was prepared using this source dependency: {error}",
+                            dependency.binding.source_set_name(),
+                            path.display(),
+                        ),
                     )
                 })?;
                 if offset != expected.len() {
                     return Err(ApplyPublicationError::new(
                         ApplyPublicationErrorKind::ConcurrentRevision,
-                        "apply dependency changed before publication",
+                        format!(
+                            "read-only input `{}:{}` changed; the plan was prepared using this source dependency",
+                            dependency.binding.source_set_name(),
+                            path.display(),
+                        ),
                     ));
                 }
             }
@@ -5325,7 +5333,14 @@ pub(crate) mod tests {
                 .prepare_with_effects(staged, Default::default())
                 .unwrap();
             std::fs::write(&path, b"parent after").unwrap();
-            assert!(fixture.actor.publish_prepared_apply(prepared).is_err());
+            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                super::ApplyPublicationErrorKind::ConcurrentRevision
+            );
+            assert!(error.contains("parent:Configuration.xml"), "{error}");
+            assert!(error.contains("read-only input"), "{error}");
+            assert!(error.contains("prepared using"), "{error}");
             assert!(!fixture.roots[0].join("Borrowed.bsl").exists());
             assert!(!fixture.actor.context().cache_root.exists());
             fixture.cleanup();
@@ -11149,6 +11164,17 @@ pub(crate) mod tests {
             second_kind.get(),
             Some(super::ApplyPublicationErrorKind::ConcurrentRevision)
         );
+        assert!(second.summary.contains("state.json"), "{}", second.summary);
+        assert!(
+            second.summary.contains("shared cache"),
+            "{}",
+            second.summary
+        );
+        assert!(
+            second.summary.contains("atomic publication"),
+            "{}",
+            second.summary
+        );
         assert_eq!(std::fs::read(&module_a).unwrap(), b"A after");
         assert_eq!(std::fs::read(&module_b).unwrap(), b"B before");
         assert_eq!(snapshot_tree(cache_root), expected_cache_after_a);
@@ -11215,6 +11241,17 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert!(!result.ok, "changed sources must invalidate saved bytes");
+        assert!(result.summary.contains("Form.xml"), "{}", result.summary);
+        assert!(
+            result.summary.contains("source write target"),
+            "{}",
+            result.summary
+        );
+        assert!(
+            result.summary.contains("prevent overwriting"),
+            "{}",
+            result.summary
+        );
         assert_eq!(snapshot_tree(&fixture.roots[0]), before);
         let replay = fixture
             .actor
@@ -11227,6 +11264,88 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(replay, result);
         fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_read_only_input_conflict_explains_dependency_without_publishing() {
+        for after_publication in [false, true] {
+            let fixture = actor_fixture("saved-plan-read-only-context", &["main"]);
+            let source = &fixture.roots[0];
+            std::fs::write(source.join("Module.bsl"), b"before").unwrap();
+            std::fs::write(source.join("Dependency.bsl"), b"dependency").unwrap();
+            let binding = fixture.actor.bind_provider_root("main", source).unwrap();
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            state.read(Path::new("Dependency.bsl")).unwrap();
+            state
+                .replace("Module.bsl", b"before", b"after".to_vec())
+                .unwrap();
+            let batch = admission
+                .prepare_with_effects(state, Default::default())
+                .unwrap();
+            fixture.actor.preview_prepared_apply(&batch).unwrap();
+            let token = fixture
+                .actor
+                .save_prepared_apply(
+                    batch,
+                    crate::domain::invocation::DomainResult::success("preview"),
+                )
+                .unwrap();
+            if after_publication {
+                let hook_source = source.clone();
+                crate::infrastructure::native_operations::compile_transaction::set_retained_apply_before_postimages_hook(move || {
+                    assert_eq!(std::fs::read(hook_source.join("Module.bsl")).unwrap(), b"after");
+                    std::fs::write(hook_source.join("Dependency.bsl"), b"changed").unwrap();
+                });
+            } else {
+                std::fs::write(source.join("Dependency.bsl"), b"changed").unwrap();
+            }
+            let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+            let result = fixture
+                .actor
+                .execute_saved_apply(
+                    &token,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                    finish_saved_apply_test,
+                )
+                .unwrap();
+            assert!(!result.ok);
+            assert!(
+                result.summary.contains("Dependency.bsl"),
+                "{}",
+                result.summary
+            );
+            assert!(
+                result.summary.contains("read-only input"),
+                "{}",
+                result.summary
+            );
+            assert!(
+                !result.summary.contains("source write target"),
+                "{}",
+                result.summary
+            );
+            assert_eq!(std::fs::read(source.join("Module.bsl")).unwrap(), b"before");
+            assert_eq!(
+                std::fs::read(source.join("Dependency.bsl")).unwrap(),
+                b"changed"
+            );
+            assert_eq!(
+                snapshot_tree(&fixture.root.join(".build/unica")),
+                cache_before
+            );
+            fixture.cleanup();
+        }
     }
 
     #[test]
