@@ -635,6 +635,29 @@ pub(crate) fn staged_template_format(
     dcs_mxl::template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw))
 }
 
+/// Путь набора с именем `name` в стадированной схеме макета `template`:
+/// по нему снятый `dataSet` ведёт к настоящему, в том числе вложенному,
+/// набору (#1353). `None` — схемы нет или набор не найден однозначно.
+pub(crate) fn staged_data_set_path(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    template: &crate::domain::address::QualifiedAddress,
+    name: &str,
+) -> Option<Vec<String>> {
+    let (address, covered) = descriptor_node(template)?;
+    if covered != template.segments().len() {
+        return None;
+    }
+    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+        &address,
+        "Template.xml",
+        binding.source_kind(),
+    )
+    .ok()?;
+    let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
+    dcs_mxl::data_set_path_in_schema(&bytes, name)
+}
+
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
 /// описанием есть, когда есть его файл; член объекта метаданных (реквизит,
 /// табличная часть) при существующем описании владельца считается

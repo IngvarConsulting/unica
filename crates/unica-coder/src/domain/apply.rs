@@ -533,7 +533,7 @@ enum OperationApplicability {
     DcsDataContainer,
     /// Набор данных схемы.
     DcsData,
-    /// Набор данных схемы или его запрос `DataSet.D.Query`.
+    /// Запрос набора данных схемы `DataSet.D.Query`.
     DcsQuery,
     /// Вариант настроек схемы.
     DcsSettings,
@@ -594,7 +594,7 @@ impl OperationApplicability {
             Self::DcsSchema => "`Kind.Name.Template.T` of a data composition schema",
             Self::DcsDataContainer => "`Kind.Name.Template.T[.DataSet.D]` of a schema",
             Self::DcsData => "`Kind.Name.Template.T.DataSet.D`",
-            Self::DcsQuery => "`Kind.Name.Template.T.DataSet.D` or `.DataSet.D.Query`",
+            Self::DcsQuery => "`Kind.Name.Template.T.DataSet.D.Query`",
             Self::DcsSettings => "`Kind.Name.Template.T.Setting.S`",
             Self::DcsParameter => "`Kind.Name.Template.T.Parameter.P`",
             Self::DcsField => "`Kind.Name.Template.T.DataSet.D.Field.F`",
@@ -725,13 +725,12 @@ impl OperationApplicability {
             }
             Self::DcsData => site.dcs_terminal(&[NodeKind::DataSet]),
             Self::DcsQuery => {
-                site.dcs_terminal(&[NodeKind::DataSet])
-                    || (site.route == RouteClass::Dcs
-                        && matches!(segments, [.., data_set, query]
-                            if query.kind() == NodeKind::Query
-                                && query.name().is_none()
-                                && data_set.kind() == NodeKind::DataSet
-                                && data_set.name().is_some()))
+                site.route == RouteClass::Dcs
+                    && matches!(segments, [.., data_set, query]
+                        if query.kind() == NodeKind::Query
+                            && query.name().is_none()
+                            && data_set.kind() == NodeKind::DataSet
+                            && data_set.name().is_some())
             }
             Self::DcsSettings => site.dcs_terminal(&[NodeKind::Setting]),
             Self::DcsParameter => site.dcs_terminal(&[NodeKind::Parameter]),
@@ -1053,12 +1052,15 @@ impl OperationDescriptor {
         template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     ) -> Option<QualifiedAddress> {
         let segments = site.segments();
-        let mut candidates = (1..segments.len())
-            .rev()
-            .map(|length| QualifiedAddress {
+        // Запрос — безымянный узел набора: операцию запроса, вызванную на
+        // самом наборе, отказ ведёт к его `Query`.
+        let query = QualifiedAddress::parse(&format!("{}.Query", site.at)).ok();
+        let mut candidates = query
+            .into_iter()
+            .chain((1..segments.len()).rev().map(|length| QualifiedAddress {
                 source_set: site.at.source_set().to_string(),
                 segments: segments[..length].to_vec(),
-            })
+            }))
             .collect::<Vec<_>>();
         if site.route != RouteClass::Configuration {
             candidates.push(configuration_root(site.at.source_set()));
@@ -1084,6 +1086,7 @@ impl OperationDescriptor {
     pub(crate) fn retired_query_alias_target(
         self,
         site: &OperationSite<'_>,
+        data_sets: DataSetLookup<'_>,
     ) -> Option<QualifiedAddress> {
         let segments = site.segments();
         let position = segments
@@ -1100,9 +1103,9 @@ impl OperationDescriptor {
             source_set: site.at.source_set().to_string(),
             segments: segments[..position].to_vec(),
         };
+        let data_set = named_data_set(&template, name, data_sets)?;
         [".Query", ""].into_iter().find_map(|suffix| {
-            let candidate =
-                QualifiedAddress::parse(&format!("{template}.DataSet.{name}{suffix}")).ok()?;
+            let candidate = QualifiedAddress::parse(&format!("{data_set}{suffix}")).ok()?;
             OperationSite::new(&candidate, site.source)
                 .is_some_and(|target| self.applies_at(&target))
                 .then_some(candidate)
@@ -1348,7 +1351,10 @@ operation_descriptors!(
 /// `{at^Kind}` — начало адреса вызова до последнего сегмента вида `Kind`
 /// включительно (`Module` — и общий модуль), и `{value}` — строковое
 /// значение снятого ключа. Если в адресе вызова нет сегмента `Kind`, запись
-/// адреса не строит. Шаблон, который
+/// адреса не строит. `{dataSet}` — набор схемы, названный значением: сегмент
+/// `DataSet` адреса вызова с этим именем, иначе набор, найденный по имени
+/// в схеме макета (вложенный набор объединения тоже), иначе набор верхнего
+/// уровня. Шаблон, который
 /// кончается на `.{name}` вместо `{value}`, — для ключа, который называл
 /// подузел не его именем (идентификатором предопределённого элемента):
 /// адрес из значения не строится, и отказ ведёт к чтению коллекции, где
@@ -1459,18 +1465,9 @@ retired_arguments!(
     ),
     // Аргументы, дублировавшие `at` (П2, #1353). Значение называло узел
     // в обход адреса: отказ ведёт к узлу, который оно называло.
-    (
-        "query.set",
-        "values.dataSet",
-        "{at^Template}.DataSet.{value}",
-        true
-    ),
-    (
-        "query.patch",
-        "values.dataSet",
-        "{at^Template}.DataSet.{value}",
-        true
-    ),
+    // `{dataSet}` — набор, названный значением: см. `RetiredArgument`.
+    ("query.set", "values.dataSet", "{dataSet}.Query", true),
+    ("query.patch", "values.dataSet", "{dataSet}.Query", true),
     (
         "structure.set",
         "values.variant",
@@ -1539,11 +1536,26 @@ impl RetiredArgument {
         at: &QualifiedAddress,
         args: &Map<String, Value>,
     ) -> Option<ArgumentRedirect> {
+        self.redirect_with(at, args, &|_, _| None)
+    }
+
+    /// То же, что `redirect`, с поиском набора схемы по имени.
+    pub(crate) fn redirect_with(
+        self,
+        at: &QualifiedAddress,
+        args: &Map<String, Value>,
+        data_sets: DataSetLookup<'_>,
+    ) -> Option<ArgumentRedirect> {
         let (location, value) = find_key(&Value::Object(args.clone()), self.key, String::new())?;
         // Адрес собирается подстановкой в строку и разбирается заново: единого
         // построителя адреса пока нет, он появится в П5 (#1356) вместе с
         // экранированием точки в именах; тогда подстановку заменит он.
-        let raw = expand_anchor(self.address, at)?.replace("{at}", &at.to_string());
+        let raw = if self.address.contains("{dataSet}") {
+            let data_set = named_data_set(at, &value, data_sets)?;
+            self.address.replace("{dataSet}", &data_set.to_string())
+        } else {
+            expand_anchor(self.address, at)?.replace("{at}", &at.to_string())
+        };
         if let Some(collection) = raw.strip_suffix(".{name}") {
             return Some(ArgumentRedirect {
                 location,
@@ -1569,6 +1581,45 @@ impl ArgumentRedirect {
         }
         QualifiedAddress::parse(&format!("{}.{LISTED_MEMBER}", self.at)).ok()
     }
+}
+
+/// Путь набора схемы от макета по имени набора: `["A", "B"]` для вложенного
+/// набора `DataSet.A.DataSet.B`. `None` — набора с таким именем в схеме нет
+/// или их несколько.
+pub(crate) type DataSetLookup<'a> = &'a dyn Fn(&QualifiedAddress, &str) -> Option<Vec<String>>;
+
+/// Набор схемы, названный значением снятого `dataSet`: сегмент адреса вызова
+/// с этим именем; иначе найденный в схеме макета; иначе набор верхнего уровня.
+fn named_data_set(
+    at: &QualifiedAddress,
+    name: &str,
+    data_sets: DataSetLookup<'_>,
+) -> Option<QualifiedAddress> {
+    let segments = at.segments();
+    let prefix = |length: usize| QualifiedAddress {
+        source_set: at.source_set().to_string(),
+        segments: segments[..length].to_vec(),
+    };
+    if let Some(index) = segments
+        .iter()
+        .rposition(|segment| segment.kind() == NodeKind::DataSet && segment.name() == Some(name))
+    {
+        return Some(prefix(index + 1));
+    }
+    let template = prefix(
+        segments
+            .iter()
+            .rposition(|segment| segment.kind() == NodeKind::Template)?
+            + 1,
+    );
+    let path = data_sets(&template, name).unwrap_or_else(|| vec![name.to_string()]);
+    QualifiedAddress::parse(&format!(
+        "{template}{}",
+        path.iter()
+            .map(|name| format!(".DataSet.{name}"))
+            .collect::<String>()
+    ))
+    .ok()
 }
 
 /// Подставляет `{at^Kind}`: начало `at` до последнего сегмента вида `Kind`
@@ -1641,11 +1692,12 @@ fn retired_argument_redirect_in(
     descriptor: OperationDescriptor,
     site: &OperationSite<'_>,
     args: &Map<String, Value>,
+    data_sets: DataSetLookup<'_>,
 ) -> Option<ArgumentRedirect> {
     entries
         .iter()
         .filter(|entry| entry.retired && entry.op == descriptor.name)
-        .filter_map(|entry| entry.redirect(site.at, args))
+        .filter_map(|entry| entry.redirect_with(site.at, args, data_sets))
         .find(|redirect| {
             redirect.executable_at().is_some_and(|target| {
                 OperationSite::new(&target, site.source)
@@ -1686,8 +1738,20 @@ impl OperationRegistry {
         site: &OperationSite<'_>,
         args: &Map<String, Value>,
     ) -> Option<ArgumentRedirect> {
+        self.retired_argument_redirect_with(op, site, args, &|_, _| None)
+    }
+
+    /// То же с поиском набора схемы по имени: снятый `dataSet` ведёт
+    /// к настоящему, в том числе вложенному, набору.
+    pub(crate) fn retired_argument_redirect_with(
+        self,
+        op: &str,
+        site: &OperationSite<'_>,
+        args: &Map<String, Value>,
+        data_sets: DataSetLookup<'_>,
+    ) -> Option<ArgumentRedirect> {
         let descriptor = self.lookup(op)?;
-        retired_argument_redirect_in(RETIRED_ARGUMENTS, descriptor, site, args)
+        retired_argument_redirect_in(RETIRED_ARGUMENTS, descriptor, site, args, data_sets)
     }
 
     pub(crate) fn lookup(self, name: &str) -> Option<OperationDescriptor> {
@@ -2261,6 +2325,11 @@ mod tests {
             (
                 "query.set",
                 "main:Report.Sales.Template.Schema.DataSet.Main",
+                false,
+            ),
+            (
+                "query.set",
+                "main:Report.Sales.Template.Schema.DataSet.Union.DataSet.Member.Query",
                 true,
             ),
             (
@@ -2564,17 +2633,32 @@ mod tests {
         let cases = [
             (
                 "query.set",
-                format!("{template}.DataSet.Main"),
+                format!("{template}.DataSet.Main.Query"),
                 json!({"values": {"dataSet": "Other", "query": "ВЫБРАТЬ 1"}}),
                 "values.dataSet",
-                format!("{template}.DataSet.Other"),
+                format!("{template}.DataSet.Other.Query"),
             ),
             (
                 "query.patch",
                 format!("{template}.DataSet.Main.Query"),
                 json!({"values": {"dataSet": "Main", "find": "1"}}),
                 "values.dataSet",
-                format!("{template}.DataSet.Main"),
+                format!("{template}.DataSet.Main.Query"),
+            ),
+            // Вложенный набор, названный в адресе вызова, — он сам.
+            (
+                "query.set",
+                format!("{template}.DataSet.Union.DataSet.Member.Query"),
+                json!({"values": {"dataSet": "Member", "query": "ВЫБРАТЬ 1"}}),
+                "values.dataSet",
+                format!("{template}.DataSet.Union.DataSet.Member.Query"),
+            ),
+            (
+                "query.set",
+                format!("{template}.DataSet.Union"),
+                json!({"values": {"dataSet": "Union", "query": "ВЫБРАТЬ 1"}}),
+                "values.dataSet",
+                format!("{template}.DataSet.Union.Query"),
             ),
             // На самом макете операция не исполнима, но значение называет
             // набор: отказ ведёт к нему, а не к форме адреса.
@@ -2583,7 +2667,7 @@ mod tests {
                 template.to_string(),
                 json!({"values": {"dataSet": "Main", "query": "ВЫБРАТЬ 1"}}),
                 "values.dataSet",
-                format!("{template}.DataSet.Main"),
+                format!("{template}.DataSet.Main.Query"),
             ),
             (
                 "structure.set",
@@ -2682,6 +2766,43 @@ mod tests {
                 "{op} at {raw} without {location}"
             );
         }
+        // Набор, не названный в адресе вызова, ищется в схеме: член
+        // объединения получает свой вложенный адрес; без схемы — верхний
+        // уровень.
+        let at = address(&format!("{template}.DataSet.Main.Query"));
+        let site = OperationSite::new(&at, traits).unwrap();
+        let args = json!({"values": {"dataSet": "Member", "query": "ВЫБРАТЬ 1"}});
+        let args = args.as_object().unwrap();
+        let lookup = |schema: &QualifiedAddress, name: &str| {
+            assert_eq!(schema.to_string(), template);
+            (name == "Member").then(|| vec!["Union".to_string(), "Member".to_string()])
+        };
+        for (lookup, expected) in [
+            (
+                &lookup as super::DataSetLookup<'_>,
+                format!("{template}.DataSet.Union.DataSet.Member.Query"),
+            ),
+            (
+                &|_: &QualifiedAddress, _: &str| None,
+                format!("{template}.DataSet.Member.Query"),
+            ),
+        ] {
+            let redirect = registry
+                .retired_argument_redirect_with("query.set", &site, args, lookup)
+                .expect("the dataSet argument is retired");
+            assert_eq!(redirect.at.to_string(), expected);
+        }
+        // Операция запроса на самом наборе ведёт к его запросу.
+        let data_set = address(&format!("{template}.DataSet.Main"));
+        let site = OperationSite::new(&data_set, traits).unwrap();
+        assert_eq!(
+            registry
+                .lookup("query.set")
+                .unwrap()
+                .nearest_applicable_ancestor(&site, &|_| None)
+                .map(|at| at.to_string()),
+            Some(format!("{template}.DataSet.Main.Query"))
+        );
         // Якорь в коде — аргумент, а не адрес: он не снят.
         let module = address("main:CommonModule.Shared");
         let site = OperationSite::new(&module, traits).unwrap();
@@ -2744,6 +2865,7 @@ mod tests {
                 registry.lookup("attribute.set").unwrap(),
                 &site,
                 json!({"values": {"name": "Goods"}}).as_object().unwrap(),
+                &|_, _| None,
             ),
             None
         );

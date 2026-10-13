@@ -1346,15 +1346,59 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
         assert_eq!(refusal.next.len(), 1, "{op}");
         assert_eq!(refusal.next[0]["args"], json!({"at": target}), "{op}");
     }
-    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
     let schema = "cf:Report.Sales.Template.Schema";
+    // Операция запроса на самом наборе — обычный отказ «не тот узел» с `next`
+    // к запросу набора.
+    let request = apply_request(
+        &format!("{schema}.DataSet.Main"),
+        "query.set",
+        json!({"values": {"query": "ВЫБРАТЬ 1"}}),
+    );
+    let refusal = preflight_apply_operations(&request, traits, &|_| None)
+        .expect_err("query.set is not executable at the dataset itself");
+    assert_eq!(refusal.at.as_deref(), Some("ops[0].at"));
+    assert_eq!(
+        refusal.next[0]["args"],
+        json!({"at": format!("{schema}.DataSet.Main.Query.Can.query.set")})
+    );
+    // Набор, не названный адресом вызова, ищется в схеме: член объединения
+    // получает свой вложенный адрес.
+    let request = apply_request(
+        &format!("{schema}.DataSet.Main.Query"),
+        "query.set",
+        json!({"values": {"dataSet": "Member", "query": "ВЫБРАТЬ 1"}}),
+    );
+    let refusal = super::v13_service::preflight_apply_operations_with(
+        &request,
+        traits,
+        &|_| None,
+        &|template, name| {
+            (template.to_string() == schema && name == "Member")
+                .then(|| vec!["Union".to_string(), "Member".to_string()])
+        },
+    )
+    .expect_err("the dataSet argument is retired");
+    let actual = refusal
+        .next
+        .iter()
+        .map(|next| next["args"]["at"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        vec![
+            json!(format!(
+                "{schema}.DataSet.Union.DataSet.Member.Query.Can.query.set"
+            )),
+            json!(format!("{schema}.DataSet.Union.DataSet")),
+        ]
+    );
     for (at, op, args, location, next_at, branch, duplicate) in [
         (
-            format!("{schema}.DataSet.Main"),
+            format!("{schema}.DataSet.Main.Query"),
             "query.set",
             json!({"values": {"dataSet": "Main", "query": "ВЫБРАТЬ 1"}}),
             "ops[0].args.values.dataSet",
-            format!("{schema}.DataSet.Main.Can.query.set"),
+            format!("{schema}.DataSet.Main.Query.Can.query.set"),
             format!("{schema}.DataSet"),
             true,
         ),
@@ -1363,7 +1407,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
             "query.patch",
             json!({"values": {"dataSet": "Other", "find": "1"}}),
             "ops[0].args.values.dataSet",
-            format!("{schema}.DataSet.Other.Can.query.patch"),
+            format!("{schema}.DataSet.Other.Query.Can.query.patch"),
             format!("{schema}.DataSet"),
             false,
         ),

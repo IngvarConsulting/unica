@@ -117,7 +117,7 @@ impl OperationContract {
     pub(crate) fn dcs(op: &str) -> Option<Self> {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
-        let query_target = "Existing DCS Template.DataSet.<name> or its query DataSet.<name>.Query; repeat DataSet.<name> for a nested Union member. The address names the dataset; there is no dataset argument.";
+        let query_target = "The query of an existing dataset: Template.DataSet.<name>.Query; repeat DataSet.<name> for a nested Union member. The address names the dataset; there is no dataset argument.";
         let setting_target = "Existing DCS Template.Setting.<name>; the address names the variant. Optional group selects a unique named structure item; read Setting.Item first.";
         let title = json!({"anyOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]});
         let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});

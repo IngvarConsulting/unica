@@ -261,7 +261,14 @@ impl CanonicalV13ReadService {
                 &admission, &binding, template,
             )
         };
-        if let Err(refusal) = preflight_apply_operations(&request, traits, &template_format) {
+        let data_set_path = |template: &QualifiedAddress, name: &str| {
+            crate::infrastructure::native_operations::apply_families::staged_data_set_path(
+                &admission, &binding, template, name,
+            )
+        };
+        if let Err(refusal) =
+            preflight_apply_operations_with(&request, traits, &template_format, &data_set_path)
+        {
             return *refusal;
         }
         admission.bind_request(&request);
@@ -3956,6 +3963,17 @@ pub(super) fn preflight_apply_operations(
     source: SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
 ) -> Result<(), Box<DomainResult>> {
+    preflight_apply_operations_with(request, source, template_format, &|_, _| None)
+}
+
+/// То же, что `preflight_apply_operations`, с поиском набора схемы по имени:
+/// снятый `dataSet` ведёт к настоящему, в том числе вложенному, набору.
+pub(super) fn preflight_apply_operations_with(
+    request: &crate::domain::apply::ApplyRequest,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    data_sets: crate::domain::apply::DataSetLookup<'_>,
+) -> Result<(), Box<DomainResult>> {
     let registry = OperationRegistry::closed();
     for (index, operation) in request.ops().iter().enumerate() {
         let Some(descriptor) = registry.lookup(operation.name()) else {
@@ -3996,9 +4014,12 @@ pub(super) fn preflight_apply_operations(
                 ),
             )));
         };
-        if let Some(redirect) =
-            registry.retired_argument_redirect(operation.name(), &site, operation.args())
-        {
+        if let Some(redirect) = registry.retired_argument_redirect_with(
+            operation.name(),
+            &site,
+            operation.args(),
+            data_sets,
+        ) {
             let location = Some(format!("ops[{index}].args.{}", redirect.location));
             if redirect.listing {
                 // Значение называло подузел не именем: адрес из него не
@@ -4026,9 +4047,17 @@ pub(super) fn preflight_apply_operations(
             }
             // Адрес построен из значения аргумента, и узла с таким именем
             // может не быть: вторым шагом — коллекция, где видны имена.
-            let (member, owner) = redirect
+            // Безымянный узел (`DataSet.D.Query`) — часть своего именованного
+            // родителя: ветвь строится по родителю.
+            let named = redirect
                 .at
                 .segments()
+                .iter()
+                .rposition(|segment| segment.name().is_some())
+                .map_or(redirect.at.segments(), |last| {
+                    &redirect.at.segments()[..=last]
+                });
+            let (member, owner) = named
                 .split_last()
                 .expect("a member address has a terminal segment");
             let branch = QualifiedAddress {
@@ -4072,7 +4101,7 @@ pub(super) fn preflight_apply_operations(
         }
         // Прежний псевдоним запроса `Template.T.Query.D` снят (#1353): отказ
         // называет адрес набора, где операция исполнима.
-        if let Some(target) = descriptor.retired_query_alias_target(&site) {
+        if let Some(target) = descriptor.retired_query_alias_target(&site, data_sets) {
             return Err(Box::new(with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),

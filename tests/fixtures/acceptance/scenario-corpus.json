@@ -9532,7 +9532,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query.Can.query.set"
      },
      "expect": [
       "ok"
@@ -9559,7 +9559,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.set",
@@ -10131,7 +10131,7 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "bad_value: apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D` or `.DataSet.D.Qu",
+     "refusal": "bad_value: apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D.Query`",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -10139,7 +10139,7 @@
         {
          "code": "bad_value",
          "outcome": "fixCall",
-         "message": "apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D` or `.DataSet.D.Query`"
+         "message": "apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D.Query`"
         }
        ]
       }
@@ -10148,7 +10148,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.set",
@@ -10187,7 +10187,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.patch",
@@ -10227,7 +10227,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.patch",
@@ -10403,7 +10403,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.patch",
@@ -10444,7 +10444,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.patch",
@@ -10637,7 +10637,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.set",
@@ -10705,7 +10705,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.patch",
@@ -10814,7 +10814,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
       "ops": [
        {
         "op": "query.patch",
@@ -21222,7 +21222,7 @@
    "name": "dcs-compose-query-object-union",
    "issue": 1310,
    "area": "СКД",
-   "task": "Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check",
+   "task": "Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check; снятый dataSet, названный членом объединения, ведёт next к вложенному запросу этого члена",
    "workspace": "tests/fixtures/acceptance/workspace-dcs",
    "wire": [
     {
@@ -21693,7 +21693,7 @@
        {
         "op": "query.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested",
+         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query",
          "values": {
           "query": "ВЫБРАТЬ 8 КАК Amount"
          }
@@ -21702,7 +21702,7 @@
        {
         "op": "query.patch",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested",
+         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query",
          "values": {
           "find": "8 КАК",
           "replace": "9 КАК",
@@ -21831,6 +21831,41 @@
       {
        "pointer": "/data/items/0/text",
        "eq": "ВЫБРАТЬ 9 КАК Amount"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Query",
+      "ops": [
+       {
+        "op": "query.set",
+        "args": {
+         "values": {
+          "dataSet": "Nested",
+          "query": "ВЫБРАТЬ 9 КАК Amount"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `query.set` names its subject by address, not by `values.dataSet`; call it at `cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.dataSet"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query.Can.query.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet"
       }
      ]
     },
@@ -24324,7 +24359,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.PrimitiveLiteral.DataSet.Literal",
+      "at": "cf:Report.F05Report.Template.PrimitiveLiteral.DataSet.Literal.Query",
       "ops": [
        {
         "op": "query.patch",
@@ -34826,7 +34861,7 @@
    "name": "retired-duplicate-arguments-route-to-the-address",
    "issue": 1353,
    "area": "СКД",
-   "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, имя формы, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; прежний адрес запроса Template.T.Query.<набор> отвергается с next к запросу набора",
+   "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, имя формы, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора",
    "wire": [
     {
      "tool": "unica.view",
@@ -34846,7 +34881,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query",
       "ops": [
        {
         "op": "query.set",
@@ -34870,7 +34905,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Can.query.set"
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
       },
       {
        "pointer": "/next/1/args/at",
@@ -34888,7 +34923,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Can.query.set"
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
      },
      "expect": [
       "ok"
@@ -34897,6 +34932,36 @@
       {
        "pointer": "/data/props/op",
        "eq": "query.set"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "query.set",
+        "args": {
+         "values": {
+          "query": "ВЫБРАТЬ 1 КАК Поле1"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `query.set` does not apply to DataSet `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1`; it applies",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].at"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
       }
      ]
     },

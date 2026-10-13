@@ -257,6 +257,13 @@ fn parse_dcs_operation(
         .expect("the DCS contract requires object arguments");
     let address = qualified_target(args, op_index, binding)?;
     let target = dcs_target(&address, op_index)?;
+    if !target.query && matches!(operation, "query.set" | "query.patch") {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("{operation} addresses the dataset's query: `DataSet.D.Query`"),
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
     if target.query && !matches!(operation, "query.set" | "query.patch") {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
@@ -745,6 +752,53 @@ fn require_template_format(
     .at_path(at_path))
 }
 
+/// Путь набора с именем `name` в теле схемы: `["A", "B"]` для члена
+/// объединения `A`. `None` — такого набора нет или он не единственный.
+pub(super) fn data_set_path_in_schema(bytes: &[u8], name: &str) -> Option<Vec<String>> {
+    use crate::infrastructure::native_operations::dcs::DCS_SCHEMA_NS as S;
+    fn walk(
+        node: roxmltree::Node<'_, '_>,
+        tag: &str,
+        name: &str,
+        path: &mut Vec<String>,
+        found: &mut Vec<Vec<String>>,
+    ) {
+        for child in node
+            .children()
+            .filter(|child| child.is_element() && child.has_tag_name((S, tag)))
+        {
+            let Some(own) = child
+                .children()
+                .find(|item| item.is_element() && item.has_tag_name((S, "name")))
+                .and_then(|item| item.text())
+                .map(str::trim)
+            else {
+                continue;
+            };
+            path.push(own.to_string());
+            if own == name {
+                found.push(path.clone());
+            }
+            walk(child, "item", name, path, found);
+            path.pop();
+        }
+    }
+    let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
+    let document = roxmltree::Document::parse(text).ok()?;
+    let mut found = Vec::new();
+    walk(
+        document.root_element(),
+        "dataSet",
+        name,
+        &mut Vec::new(),
+        &mut found,
+    );
+    match found.as_slice() {
+        [only] => Some(only.clone()),
+        _ => None,
+    }
+}
+
 /// `TemplateType` of a template descriptor.
 pub(super) fn template_type_of(bytes: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
@@ -955,6 +1009,23 @@ mod tests {
         }
     }
 
+    /// Набор находится по имени на любой глубине объединения; неоднозначное
+    /// или отсутствующее имя пути не даёт.
+    #[test]
+    fn a_data_set_is_found_by_name_inside_unions() {
+        let schema = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema">
+<dataSet><name>Union</name><item><name>Member</name></item><item><name>Twin</name></item></dataSet>
+<dataSet><name>Top</name></dataSet><dataSet><name>Twin</name></dataSet></DataCompositionSchema>"#;
+        let path = |name| super::data_set_path_in_schema(schema.as_bytes(), name);
+        assert_eq!(
+            path("Member"),
+            Some(vec!["Union".to_string(), "Member".to_string()])
+        );
+        assert_eq!(path("Top"), Some(vec!["Top".to_string()]));
+        assert_eq!(path("Twin"), None);
+        assert_eq!(path("Missing"), None);
+    }
+
     /// Запрос — безымянный узел набора `DataSet.D.Query`: его правят только
     /// операции запроса, а прежний псевдоним набора `Template.T.Query.D`
     /// и аргументы, дублировавшие адрес, отказывают (#1353).
@@ -963,11 +1034,6 @@ mod tests {
         let fixture = ApplySeamFixture::new();
         let schema = "main:Report.Versions.Template.Schema";
         for (op, at, values) in [
-            (
-                "query.set",
-                "DataSet.НаборДанных1",
-                json!({"query": "ВЫБРАТЬ 1"}),
-            ),
             (
                 "query.set",
                 "DataSet.НаборДанных1.Query",
@@ -1006,6 +1072,13 @@ mod tests {
             (
                 "query.set",
                 "DataSet.НаборДанных1",
+                json!({"query": "ВЫБРАТЬ 1"}),
+                "at",
+                "DataSet.D.Query",
+            ),
+            (
+                "query.set",
+                "DataSet.НаборДанных1.Query",
                 json!({"dataSet": "НаборДанных1", "query": "ВЫБРАТЬ 1"}),
                 "values.dataSet",
                 "unknown argument",
@@ -1366,6 +1439,7 @@ mod tests {
     fn typed_dcs_aliases_have_one_owner_and_preserve_primary_priority() {
         let fixture = ApplySeamFixture::new();
         let at = "main:Report.Versions.Template.Schema.DataSet.НаборДанных1";
+        let query_at = "main:Report.Versions.Template.Schema.DataSet.НаборДанных1.Query";
         let field = |item| {
             parse_dcs_mxl_plan_operation(
                 "field.add",
@@ -1389,7 +1463,7 @@ mod tests {
         let query = |values| {
             parse_dcs_mxl_plan_operation(
                 "query.set",
-                &json!({"at":at,"values":values}),
+                &json!({"at":query_at,"values":values}),
                 0,
                 &fixture.binding,
             )

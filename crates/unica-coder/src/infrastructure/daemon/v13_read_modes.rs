@@ -219,7 +219,7 @@ mod operation_dictionary_tests {
 
     #[test]
     fn detailed_dcs_can_publishes_structured_operands_and_refuses_retired_schema_input() {
-        let data = json!({"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data","kind":"DataSet","title":"F05Data"});
+        let data = json!({"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query","kind":"Query"});
         let brief = can_of(data.clone());
         let query = brief["can"]
             .as_array()
@@ -231,7 +231,7 @@ mod operation_dictionary_tests {
             query,
             &json!({"op":"query.set","args":"values","implemented":true})
         );
-        let at = "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set";
+        let at = "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query.Can.query.set";
         let detailed =
             operation_node(&data, "query.set", at, super::configuration_context()).unwrap();
         assert_eq!(detailed["at"], at);
