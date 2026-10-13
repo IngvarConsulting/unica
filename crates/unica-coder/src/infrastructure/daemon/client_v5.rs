@@ -669,6 +669,20 @@ impl V5DaemonProcessOwner {
         )
     }
 
+    /// Fence one exact receipt key within `deadline`: a submission of it the
+    /// daemon has not reserved yet will never run in this daemon process.
+    pub(crate) fn fence_invocation_receipt_before(
+        &mut self,
+        receipt_key: ReceiptKey,
+        deadline: Instant,
+    ) -> Result<V5ServerResponse, V5TransportError> {
+        self.exchange_typed_before(
+            V5ClientRequest::FenceInvocationReceipt { receipt_key },
+            "fence invocation receipt",
+            deadline,
+        )
+    }
+
     pub(crate) fn acknowledge_invocation_receipt_before(
         &mut self,
         receipt_key: ReceiptKey,

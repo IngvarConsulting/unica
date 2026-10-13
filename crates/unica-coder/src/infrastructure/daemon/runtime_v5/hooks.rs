@@ -102,6 +102,12 @@ pub(crate) enum V5PausePoint {
     BeforeCancelGateAcquire,
     AfterTaskStoreTerminalBeforeLifecycleLinkTerminal,
     BeforeRetirementSnapshot,
+    /// A submit holds its key's lock, has found no Task link for the key and
+    /// has not reserved it yet.
+    BeforeSubmitReservation,
+    /// A cancel holds its key's lock, has found no Task link for the key and
+    /// has not written its ledger cancel yet.
+    BeforeCancelReservation,
 }
 
 /// An injected workspace admission failure, in place of the real bind.
@@ -353,6 +359,12 @@ pub(crate) trait V5RuntimeHooks: Send + Sync {
     }
 
     fn ack_response_disconnect(&self) -> bool {
+        false
+    }
+
+    /// Invoked after an exact receipt recovery is answered and before writing
+    /// the answer. Tests lose it to close the frontend recovery window.
+    fn recover_response_disconnect(&self) -> bool {
         false
     }
 

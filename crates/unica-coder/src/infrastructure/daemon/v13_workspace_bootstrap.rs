@@ -81,7 +81,7 @@ pub(super) fn prepare(
         let (tool, summary) = match question {
             RootQuestion::Facts => (
                 "unica.view",
-                "view filter, limit, and cursor require logical argument `at`; call unica.view with an empty object to inspect the workspace",
+                "view limit and cursor require logical argument `at`; call unica.view with an empty object to inspect the workspace",
             ),
             RootQuestion::Verdict => (
                 "unica.check",

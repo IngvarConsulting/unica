@@ -266,7 +266,7 @@ fn predefined_writes_refuse_an_owner_without_code_type() {
     let item = json!({"name": "Основной", "id": "a1b2c3d4-1111-4111-8111-111111111111"});
     for op in [
         json!({"op": "predefinedItem.add", "args": {"items": [item.clone()]}}),
-        json!({"op": "predefinedItem.set", "args": {"values": {"id": "a1b2c3d4-1111-4111-8111-111111111111", "description": "x"}}}),
+        json!({"op": "predefinedItem.set", "args": {"at": "ext:Catalog.CorpusCatalog.PredefinedItem.Основной", "values": {"description": "x"}}}),
     ] {
         let error = plan_single(
             "workspace-incomplete-borrowed",

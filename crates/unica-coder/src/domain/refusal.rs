@@ -74,8 +74,6 @@ pub enum RefusalCode {
     UnsupportedCursor,
     /// `unsupported_source`
     UnsupportedSource,
-    /// `unsupported_filter`
-    UnsupportedFilter,
     /// `incomparable_nodes`
     IncomparableNodes,
     /// `result_too_large`
@@ -132,6 +130,10 @@ pub enum RefusalCode {
     ProviderFailed,
     /// `invalid_result`
     InvalidResult,
+    /// `submit_response_lost`
+    SubmitResponseLost,
+    /// `submit_not_delivered`
+    SubmitNotDelivered,
 }
 
 impl RefusalCode {
@@ -151,7 +153,6 @@ impl RefusalCode {
             Self::InvalidCursor => "invalid_cursor",
             Self::UnsupportedCursor => "unsupported_cursor",
             Self::UnsupportedSource => "unsupported_source",
-            Self::UnsupportedFilter => "unsupported_filter",
             Self::IncomparableNodes => "incomparable_nodes",
             Self::ResultTooLarge => "result_too_large",
             Self::InvalidTaskId => "invalid_task_id",
@@ -180,6 +181,8 @@ impl RefusalCode {
             Self::TaskProjectionFailed => "task_projection_failed",
             Self::ProviderFailed => "provider_failed",
             Self::InvalidResult => "invalid_result",
+            Self::SubmitResponseLost => "submit_response_lost",
+            Self::SubmitNotDelivered => "submit_not_delivered",
         }
     }
 
@@ -207,7 +210,6 @@ impl RefusalCode {
             Self::InvalidCursor => Outcome::FixCall,
             Self::UnsupportedCursor => Outcome::FixCall,
             Self::UnsupportedSource => Outcome::FixCall,
-            Self::UnsupportedFilter => Outcome::FixCall,
             Self::IncomparableNodes => Outcome::FixCall,
             Self::ResultTooLarge => Outcome::FixCall,
             Self::InvalidTaskId => Outcome::FixCall,
@@ -236,6 +238,12 @@ impl RefusalCode {
             Self::TaskProjectionFailed => Outcome::DeadEnd,
             Self::ProviderFailed => Outcome::DeadEnd,
             Self::InvalidResult => Outcome::DeadEnd,
+            // Ответ на отправку потерян, но вызов мог стать заданием: ждать
+            // его по `taskId` из `next`, а не отправлять вызов заново.
+            Self::SubmitResponseLost => Outcome::GoElsewhere,
+            // Вызов не дошёл до демона и уже не запустится: тот же вызов
+            // можно повторить как есть.
+            Self::SubmitNotDelivered => Outcome::RetryAsIs,
         }
     }
 
@@ -245,7 +253,7 @@ impl RefusalCode {
     }
 
     /// Весь словарь — для проверок полноты и порождения ведомостей.
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 43] = [
         Self::ConcurrentChange,
         Self::SourceSelectionChanged,
         Self::DeadlineExceeded,
@@ -259,7 +267,6 @@ impl RefusalCode {
         Self::InvalidCursor,
         Self::UnsupportedCursor,
         Self::UnsupportedSource,
-        Self::UnsupportedFilter,
         Self::IncomparableNodes,
         Self::ResultTooLarge,
         Self::InvalidTaskId,
@@ -288,6 +295,8 @@ impl RefusalCode {
         Self::TaskProjectionFailed,
         Self::ProviderFailed,
         Self::InvalidResult,
+        Self::SubmitResponseLost,
+        Self::SubmitNotDelivered,
     ];
 }
 

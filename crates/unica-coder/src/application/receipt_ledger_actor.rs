@@ -161,15 +161,19 @@ struct ActorHealth {
     wake_generation: Mutex<u64>,
     changed: Condvar,
     heavy_result_slot: Arc<HeavyResultSlot>,
+    /// The least time a port call gets once it has begun, counted from its
+    /// start. The caller's deadline still bounds the wait in the queue.
+    running_floor: Duration,
 }
 
 impl ActorHealth {
-    fn ready() -> Self {
+    fn ready(running_floor: Duration) -> Self {
         Self {
             state: AtomicU8::new(READY),
             wake_generation: Mutex::new(0),
             changed: Condvar::new(),
             heavy_result_slot: Arc::new(HeavyResultSlot::available()),
+            running_floor,
         }
     }
 
@@ -407,7 +411,8 @@ enum Command {
 
 enum TicketState<R> {
     Queued,
-    Running,
+    /// Begun, with the deadline the running port call is held to.
+    Running(OperationDeadline),
     Finished(Option<Result<R, ReceiptLedgerError>>),
     TimedOut(Option<ReceiptLedgerError>),
 }
@@ -449,14 +454,25 @@ impl<R> Ticket<R> {
     /// The time check and `Queued -> Running` transition share one gate with
     /// the caller's timeout path, so a queued command cannot start after its
     /// caller has returned `DeadlineExceeded`.
-    fn try_begin(&self, health: &ActorHealth) -> bool {
+    ///
+    /// A begun call is held to its caller's deadline, but never to less than
+    /// the actor's running floor from this moment: a durable write that
+    /// started late in a short or nearly spent budget is not cut short and
+    /// declared uncertain (#1387). Returns the deadline the port gets.
+    fn begin(&self, health: &ActorHealth) -> Option<OperationDeadline> {
         let mut state = self.state.lock().expect("receipt ticket mutex poisoned");
+        let now = Instant::now();
         let started = match &*state {
-            TicketState::Queued
-                if health.is_ready() && !self.deadline.is_elapsed_at(Instant::now()) =>
-            {
-                *state = TicketState::Running;
-                true
+            TicketState::Queued if health.is_ready() && !self.deadline.is_elapsed_at(now) => {
+                let running = match self.deadline {
+                    OperationDeadline::NoDeadline => OperationDeadline::NoDeadline,
+                    OperationDeadline::Finite(deadline) => OperationDeadline::Finite(
+                        now.checked_add(health.running_floor)
+                            .map_or(deadline, |floor| deadline.max(floor)),
+                    ),
+                };
+                *state = TicketState::Running(running);
+                Some(running)
             }
             TicketState::Queued => {
                 let error = if health.is_ready() {
@@ -465,16 +481,21 @@ impl<R> Ticket<R> {
                     ReceiptLedgerError::StoreUnavailable
                 };
                 *state = TicketState::Finished(Some(Err(error)));
-                false
+                None
             }
-            TicketState::TimedOut(_) | TicketState::Finished(_) => false,
-            TicketState::Running => unreachable!("receipt ticket can begin only once"),
+            TicketState::TimedOut(_) | TicketState::Finished(_) => None,
+            TicketState::Running(_) => unreachable!("receipt ticket can begin only once"),
         };
         drop(state);
-        if !started {
+        if started.is_none() {
             health.wake_all();
         }
         started
+    }
+
+    #[cfg(test)]
+    fn try_begin(&self, health: &ActorHealth) -> bool {
+        self.begin(health).is_some()
     }
 
     fn finish(&self, result: Result<R, ReceiptLedgerError>, health: &ActorHealth) {
@@ -489,11 +510,11 @@ impl<R> Ticket<R> {
     ) {
         let mut state = self.state.lock().expect("receipt ticket mutex poisoned");
         let should_latch = match &*state {
-            TicketState::Running if self.deadline.is_elapsed_at(completed_at) => {
+            TicketState::Running(running) if running.is_elapsed_at(completed_at) => {
                 *state = TicketState::TimedOut(Some(self.running_timeout_error.clone()));
                 true
             }
-            TicketState::Running => {
+            TicketState::Running(_) => {
                 let should_latch = result
                     .as_ref()
                     .is_err_and(ReceiptLedgerError::requires_reopen);
@@ -540,20 +561,24 @@ impl<R> Ticket<R> {
                     *state = TicketState::TimedOut(None);
                     return Err(ReceiptLedgerError::StoreUnavailable);
                 }
-                TicketState::Queued | TicketState::Running
-                    if self.deadline.is_elapsed_at(Instant::now()) =>
-                {
-                    let was_running = matches!(&*state, TicketState::Running);
+                TicketState::Queued if self.deadline.is_elapsed_at(Instant::now()) => {
                     *state = TicketState::TimedOut(None);
                     drop(state);
-                    if was_running {
-                        health.latch_recovery_required();
-                        return Err(self.running_timeout_error.clone());
-                    }
                     return Err(ReceiptLedgerError::DeadlineExceeded);
                 }
-                TicketState::Queued | TicketState::Running => {
+                TicketState::Running(running) if running.is_elapsed_at(Instant::now()) => {
+                    *state = TicketState::TimedOut(None);
+                    drop(state);
+                    health.latch_recovery_required();
+                    return Err(self.running_timeout_error.clone());
+                }
+                TicketState::Queued => {
                     let remaining = self.deadline.remaining_at(Instant::now());
+                    drop(state);
+                    health.wait_for_change(observed_generation, remaining);
+                }
+                TicketState::Running(running) => {
+                    let remaining = running.remaining_at(Instant::now());
                     drop(state);
                     health.wait_for_change(observed_generation, remaining);
                 }
@@ -631,9 +656,20 @@ impl TimeoutClass {
 }
 
 impl ReceiptLedgerActor {
+    /// An actor whose begun port calls are held to their callers' deadlines
+    /// exactly.
     pub(crate) fn spawn(port: impl ReceiptLedgerPort) -> Self {
+        Self::spawn_with_running_floor(port, Duration::ZERO)
+    }
+
+    /// An actor whose begun port calls get at least `running_floor` from
+    /// their start, whatever their callers had left.
+    pub(crate) fn spawn_with_running_floor(
+        port: impl ReceiptLedgerPort,
+        running_floor: Duration,
+    ) -> Self {
         let (sender, receiver) = mpsc::sync_channel(RECEIPT_LEDGER_CHANNEL_CAPACITY);
-        let health = Arc::new(ActorHealth::ready());
+        let health = Arc::new(ActorHealth::ready(running_floor));
         let worker_health = Arc::clone(&health);
         let worker = std::thread::Builder::new()
             .name("unica-receipt-ledger".to_owned())
@@ -1562,10 +1598,13 @@ fn run_worker(
 ) {
     while let Ok(command) = receiver.recv() {
         match command {
-            Command::SnapshotCatalog { deadline, ticket } => {
-                if !ticket.try_begin(&health) {
+            Command::SnapshotCatalog {
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.snapshot_catalog(ReceiptLedgerCatalogSnapshotAuthority::new(), deadline)
                 }))
@@ -1574,12 +1613,12 @@ fn run_worker(
             }
             Command::ReserveBatch {
                 requests,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = batch_receipt_key_digest(&requests, |request| &request.0)
                     .expect("validated reserve batch is nonempty");
                 let result =
@@ -1591,12 +1630,12 @@ fn run_worker(
             }
             Command::BindReservedActorBatch {
                 requests,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = batch_receipt_key_digest(&requests, |request| &request.0)
                     .expect("validated actor-binding batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
@@ -1609,12 +1648,12 @@ fn run_worker(
             }
             Command::MarkReservedBegunBatch {
                 requests,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = batch_receipt_key_digest(&requests, |request| &request.0)
                     .expect("validated begun batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
@@ -1627,12 +1666,12 @@ fn run_worker(
             }
             Command::PublishDirectTerminalBatch {
                 requests,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = batch_receipt_key_digest(&requests, |request| &request.0)
                     .expect("validated terminal batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
@@ -1645,12 +1684,12 @@ fn run_worker(
             }
             Command::AcknowledgeDirectBatch {
                 requests,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = batch_receipt_key_digest(&requests, |request| &request.0)
                     .expect("validated acknowledgement batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
@@ -1665,12 +1704,12 @@ fn run_worker(
                 requests,
                 terminal_epoch_ms,
                 terminal,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = batch_receipt_key_digest(&requests, |request| &request.0)
                     .expect("validated cancelled Direct batch is nonempty");
                 let result = catch_unwind(AssertUnwindSafe(|| {
@@ -1686,18 +1725,24 @@ fn run_worker(
                 }));
                 ticket.finish(result, &health);
             }
-            Command::Generation { deadline, ticket } => {
-                if !ticket.try_begin(&health) {
+            Command::Generation {
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let result = catch_unwind(AssertUnwindSafe(|| port.generation(deadline)))
                     .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
                 ticket.finish(result, &health);
             }
-            Command::RotateGenerationForTest { deadline, ticket } => {
-                if !ticket.try_begin(&health) {
+            Command::RotateGenerationForTest {
+                deadline: _,
+                ticket,
+            } => {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.rotate_generation_for_test(deadline)
                 }))
@@ -1707,12 +1752,12 @@ fn run_worker(
             Command::Reserve {
                 key,
                 original_cutoff,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.reserve(key, original_cutoff, deadline)
@@ -1726,12 +1771,12 @@ fn run_worker(
                 key,
                 expected_version,
                 bound_workspace_identity,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.bind_reserved_actor(
@@ -1749,12 +1794,12 @@ fn run_worker(
             Command::MarkReservedBegun {
                 key,
                 expected_version,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.mark_reserved_begun(&key, expected_version, deadline)
@@ -1770,12 +1815,12 @@ fn run_worker(
                 created_at_epoch_ms,
                 ttl_ms,
                 poll_interval_ms,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.promise_task_unbound(
@@ -1796,12 +1841,12 @@ fn run_worker(
                 key,
                 expected_version,
                 workspace_identity_hash,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.bind_promised_task_actor(
@@ -1822,12 +1867,12 @@ fn run_worker(
                 created_at_epoch_ms,
                 ttl_ms,
                 poll_interval_ms,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.begin_bound_task_handoff(
@@ -1850,12 +1895,12 @@ fn run_worker(
                 terminal_epoch_ms,
                 terminal,
                 certificate,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.stage_bound_task_handoff_terminal(
@@ -1876,12 +1921,12 @@ fn run_worker(
                 key,
                 expected_version,
                 confirmed_task_bound,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.complete_bound_task_handoff(
@@ -1900,12 +1945,12 @@ fn run_worker(
                 key,
                 expected_version,
                 confirmed_terminal_bound,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.complete_staged_task_handoff(
@@ -1924,12 +1969,12 @@ fn run_worker(
                 key,
                 expected_version,
                 proven_link_capacity,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.retain_begun_task_after_link_capacity(
@@ -1947,12 +1992,12 @@ fn run_worker(
             Command::RequestTaskCancel {
                 key,
                 expected_state,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.request_task_cancel(&key, *expected_state, deadline)
@@ -1967,12 +2012,12 @@ fn run_worker(
                 expected_state,
                 terminal_epoch_ms,
                 terminal,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.publish_receipt_backed_task_terminal(
@@ -1991,12 +2036,12 @@ fn run_worker(
             Command::RequestCancelOrReserve {
                 key,
                 cancel_reserved_at_epoch_ms,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.request_cancel_or_reserve(key, cancel_reserved_at_epoch_ms, deadline)
@@ -2011,12 +2056,12 @@ fn run_worker(
                 expected_version,
                 terminal_epoch_ms,
                 terminal,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.publish_direct_terminal(
@@ -2036,12 +2081,12 @@ fn run_worker(
                 key,
                 terminal_digest,
                 acknowledged_at_epoch_ms,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let digest = receipt_key_digest(&key);
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.acknowledge_direct(
@@ -2058,12 +2103,12 @@ fn run_worker(
             }
             Command::ReclaimExpiredTombstones {
                 observed_at_epoch_ms,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let result = catch_unwind(AssertUnwindSafe(|| {
                     port.reclaim_expired_tombstones(observed_at_epoch_ms, deadline)
                 }))
@@ -2073,12 +2118,12 @@ fn run_worker(
             Command::Recover {
                 key,
                 observed_at_epoch_ms,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let result = catch_unwind(AssertUnwindSafe(|| match observed_at_epoch_ms {
                     Some(observed_at_epoch_ms) => {
                         port.recover_at(&key, observed_at_epoch_ms, deadline)
@@ -2090,12 +2135,12 @@ fn run_worker(
             }
             Command::ResolveTask {
                 task_id,
-                deadline,
+                deadline: _,
                 ticket,
             } => {
-                if !ticket.try_begin(&health) {
+                let Some(deadline) = ticket.begin(&health) else {
                     continue;
-                }
+                };
                 let result =
                     catch_unwind(AssertUnwindSafe(|| port.resolve_task(task_id, deadline)))
                         .unwrap_or(Err(ReceiptLedgerError::StoreUnavailable));
@@ -3081,7 +3126,7 @@ mod tests {
 
     #[test]
     fn no_deadline_mutation_keeps_late_successful_completion_authority() {
-        let health = ActorHealth::ready();
+        let health = ActorHealth::ready(Duration::ZERO);
         let ticket = Ticket::<u64>::queued(
             OperationDeadline::NoDeadline,
             TimeoutClass::Reserve(receipt_key_digest(&receipt_key())),
@@ -3096,7 +3141,7 @@ mod tests {
 
     #[test]
     fn no_deadline_permit_wait_is_released_by_fail_stop() {
-        let health = Arc::new(ActorHealth::ready());
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
         let held = health
             .acquire_heavy_result_permit(OperationDeadline::NoDeadline)
             .expect("hold permit");
@@ -3137,7 +3182,7 @@ mod tests {
 
     #[test]
     fn late_clean_mutation_finish_is_commit_uncertain_and_latches_health() {
-        let health = ActorHealth::ready();
+        let health = ActorHealth::ready(Duration::ZERO);
         let key = receipt_key();
         let digest = receipt_key_digest(&key);
         let deadline = Instant::now() + Duration::from_secs(1);
@@ -3163,7 +3208,7 @@ mod tests {
 
     #[test]
     fn late_clean_recover_finish_is_store_unavailable_and_latches_health() {
-        let health = ActorHealth::ready();
+        let health = ActorHealth::ready(Duration::ZERO);
         let deadline = Instant::now() + Duration::from_secs(1);
         let ticket = Ticket::<ReceiptState>::queued(deadline, TimeoutClass::Recover);
         assert!(ticket.try_begin(&health));
@@ -3181,7 +3226,7 @@ mod tests {
 
     #[test]
     fn clean_finish_before_deadline_retains_completion_authority() {
-        let health = ActorHealth::ready();
+        let health = ActorHealth::ready(Duration::ZERO);
         let key = receipt_key();
         let deadline = Instant::now() + Duration::from_secs(1);
         let ticket = Ticket::<ReserveOutcome>::queued(
@@ -3333,7 +3378,7 @@ mod tests {
 
     #[test]
     fn abandoned_queued_direct_ticket_retains_permit_until_command_arc_drops() {
-        let health = Arc::new(ActorHealth::ready());
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
         let permit = health
             .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
             .expect("acquire the only direct-publication permit");
@@ -3367,7 +3412,7 @@ mod tests {
 
     #[test]
     fn finished_direct_ticket_retains_permit_until_result_is_consumed_and_last_arc_drops() {
-        let health = Arc::new(ActorHealth::ready());
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
         let permit = health
             .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
             .expect("acquire the only direct-publication permit");
@@ -3408,7 +3453,7 @@ mod tests {
 
     #[test]
     fn direct_permit_waiter_wakes_with_store_unavailable_after_fail_stop() {
-        let health = Arc::new(ActorHealth::ready());
+        let health = Arc::new(ActorHealth::ready(Duration::ZERO));
         let held = health
             .acquire_heavy_result_permit(Instant::now() + Duration::from_secs(1))
             .expect("hold the only direct-publication permit");
@@ -3737,6 +3782,121 @@ mod tests {
             ReceiptLedgerError::CapacityExceeded
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// Holds each reserve in the port until released; reports the deadline
+    /// it was given on entry.
+    struct GatedReservePort {
+        entered: mpsc::Sender<OperationDeadline>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl ReceiptLedgerPort for GatedReservePort {
+        fn reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _original_cutoff: OriginalCutoffDescriptor,
+            deadline: OperationDeadline,
+        ) -> Result<ReserveOutcome, ReceiptLedgerError> {
+            self.entered.send(deadline).expect("report port entry");
+            self.release.recv().expect("release the port call");
+            Err(ReceiptLedgerError::CapacityExceeded)
+        }
+
+        fn publish_direct_terminal(
+            &mut self,
+            _key: &ReceiptKey,
+            _expected_version: ReceiptVersion,
+            _terminal_epoch_ms: u64,
+            _terminal: V5CanonicalTerminal,
+            _deadline: OperationDeadline,
+        ) -> Result<CommittedDirectPublication, ReceiptLedgerError> {
+            unreachable!("only reserves run here")
+        }
+
+        fn request_cancel_or_reserve(
+            &mut self,
+            _key: ReceiptKey,
+            _cancel_reserved_at_epoch_ms: u64,
+            _deadline: OperationDeadline,
+        ) -> Result<CancelResolution, ReceiptLedgerError> {
+            unreachable!("only reserves run here")
+        }
+
+        fn recover(
+            &mut self,
+            _key: &ReceiptKey,
+            _deadline: OperationDeadline,
+        ) -> Result<ReceiptState, ReceiptLedgerError> {
+            unreachable!("only reserves run here")
+        }
+    }
+
+    /// #1387: a step queued behind a slow one starts with little of its
+    /// caller's deadline left. Once begun it is held to the actor's running
+    /// floor from its own start, not to the caller's remainder: overrunning
+    /// the caller's deadline is neither uncertain nor a fail-stop.
+    #[test]
+    fn step_begun_late_in_its_deadline_gets_the_running_floor_from_its_start() {
+        let floor = Duration::from_secs(3);
+        let (entered, entered_wait) = mpsc::channel();
+        let (release, release_wait) = mpsc::channel();
+        let actor = ReceiptLedgerActor::spawn_with_running_floor(
+            GatedReservePort {
+                entered,
+                release: release_wait,
+            },
+            floor,
+        );
+        let slow_actor = actor.clone();
+        let slow = std::thread::spawn(move || {
+            slow_actor.reserve(
+                receipt_key(),
+                cutoff(),
+                Instant::now() + Duration::from_secs(10),
+            )
+        });
+        entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the slow step entered the port");
+        let caller_deadline = Instant::now() + Duration::from_millis(500);
+        let late_actor = actor.clone();
+        let late = std::thread::spawn(move || {
+            late_actor.reserve(receipt_key(), cutoff(), caller_deadline)
+        });
+        // The late step waits in the queue; then it begins well inside its
+        // caller's deadline and is held in the port past that deadline.
+        std::thread::sleep(Duration::from_millis(100));
+        release.send(()).expect("release the slow step");
+        let begun_with = entered_wait
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the late step entered the port");
+        let begun_at = Instant::now();
+        assert!(
+            begun_at < caller_deadline,
+            "the fixture began the step too late"
+        );
+        let held_to = begun_with.as_instant().expect("a finite running deadline");
+        assert!(
+            held_to >= begun_at + floor - Duration::from_millis(100),
+            "the begun step got only {:?}",
+            held_to.saturating_duration_since(begun_at)
+        );
+        std::thread::sleep(
+            caller_deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(200),
+        );
+        release.send(()).expect("release the late step");
+
+        assert_eq!(
+            late.join().expect("late caller"),
+            Err(ReceiptLedgerError::CapacityExceeded),
+            "the step's own answer, not an uncertain commit"
+        );
+        assert_eq!(
+            slow.join().expect("slow caller"),
+            Err(ReceiptLedgerError::CapacityExceeded)
+        );
+        assert!(!actor.restart_required(), "no fail-stop");
     }
 
     #[test]

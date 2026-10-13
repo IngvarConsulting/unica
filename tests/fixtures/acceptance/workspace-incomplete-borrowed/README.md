@@ -1,6 +1,6 @@
 # Incomplete borrowed metadata without a parent
 
-S389 reads five borrowed objects from a single EXTENSION source set. No parent
+S405 reads five borrowed objects from a single EXTENSION source set. No parent
 configuration is registered, so local observations must remain available without
 resolving inherited values.
 
@@ -19,6 +19,6 @@ workspace, including this added BSL file, was not validated as an importable
 platform extension; it makes no claim about module override or inheritance rules.
 
 The scenario checks descriptor omissions separately from explicit false and
-empty Comment values, rejects context filtering when availability is unknown,
+empty Comment values, reports unknown compilation contexts as a node limit,
 and verifies the SHA-256 of every source file and project configuration before
 and after its sequence of read calls.

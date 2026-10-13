@@ -136,7 +136,7 @@ pub(crate) use info::{
 };
 pub(crate) use info_projection::{observe_meta_borrowing_property, observe_meta_info_property};
 pub(crate) use predefined::{
-    is_predefined_operation, read_complete_predefined_items_for_code_type,
+    predefined_item_id, predefined_post_image, read_complete_predefined_items_for_code_type,
     require_predefined_code_type, PredefinedCodeType, MISSING_PREDEFINED_CODE_TYPE,
 };
 pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add};

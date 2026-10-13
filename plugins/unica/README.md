@@ -163,8 +163,9 @@ codex plugin marketplace remove unica
 
 ## Data composition schemas
 
-Read the template's datasets and settings with `unica.view`. Request the
-chosen operation's contract through `filter: {sections: ["can"], can: {op: "query.set"}}`.
+Read the template's datasets and settings with `unica.view`; every node
+answer lists its operations in `can`. Read the chosen operation's contract at
+its own address, for example `<DataSet address>.Can.query.set`.
 Preview with `unica.apply` and execute its `data.executionToken`, then read
 the result and validate with `unica.check`. See the
 [reports and printing reference](references/use-cases/reports-printing.md)
