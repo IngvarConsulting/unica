@@ -37366,7 +37366,7 @@
    "name": "schema-subnodes-and-method-insert-are-addressed",
    "issue": 1354,
    "area": "СКД",
-   "task": "Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр, а снятая форма поля с составным dataPath ведёт к экранированному адресу Field.Объект\\.Код",
+   "task": "Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр",
    "wire": [
     {
      "tool": "unica.view",
@@ -37565,40 +37565,6 @@
       {
        "pointer": "/data/effects",
        "eq": 1
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-       "eq": "$capture.schema"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
-      "ops": [
-       {
-        "op": "field.set",
-        "args": {
-         "values": {
-          "field": "Объект.Код",
-          "title": "Код"
-         }
-        }
-       }
-      ]
-     },
-     "expect": [
-      "refused"
-     ],
-     "refusal": "bad_value: `field.set` names its subject by address, not by `values.field`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.Наб",
-     "assertions": [
-      {
-       "pointer": "/next/0/args/at",
-       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Объект\\.Код.Can.field.set"
       }
      ],
      "fileAssertions": [
@@ -37855,7 +37821,7 @@
    "name": "dcs-composite-field-is-addressed",
    "issue": 1356,
    "area": "СКД",
-   "task": "Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес, и поле читается по нему",
+   "task": "Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес и поле читается по нему; снятая форма field.set с values.field отказывает без записи с next к этому адресу, а field.set и fieldRole.set на нём меняют поле, что видно при чтении",
    "wire": [
     {
      "tool": "unica.apply",
@@ -37919,6 +37885,130 @@
       {
        "pointer": "/data/title",
        "eq": "ТипОбъекта.Представление"
+      }
+     ],
+     "captures": {
+      "schema": {
+       "kind": "sha256",
+       "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "field": "ТипОбъекта.Представление",
+          "title": "Тип объекта (представление)"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `field.set` names its subject by address, not by `values.field`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.Наб",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление.Can.field.set"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "title": "Тип объекта (представление)"
+         }
+        }
+       },
+       {
+        "op": "fieldRole.set",
+        "args": {
+         "values": {
+          "role": {
+           "dimension": true
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}field[{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath='ТипОбъекта.Представление']/{http://v8.1c.ru/8.1/data-composition-system/schema}role/{http://v8.1c.ru/8.1/data-composition-system/common}dimension",
+       "eq": [
+        "true"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+      },
+      {
+       "pointer": "/data/props/title",
+       "eq": "Тип объекта (представление)"
       }
      ]
     }

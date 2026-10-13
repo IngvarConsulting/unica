@@ -674,6 +674,24 @@ fn parse_role_operation(
                         ))
                     }
                 }
+                // Вложенный объект роли — закрытый набор раскладок, которые
+                // платформа пишет в Rights.xml: команда, реквизит, стандартный
+                // реквизит, табличная часть и её реквизиты, измерение, ресурс,
+                // операция веб-сервиса, метод шаблона URL, канал сервиса
+                // интеграции, реквизит адресации задачи, вложенная подсистема.
+                // Опечатка вида (`Comand`) или вложенный объект у корня
+                // конфигурации иначе ушли бы в Rights.xml записью, которой
+                // у платформы нет.
+                let nested = object.split('.').count() > 2;
+                if nested && !crate::domain::role::nested_right_shape_is_modelled(&object) {
+                    return Err(bad(
+                        op_index,
+                        &format!("{location}.object"),
+                        format!(
+                            "`{object}` is not a nested object a role lists: use Kind.Name.Command|Attribute|StandardAttribute|TabularSection|Dimension|Resource|Operation|AddressingAttribute|IntegrationServiceChannel.X, Kind.Name.TabularSection.T.Attribute|StandardAttribute.X, HTTPService.S.URLTemplate.T.Method.M or Subsystem.S.Subsystem.X"
+                        ),
+                    ));
+                }
                 // Созданную запись `right.set` правит по адресу
                 // `Right.<Вид>_<Имя>`; адрес, который грамматика не разбирает,
                 // оставил бы запись без адреса.
@@ -728,6 +746,21 @@ fn parse_role_operation(
                         )),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                if nested {
+                    // Право вложенного объекта — из его закрытого набора
+                    // (View/Edit, Use у операций и каналов), а не права объекта.
+                    if let Some((right, message)) = rights.iter().find_map(|(right, _)| {
+                        crate::domain::role::validate_nested_right(&object, right)
+                            .err()
+                            .map(|message| (right, message))
+                    }) {
+                        return Err(bad(
+                            op_index,
+                            &format!("{location}.rights.{right}"),
+                            message,
+                        ));
+                    }
+                }
                 entries.push(RightEntry { object, rights });
             }
             Ok(FormResourcePlanKind::RightAdd {
@@ -3732,6 +3765,73 @@ mod tests {
                 .expect_err("the subject comes from the address");
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} {path}");
             assert_eq!(error.path(), Some(path), "{op}");
+        }
+    }
+
+    /// Вложенный объект `right.add` — из закрытого набора раскладок
+    /// Rights.xml. Опечатка вида и вложенный объект корня конфигурации
+    /// отклоняются до записи, право вложенного объекта — из его набора.
+    #[test]
+    fn right_add_accepts_only_nested_objects_a_role_lists() {
+        let fixture = ApplySeamFixture::new();
+        for object in [
+            "Catalog.Items.Command.Open",
+            "Catalog.Items.Attribute.Price",
+            "Catalog.Items.StandardAttribute.Code",
+            "Document.Order.TabularSection.Goods",
+            "Document.Order.TabularSection.Goods.Attribute.Qty",
+            "Document.Order.TabularSection.Goods.StandardAttribute.LineNumber",
+            "InformationRegister.Prices.Dimension.Item",
+            "AccumulationRegister.Stock.Resource.Qty",
+            "Task.Job.AddressingAttribute.Assignee",
+            "Subsystem.Sales.Subsystem.Orders.Subsystem.Returns",
+        ] {
+            let args = json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": {"View": true}}]});
+            parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{object}: {error:?}"));
+        }
+        for object in [
+            "WebService.Exchange.Operation.Send",
+            "HTTPService.Api.URLTemplate.Items.Method.Get",
+            "IntegrationService.Bus.IntegrationServiceChannel.Out",
+        ] {
+            let args = json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": {"Use": true}}]});
+            parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{object}: {error:?}"));
+        }
+        for (object, rights, path) in [
+            (
+                "Catalog.Items.Comand.Open",
+                json!({"Read": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Configuration.X.Command.Y",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Constant.Rate.Command.Open",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Catalog.Items.Command.Open.Attribute.X",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Catalog.Items.Command.Open",
+                json!({"Read": true}),
+                "ops[0].args.items[0].rights.Read",
+            ),
+        ] {
+            let args =
+                json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": rights}]});
+            let error = parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .expect_err(object);
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{object}");
+            assert_eq!(error.path(), Some(path), "{object}");
         }
     }
 

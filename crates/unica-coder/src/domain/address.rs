@@ -244,25 +244,32 @@ impl NodeKind {
         !matches!(self, Self::Configuration | Self::Interface)
     }
 
-    /// Может ли имя узла этого вида содержать точку.
+    /// Может ли имя узла этого вида в этом месте адреса содержать точку.
     ///
     /// Имена объектов метаданных и их членов — идентификаторы платформы,
-    /// точки в них не бывает. Точку несут данные внутри документов: составной
-    /// `dataPath` поля схемы, группа интерфейса `CommandGroup.X`, тип и
-    /// свойство XDTO, запись права на вложенный объект роли, область и
-    /// параметр макета. Экранированная точка в имени другого вида — не имя,
-    /// а склейка нескольких сегментов, и разбор её отклоняет.
-    pub(crate) const fn name_may_contain_dot(self) -> bool {
-        matches!(
-            self,
-            Self::Field
-                | Self::Group
-                | Self::Type
-                | Self::Property
-                | Self::Right
-                | Self::Area
-                | Self::Parameter
-        )
+    /// точки в них не бывает. Точку несут данные внутри документов, и решает
+    /// маршрут, а не один вид: составной `dataPath` поля, параметр и область
+    /// внутри макета, группа интерфейса `CommandGroup.X`, тип и свойство
+    /// пакета XDTO, запись права роли на вложенный объект. Тот же `Parameter`
+    /// у формы или операции веб-сервиса — член метаданных, и экранированная
+    /// точка в нём — не имя, а склейка нескольких сегментов, которую разбор
+    /// отклоняет. `owners` — сегменты адреса до этого.
+    pub(crate) fn name_may_contain_dot(self, owners: &[AddressSegment]) -> bool {
+        let first = owners.first().map(AddressSegment::kind);
+        let previous = owners.last().map(AddressSegment::kind);
+        // Тело макета: СКД или табличный документ внутри именованного макета
+        // объекта или общего макета.
+        let inside_template = first == Some(Self::CommonTemplate)
+            || owners
+                .iter()
+                .any(|owner| owner.kind == Self::Template && owner.name.is_some());
+        match self {
+            Self::Field | Self::Parameter | Self::Area => inside_template,
+            Self::Group => previous == Some(Self::Interface),
+            Self::Type | Self::Property => first == Some(Self::XdtoPackage),
+            Self::Right => first == Some(Self::Role) && owners.len() == 1,
+            _ => false,
+        }
     }
 
     // Параметр назван `token`, а не `raw`: `&raw` — это спеллинг оператора
@@ -524,7 +531,7 @@ impl QualifiedAddress {
                 None
             };
             if let Some(name) = name.filter(|name| name.contains('.')) {
-                if !kind.name_may_contain_dot() {
+                if !kind.name_may_contain_dot(&segments) {
                     return Err(AddressError::new(
                         AddressErrorCode::InvalidName,
                         format!(
@@ -934,6 +941,53 @@ mod tests {
                 .code(),
             AddressErrorCode::EmptySegment
         );
+    }
+
+    /// Точку в имени разрешает маршрут, а не вид сегмента: `Parameter`
+    /// макета и области несёт точку, `Parameter` формы и операции
+    /// веб-сервиса — член метаданных и её не несёт; то же для поля, области,
+    /// группы, типа, свойства и записи права вне своего документа.
+    #[test]
+    fn an_escaped_dot_is_a_name_only_on_document_routes() {
+        for accepted in [
+            r"main:Report.R.Template.S.DataSet.D.Field.A\.B",
+            r"main:Report.R.Template.S.Parameter.A\.B",
+            r"main:CommonTemplate.S.Parameter.A\.B",
+            r"main:CommonTemplate.S.DataSet.D.Field.A\.B",
+            r"main:Report.R.Template.P.Area.A\.B",
+            r"main:Report.R.Template.P.Area.A\.B.Parameter.C\.D",
+            r"main:Subsystem.S.Interface.Group.CommandGroup\.X",
+            r"main:XDTOPackage.P.Type.T\.U.Property.A\.B.Property.C\.D",
+            r"main:XDTOPackage.P.Property.A\.B",
+            r"main:Role.R.Right.Catalog_X\.Command\.Y",
+        ] {
+            let at = QualifiedAddress::parse(accepted)
+                .unwrap_or_else(|error| panic!("{accepted}: {error:?}"));
+            assert_eq!(at.to_string(), accepted);
+        }
+        for rejected in [
+            r"main:WebService.Exchange.Operation.Send.Parameter.A\.B",
+            r"main:Catalog.Items.Form.Main.Parameter.Key\.X",
+            r"main:CommonForm.Main.Parameter.Key\.X",
+            r"main:Catalog.Items.Form.Main.Group.G\.H",
+            r"main:Catalog.Items.Template.T\.U",
+            r"main:Catalog.Items.Field.A\.B",
+            r"main:Catalog.Items.Area.A\.B",
+            r"main:Catalog.Items.Type.A\.B",
+            r"main:Catalog.Items.Property.A\.B",
+            r"main:Catalog.Items.Right.A\.B",
+            r"main:Subsystem.S.Group.A\.B",
+            r"main:XDTOPackage.P\.Q.Type.T",
+        ] {
+            assert_eq!(
+                QualifiedAddress::parse(rejected)
+                    .map(|at| at.to_string())
+                    .unwrap_err()
+                    .code(),
+                AddressErrorCode::InvalidName,
+                "{rejected}"
+            );
+        }
     }
 
     /// Точка внутри имени экранируется `\.`: составной `dataPath` поля
