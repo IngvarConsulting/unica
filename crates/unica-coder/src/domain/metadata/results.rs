@@ -162,9 +162,24 @@ pub(crate) struct MetaRelationTargetData {
     pub(crate) value: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(crate) enum MetaExchangeAutoRecord {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MetaExchangeContentItem {
+    pub(crate) target: MetadataAddress,
+    pub(crate) auto_record: MetaExchangeAutoRecord,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MetaRelationsData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) content: Option<Option<Vec<MetaExchangeContentItem>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) owners: Option<Option<Vec<MetaRelationTargetData>>>,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -878,12 +878,50 @@ impl ProviderReadAuthority {
         } else {
             None
         };
-        let info =
+        let mut info =
             parse_typed_meta_local_info(&descriptor, target, support).map_err(|failure| {
                 let message = serde_json::to_string(&failure.diagnostics)
                     .unwrap_or_else(|_| "metadata reader failed".to_string());
                 ViewError::detailed(RefusalDetail::SourceUnreadable, message)
             })?;
+        if info.kind == MetadataKind::ExchangePlan {
+            let relative = Path::new("ExchangePlans")
+                .join(&info.name)
+                .join("Ext/Content.xml");
+            let observation = match self.read_optional_relative_with_checkpoint(
+                &relative,
+                Some(MAX_CONFIGURATION_BYTES),
+                checkpoint,
+            ) {
+                Ok(Some(bytes)) => std::str::from_utf8(&bytes)
+                    .map_err(|e| e.to_string())
+                    .and_then(crate::infrastructure::native_operations::meta::read_exchange_content)
+                    .map(Some),
+                Ok(None) => Ok(None),
+                Err(error) if matches!(error.detail(), Some(RefusalDetail::SourceUnreadable)) => {
+                    Err(error.to_string())
+                }
+                Err(error) => return Err(error),
+            };
+            let errors = match observation {
+                Ok(Some(observation)) => {
+                    info.relations.content = Some(Some(observation.items));
+                    observation.errors
+                }
+                Ok(None) => Vec::new(),
+                Err(error) => vec![error],
+            };
+            for error in errors {
+                info.diagnostics.push(
+                    crate::domain::metadata::MetaDiagnostic::error(
+                        crate::domain::metadata::MetaDiagnosticCode::ValidationFailed,
+                        error,
+                    )
+                    .with_metadata_path(target.clone())
+                    .with_field("relations.content"),
+                );
+            }
+        }
         Ok(MetadataLocalRead { info, borrowing })
     }
 

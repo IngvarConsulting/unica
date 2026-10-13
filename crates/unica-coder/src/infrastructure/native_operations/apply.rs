@@ -239,6 +239,19 @@ pub(crate) struct BorrowPlanDetail {
     pub(crate) protected_overrides: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ExchangeContentPlanItem {
+    pub(crate) at: String,
+    pub(crate) auto_record: crate::domain::metadata::MetaExchangeAutoRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ExchangeContentPlanDetail {
+    pub(crate) at: String,
+    pub(crate) items: Vec<ExchangeContentPlanItem>,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct PlannedApplyEffects {
     events: Vec<DomainEvent>,
@@ -251,9 +264,16 @@ pub(crate) struct PlannedApplyEffects {
     /// forced removal names the files that keep referring to the object.
     warnings: Vec<serde_json::Value>,
     borrowing: Vec<BorrowPlanDetail>,
+    exchange_content: Vec<ExchangeContentPlanDetail>,
 }
 
 impl PlannedApplyEffects {
+    pub(crate) fn exchange_content(&self) -> &[ExchangeContentPlanDetail] {
+        &self.exchange_content
+    }
+    pub(crate) fn set_exchange_content(&mut self, details: Vec<ExchangeContentPlanDetail>) {
+        self.exchange_content = details;
+    }
     pub(crate) fn borrowing(&self) -> &[BorrowPlanDetail] {
         &self.borrowing
     }

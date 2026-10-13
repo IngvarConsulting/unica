@@ -611,6 +611,18 @@ impl OperationContract {
         let (family, verb) = op.split_once('.')?;
         let owner = site.map(|site| site.owner);
         let at = || ("at", text(true));
+        if family == "content" && verb == "set" {
+            return Some(Self {
+                schema: object(&[at(), ("items", json!({"type":"array", "minItems":1,
+                    "items":{"type":"object", "additionalProperties":false, "required":["at","autoRecord"],
+                    "properties":{"at":{"type":"string"},"autoRecord":{"type":"string","enum":["Allow","Deny"]}}}}))], &["items"]),
+                target: "An ExchangePlan: <source-set>:ExchangePlan.<Name>.",
+                effect: "Update the listed Content.xml entries, appending new targets and preserving unlisted entries and their AutoRecord values.",
+                notes: "Each item names an existing top-level object in the same source set. AutoRecord is the XML value Allow or Deny; this does not prove runtime change registration. Missing or damaged Content.xml and repeated targets are refused. An equivalent repeat preserves all bytes.",
+                example_args: json!({"items":[{"at":"main:Catalog.Items","autoRecord":"Allow"}]}),
+                help: METADATA_HELP,
+            });
+        }
         if family == "predefinedItem" {
             let (schema, target, effect, example_args) = match verb {
                 "add" => (

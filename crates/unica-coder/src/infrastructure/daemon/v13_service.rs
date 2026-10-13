@@ -307,6 +307,7 @@ impl CanonicalV13ReadService {
             Ok(planned) => planned,
         };
         let borrowing = effects.borrowing().to_vec();
+        let exchange_content = effects.exchange_content().to_vec();
         let has_changes = !staged.planned_changes().is_empty();
         if !has_changes {
             effects = Default::default();
@@ -366,6 +367,10 @@ impl CanonicalV13ReadService {
             "effects": publication.effects().events().len(),
             "cache": publication.effects().cache(),
         }));
+        if !exchange_content.is_empty() {
+            result.data.as_mut().expect("apply data exists")["exchangeContent"] =
+                serde_json::json!(exchange_content);
+        }
         if !borrowing.is_empty() {
             result.data.as_mut().expect("apply data exists")["borrowing"] =
                 serde_json::json!(borrowing);
