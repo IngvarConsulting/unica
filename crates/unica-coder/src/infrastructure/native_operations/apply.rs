@@ -251,9 +251,17 @@ pub(crate) struct PlannedApplyEffects {
     /// forced removal names the files that keep referring to the object.
     warnings: Vec<serde_json::Value>,
     borrowing: Vec<BorrowPlanDetail>,
+    xdto_objects: Vec<super::xdto::XdtoObjectPlanDetail>,
 }
 
 impl PlannedApplyEffects {
+    pub(crate) fn xdto_objects(&self) -> &[super::xdto::XdtoObjectPlanDetail] {
+        &self.xdto_objects
+    }
+    pub(crate) fn set_xdto_objects(&mut self, details: Vec<super::xdto::XdtoObjectPlanDetail>) {
+        self.xdto_objects = details;
+    }
+
     pub(crate) fn borrowing(&self) -> &[BorrowPlanDetail] {
         &self.borrowing
     }

@@ -208,6 +208,7 @@ class ReferenceFormatProfileTests(unittest.TestCase):
                 ("supported", "package/property"): "direct-child",
                 ("supported", "package/valueType"): "direct-child",
                 ("supported", "package/objectType"): "direct-child",
+                ("supported", "objectType/@base"): "local-object-type-chain;acyclic",
                 ("supported", "objectType/property"): "direct-child",
                 ("supported", "property/typeDef:ObjectType"): "direct-child",
                 ("supported", "typeDef:ObjectType/property"): "direct-child",

@@ -2199,6 +2199,14 @@ fn project_xdto(
                 Value::String(serde_json::to_string(base).unwrap_or_default()),
             );
         }
+        let mut limits = Vec::new();
+        if let Some(base_at) = item.get("baseAt") {
+            if let Some(value) = bounded_prop("baseAt", base_at) {
+                props.insert("baseAt".to_string(), value);
+            } else {
+                limits.push(format!("XDTO baseAt exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+            }
+        }
         let branches = item
             .get("properties")
             .and_then(Value::as_array)
@@ -2207,7 +2215,8 @@ fn project_xdto(
             .unwrap_or_default();
         return Ok(NodeViewData::Node(
             NodeView::new(address.to_string(), segment.kind().as_str(), name, props)
-                .with_branches(branches),
+                .with_branches(branches)
+                .with_limits(limits),
         ));
     }
     let property = &suffix[1];

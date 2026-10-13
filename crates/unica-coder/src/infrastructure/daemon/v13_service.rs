@@ -307,6 +307,7 @@ impl CanonicalV13ReadService {
             Ok(planned) => planned,
         };
         let borrowing = effects.borrowing().to_vec();
+        let xdto_objects = effects.xdto_objects().to_vec();
         let has_changes = !staged.planned_changes().is_empty();
         if !has_changes {
             effects = Default::default();
@@ -366,6 +367,10 @@ impl CanonicalV13ReadService {
             "effects": publication.effects().events().len(),
             "cache": publication.effects().cache(),
         }));
+        if !xdto_objects.is_empty() {
+            result.data.as_mut().expect("apply data exists")["xdtoObjects"] =
+                serde_json::json!(xdto_objects);
+        }
         if !borrowing.is_empty() {
             result.data.as_mut().expect("apply data exists")["borrowing"] =
                 serde_json::json!(borrowing);
