@@ -333,9 +333,9 @@ fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String
             if arguments.len() != 1 {
                 return Err("executionToken must be the only apply argument; at and ops belong to the planning call".to_string());
             }
-            if !arguments["executionToken"]
+            if arguments["executionToken"]
                 .as_str()
-                .is_some_and(|token| !token.is_empty())
+                .is_none_or(|token| token.is_empty())
             {
                 return Err(
                     "executionToken must be non-empty text returned by a successful apply plan"
@@ -9887,9 +9887,9 @@ struct ActorLogicalReadLease {"#,
         let at = "main:Document.Order.Form.Main";
         let item_at = "main:Document.Order.Form.Main.Item.Content.Item.Html";
         apply_pair(
-            at,
-            serde_json::json!([{"op": "form.create", "args": {
-                "values": {"type": "ObjectForm"}
+            "main:Document.Order",
+            serde_json::json!([{"op": "form.add", "args": {
+                "items": [{"name": "Main", "type": "ObjectForm"}]
             }}]),
         );
         apply_pair(

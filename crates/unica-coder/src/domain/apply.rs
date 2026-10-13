@@ -521,6 +521,8 @@ enum OperationApplicability {
     FormOrItem,
     /// Роль верхнего уровня.
     Role,
+    /// Запись прав роли на один объект: `Role.R.Right.<Вид_Имя>`.
+    RoleRight,
     /// Подсистема любой вложенности.
     Subsystem,
     /// Вложенная подсистема: исключение из состава её родителя.
@@ -543,13 +545,16 @@ enum OperationApplicability {
     DcsField,
     /// Макет-табличный документ как узел владельца.
     Mxl,
+    /// Именованная область макета-табличного документа.
+    MxlArea,
     /// Пакет XDTO.
     XdtoPackage,
     /// Тип пакета XDTO.
     XdtoType,
     /// Объект верхнего уровня любого вида: правило поддержки.
     SupportRule,
-    /// Модуль или его тело: вставка текста.
+    /// Модуль, его тело или метод: вставка текста. У метода место вставки —
+    /// до или после него.
     CodeInsert,
     /// Модуль, его тело, метод или тело метода: замена текста.
     Code,
@@ -588,6 +593,7 @@ impl OperationApplicability {
             Self::Form => "`Kind.Name.Form.F`",
             Self::FormOrItem => "`Kind.Name.Form.F[.Item.I]`",
             Self::Role => "`Role.Name`",
+            Self::RoleRight => "`Role.Name.Right.<Kind>_<Name>`",
             Self::Subsystem => "`Subsystem.Name[.Subsystem.Child]`",
             Self::NestedSubsystem => "`Subsystem.Parent.Subsystem.Child`",
             Self::Interface => "`Subsystem.Name[.Subsystem.Child].Interface`",
@@ -599,9 +605,10 @@ impl OperationApplicability {
             Self::DcsParameter => "`Kind.Name.Template.T.Parameter.P`",
             Self::DcsField => "`Kind.Name.Template.T.DataSet.D.Field.F`",
             Self::Mxl => "`Kind.Name.Template.T` of a spreadsheet",
+            Self::MxlArea => "`Kind.Name.Template.T.Area.A` of a spreadsheet",
             Self::XdtoPackage => "`XDTOPackage.Name`",
             Self::XdtoType => "`XDTOPackage.Name.Type.T`",
-            Self::CodeInsert => "a module address or its `Body`",
+            Self::CodeInsert => "a module address, its `Body` or `Method.M`",
             Self::Code => "a module address, its `Body`, `Method.M` or `Method.M.Body`",
             Self::Event => "an `Event` of a module or a form",
         }
@@ -705,6 +712,14 @@ impl OperationApplicability {
                 site.route == RouteClass::Role
                     && matches!(segments, [role] if role.kind() == NodeKind::Role && role.name().is_some())
             }
+            Self::RoleRight => {
+                site.route == RouteClass::Role
+                    && matches!(segments, [role, right]
+                        if role.kind() == NodeKind::Role
+                            && role.name().is_some()
+                            && right.kind() == NodeKind::Right
+                            && right.name().is_some())
+            }
             Self::Subsystem => {
                 site.route == RouteClass::Subsystem
                     && segments.iter().all(|segment| {
@@ -720,6 +735,16 @@ impl OperationApplicability {
                     })
             }
             Self::DcsSchema | Self::Mxl => site.owned_template(),
+            Self::MxlArea => {
+                site.route == RouteClass::Mxl
+                    && matches!(segments, [owner, template, area]
+                        if owner.name().is_some()
+                            && template.kind() == NodeKind::Template
+                            && template.name().is_some()
+                            && area.kind() == NodeKind::Area
+                            && area.name().is_some()
+                            && metadata_collection_matches(owner.kind(), MetaCollection::Templates))
+            }
             Self::DcsDataContainer => {
                 site.owned_template() || site.dcs_terminal(&[NodeKind::DataSet])
             }
@@ -753,7 +778,8 @@ impl OperationApplicability {
             Self::CodeInsert => {
                 site.route == RouteClass::Module
                     && (module_terminal(segments)
-                        || (terminal.kind() == NodeKind::Body && !method_body(segments)))
+                        || (terminal.kind() == NodeKind::Body && !method_body(segments))
+                        || (terminal.kind() == NodeKind::Method && terminal.name().is_some()))
             }
             Self::Code => {
                 site.route == RouteClass::Module
@@ -883,16 +909,17 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "groupOrder.set",
     "subsystemOrder.set",
     "mxl.set",
+    "area.add",
     "event.implement",
     "form.add",
     "form.set",
     "form.remove",
-    "form.create",
     "element.add",
     "element.remove",
     "formAttribute.add",
     "formCommand.add",
     "event.bind",
+    "right.add",
     "right.set",
     "role.create",
     "subsystem.create",
@@ -1020,10 +1047,7 @@ impl OperationDescriptor {
         match self.family {
             OperationFamily::Role if self.name != "role.create" => Some("Rights.xml"),
             OperationFamily::Form
-                if !matches!(
-                    self.name,
-                    "form.add" | "form.set" | "form.remove" | "form.create"
-                ) =>
+                if !matches!(self.name, "form.add" | "form.set" | "form.remove") =>
             {
                 Some("Form.xml")
             }
@@ -1097,10 +1121,15 @@ impl OperationDescriptor {
         })
     }
 
-    /// Операция создаёт узел своего адреса: до её исполнения узла нет, и
-    /// `next` не ведёт к нему, а только к ветви узлов этого вида.
-    pub(crate) fn creates_its_subject(self) -> bool {
-        self.name == "form.create"
+    /// Операция родителя, которая создаёт узел этой операции: `*.set`
+    /// пишет только в существующий узел, а отсутствующий создаёт `*.add`
+    /// на родителе с именем в аргументах (#1354).
+    pub(crate) const fn creator(self) -> Option<&'static str> {
+        match self.name.as_bytes() {
+            b"right.set" => Some("right.add"),
+            b"mxl.set" => Some("area.add"),
+            _ => None,
+        }
     }
 
     /// Адрес, на котором операция исполнима вместо снятого псевдонима
@@ -1151,6 +1180,7 @@ impl OperationDescriptor {
             OperationFamily::Metadata => {
                 super::operation_contract::OperationContract::metadata(self.name)
             }
+            OperationFamily::Role => super::operation_contract::OperationContract::role(self.name),
             _ => None,
         }
     }
@@ -1272,14 +1302,14 @@ operation_descriptors!(
         MetadataPredefinedItem,
         Target
     ),
-    ("form.create", Form, Form, Values),
     ("element.add", Form, Form, Items),
     ("element.remove", Form, FormOrItem, Target),
     ("formAttribute.add", Form, Form, Items),
     ("formCommand.add", Form, Form, Items),
     ("event.bind", Form, FormOrItem, Values),
     ("role.create", Role, Configuration, Values),
-    ("right.set", Role, Role, Values),
+    ("right.add", Role, Role, Items),
+    ("right.set", Role, RoleRight, Values),
     ("dataSource.add", Dcs, DcsSchema, Items),
     ("dataSource.set", Dcs, DcsSchema, Values),
     ("dataSource.remove", Dcs, DcsSchema, Values),
@@ -1287,21 +1317,21 @@ operation_descriptors!(
     ("dataSet.set", Dcs, DcsData, Values),
     ("dataSet.remove", Dcs, DcsData, Target),
     ("field.add", Dcs, DcsData, Items),
-    ("field.set", Dcs, DcsData, Values),
+    ("field.set", Dcs, DcsField, Values),
     ("field.remove", Dcs, DcsField, Target),
-    ("fieldRole.set", Dcs, DcsData, Values),
+    ("fieldRole.set", Dcs, DcsField, Values),
     ("parameter.add", Dcs, DcsSchema, Items),
-    ("parameter.set", Dcs, DcsSchema, Values),
+    ("parameter.set", Dcs, DcsParameter, Values),
     ("parameter.remove", Dcs, DcsParameter, Target),
-    ("parameter.rename", Dcs, DcsSchema, Values),
+    ("parameter.rename", Dcs, DcsParameter, Values),
     ("parameter.reorder", Dcs, DcsSchema, Items),
     ("calculatedField.add", Dcs, DcsSchema, Items),
     ("calculatedField.remove", Dcs, DcsSchema, Values),
     ("total.add", Dcs, DcsSchema, Items),
     ("total.remove", Dcs, DcsSchema, Values),
     ("variant.add", Dcs, DcsSchema, Items),
-    ("variant.set", Dcs, DcsSchema, Values),
-    ("variant.remove", Dcs, DcsSchema, Values),
+    ("variant.set", Dcs, DcsSettings, Values),
+    ("variant.remove", Dcs, DcsSettings, Target),
     ("query.set", Dcs, DcsQuery, Values),
     ("query.patch", Dcs, DcsQuery, Values),
     ("filter.add", Dcs, DcsSettings, Items),
@@ -1333,7 +1363,8 @@ operation_descriptors!(
     ("conditionalAppearance.remove", Dcs, DcsSettings, Values),
     ("dataSetLink.set", Dcs, DcsSchema, Values),
     ("dataSetLink.remove", Dcs, DcsSchema, Values),
-    ("mxl.set", Mxl, Mxl, Values),
+    ("mxl.set", Mxl, MxlArea, Values),
+    ("area.add", Mxl, Mxl, Items),
     ("valueType.add", Xdto, XdtoPackage, Values),
     ("objectType.add", Xdto, XdtoPackage, Values),
     ("property.add", Xdto, XdtoType, Values),
@@ -1373,7 +1404,9 @@ operation_descriptors!(
 /// массив (`items[].into`), а `items[]` без продолжения берёт элемент-строку. В `address` подставляются `{at}` — адрес вызова,
 /// `{at^Kind}` — начало адреса вызова до последнего сегмента вида `Kind`
 /// включительно (`Module` — и общий модуль), и `{value}` — строковое
-/// значение снятого ключа. Если в адресе вызова нет сегмента `Kind`, запись
+/// значение снятого ключа. `{right}` — то же значение, где первая точка
+/// заменена на `_`: объект роли `Catalog.Items` даёт имя записи прав
+/// `Catalog_Items`. Если в адресе вызова нет сегмента `Kind`, запись
 /// адреса не строит. `{dataSet}` — набор схемы, названный значением: сегмент
 /// `DataSet` адреса вызова с этим именем, иначе набор, найденный по имени
 /// в схеме макета (вложенный набор объединения тоже), иначе набор верхнего
@@ -1503,9 +1536,6 @@ retired_arguments!(
         "{at^Template}.Setting.{value}",
         true
     ),
-    // Имя формы повторяло её адрес; на владельце оно называло форму.
-    ("form.create", "values.name", "{at}", true),
-    ("form.create", "values.name", "{at}.Form.{value}", true),
     (
         "childSubsystem.remove",
         "items[].name",
@@ -1526,6 +1556,79 @@ retired_arguments!(
     ),
     (
         "code.replace",
+        "selector.method",
+        "{at^Module}.Method.{value}",
+        true
+    ),
+    // Операции подузлов (П3, #1354): подузел, прежде названный аргументом
+    // на владельце, задаётся адресом. Узел создаёт операция родителя
+    // (`right.add`, `area.add`), а `*.set` пишет только в существующий.
+    ("right.set", "values.object", "{at}.Right.{right}", true),
+    ("mxl.set", "values.area", "{at}.Area.{value}", true),
+    (
+        "variant.set",
+        "values.name",
+        "{at^Template}.Setting.{value}",
+        true
+    ),
+    (
+        "variant.remove",
+        "values.name",
+        "{at^Template}.Setting.{value}",
+        true
+    ),
+    (
+        "parameter.set",
+        "values.name",
+        "{at^Template}.Parameter.{value}",
+        true
+    ),
+    (
+        "parameter.rename",
+        "values.name",
+        "{at^Template}.Parameter.{value}",
+        true
+    ),
+    // Поле с составным `dataPath` адресуется после П5 (#1356): из точки в
+    // значении адрес поля не строится, и запись не срабатывает.
+    (
+        "field.set",
+        "values.field",
+        "{at^DataSet}.Field.{value}",
+        true
+    ),
+    (
+        "field.set",
+        "values.dataPath",
+        "{at^DataSet}.Field.{value}",
+        true
+    ),
+    (
+        "field.set",
+        "values.name",
+        "{at^DataSet}.Field.{value}",
+        true
+    ),
+    (
+        "fieldRole.set",
+        "values.field",
+        "{at^DataSet}.Field.{value}",
+        true
+    ),
+    (
+        "fieldRole.set",
+        "values.dataPath",
+        "{at^DataSet}.Field.{value}",
+        true
+    ),
+    (
+        "fieldRole.set",
+        "values.name",
+        "{at^DataSet}.Field.{value}",
+        true
+    ),
+    (
+        "code.insert",
         "selector.method",
         "{at^Module}.Method.{value}",
         true
@@ -1586,7 +1689,11 @@ impl RetiredArgument {
                 listing: true,
             });
         }
-        let target = QualifiedAddress::parse(&raw.replace("{value}", &value)).ok()?;
+        let target = QualifiedAddress::parse(
+            &raw.replace("{value}", &value)
+                .replace("{right}", &value.replacen('.', "_", 1)),
+        )
+        .ok()?;
         Some(ArgumentRedirect {
             location,
             at: target,
@@ -1729,6 +1836,52 @@ fn retired_argument_redirect_in(
         })
 }
 
+/// Снятая операция и та, что её заменила на узле-родителе (#1354): узел
+/// создаёт операция родителя с именем в аргументах, а не адрес ещё
+/// несуществующего узла. Псевдонима нет — вызов снятой операции получает
+/// отказ с адресом родителя.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetiredOperation {
+    pub(crate) op: &'static str,
+    pub(crate) replacement: &'static str,
+    /// Вид узла, который снятая операция создавала по своему адресу.
+    pub(crate) creates: NodeKind,
+    /// Как аргументы прежнего вызова выражаются в заменившей операции.
+    pub(crate) arguments: &'static str,
+}
+
+pub(crate) const RETIRED_OPERATIONS: &[RetiredOperation] = &[RetiredOperation {
+    op: "form.create",
+    replacement: "form.add",
+    creates: NodeKind::Form,
+    arguments: "`items: [{name, type}]` names the form and its type",
+}];
+
+impl RetiredOperation {
+    pub(crate) fn lookup(op: &str) -> Option<Self> {
+        RETIRED_OPERATIONS
+            .iter()
+            .copied()
+            .find(|entry| entry.op == op)
+    }
+
+    /// Узел, на котором исполнима заменившая операция: родитель узла вида
+    /// `creates` в адресе вызова, иначе сам адрес вызова.
+    pub(crate) fn replacement_at(self, at: &QualifiedAddress) -> QualifiedAddress {
+        match at
+            .segments()
+            .iter()
+            .rposition(|segment| segment.kind() == self.creates)
+        {
+            Some(index) if index > 0 => QualifiedAddress {
+                source_set: at.source_set().to_string(),
+                segments: at.segments()[..index].to_vec(),
+            },
+            _ => at.clone(),
+        }
+    }
+}
+
 fn configuration_root(source_set: &str) -> QualifiedAddress {
     QualifiedAddress::parse(&format!("{source_set}:Configuration"))
         .expect("an admitted source set name forms the configuration-root address")
@@ -1857,16 +2010,17 @@ mod tests {
         let resource = |op: &str| registry.lookup(op).unwrap().content_resource();
         for (op, expected) in [
             ("right.set", Some("Rights.xml")),
+            ("right.add", Some("Rights.xml")),
             ("element.add", Some("Form.xml")),
             ("event.bind", Some("Form.xml")),
             ("event.implement", Some("Form.xml")),
             ("code.insert", Some("Form.xml")),
             ("mxl.set", Some("Template.xml")),
+            ("area.add", Some("Template.xml")),
             ("query.set", Some("Template.xml")),
             ("objectType.add", Some("Package.bin")),
             ("role.create", None),
             ("form.remove", None),
-            ("form.create", None),
             ("form.add", None),
             ("form.set", None),
             ("props.set", None),
@@ -2079,13 +2233,13 @@ mod tests {
             "predefinedItem.add",
             "predefinedItem.set",
             "predefinedItem.remove",
-            "form.create",
             "element.add",
             "element.remove",
             "formAttribute.add",
             "formCommand.add",
             "event.bind",
             "role.create",
+            "right.add",
             "right.set",
             "dataSource.add",
             "dataSource.set",
@@ -2141,6 +2295,7 @@ mod tests {
             "dataSetLink.set",
             "dataSetLink.remove",
             "mxl.set",
+            "area.add",
             "valueType.add",
             "objectType.add",
             "property.add",
@@ -2163,7 +2318,7 @@ mod tests {
             "event.implement",
         ];
         let registry = OperationRegistry::closed();
-        assert_eq!(expected.len(), 120);
+        assert_eq!(expected.len(), 121);
         assert_eq!(registry.names(), expected);
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();
@@ -2310,20 +2465,74 @@ mod tests {
             ("form.set", "main:Document.Order.Form.Main", false),
             ("form.remove", "main:Document.Order.Form.Main", true),
             ("form.remove", "main:Document.Order", false),
-            // Права пишутся на роли; узел права разбор цели не принимает.
-            ("right.set", "main:Role.Reader", true),
-            ("right.set", "main:Role.Reader.Right.Catalog_Items", false),
-            // Ячейки пишутся в макет; область — его подузел.
-            ("mxl.set", "main:Report.Sales.Template.Print", true),
+            // Запись прав создаёт роль, а меняет сама запись (#1354).
+            ("right.add", "main:Role.Reader", true),
+            ("right.add", "main:Role.Reader.Right.Catalog_Items", false),
+            ("right.set", "main:Role.Reader", false),
+            ("right.set", "main:Role.Reader.Right.Catalog_Items", true),
+            ("right.set", "main:Role.Reader.Right", false),
+            ("right.set", "main:Role.Reader.Attribute.Code", false),
+            // Область создаёт макет, а ячейки пишутся в саму область.
+            ("area.add", "main:Report.Sales.Template.Print", true),
+            (
+                "area.add",
+                "main:Report.Sales.Template.Print.Area.Header",
+                false,
+            ),
+            ("mxl.set", "main:Report.Sales.Template.Print", false),
             (
                 "mxl.set",
                 "main:Report.Sales.Template.Print.Area.Header",
+                true,
+            ),
+            // Подузлы СКД: вариант, параметр и поле — по своему адресу.
+            ("variant.set", "main:Report.Sales.Template.Schema", false),
+            (
+                "variant.set",
+                "main:Report.Sales.Template.Schema.Setting.Main",
+                true,
+            ),
+            (
+                "variant.remove",
+                "main:Report.Sales.Template.Schema.Setting.Main",
+                true,
+            ),
+            ("variant.add", "main:Report.Sales.Template.Schema", true),
+            ("parameter.set", "main:Report.Sales.Template.Schema", false),
+            (
+                "parameter.set",
+                "main:Report.Sales.Template.Schema.Parameter.Period",
+                true,
+            ),
+            (
+                "parameter.rename",
+                "main:Report.Sales.Template.Schema.Parameter.Period",
+                true,
+            ),
+            (
+                "field.set",
+                "main:Report.Sales.Template.Schema.DataSet.Main",
+                false,
+            ),
+            (
+                "field.set",
+                "main:Report.Sales.Template.Schema.DataSet.Main.Field.Amount",
+                true,
+            ),
+            (
+                "fieldRole.set",
+                "main:Report.Sales.Template.Schema.DataSet.Main.Field.Amount",
+                true,
+            ),
+            (
+                "fieldRole.set",
+                "main:Report.Sales.Template.Schema.DataSet.Main",
                 false,
             ),
             // Код пишется в модуль, его тело и метод; область — нет.
             ("code.replace", "main:CommonModule.Shared", true),
             ("code.replace", "main:CommonModule.Shared.Method.Run", true),
-            ("code.insert", "main:CommonModule.Shared.Method.Run", false),
+            ("code.insert", "main:CommonModule.Shared.Method.Run", true),
             ("code.insert", "main:CommonModule.Shared.Body", true),
             (
                 "code.insert",
@@ -2453,13 +2662,13 @@ mod tests {
         .unwrap();
         let registry = OperationRegistry::closed();
         for (op, format, expected) in [
-            ("mxl.set", Some(TemplateFormat::SpreadsheetDocument), true),
+            ("area.add", Some(TemplateFormat::SpreadsheetDocument), true),
             (
-                "mxl.set",
+                "area.add",
                 Some(TemplateFormat::DataCompositionSchema),
                 false,
             ),
-            ("mxl.set", None, false),
+            ("area.add", None, false),
             (
                 "dataSet.add",
                 Some(TemplateFormat::DataCompositionSchema),
@@ -2493,15 +2702,19 @@ mod tests {
         };
         for (op, raw, expected) in [
             (
-                "mxl.set",
+                "area.add",
                 "main:Report.Sales.Template.Print.Area.Header",
                 Some("main:Report.Sales.Template.Print"),
             ),
             (
-                "right.set",
+                "right.add",
                 "main:Role.Reader.Right.Catalog_Items",
                 Some("main:Role.Reader"),
             ),
+            // Запись `*.set` создаёт не предок: у владельца её нет, и отказ
+            // называет форму адреса подузла.
+            ("right.set", "main:Role.Reader", None),
+            ("mxl.set", "main:Report.Sales.Template.Print", None),
             (
                 "role.create",
                 "main:Role.Reader",
@@ -2513,10 +2726,10 @@ mod tests {
                 Some("main:Document.Order.Form.Main"),
             ),
             ("element.add", "main:Document.Order.Attribute.Total", None),
-            // Под макетом-схемой ячеек нет: `next` не ведёт туда, где
+            // Под макетом-схемой областей нет: `next` не ведёт туда, где
             // планировщик откажет по формату.
             (
-                "mxl.set",
+                "area.add",
                 "main:Report.Sales.Template.Schema.Area.Header",
                 None,
             ),
@@ -2547,7 +2760,7 @@ mod tests {
     #[test]
     fn every_retired_argument_entry_builds_a_routable_member_address() {
         let registry = OperationRegistry::closed();
-        let duplicates = DUPLICATE_ARGUMENT_OPERATIONS;
+        let duplicates = [DUPLICATE_ARGUMENT_OPERATIONS, SUBNODE_OPERATIONS].concat();
         let traits =
             SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let owners = [
@@ -2658,6 +2871,198 @@ mod tests {
         assert_eq!(redirect.at.to_string(), "main:Catalog.Items.PredefinedItem");
     }
 
+    /// Операции пакета П3 (#1354): подузел, прежде названный аргументом на
+    /// владельце, задаётся адресом.
+    const SUBNODE_OPERATIONS: &[&str] = &[
+        "right.set",
+        "mxl.set",
+        "variant.set",
+        "variant.remove",
+        "parameter.set",
+        "parameter.rename",
+        "field.set",
+        "fieldRole.set",
+        "code.insert",
+    ];
+
+    /// Подузел, названный аргументом на владельце, отказывает с адресом
+    /// подузла; на самом подузле тот же аргумент лишний и тоже отказывает,
+    /// а вызов без него таблицу не трогает. Каждая операция пакета
+    /// представлена в таблице, и её запись переключена.
+    #[test]
+    fn a_subnode_named_by_an_argument_is_refused_with_its_address() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let schema = "main:Report.Sales.Template.Schema";
+        let cases = [
+            (
+                "right.set",
+                "main:Role.Reader".to_string(),
+                json!({"values": {"object": "Catalog.Items", "right": "Read", "value": true}}),
+                "values.object",
+                "main:Role.Reader.Right.Catalog_Items".to_string(),
+            ),
+            (
+                "mxl.set",
+                "main:Report.Sales.Template.Print".to_string(),
+                json!({"values": {"area": "Header", "cells": {"R1C1": "x"}}}),
+                "values.area",
+                "main:Report.Sales.Template.Print.Area.Header".to_string(),
+            ),
+            (
+                "variant.set",
+                schema.to_string(),
+                json!({"values": {"name": "Main", "title": "x"}}),
+                "values.name",
+                format!("{schema}.Setting.Main"),
+            ),
+            (
+                "variant.remove",
+                format!("{schema}.Setting.Main"),
+                json!({"values": {"name": "Extra"}}),
+                "values.name",
+                format!("{schema}.Setting.Extra"),
+            ),
+            (
+                "parameter.set",
+                schema.to_string(),
+                json!({"values": {"name": "Period", "title": "x"}}),
+                "values.name",
+                format!("{schema}.Parameter.Period"),
+            ),
+            (
+                "parameter.rename",
+                schema.to_string(),
+                json!({"values": {"name": "Period", "newName": "Range"}}),
+                "values.name",
+                format!("{schema}.Parameter.Period"),
+            ),
+            (
+                "field.set",
+                format!("{schema}.DataSet.Main"),
+                json!({"values": {"field": "Amount", "title": "x"}}),
+                "values.field",
+                format!("{schema}.DataSet.Main.Field.Amount"),
+            ),
+            (
+                "field.set",
+                format!("{schema}.DataSet.Main.Field.Amount"),
+                json!({"values": {"dataPath": "Amount", "title": "x"}}),
+                "values.dataPath",
+                format!("{schema}.DataSet.Main.Field.Amount"),
+            ),
+            (
+                "fieldRole.set",
+                format!("{schema}.DataSet.Union.DataSet.Member"),
+                json!({"values": {"name": "Amount", "role": {"dimension": true}}}),
+                "values.name",
+                format!("{schema}.DataSet.Union.DataSet.Member.Field.Amount"),
+            ),
+            (
+                "code.insert",
+                "main:CommonModule.Shared".to_string(),
+                json!({"selector": {"method": "Run"}, "position": "after", "text": "x"}),
+                "selector.method",
+                "main:CommonModule.Shared.Method.Run".to_string(),
+            ),
+            (
+                "code.insert",
+                "main:Catalog.Items.Module.Object.Body".to_string(),
+                json!({"selector": {"method": "Run"}, "position": "before", "text": "x"}),
+                "selector.method",
+                "main:Catalog.Items.Module.Object.Method.Run".to_string(),
+            ),
+        ];
+        for (op, raw, args, location, expected) in cases {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let args = args.as_object().unwrap();
+            let redirect = registry
+                .retired_argument_redirect(op, &site, args)
+                .unwrap_or_else(|| panic!("{op} at {raw} keeps its retired argument"));
+            assert_eq!(redirect.location, location, "{op} at {raw}");
+            assert_eq!(redirect.at.to_string(), expected, "{op} at {raw}");
+            let target = OperationSite::new(&redirect.at, traits).unwrap();
+            assert!(
+                registry.lookup(op).unwrap().applies_at(&target),
+                "{op} applies at {expected}"
+            );
+            let mut cleaned = args.clone();
+            let (container, rest) = location.split_once('.').unwrap();
+            cleaned
+                .get_mut(container)
+                .and_then(Value::as_object_mut)
+                .unwrap()
+                .remove(rest)
+                .expect("the retired key is present");
+            assert_eq!(
+                registry.retired_argument_redirect(op, &target, &cleaned),
+                None,
+                "{op} at {expected} without {location}"
+            );
+        }
+        // Составной `dataPath` адреса поля не строит (#1356): запись не
+        // срабатывает, и вызов получает отказ «не тот узел».
+        let data_set = address(&format!("{schema}.DataSet.Main"));
+        let site = OperationSite::new(&data_set, traits).unwrap();
+        assert_eq!(
+            registry.retired_argument_redirect(
+                "field.set",
+                &site,
+                json!({"values": {"field": "Owner.Code", "title": "x"}})
+                    .as_object()
+                    .unwrap()
+            ),
+            None
+        );
+        for op in SUBNODE_OPERATIONS {
+            assert!(
+                RETIRED_ARGUMENTS
+                    .iter()
+                    .any(|entry| entry.op == *op && entry.retired),
+                "{op} has a retired entry"
+            );
+        }
+    }
+
+    /// Узел создаёт операция родителя: снятая `form.create` называет
+    /// `form.add` на владельце формы, а `*.set` подузла знает, какая
+    /// операция родителя создаёт его узел (#1354).
+    #[test]
+    fn a_retired_creation_names_the_parent_operation() {
+        let retired =
+            super::RetiredOperation::lookup("form.create").expect("form.create is retired");
+        assert_eq!(retired.replacement, "form.add");
+        let registry = OperationRegistry::closed();
+        assert!(registry.lookup("form.create").is_none());
+        assert!(registry.lookup(retired.replacement).is_some());
+        for (raw, expected) in [
+            ("main:Catalog.Items.Form.Choice", "main:Catalog.Items"),
+            ("main:Catalog.Items", "main:Catalog.Items"),
+        ] {
+            let target = retired.replacement_at(&address(raw));
+            assert_eq!(target.to_string(), expected, "{raw}");
+            let site = OperationSite::new(
+                &target,
+                SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            )
+            .unwrap();
+            assert!(
+                registry.lookup("form.add").unwrap().applies_at(&site),
+                "{raw}"
+            );
+        }
+        assert!(super::RetiredOperation::lookup("form.add").is_none());
+        for (op, creator) in [
+            ("right.set", Some("right.add")),
+            ("mxl.set", Some("area.add")),
+            ("attribute.set", None),
+        ] {
+            assert_eq!(registry.lookup(op).unwrap().creator(), creator, "{op}");
+        }
+    }
+
     /// Операции пакета П2 (#1353): их снятый аргумент дублировал `at` или
     /// называл узел в обход адреса, а сами они не переезжали.
     const DUPLICATE_ARGUMENT_OPERATIONS: &[&str] = &[
@@ -2665,7 +3070,6 @@ mod tests {
         "query.patch",
         "structure.set",
         "structure.patch",
-        "form.create",
         "childSubsystem.remove",
         "code.replace",
     ];
@@ -2733,20 +3137,6 @@ mod tests {
                 json!({"values": {"variant": "Extra", "name": "G", "groupBy": ["A"]}}),
                 "values.variant",
                 format!("{template}.Setting.Extra"),
-            ),
-            (
-                "form.create",
-                "main:Catalog.Items.Form.Choice".to_string(),
-                json!({"values": {"name": "Choice", "type": "ChoiceForm"}}),
-                "values.name",
-                "main:Catalog.Items.Form.Choice".to_string(),
-            ),
-            (
-                "form.create",
-                "main:Catalog.Items".to_string(),
-                json!({"values": {"name": "Choice", "type": "ChoiceForm"}}),
-                "values.name",
-                "main:Catalog.Items.Form.Choice".to_string(),
             ),
             (
                 "childSubsystem.remove",

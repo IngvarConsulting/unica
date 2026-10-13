@@ -3868,14 +3868,17 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаПодбора",
+      "at": "main:Catalog.Валюты",
       "ops": [
        {
-        "op": "form.create",
+        "op": "form.add",
         "args": {
-         "values": {
-          "type": "ChoiceForm"
-         }
+         "items": [
+          {
+           "name": "ФормаПодбора",
+           "type": "ChoiceForm"
+          }
+         ]
         }
        }
       ]
@@ -4537,15 +4540,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик",
+      "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
       "ops": [
        {
         "op": "code.insert",
         "args": {
          "text": "// приёмочная вставка после ДоступныеЯзыки",
-         "selector": {
-          "method": "ДоступныеЯзыки"
-         },
          "position": "after"
         }
        }
@@ -4632,15 +4632,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:CommonModule.GoogleПереводчик",
+      "at": "main:CommonModule.GoogleПереводчик.Method.НастройкиАвторизации",
       "ops": [
        {
         "op": "code.insert",
         "args": {
          "text": "// приёмочная вставка",
-         "selector": {
-          "method": "НастройкиАвторизации"
-         },
          "position": "after"
         }
        }
@@ -4808,13 +4805,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.SalesReader",
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты",
       "ops": [
        {
         "op": "right.set",
         "args": {
          "values": {
-          "object": "Catalog.Валюты",
           "right": "Read",
           "value": true
          }
@@ -4836,13 +4832,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.SalesReader",
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты",
       "ops": [
        {
         "op": "right.set",
         "args": {
          "values": {
-          "object": "Catalog.Валюты",
           "right": "InteractiveDelete",
           "value": false
          }
@@ -4893,10 +4888,24 @@
       "at": "main:Role.SalesReader",
       "ops": [
        {
+        "op": "right.add",
+        "args": {
+         "at": "main:Role.SalesReader",
+         "items": [
+          {
+           "object": "InformationRegister.АдминистративнаяИерархия",
+           "rights": {
+            "Read": true
+           }
+          }
+         ]
+        }
+       },
+       {
         "op": "right.set",
         "args": {
+         "at": "main:Role.SalesReader.Right.InformationRegister_АдминистративнаяИерархия",
          "values": {
-          "object": "InformationRegister.АдминистративнаяИерархия",
           "right": "Read",
           "rls": "ГДЕ КодСубъектаРФ = &Код"
          }
@@ -4918,13 +4927,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.SalesReader",
+      "at": "main:Role.SalesReader.Right.Document_АктОбУничтоженииПерсональныхДанных",
       "ops": [
        {
         "op": "right.set",
         "args": {
          "values": {
-          "object": "Document.АктОбУничтоженииПерсональныхДанных",
           "right": "Posting",
           "value": true
          }
@@ -4949,13 +4957,16 @@
       "at": "main:Role.SalesReader",
       "ops": [
        {
-        "op": "right.set",
+        "op": "right.add",
         "args": {
-         "values": {
-          "object": "Report.АнализВерсийОбъектов",
-          "right": "Use",
-          "value": true
-         }
+         "items": [
+          {
+           "object": "Report.АнализВерсийОбъектов",
+           "rights": {
+            "Use": true
+           }
+          }
+         ]
         }
        }
       ]
@@ -5022,8 +5033,8 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "right.set",
-        "args": "values",
+        "op": "right.add",
+        "args": "items",
         "implemented": true
        }
       }
@@ -5049,13 +5060,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Role.SalesReader",
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты",
       "ops": [
        {
         "op": "right.set",
         "args": {
          "values": {
-          "object": "Catalog.Валюты",
           "right": "Update",
           "value": true
          }
@@ -5159,13 +5169,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Количество",
       "ops": [
        {
         "op": "field.set",
         "args": {
          "values": {
-          "field": "Количество",
           "title": "Число версий"
          }
         }
@@ -5252,8 +5261,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Parameter.Период",
          "values": {
-          "name": "Период",
           "value": "ThisMonth"
          }
         }
@@ -5628,16 +5637,18 @@
         }
        },
        {
-        "op": "mxl.set",
+        "op": "area.add",
         "args": {
          "at": "main:Catalog.Валюты.Template.ПФ_MXL_СписокВалют",
-         "values": {
-          "area": "Шапка",
-          "cells": {
-           "R1C1": "Валюта",
-           "R1C2": "Курс"
+         "items": [
+          {
+           "name": "Шапка",
+           "cells": {
+            "R1C1": "Валюта",
+            "R1C2": "Курс"
+           }
           }
-         }
+         ]
         }
        }
       ]
@@ -7467,13 +7478,16 @@
       "at": "newer:Role.SalesReader",
       "ops": [
        {
-        "op": "right.set",
+        "op": "right.add",
         "args": {
-         "values": {
-          "object": "Catalog.Валюты",
-          "right": "Read",
-          "value": true
-         }
+         "items": [
+          {
+           "object": "Catalog.Валюты",
+           "rights": {
+            "Read": true
+           }
+          }
+         ]
         }
        }
       ]
@@ -11229,16 +11243,16 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F06Report.Template.Reported.Can.mxl.set"
+      "at": "cf:Report.F06Report.Template.Reported.Can.area.add"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/props/contract/argsSchema/properties/values/required",
+       "pointer": "/data/props/contract/argsSchema/properties/items/items/required",
        "eq": [
-        "area",
+        "name",
         "cells"
        ]
       }
@@ -11250,15 +11264,17 @@
       "at": "cf:Report.F06Report.Template.Reported",
       "ops": [
        {
-        "op": "mxl.set",
+        "op": "area.add",
         "args": {
-         "values": {
-          "area": "Header",
-          "cells": {
-           "R1C1": "Номенклатура",
-           "R1C2": "Сумма"
+         "items": [
+          {
+           "name": "Header",
+           "cells": {
+            "R1C1": "Номенклатура",
+            "R1C2": "Сумма"
+           }
           }
-         }
+         ]
         }
        }
       ]
@@ -11395,13 +11411,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Stale"
           }
@@ -11439,13 +11454,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C2": "ConvertedParam",
            "R1C3": "ConvertedTemplate",
@@ -11633,13 +11647,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R01C+02": "ConvertedParam"
           },
@@ -11751,15 +11764,17 @@
       "at": "cf:Report.F06Report.Template.F06Template",
       "ops": [
        {
-        "op": "mxl.set",
+        "op": "area.add",
         "args": {
-         "values": {
-          "area": "C",
-          "cells": {
-           "R1C1": "NewArea",
-           "R2C2": "Footer"
+         "items": [
+          {
+           "name": "C",
+           "cells": {
+            "R1C1": "NewArea",
+            "R2C2": "Footer"
+           }
           }
-         }
+         ]
         }
        }
       ]
@@ -11893,13 +11908,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeOutsideRow",
+      "at": "cf:Report.F06Report.Template.UnsafeOutsideRow.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -11932,13 +11946,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeOverlappingAreas",
+      "at": "cf:Report.F06Report.Template.UnsafeOverlappingAreas.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -11971,13 +11984,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafePhysicalAreaOrder",
+      "at": "cf:Report.F06Report.Template.UnsafePhysicalAreaOrder.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12010,13 +12022,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeCellTranslations",
+      "at": "cf:Report.F06Report.Template.UnsafeCellTranslations.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12049,13 +12060,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeMultipleColumnSets",
+      "at": "cf:Report.F06Report.Template.UnsafeMultipleColumnSets.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12088,13 +12098,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeColumnsId",
+      "at": "cf:Report.F06Report.Template.UnsafeColumnsId.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12127,13 +12136,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeLanguageSettings",
+      "at": "cf:Report.F06Report.Template.UnsafeLanguageSettings.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12166,13 +12174,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeDrawing",
+      "at": "cf:Report.F06Report.Template.UnsafeDrawing.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12205,13 +12212,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeColumnArea",
+      "at": "cf:Report.F06Report.Template.UnsafeColumnArea.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12244,13 +12250,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeFormatTranslations",
+      "at": "cf:Report.F06Report.Template.UnsafeFormatTranslations.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12283,13 +12288,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.UnsafeCompressedOutsideRow",
+      "at": "cf:Report.F06Report.Template.UnsafeCompressedOutsideRow.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "Changed"
           }
@@ -12317,7 +12321,7 @@
    "name": "mxl-contract-refusals-preserve-source",
    "issue": 1311,
    "area": "Макеты",
-   "task": "Массив/пустые cells, координаты/типы, оформление, дробная ширина и адрес Area отказывают без записи",
+   "task": "Массив/пустые cells, координаты/типы, оформление, дробная ширина и область в аргументах вместо адреса Area отказывают без записи",
    "workspace": "tests/fixtures/acceptance/workspace-mxl",
    "wire": [
     {
@@ -12338,13 +12342,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": []
          }
         }
@@ -12366,13 +12369,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {}
          }
         }
@@ -12394,13 +12396,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R0C1": "x"
           }
@@ -12424,13 +12425,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": {}
           }
@@ -12454,13 +12454,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "x"
           },
@@ -12485,13 +12484,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template",
+      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
       "ops": [
        {
         "op": "mxl.set",
         "args": {
          "values": {
-          "area": "A",
           "cells": {
            "R1C1": "x"
           },
@@ -12516,7 +12514,7 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+      "at": "cf:Report.F06Report.Template.F06Template",
       "ops": [
        {
         "op": "mxl.set",
@@ -12534,7 +12532,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `mxl.set` does not apply to Area `cf:Report.F06Report.Template.F06Template.Area.A`; it applies at `cf:Report.F06Report.Template.F06Template`",
+     "refusal": "bad_value: `mxl.set` names its subject by address, not by `values.area`; call it at `cf:Report.F06Report.Template.F06Template.Area.A`; a missing one is created by `area.ad",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -12544,8 +12542,16 @@
      ],
      "assertions": [
       {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.area"
+      },
+      {
        "pointer": "/next/0/args/at",
-       "eq": "cf:Report.F06Report.Template.F06Template.Can.mxl.set"
+       "eq": "cf:Report.F06Report.Template.F06Template.Area.A.Can.mxl.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template.Area"
       }
      ]
     }
@@ -15266,10 +15272,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример",
-         "selector": {
-          "method": "ОбработатьПример"
-         },
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "position": "before",
          "text": "Процедура ПередМетодом() Экспорт\nКонецПроцедуры\n\n"
         }
@@ -15426,10 +15429,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример",
-         "selector": {
-          "method": "ОбработатьПример"
-         },
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "position": "before",
          "text": "Процедура ПередМетодом() Экспорт\nКонецПроцедуры\n\n"
         }
@@ -15586,10 +15586,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример",
-         "selector": {
-          "method": "ОбработатьПример"
-         },
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "position": "after",
          "text": "\nПроцедура ПослеМетода() Экспорт\nКонецПроцедуры\n"
         }
@@ -15746,10 +15743,7 @@
        {
         "op": "code.insert",
         "args": {
-         "at": "main:CommonModule.Пример",
-         "selector": {
-          "method": "ОбработатьПример"
-         },
+         "at": "main:CommonModule.Пример.Method.ОбработатьПример",
          "position": "after",
          "text": "\nПроцедура ПослеМетода() Экспорт\nКонецПроцедуры\n"
         }
@@ -15905,7 +15899,7 @@
    "name": "code-insert-refusal-and-method-body-replace",
    "pr": 1292,
    "area": "Код BSL",
-   "task": "Method/Method.Body insert, Body+selector и неполные position/selector отказывают без записи; замена Method.Body сохраняет подпись/BOM/CRLF/соседей и повтор",
+   "task": "Method без position, Method.Body insert, Body+selector и неполные position/selector отказывают без записи; замена Method.Body сохраняет подпись/BOM/CRLF/соседей и повтор",
    "workspace": "tests/fixtures/acceptance/workspace-code",
    "wire": [
     {
@@ -15925,7 +15919,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `code.insert` does not apply to Method `main:CommonModule.Пример.Method.ОбработатьПример`; it applies at `main:CommonModule.Пример`",
+     "refusal": "bad_value: code.insert at a method needs `position`: before or after it",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -15980,8 +15974,8 @@
      ],
      "assertions": [
       {
-       "pointer": "/next/0/args/at",
-       "eq": "main:CommonModule.Пример"
+       "pointer": "/at",
+       "eq": "ops[0].args.position"
       }
      ]
     },
@@ -16002,7 +15996,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `code.insert` does not apply to Body `main:CommonModule.Пример.Method.ОбработатьПример.Body`; it applies at `main:CommonModule.Пример`",
+     "refusal": "bad_value: apply operation `code.insert` does not apply to Body `main:CommonModule.Пример.Method.ОбработатьПример.Body`; it applies at `main:CommonModule.Пример.Method.Обр",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -16058,7 +16052,7 @@
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:CommonModule.Пример"
+       "eq": "main:CommonModule.Пример.Method.ОбработатьПример"
       }
      ]
     },
@@ -16072,7 +16066,7 @@
         "args": {
          "at": "main:CommonModule.Пример.Body",
          "selector": {
-          "method": "ОбработатьПример"
+          "anchor": "// insertion point"
          },
          "position": "after",
          "text": "// отказ"
@@ -21666,9 +21660,8 @@
        {
         "op": "field.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData",
+         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Field.Amount",
          "values": {
-          "field": "Amount",
           "title": {
            "ru": "Сумма [шт]",
            "en": "Amount @work"
@@ -21680,9 +21673,8 @@
        {
         "op": "fieldRole.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData",
+         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Field.Amount",
          "values": {
-          "field": "Amount",
           "role": {
            "dimension": true,
            "required": true
@@ -22227,8 +22219,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveParameters.Parameter.First",
          "values": {
-          "name": "First",
           "title": {
            "ru": "Изменённый",
            "en": "Updated"
@@ -22243,8 +22235,8 @@
        {
         "op": "parameter.rename",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveParameters.Parameter.First",
          "values": {
-          "name": "First",
           "newName": "Renamed"
          }
         }
@@ -22824,8 +22816,8 @@
        {
         "op": "variant.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
          "values": {
-          "name": "Work",
           "presentation": {
            "ru": "Новый",
            "en": "New"
@@ -23071,15 +23063,11 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.PrimitiveSettings",
+      "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
       "ops": [
        {
         "op": "variant.remove",
-        "args": {
-         "values": {
-          "name": "Work"
-         }
-        }
+        "args": {}
        }
       ]
      },
@@ -27718,8 +27706,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Choice",
          "values": {
-          "name": "Choice",
           "value": "Перечисление.Округления.Окр1000"
          }
         }
@@ -27727,8 +27715,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.List",
          "values": {
-          "name": "List",
           "values": [
            "B",
            "C"
@@ -27739,8 +27727,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.CustomPeriod",
          "values": {
-          "name": "CustomPeriod",
           "value": "Today"
          }
         }
@@ -27865,8 +27853,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Choice",
          "values": {
-          "name": "Choice",
           "value": "Перечисление.Округления.Окр1000"
          }
         }
@@ -27874,8 +27862,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.List",
          "values": {
-          "name": "List",
           "values": [
            "B",
            "C"
@@ -27886,8 +27874,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.Empty",
          "values": {
-          "name": "Empty",
           "value": null
          }
         }
@@ -27895,8 +27883,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTypedValues.Parameter.EmptyComposite",
          "values": {
-          "name": "EmptyComposite",
           "value": null
          }
         }
@@ -29503,8 +29491,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.Parameter.Text",
          "values": {
-          "name": "Text",
           "title": "",
           "value": "",
           "expression": ""
@@ -29514,9 +29502,8 @@
        {
         "op": "field.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData",
+         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData.Field.Amount",
          "values": {
-          "field": "Amount",
           "title": "",
           "presentationExpression": ""
          }
@@ -29626,8 +29613,8 @@
        {
         "op": "parameter.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.Parameter.Text",
          "values": {
-          "name": "Text",
           "title": "",
           "value": "",
           "expression": ""
@@ -29637,9 +29624,8 @@
        {
         "op": "field.set",
         "args": {
-         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData",
+         "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData.Field.Amount",
          "values": {
-          "field": "Amount",
           "title": "",
           "presentationExpression": ""
          }
@@ -32429,9 +32415,8 @@
        {
         "op": "field.set",
         "args": {
-         "at": "cf:Report.Sales.Template.SalesSchema.DataSet.SalesData",
+         "at": "cf:Report.Sales.Template.SalesSchema.DataSet.SalesData.Field.Amount",
          "values": {
-          "field": "Amount",
           "title": "Total amount"
          }
         }
@@ -32450,8 +32435,8 @@
        {
         "op": "variant.set",
         "args": {
+         "at": "cf:Report.Sales.Template.SalesSchema.Setting.Main",
          "values": {
-          "name": "Main",
           "title": "Main variant"
          }
         }
@@ -35366,13 +35351,16 @@
       "at": "ext:Role.SalesReader",
       "ops": [
        {
-        "op": "right.set",
+        "op": "right.add",
         "args": {
-         "values": {
-          "object": "DataProcessor.Обработка",
-          "right": "Use",
-          "value": true
-         }
+         "items": [
+          {
+           "object": "DataProcessor.Обработка",
+           "rights": {
+            "Use": true
+           }
+          }
+         ]
         }
        }
       ]
@@ -35380,7 +35368,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "not_found: apply operation `right.set` writes content of `ext:Role.SalesReader` that is inherited from the parent: the extension does not hold its `Rights.xml`; read the p",
+     "refusal": "not_found: apply operation `right.add` writes content of `ext:Role.SalesReader` that is inherited from the parent: the extension does not hold its `Rights.xml`; read the p",
      "assertions": [
       {
        "pointer": "/next/0/args/at",
@@ -36104,7 +36092,7 @@
    "name": "retired-duplicate-arguments-route-to-the-address",
    "issue": 1353,
    "area": "СКД",
-   "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, имя формы, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора",
+   "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора; снятая form.create ведёт к form.add на владельце, и форма создаётся там",
    "wire": [
     {
      "tool": "unica.view",
@@ -36303,13 +36291,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты",
+      "at": "main:Catalog.Валюты.Form.ФормаПодбора",
       "ops": [
        {
         "op": "form.create",
         "args": {
          "values": {
-          "name": "ФормаПодбора",
           "type": "ChoiceForm"
          }
         }
@@ -36319,11 +36306,11 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: `form.create` names its subject by address, not by `values.name`; call it at `main:Catalog.Валюты.Form.ФормаПодбора`",
+     "refusal": "bad_value: apply operation `form.create` is retired: call `form.add` at `main:Catalog.Валюты`; `items: [{name, type}]` names the form and its type",
      "assertions": [
       {
        "pointer": "/at",
-       "eq": "ops[0].args.values.name"
+       "eq": "ops[0].op"
       },
       {
        "pointer": "/next",
@@ -36331,9 +36318,9 @@
         {
          "tool": "unica.view",
          "args": {
-          "at": "main:Catalog.Валюты.Form"
+          "at": "main:Catalog.Валюты"
          },
-         "reason": "существующие узлы этого вида у владельца"
+         "reason": "какие операции применимы к этому узлу"
         }
        ]
       }
@@ -36349,14 +36336,17 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаПодбора",
+      "at": "main:Catalog.Валюты",
       "ops": [
        {
-        "op": "form.create",
+        "op": "form.add",
         "args": {
-         "values": {
-          "type": "ChoiceForm"
-         }
+         "items": [
+          {
+           "name": "ФормаПодбора",
+           "type": "ChoiceForm"
+          }
+         ]
         }
        }
       ]
@@ -36870,6 +36860,838 @@
   },
   {
    "id": "S417",
+   "name": "role-rights-entry-is-addressed-and-created-by-right-add",
+   "issue": 1354,
+   "area": "Роли и права",
+   "task": "Объект права в аргументах вместо адреса записи отказывает без записи с next к записи и ветви прав; right.set правит существующую запись по её адресу, опечатка в адресе отвечает not_found с next к роли и ничего не создаёт; новую запись создаёт right.add на роли, а повторное right.add на существующей отказывает; контракт right.add читается по адресу операции",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "right.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
+     ],
+     "captures": {
+      "rights": {
+       "kind": "sha256",
+       "file": "src/Roles/SalesReader/Ext/Rights.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "Catalog.Валюты",
+          "right": "Update",
+          "value": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `right.set` names its subject by address, not by `values.object`; call it at `main:Role.SalesReader.Right.Catalog_Валюты`; a missing one is created by `right.ad",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.object"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Role.SalesReader.Right.Catalog_Валюты.Can.right.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Role.SalesReader.Right"
+      },
+      {
+       "pointer": "/next/2/args/at",
+       "eq": "main:Role.SalesReader.Can.right.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "right.set",
+        "args": "values",
+        "implemented": true
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader.Right.Catalog_Валюты",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "right": "Update",
+          "value": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader.Right.Catalog_Валютыы",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "right": "Update",
+          "value": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: the role has no rights entry for `Catalog.Валютыы`; create it with right.add at `main:Role.SalesReader`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.at"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Role.SalesReader"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.add",
+        "args": {
+         "items": [
+          {
+           "object": "Report.АнализВерсийОбъектов",
+           "rights": {
+            "Use": true,
+            "View": true
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.add",
+        "args": {
+         "items": [
+          {
+           "object": "Catalog.Валюты",
+           "rights": {
+            "Update": true
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: the role already has a rights entry for `Catalog.Валюты`; change it with right.set at `main:Role.SalesReader.Right.Catalog_Валюты`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].object"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Roles/SalesReader/Ext/Rights.xml",
+       "eq": "$capture.rights"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Role.SalesReader.Can.right.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/contract/argsSchema/properties/items/items/required",
+       "eq": [
+        "object",
+        "rights"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S418",
+   "name": "spreadsheet-area-is-addressed-and-created-by-area-add",
+   "issue": 1354,
+   "area": "Макеты",
+   "workspace": "tests/fixtures/acceptance/workspace-mxl",
+   "task": "Область в аргументах вместо адреса Area отказывает без записи; mxl.set правит только существующую область по её адресу, отсутствующая отвечает not_found с next к макету; новую область с начальными ячейками создаёт area.add на макете, повтор имени существующей области отказывает",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "area.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "area": "B",
+          "cells": {
+           "R1C1": "x"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `mxl.set` names its subject by address, not by `values.area`; call it at `cf:Report.F06Report.Template.F06Template.Area.B`; a missing one is created by `area.ad",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template.Area.B.Can.mxl.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template.Area"
+      },
+      {
+       "pointer": "/next/2/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template.Can.area.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.Z",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "cells": {
+           "R1C1": "x"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: the template has no area `Z`; create it with area.add at `cf:Report.F06Report.Template.F06Template`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.at"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F06Report.Template.F06Template"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "area.add",
+        "args": {
+         "items": [
+          {
+           "name": "Z",
+           "cells": {
+            "R1C1": "Итого",
+            "R1C2": 0
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ],
+     "captures": {
+      "add": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template.Area.Z.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 1,
+         "template": false,
+         "text": "Итого"
+        },
+        {
+         "index": 2,
+         "template": false,
+         "text": "0"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.F06Template",
+      "ops": [
+       {
+        "op": "area.add",
+        "args": {
+         "items": [
+          {
+           "name": "A",
+           "cells": {
+            "R1C1": "x"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: the template already has area `A`; change its cells with mxl.set at `cf:Report.F06Report.Template.F06Template.Area.A`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].name"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S419",
+   "name": "schema-subnodes-and-method-insert-are-addressed",
+   "issue": 1354,
+   "area": "СКД",
+   "task": "Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр, а снятая форма поля с составным dataPath не уводит к несуществующему адресу",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "schema": {
+       "kind": "sha256",
+       "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+      },
+      "module": {
+       "kind": "sha256",
+       "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+      "ops": [
+       {
+        "op": "variant.set",
+        "args": {
+         "values": {
+          "name": "Основной",
+          "title": "Версии"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `variant.set` names its subject by address, not by `values.name`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Ос",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Can.variant.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "variant.set",
+        "args": {
+         "values": {
+          "title": "Версии"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных",
+      "ops": [
+       {
+        "op": "parameter.set",
+        "args": {
+         "values": {
+          "name": "Период",
+          "title": "Период"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `parameter.set` names its subject by address, not by `values.name`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Paramete",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Parameter.Период.Can.parameter.set"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "field": "Количество",
+          "title": "Число версий"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `field.set` names its subject by address, not by `values.field`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.Наб",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Количество.Can.field.set"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Количество",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "title": "Число версий"
+         }
+        }
+       },
+       {
+        "op": "fieldRole.set",
+        "args": {
+         "values": {
+          "role": {
+           "dimension": true
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "field": "Объект.Код",
+          "title": "Код"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `field.set` does not apply to DataSet `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1`; it address",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "selector": {
+          "method": "ДоступныеЯзыки"
+         },
+         "position": "after",
+         "text": "// приёмочная вставка"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `code.insert` names its subject by address, not by `selector.method`; call it at `main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.selector.method"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": "$capture.module"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "position": "before",
+         "text": "// приёмочная вставка"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": "$capture.module"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S420",
    "issue": 1413,
    "area": "Метаданные",
    "task": "Дополнить источники подписки без перестановки прежних, удалить отдельные цели и проверить повтор без записи; сохранить прежнюю детерминированную замену",

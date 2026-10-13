@@ -34,6 +34,14 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs::a_query_is_addressed_through_its_dataset_and_retired_spellings_refuse
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::form_and_child_subsystem_names_come_only_from_the_address
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs::a_data_set_is_found_by_name_inside_unions
+  - crates/unica-coder/src/domain/apply.rs::a_subnode_named_by_an_argument_is_refused_with_its_address
+  - crates/unica-coder/src/domain/apply.rs::a_retired_creation_names_the_parent_operation
+  - crates/unica-coder/src/domain/operation_contract.rs::role_contracts_publish_the_entry_shape
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_subnode_arguments_route_next_to_the_subnode_address
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::right_set_grants_lists_and_restricts_rights_on_the_staged_document
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::an_area_is_written_only_where_it_exists_and_created_only_by_area_add
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::a_missing_rights_entry_or_area_routes_next_to_the_parent
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::a_missing_target_routes_next_to_the_parent_dictionary
 gap: https://github.com/IngvarConsulting/unica/issues/1358
 ---
 
@@ -97,15 +105,14 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 
 Аргумент, который повторял адрес вызова или называл узел в обход него, снят:
 набор у `query.set` и `query.patch` (`values.dataSet`), вариант у
-`structure.set` и `structure.patch` (`values.variant`), имя формы у
-`form.create` (`values.name`), дочерняя подсистема у `childSubsystem.remove`
-(`items[].name`, элемент-строка `items[]`, `values.name`) и метод у
-`code.replace` (`selector.method`). Если из значения строится адрес, где
-операция исполнима, вызов получает `bad_value` до планирования, даже когда
-операция исполнима и на адресе вызова. Первый `next` ведёт к узлу, который
-называло значение, второй — к ветви узлов этого вида; к форме, которую
-`form.create` только создаёт, `next` не ведёт, остаётся ветвь форм. Если
-значение повторяло адрес вызова, отказ говорит снять аргумент. Иначе
+`structure.set` и `structure.patch` (`values.variant`), дочерняя подсистема
+у `childSubsystem.remove` (`items[].name`, элемент-строка `items[]`,
+`values.name`) и метод у `code.replace` (`selector.method`). Если из значения
+строится адрес, где операция исполнима, вызов получает `bad_value` до
+планирования, даже когда операция исполнима и на адресе вызова. Первый
+`next` ведёт к узлу, который называло значение, второй — к ветви узлов
+этого вида. Если значение повторяло адрес вызова, отказ говорит снять
+аргумент. Иначе
 снятый ключ отвергают контракт или разбор планировщиком, тоже `bad_value`.
 Набор, названный снятым `dataSet`, — это сегмент адреса вызова с тем же
 именем, иначе набор, найденный по имени в схеме макета (в том числе член
@@ -116,13 +123,48 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 набора, а для операций набора — к самому набору; остальные операции набора
 на узле запроса не исполнимы.
 Дочерняя подсистема исключается из родителя только по своему адресу.
-Текстовый якорь `selector.anchor` у `code.replace` остаётся аргументом.
+Текстовый якорь `selector.anchor` у `code.replace` и `code.insert` остаётся
+аргументом.
 
-До переноса остальных операций на адреса подузлов (пакеты П3–П6 зонта
+Операции подузлов исполняются по адресу подузла, а не владельца: запись
+прав `right.set` — на `Role.<роль>.Right.<Вид>_<Имя>`, ячейки `mxl.set` —
+на области `Template.<макет>.Area.<область>`, `variant.set` и
+`variant.remove` — на `Setting.<вариант>`, `parameter.set` и
+`parameter.rename` — на `Parameter.<параметр>`, `field.set` и
+`fieldRole.set` — на `DataSet.<набор>.Field.<поле>`, вставка `code.insert`
+до или после метода — на `Method.<метод>` с `position`. Прежний аргумент
+(`values.object`, `values.area`, `values.name`, `values.field`,
+`values.dataPath`, `selector.method`) получает тот же отказ `bad_value`
+с `next` к `can` подузла и к ветви его вида. Поле с составным `dataPath`
+адресом не выражается до экранирования точки (#1356): его `field.set` и
+`fieldRole.set` недоступны, а отказ называет форму адреса поля. По той же
+причине до #1356 недоступны права вложенного объекта роли
+(`Kind.Name.Command.C`, реквизит): `right.add` такой объект отвергает,
+а `right.set` его записи не адресует. Запись прав адресуется только
+каноническим именем `<Вид>_<Имя>`, а не коротким псевдонимом чтения;
+`area.add` отвергает имя области с точкой.
+
+Узел создаёт только операция родителя с именем в аргументах, а `*.set`
+и `*.remove` пишут в существующий узел. Запись прав создаёт `right.add`
+на роли с начальным набором прав, область — `area.add` на макете
+с начальными ячейками, форму — `form.add` на владельце. `right.set` и
+`mxl.set` на отсутствующем узле отвечают `not_found` с `next` к родителю,
+в чьём `can` есть создающая операция; опечатка в адресе узла не создаёт.
+`right.add` и `area.add` с именем существующего узла отвергаются
+`bad_value` и называют адрес для `*.set`. Отказ по снятому аргументу
+у `right.set` и `mxl.set` называет создающую операцию родителя, а третий
+`next` ведёт к её контракту `<родитель>.Can.<операция>`. Контракты `right.add`
+и `right.set` публикуются по адресу операции, как у других семейств. Снятая
+операция `form.create` в реестре отсутствует: вызов получает `bad_value`
+с `next` к владельцу формы, где исполнима `form.add`. Псевдонимов
+прежних форм вызова нет.
+
+До переноса остальных операций на адреса подузлов (пакеты П4–П6 зонта
 #1358) обещание «не пишет в другой узел» выполнено не для всех операций:
 те, что ещё называют подузел аргументом (записи таблицы снятых аргументов
-в реестре, например `values.element` у `event.bind`), пишут в подузел,
-названный аргументом, а не адресом.
+в реестре, например `values.element` у `event.bind`, и группа
+`values.group` у `commandOrder.set`, чьи имена с точкой адресуются после
+#1356), пишут в подузел, названный аргументом, а не адресом.
 
 Проверки проходят настоящий вызов `view` для объекта метаданных и
 отдельно проверяют проекции корня, модуля, неизвестного вида и операции

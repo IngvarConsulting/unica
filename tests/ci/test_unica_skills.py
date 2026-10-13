@@ -912,7 +912,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.check"',
     ],
     "form-compile": [
-        '"op": "form.create"',
+        '"op": "form.add"',
         '"op": "formAttribute.add"',
     ],
     # Действие стало именем операции. `hide` и `show` свелись к одному
@@ -944,7 +944,7 @@ SCENARIO_PRESERVING_TOKENS = {
     # операцию, и предпросмотр показывает их поимённо, а не имя пресета.
     "role-compile": [
         '"op": "role.create"',
-        '"op": "right.set"',
+        '"op": "right.add"',
         '"name": "unica.check"',
         '"name": "unica.view"',
     ],
@@ -1400,8 +1400,9 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 self.assertEqual(set(arguments), {"executionToken"})
                 self.assertTrue(arguments["executionToken"])
                 continue
-            # Роль называет адрес; ни набора, ни пути в аргументах нет.
-            self.assertRegex(arguments["at"], r"^[^:]+:Role\.[^.]+$")
+            # Роль или её запись прав называет адрес; ни набора, ни пути
+            # в аргументах нет.
+            self.assertRegex(arguments["at"], r"^[^:]+:Role\.[^.]+(\.Right\.[^.]+_[^.]+)?$")
             self.assertNotIn("sourceSet", arguments)
             self.assertNotIn("metadataPath", arguments)
             previews += 1
@@ -1409,9 +1410,20 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             self.assertNotIn("ifRev", arguments)
             self.assertTrue(arguments["ops"])
             for operation in arguments["ops"]:
-                self.assertEqual(operation["op"], "right.set")
+                self.assertIn(operation["op"], {"right.set", "right.add"})
+                if operation["op"] == "right.add":
+                    # Запись создаёт роль: объект и начальные права.
+                    self.assertRegex(operation["args"]["at"], r"^[^:]+:Role\.[^.]+$")
+                    for item in operation["args"]["items"]:
+                        self.assertIn("object", item)
+                        self.assertTrue(item["rights"])
+                    continue
+                # Объект записи называет её адрес, а не аргумент (#1354).
+                self.assertRegex(
+                    operation["args"]["at"], r"^[^:]+:Role\.[^.]+\.Right\.[^.]+_[^.]+$"
+                )
                 values = operation["args"]["values"]
-                self.assertIn("object", values)
+                self.assertNotIn("object", values)
                 self.assertIn("right", values)
                 # Одно из двух обязано быть: право без значения и без
                 # ограничения ничего не говорит.
