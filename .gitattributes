@@ -41,3 +41,8 @@ tests/fixtures/acceptance/workspace-metadata-values/** -text whitespace=cr-at-eo
 tests/fixtures/acceptance/workspace-borrowed/** -text whitespace=cr-at-eol
 
 tests/fixtures/acceptance/workspace/** -text whitespace=cr-at-eol
+
+# Incomplete borrowed descriptors and MCP checks preserve platform-export bytes.
+tests/fixtures/platform_8_3_27/incomplete_borrowed/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-incomplete-borrowed/** -text whitespace=cr-at-eol
+tests/fixtures/acceptance/workspace-invalid-borrowing/** -text whitespace=cr-at-eol

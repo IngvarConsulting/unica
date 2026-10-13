@@ -33,8 +33,12 @@ allowed-tools:
 | `content.add` | `items: [{object}]` | Добавляет объекты в состав |
 | `content.remove` | `items: [{object}]` | Удаляет объекты из состава |
 | `childSubsystem.add` | `items: [{name}]` | Заводит дочернюю подсистему |
-| `childSubsystem.remove` | `items: [{name}]` | Удаляет дочернюю подсистему |
+| `childSubsystem.remove` | только `at` дочерней | Исключает дочернюю подсистему из состава родителя |
 | `props.set` | `values: {…}` | Меняет свойства: `Synonym`, `IncludeInCommandInterface`, `UseOneCommand` и прочие |
+
+`childSubsystem.remove` вызывается на адресе самой дочерней подсистемы:
+`<набор>:Subsystem.<Родитель>.Subsystem.<Имя>`. Имя дочерней в `items` или
+`values` получает отказ `bad_value`, а `next` ведёт к её адресу.
 
 Элемент списка можно писать строкой вместо объекта. Операции применяются по
 порядку и публикуются одной транзакцией: либо все, либо ни одной. Повтор

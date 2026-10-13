@@ -127,6 +127,15 @@ pub(crate) enum NodeViewData {
 }
 
 impl NodeViewData {
+    #[must_use]
+    pub(crate) fn with_limit(mut self, limit: impl Into<String>) -> Self {
+        match &mut self {
+            Self::Node(node) => node.limits.push(limit.into()),
+            Self::Collection(collection) => collection.node.limits.push(limit.into()),
+        }
+        self
+    }
+
     pub(crate) fn at(&self) -> &str {
         match self {
             Self::Node(node) => node.at(),

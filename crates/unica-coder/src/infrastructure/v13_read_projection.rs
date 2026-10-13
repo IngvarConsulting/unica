@@ -1169,7 +1169,7 @@ fn project_metadata(
                 props,
             )
             .with_branches(branches)
-            .with_limits(unreadable_limits(payload)),
+            .with_limits(metadata_limits(payload)),
         ));
     }
     let first = &suffix[0];
@@ -1186,7 +1186,8 @@ fn project_metadata(
                 NodeKind::Relation.as_str(),
                 "Relations",
                 Map::new(),
-            ),
+            )
+            .with_limits(metadata_relation_limits(payload)),
             metadata_relations(address, payload),
         )));
     }
@@ -1290,6 +1291,88 @@ fn project_metadata(
     Ok(NodeViewData::Node(metadata_item_node(address, kind, item)))
 }
 
+fn metadata_limits(payload: &Value) -> Vec<String> {
+    let mut limits = unreadable_limits(payload);
+    limits.extend(metadata_missing_relation_limits(payload));
+    limits
+}
+
+const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
+    (
+        "registeredDocuments",
+        "registeredDocument",
+        "RegisteredDocuments",
+    ),
+    (
+        "baseCalculationTypes",
+        "baseCalculationType",
+        "BaseCalculationTypes",
+    ),
+    ("xdtoPackages", "xdtoPackage", "XDTOPackages"),
+];
+
+fn metadata_relation_error_field(field: &str) -> Option<String> {
+    if field.starts_with("relations.") {
+        return Some(field.to_string());
+    }
+    for (name, _, xml_name) in METADATA_DETAIL_RELATIONS {
+        let detail = format!("details.{name}");
+        if field == format!("properties.{xml_name}") {
+            return Some(detail);
+        }
+        if field
+            .strip_prefix(&detail)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+        {
+            return Some(field.to_string());
+        }
+    }
+    None
+}
+
+fn metadata_relation_limits(payload: &Value) -> Vec<String> {
+    let mut limits = unreadable_entries(payload)
+        .filter_map(|(field, message)| {
+            metadata_relation_error_field(field)
+                .map(|field| format!("{field} не прочитано: {message}"))
+        })
+        .collect::<Vec<_>>();
+    limits.extend(metadata_missing_relation_limits(payload));
+    limits
+}
+
+fn metadata_missing_relation_limits(payload: &Value) -> Vec<String> {
+    let mut missing = payload
+        .get("relations")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+        .filter(|(_, value)| value.is_null())
+        .map(|(name, _)| format!("relations.{name}"))
+        .collect::<Vec<_>>();
+    if let Some(details) = metadata_details(payload) {
+        missing.extend(
+            METADATA_DETAIL_RELATIONS
+                .iter()
+                .filter(|(name, _, _)| details.get(*name).is_some_and(Value::is_null))
+                .map(|(name, _, _)| format!("details.{name}")),
+        );
+    }
+    missing
+        .into_iter()
+        .filter_map(|field| {
+            let damaged = unreadable_entries(payload).any(|(candidate, _)| {
+                metadata_relation_error_field(candidate).is_some_and(|candidate| {
+                    candidate
+                        .strip_prefix(&field)
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+                })
+            });
+            (!damaged).then(|| format!("{field} is absent; the relation list may be incomplete"))
+        })
+        .collect()
+}
+
 /// Поля, которые читатель не смог спроецировать, — строками для `limits`.
 fn unreadable_limits(payload: &Value) -> Vec<String> {
     unreadable_entries(payload)
@@ -1303,6 +1386,7 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 /// «нет такой коллекции», и агент счёл бы сервис пустым.
 fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     let prefix = match kind {
+        NodeKind::PredefinedItem => "predefinedItems",
         NodeKind::UrlTemplate => "details.urlTemplates",
         NodeKind::Operation => "details.operations",
         _ => return None,
@@ -1426,12 +1510,11 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
     // `family` у источника, пространство имён у пакета — сюда не попадает:
     // ветвь адресует объекты, а не строки.
     let details = metadata_details(payload);
-    for (holder, field, relation) in [
-        (relations, "source", "source"),
-        (details, "registeredDocuments", "registeredDocument"),
-        (details, "baseCalculationTypes", "baseCalculationType"),
-        (details, "xdtoPackages", "xdtoPackage"),
-    ] {
+    for (holder, field, relation) in std::iter::once((relations, "source", "source")).chain(
+        METADATA_DETAIL_RELATIONS
+            .iter()
+            .map(|(field, relation, _)| (details, *field, *relation)),
+    ) {
         let entries = holder
             .and_then(|holder| holder.get(field))
             .and_then(Value::as_array);

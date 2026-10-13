@@ -24,7 +24,8 @@ allowed-tools:
 ## Шаг 1 — завести форму
 
 Адрес называет будущую форму: `<набор>:<Вид>.<Имя>.Form.<Форма>`; `values.type`
-задаёт назначение, `values.name` обязано совпасть с именем в адресе.
+задаёт назначение. Имя формы берётся только из адреса: `values.name` получает
+отказ `bad_value`, а `next` ведёт к адресу формы.
 
 ```json
 {
@@ -35,7 +36,7 @@ allowed-tools:
     "arguments": {
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
-        {"op": "form.create", "args": {"values": {"name": "ФормаЭлемента", "type": "ObjectForm"}}}
+        {"op": "form.create", "args": {"values": {"type": "ObjectForm"}}}
       ]
     }
   }

@@ -4,18 +4,18 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **407 сценариев** реальных задач разработчика конфигурации и **1011 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованный общий модуль без свойств из выгрузки платформы — на `workspace-borrowed/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **415 сценариев** реальных задач разработчика конфигурации и **1078 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 391 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 399 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 840 |
-| `refused` | умышленный типизированный отказ | 120 |
+| `ok` | результат | 890 |
+| `refused` | умышленный типизированный отказ | 134 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 26 |
-| `provider` | провайдер недоступен | 17 |
+| `provider` | провайдер недоступен | 20 |
 | `unsupported` | закрытый список | 3 |
 | `ok` / `provider` | любой из: результат; провайдер недоступен | 2 |
 | `ok` / `provider` / `task` / `unsupported` | любой из: результат; провайдер недоступен; длинная задача; закрытый список | 2 |
@@ -86,11 +86,11 @@
 | `relation.remove` | `values` | да | S115 |
 | `relation.replace` | `values` | да | S114, S394 |
 | `help.create` | `values` | да | S116 |
-| `attribute.add` | `items` | да | S059, S060, S061, S062, S063, S064, S065, S066, S067, S068, S072, S094, S095, S097, S099, S110, S259, S260, S399, S401, S403, S406 |
+| `attribute.add` | `items` | да | S059, S060, S061, S062, S063, S064, S065, S066, S067, S068, S072, S094, S095, S097, S099, S110, S259, S260, S399, S401, S403, S414 |
 | `attribute.set` | `values` | да | S050, S051, S052, S053, S069, S102, S394 |
 | `attribute.remove` | только `at` | да | S070, S071 |
-| `tabularSection.add` | `items` | да | S073, S098, S401, S406 |
-| `tabularSection.set` | `values` | да | S056, S074, S405 |
+| `tabularSection.add` | `items` | да | S073, S098, S401, S414 |
+| `tabularSection.set` | `values` | да | S056, S074, S413 |
 | `tabularSection.remove` | только `at` | да | S075 |
 | `dimension.add` | `items` | да | S076 |
 | `dimension.set` | `values` | да | S077, S080, S400 |
@@ -104,10 +104,10 @@
 | `column.add` | `items` | да | S085 |
 | `column.set` | `values` | да | S086 |
 | `column.remove` | только `at` | да | S087 |
-| `template.add` | `items` | да | S196, S199, S203, S277, S284, S330, S331, S361, S362, S363, S364, S365, S367, S368, S370, S371, S372, S373, S374, S375, S376, S377, S378, S379, S380, S407 |
+| `template.add` | `items` | да | S196, S199, S203, S277, S284, S330, S331, S361, S362, S363, S364, S365, S367, S368, S370, S371, S372, S373, S374, S375, S376, S377, S378, S379, S380, S415 |
 | `template.set` | `values` | да | S197 |
 | `template.remove` | только `at` | да | S198 |
-| `command.add` | `items` | да | S407 |
+| `command.add` | `items` | да | S415 |
 | `command.set` | `values` | да | **не покрыто — предложите задачу** |
 | `command.remove` | только `at` | да | **не покрыто — предложите задачу** |
 | `predefinedItem.add` | `items` | да | S088, S089, S090, S400 |
@@ -124,22 +124,22 @@
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `form.add` | `items` | да | S125, S126, S136, S137, S138, S145, S273, S283, S312, S388, S407 |
+| `form.add` | `items` | да | S125, S126, S136, S137, S138, S145, S273, S283, S312, S388, S415 |
 | `form.set` | `values` | да | S127 |
 | `form.remove` | только `at` | да | S128, S295 |
-| `form.create` | `values` | да | S129 |
-| `element.add` | `items` | да | S130, S139, S141, S142, S388, S393 |
+| `form.create` | `values` | да | S129, S412 |
+| `element.add` | `items` | да | S130, S139, S141, S142, S388, S393, S407, S408 |
 | `element.remove` | только `at` | да | S131 |
 | `formAttribute.add` | `items` | да | S132, S388 |
 | `formCommand.add` | `items` | да | S133, S135, S388 |
-| `event.bind` | `values` | да | S134, S140, S143, S325, S404 |
+| `event.bind` | `values` | да | S134, S140, S143, S325, S404, S405 |
 
 ### Роли и права
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
 | `role.create` | `values` | да | S170 |
-| `right.set` | `values` | да | S168, S169, S171, S172, S173, S177, S279 |
+| `right.set` | `values` | да | S168, S169, S171, S172, S173, S177, S279, S409 |
 
 ### Схемы компоновки данных
 
@@ -167,7 +167,7 @@
 | `variant.add` | `items` | да | S192, S363 |
 | `variant.set` | `values` | да | S363, S388 |
 | `variant.remove` | `values` | да | S363 |
-| `query.set` | `values` | да | S188, S326, S327, S329, S361 |
+| `query.set` | `values` | да | S188, S326, S327, S329, S361, S412 |
 | `query.patch` | `values` | да | S189, S327, S329, S361, S367 |
 | `filter.add` | `items` | да | S186, S363, S364, S365 |
 | `filter.set` | `values` | да | S363 |
@@ -183,7 +183,7 @@
 | `conditionalAppearance.add` | `items` | да | S363, S365, S373, S377 |
 | `conditionalAppearance.clear` | `values` | да | S365 |
 | `structure.add` | `items` | да | S364, S375 |
-| `structure.set` | `values` | да | S193, S364 |
+| `structure.set` | `values` | да | S193, S364, S412 |
 | `structure.patch` | `values` | да | S326, S327, S364, S375 |
 | `structure.remove` | `values` | да | S364 |
 | `dataSetLink.add` | `items` | да | S361, S370 |
@@ -223,7 +223,7 @@
 | `content.add` | `items` | да | S206, S207 |
 | `content.remove` | только `at` | да | S207 |
 | `childSubsystem.add` | `items` | да | S208 |
-| `childSubsystem.remove` | только `at` | да | S209 |
+| `childSubsystem.remove` | только `at` | да | S209, S412 |
 
 ### Поддержка поставщика
 
@@ -246,14 +246,14 @@
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `code.insert` | `text` | да | S156, S159, S278, S314, S319, S325, S336, S337, S338, S397, S404 |
+| `code.insert` | `text` | да | S156, S159, S278, S314, S319, S325, S336, S337, S338, S397, S404, S405, S409 |
 | `code.replace` | `text` | да | S157, S316, S338, S357 |
 
 ### События
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `event.implement` | только `at` | да | S158 |
+| `event.implement` | только `at` | да | S158, S405, S406 |
 
 ## Покрытие профилей `check`
 
@@ -267,15 +267,15 @@
 | `role` | S175, S179, S269, S291, S303 |
 | `subsystem` | S210, S212, S270 |
 | `interface` | S266 |
-| `meta` | S035, S101, S222, S223, S228, S264, S347, S348, S349, S387, S394 |
+| `meta` | S035, S101, S222, S223, S228, S264, S347, S348, S349, S387, S394, S409 |
 
 ## Инструменты в проводах
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 228 |
-| `unica.view` | 118 |
-| `unica.check` | 71 |
+| `unica.apply` | 234 |
+| `unica.view` | 125 |
+| `unica.check` | 72 |
 | `unica.search` | 35 |
 | `unica.docs` | 26 |
 | `unica.diff` | 17 |
@@ -283,7 +283,7 @@
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (54) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (30) · Код BSL (44) · Роли и права (15) · СКД (41) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (19) · Поддержка поставщика (16) · Расширения конфигурации (9) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1)
+Области: Навигация и чтение (56) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (34) · Код BSL (44) · Роли и права (15) · СКД (42) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (19) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1)
 
 ### Навигация и чтение
 
@@ -343,6 +343,8 @@
 | S386 | Сохранить обратное разрешение пути и расположение владельца | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 | S402 | Словарь операций приходит в каждом ответе узла, контракт одной операции читается адресом <узел>.Can.<op>, а diff сравнивает данные узлов без словаря | `source` | `view`<br>`view`<br>`diff` | `ok`<br>`ok`<br>`ok` |
 | S403 | Вызов view или diff с прежним filter получает отказ неизвестного аргумента и next к адресу, который его заменил; Can без операции и неприменимая операция отказывают с next к словарю узла; check, resolve, search и apply на адресе операции отказывают и ведут к его чтению через view | `source` | `view`<br>`diff`<br>`view`<br>`view`<br>`check`<br>`resolve`<br>`search`<br>`apply` `attribute.add` | `refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
+| S410 | Прочитать неполные заимствованные метаданные без родителя: сохранить локальные факты и исходник BSL, неизвестность контекстов и отказ зависимого фильтра без записи файлов | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S411 | Отклонить чтение общего модуля и его методов при дубликате идентичности заимствования, сохранив исходные файлы | `source` | `view`<br>`view`<br>`view` | `provider`<br>`provider`<br>`provider` |
 
 ### Свойства объектов
 
@@ -431,8 +433,8 @@
 | S399 | Вызов attribute.add со снятым scope.tabularSection отказывает без записи, next ведёт к can табличной части с контрактом операции, исправленный вызов на адресе части публикует реквизит внутри части, а не в шапке | `source` | `apply` `attribute.add`<br>`view`<br>`apply` `attribute.add`<br>`apply` | `refused`<br>`ok`<br>`ok`<br>`ok` |
 | S400 | Член метаданных, названный аргументом на владельце, получает отказ с адресом члена и ветвью владельца в next; предопределённый элемент, названный идентификатором, — с коллекцией, где видно его имя; занятое имя предопределённого элемента не принимается | `source` | `apply` `dimension.set`<br>`apply` `predefinedItem.remove`<br>`view`<br>`apply` `predefinedItem.add` | `refused`<br>`refused`<br>`ok`<br>`refused` |
 | S401 | Одним пакетом создать табличную часть и добавить в неё реквизит по адресу новой части; публикация кладёт реквизит в часть | `source` | `apply` `tabularSection.add` `attribute.add`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok` |
-| S405 | Переименование табличной части через newName переименовывает и её созданные типы (`CatalogTabularSection…`, `CatalogTabularSectionRow…`), сохраняя их TypeId, как это делает выгрузка платформы | `source` | `apply` `tabularSection.set`<br>`apply` | `ok`<br>`ok` |
-| S406 | Новый реквизит шапки справочника встаёт перед табличными частями, новая табличная часть — после имеющихся и перед формами, а её `Use` предшествует `LineNumberLength`, как в выгрузке платформы | `source` | `apply` `attribute.add` `tabularSection.add`<br>`apply` | `ok`<br>`ok` |
+| S413 | Переименование табличной части через newName переименовывает и её созданные типы (`CatalogTabularSection…`, `CatalogTabularSectionRow…`), сохраняя их TypeId, как это делает выгрузка платформы | `source` | `apply` `tabularSection.set`<br>`apply` | `ok`<br>`ok` |
+| S414 | Новый реквизит шапки справочника встаёт перед табличными частями, новая табличная часть — после имеющихся и перед формами, а её `Use` предшествует `LineNumberLength`, как в выгрузке платформы | `source` | `apply` `attribute.add` `tabularSection.add`<br>`apply` | `ok`<br>`ok` |
 
 ### Создание и удаление объектов
 
@@ -495,7 +497,11 @@
 | S388 | В конфигурации с единственным языком en заголовки и подсказки новых элементов формы и заголовки СКД пишутся на en; ru не появляется | `source` | `apply` `form.add` `formAttribute.add` `element.add` `formCommand.add`<br>`apply`<br>`apply` `field.add` `field.set` `parameter.add` `variant.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 | S393 | element.add на адресе элемента формы отказывает без записи, next ведёт к can формы, а исправленный вызов на форме с into строит предпросмотр | `source` | `view`<br>`apply` `element.add`<br>`view`<br>`apply` `element.add` | `ok`<br>`refused`<br>`ok`<br>`ok` |
 | S404 | Проверка формы принимает обработчик выбора таблицы с полной сигнатурой события, `Знач` и необязательным лишним параметром | `source` | `apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`check` валидаторы `form` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S407 | Форма справочника регистрируется после его табличных частей и имеющихся форм, а макет — перед командами, как в выгрузке платформы | `source` | `apply` `form.add`<br>`apply`<br>`apply` `command.add`<br>`apply`<br>`apply` `template.add`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S405 | Реализовать обработчик события элемента формы: `event.implement` пишет `Элемент` первым параметром, `view` показывает событие реализованным; обработчик с полной сигнатурой, написанный вручную, тоже реализован, а с сигнатурой другого события элемента — нет | `source` | `apply` `event.implement`<br>`apply`<br>`view`<br>`view`<br>`apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`view`<br>`apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S406 | Реализовать обработчик события самой формы: `event.implement` пишет сигнатуру без `Элемент`, `view` показывает событие реализованным | `source` | `apply` `event.implement`<br>`apply`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok` |
+| S407 | Кнопка, добавленная через into в корневую или табличную автоматическую командную панель, ложится в её ChildItems как CommandBarButton | `source` | `apply` `element.add`<br>`apply`<br>`apply` `element.add`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok` |
+| S408 | element.add с into, имя которого носят две командные панели формы, отказывает без записи | `source` | `view`<br>`apply` `element.add` | `ok`<br>`refused` |
+| S415 | Форма справочника регистрируется после его табличных частей и имеющихся форм, а макет — перед командами, как в выгрузке платформы | `source` | `apply` `form.add`<br>`apply`<br>`apply` `command.add`<br>`apply`<br>`apply` `template.add`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Код BSL
 
@@ -538,7 +544,7 @@
 | S344 | Пустой поток называет отсутствие start и действие восстановления без номера строки | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S345 | Повреждённый JSONL называет безопасную строку и причину без исходного payload | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S346 | Неизвестная severity даёт безопасный отказ без секретных значений | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
-| S357 | Выделить три helper-метода одной заменой метода: селектор и адрес метода дают одну запись, опубликованный повтор пустой, повторно объявленный helper отказывает | `source` | `apply` `code.replace`<br>`apply`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused` |
+| S357 | Выделить три helper-метода одной заменой метода по его адресу: одна запись, опубликованный повтор пустой, повторно объявленный helper отказывает; снятый селектор метода отказывает без записи и ведёт к адресу метода | `source` | `apply` `code.replace`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace` | `refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused` |
 | S389 | Движок анализа завершился ошибкой: отказ называет причину и действие без stderr движка | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S390 | Движка анализа нет на машине: check сам запускает доставку и при её отказе называет класс сбоя и действие, а не голое unproven | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S392 | Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку | `source` | `search`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
@@ -591,7 +597,7 @@
 | S328 | Реальный Codex без навыков/обходов самостоятельно находит контракт, публикует три изменения, проверяет XML и честно описывает границу создания схем; полный transcript оценивает независимый агент | `agent-evaluation/codex` | `view`<br>`view`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok` |
 | S329 | Текст запроса одинаков при raw quotes/entities; once сохраняет пробелы и пустую замену; preview читается как исходная версия, устаревший токен не публикуется; XML comments/PI сохраняются побайтно | `source` | `view`<br>`apply` `query.set`<br>`view`<br>`apply` `query.patch`<br>`apply`<br>`apply`<br>`apply` `query.patch`<br>`apply`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S330 | Новый DCS template — каркас с Основной, без DataSet; коллекция и XML честно показывают отсутствие набора данных | `source` | `view`<br>`apply` `template.add`<br>`apply`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S361 | Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSource.add` `dataSource.set` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `field.add` `field.add` `field.add` `field.add` `dataSet.set` `dataSet.set`<br>`apply`<br>`view`<br>`apply` `field.set` `fieldRole.set` `query.set` `query.patch` `dataSetLink.add`<br>`apply`<br>`view`<br>`view`<br>`check` валидаторы `dcs`<br>`view`<br>`apply` `dataSet.remove` `dataSource.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S361 | Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check; снятый dataSet, названный членом объединения, ведёт next к вложенному запросу этого члена | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSource.add` `dataSource.set` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `field.add` `field.add` `field.add` `field.add` `dataSet.set` `dataSet.set`<br>`apply`<br>`view`<br>`apply` `field.set` `fieldRole.set` `query.set` `query.patch` `dataSetLink.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `query.set`<br>`check` валидаторы `dcs`<br>`view`<br>`apply` `dataSet.remove` `dataSource.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S362 | Параметры, вычисления и итоги имеют отдельные операции; rename сохраняет ссылки, reorder сохраняет чужие элементы, удаления проверены после положительных эффектов | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `parameter.add` `calculatedField.add` `total.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `parameter.rename` `parameter.reorder`<br>`apply`<br>`view`<br>`apply` `parameter.remove` `calculatedField.remove` `total.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S363 | Создать отдельный вариант: явная выборка, сортировка, отбор, параметры данных/вывода и оформление; set меняет только выбранное свойство и сохраняет соседние настройки | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `variant.add`<br>`apply`<br>`view`<br>`apply` `selection.add` `order.add` `filter.add` `dataParameter.add` `outputParameter.set` `conditionalAppearance.add`<br>`apply`<br>`view`<br>`apply` `variant.set` `filter.set` `dataParameter.set` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `filter.remove`<br>`apply`<br>`view`<br>`apply` `variant.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S364 | Составить table/chart с осями и именованными вложенными группами; локальная настройка и patch сохраняют остальные элементы; заменить и удалить структуру явно | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `structure.add` `structure.add`<br>`apply`<br>`view`<br>`apply` `structure.patch` `selection.add` `filter.add` `order.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `structure.remove`<br>`apply`<br>`view`<br>`apply` `structure.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
@@ -611,6 +617,7 @@
 | S378 | Folder создаётся отдельно от детей; parentIndexes из чтения точно выбирают вложенную выборку при set/remove и сохраняют соседей, заголовки и placement | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.clear` `selection.add` `selection.add` `selection.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.set` `selection.set` `selection.remove`<br>`apply`<br>`view`<br>`apply` `selection.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S379 | Один итог имеет несколько explicit group bindings; set заменяет весь список, пустой список снимает привязки, соседний итог сохраняется | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `total.add`<br>`apply`<br>`view`<br>`apply` `total.set` `total.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S380 | Явные пустые value/title/expression/presentationExpression записываются; повтор такого же сохранённого плана оставляет XML без изменений и имеет нулевой эффект | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add` `field.add` `parameter.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S412 | Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, имя формы, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора | `source` | `view`<br>`apply` `query.set`<br>`view`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `structure.set`<br>`apply` `form.create`<br>`apply` `form.create`<br>`apply` `childSubsystem.remove`<br>`view`<br>`view` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`ok` |
 
 ### Макеты
 
@@ -758,6 +765,7 @@
 | S319 | Вставить код в заимствованный общий модуль расширения | `source` | `apply` `object.borrow`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S394 | Проверить и изменить объекты расширения из штатной выгрузки, ссылающиеся на основную конфигурацию через v8:TypeId: реквизит справочника и Source подписки на события проходят проверку, тип реквизита и источник видны как readOnly, правки свойств и замена логических источников не теряют TypeId | `source` | `check` валидаторы `meta`<br>`view`<br>`apply` `attribute.set`<br>`apply`<br>`check` валидаторы `meta`<br>`apply` `props.set`<br>`apply`<br>`view`<br>`apply` `relation.replace`<br>`apply`<br>`check` валидаторы `meta` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S397 | Прочитать заимствованный общий модуль, который платформа выгрузила без свойств: незаписанные свойства и контексты — null, методы доступны с неизвестными контекстами, вставка кода не трогает описание | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `cfe`<br>`apply` `code.insert`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S409 | Прочитать и проверить заимствованные роль, общую форму, форму и макет обработки и пакет XDTO, которые платформа выгрузила без Rights.xml, Form.xml, Template.xml и Package.bin: узел читается по описанию с адресом родителя и унаследованным содержимым, адрес внутри содержимого отказывает с указанием на родителя, запись в унаследованное содержимое и в модуль такой формы отказывает с продолжением к объекту расширения, проверка не требует отсутствующих файлов | `source` | `view`<br>`view`<br>`check`<br>`apply` `right.set`<br>`view`<br>`check`<br>`view`<br>`apply` `code.insert`<br>`view`<br>`view`<br>`check`<br>`view`<br>`view`<br>`view`<br>`check` валидаторы `meta` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok` |
 
 ### Объекты метаданных
 

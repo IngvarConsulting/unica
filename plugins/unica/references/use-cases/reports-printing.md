@@ -27,7 +27,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
   Every node answer lists its operations in `can`. For a DCS operation, `mxl.set` or `template.add`, read its argument contract at the operation's own address `<node>.Can.<op>`:
 
   ```json
-  {"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"}
+  {"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query.Can.query.set"}
   ```
 
   This is a `unica.view` argument example over the acceptance fixture;
@@ -87,9 +87,12 @@ these components does not rewrite their references or variant settings.
 Plan those changes explicitly in the same batch.
 
 Read a query through `DataSet.<name>.Query`: join `data.items[].text` with
-newlines in page order. Query replacement takes literal text, not an
-`@file` path. A patch with `once:true` requires exactly one match; zero or
-multiple matches fail. An empty replacement deletes the matched text.
+newlines in page order. `query.set` and `query.patch` are called at the
+same `DataSet.<name>.Query` address; a call at the dataset itself, the old
+`Template.<name>.Query.<dataset>` address and a `dataSet` argument are
+refused, and `next` names the query's address. Query
+replacement takes literal text, not an `@file` path. A patch with
+`once:true` requires exactly one match; zero or multiple matches fail. An empty replacement deletes the matched text.
 Keep the fields needed by the schema in the query result.
 
 Adding a field does not select it for output. Configure selection separately
@@ -120,6 +123,9 @@ Indices identify rows within that variant, not logical nodes. Names may be
 absent or repeated, and rows have no `at`. Use an exact, uniquely named
 item as a selector; unknown or ambiguous names fail before publication.
 `structure.patch` takes the item's `name` separately from its `groupBy`.
+Both `structure.set` and `structure.patch` take the variant from the
+`Setting.<name>` address; a `variant` argument is refused and `next` names
+the variant's address.
 
 Compose nested structure by adding each named group, table or chart
 separately. Select its parent explicitly; a table's row/column or a chart's

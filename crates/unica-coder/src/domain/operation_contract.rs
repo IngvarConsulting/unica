@@ -116,8 +116,9 @@ fn field_head(names: &[&str], required: &[&str]) -> Value {
 impl OperationContract {
     pub(crate) fn dcs(op: &str) -> Option<Self> {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
-        let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member. Query.<name> is a dataset alias.";
-        let setting_target = "Existing DCS Template.Setting.<name>. Optional group selects a unique named structure item; read Setting.Item first.";
+        let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
+        let query_target = "The query of an existing dataset: Template.DataSet.<name>.Query; repeat DataSet.<name> for a nested Union member. The address names the dataset; there is no dataset argument.";
+        let setting_target = "Existing DCS Template.Setting.<name>; the address names the variant. Optional group selects a unique named structure item; read Setting.Item first.";
         let title = json!({"anyOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]});
         let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
         let localized_value =
@@ -258,8 +259,8 @@ impl OperationContract {
             "total.remove" | "calculatedField.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove the named schema total/calculation only.",json!({"values":{"name":"Amount"}})),
             "variant.add" | "variant.set" => (if op.ends_with("add"){"items"}else{"values"},optional_aliases(object(&[("name",text(true)),("title",title.clone()),("presentation",title.clone())],&["name"]),&["title","presentation"]),schema_target,if op.ends_with("add"){"Create an empty settings variant. Configure selection and structure separately."}else{"Change the presentation of an existing settings variant. A missing variant is refused; create it with variant.add."},if op.ends_with("add"){json!({"items":[{"name":"Additional","title":"Additional"}]})}else{json!({"values":{"name":"Additional","title":"Report"}})}),
             "variant.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove the selected variant.",json!({"values":{"name":"Additional"}})),
-            "query.set" => ("values",aliases(object(&[("dataSet",text(false)),("query",text(true)),("text",text(true))],&[]),&["query","text"]),data_target,"Replace query text. Supply literal text, not @file.",json!({"values":{"query":"ВЫБРАТЬ 1 КАК Amount"}})),
-            "query.patch" => ("values",object(&[("dataSet",text(false)),("find",text(true)),("replace",json!({"type":"string","default":""})),("once",json!({"type":"boolean","default":false}))],&["find"]),data_target,"Patch decoded query text. No matches fail; once=true requires exactly one. Comments/PI are preserved; a marker within replaced text anchors to replacement start.",json!({"values":{"find":"1 КАК Amount","replace":"2 КАК Amount","once":true}})),
+            "query.set" => ("values",aliases(object(&[("query",text(true)),("text",text(true))],&[]),&["query","text"]),query_target,"Replace query text. Supply literal text, not @file.",json!({"values":{"query":"ВЫБРАТЬ 1 КАК Amount"}})),
+            "query.patch" => ("values",object(&[("find",text(true)),("replace",json!({"type":"string","default":""})),("once",json!({"type":"boolean","default":false}))],&["find"]),query_target,"Patch decoded query text. No matches fail; once=true requires exactly one. Comments/PI are preserved; a marker within replaced text anchors to replacement start.",json!({"values":{"find":"1 КАК Amount","replace":"2 КАК Amount","once":true}})),
             "filter.add" | "filter.set" => (if op.ends_with("add"){"items"}else{"values"},filter(),setting_target,"Add a filter or patch one uniquely selected by field. Literal strings retain @, brackets and comparison words. Set requires a unique match.",if op.ends_with("add"){json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]})}else{json!({"values":{"field":"Amount","comparison":"Greater","value":1}})}),
             "filter.remove" => ("values",object(&[("field",text(true)),("group",text(true))],&["field"]),setting_target,"Remove one uniquely selected filter; multiple matches fail.",json!({"values":{"field":"Amount"}})),
             "selection.add" | "order.add" => {
@@ -276,8 +277,8 @@ impl OperationContract {
                 ("items",object(&[("fields",strings.clone()),("filter",json!({"type":"array","items":condition})),("use",json!({"type":"boolean"})),("appearance",json!({"type":"object","minProperties":1,"additionalProperties":appearance_value.clone()})),("group",text(true))],&["fields","appearance"]),setting_target,"Add conditional appearance with explicit use, comparisons and typed value atoms. Formatting does not change field values.",json!({"items":[{"fields":["Amount"],"use":false,"appearance":{"Формат":{"valueType":"v8:LocalStringType","value":{"ru":"ЧДЦ=2"}}}}]}))
             }
             "structure.add" => ("items",structure(),setting_target,"Add one named group/table/chart; parent selects an existing unique item, axis selects its row/column/point/series. Add each child with a separate operation.",json!({"items":[{"name":"ByAmount","kind":"group","groupBy":["Amount"]}]})),
-            "structure.set" => ("values",object(&[("variant",text(false)),("name",text(true)),("groupBy",json!({"type":"array","items":text(true),"default":[]})),("details",json!({"type":"boolean","default":true}))],&[]),setting_target,"Replace the variant structure with one group and optional nested details. groupBy=[] is a details group; use structure.add for tables/charts and nested composition.",json!({"values":{"name":"ByAmount","groupBy":["Amount"],"details":true}})),
-            "structure.patch" => ("values",object(&[("variant",text(false)),("name",text(true)),("groupBy",strings.clone())],&["name","groupBy"]),setting_target,"Patch groupBy of one uniquely named group. Other structure and settings are preserved. Names and fields are separate operands.",json!({"values":{"name":"ExistingGroup","groupBy":["Amount"]}})),
+            "structure.set" => ("values",object(&[("name",text(true)),("groupBy",json!({"type":"array","items":text(true),"default":[]})),("details",json!({"type":"boolean","default":true}))],&[]),setting_target,"Replace the variant structure with one group and optional nested details. groupBy=[] is a details group; use structure.add for tables/charts and nested composition.",json!({"values":{"name":"ByAmount","groupBy":["Amount"],"details":true}})),
+            "structure.patch" => ("values",object(&[("name",text(true)),("groupBy",strings.clone())],&["name","groupBy"]),setting_target,"Patch groupBy of one uniquely named group. Other structure and settings are preserved. Names and fields are separate operands.",json!({"values":{"name":"ExistingGroup","groupBy":["Amount"]}})),
             "structure.remove" => ("values",object(&[("name",text(true))],&["name"]),setting_target,"Remove a unique named structure item and its children.",json!({"values":{"name":"ExistingGroup"}})),
             "calculatedField.set" => ("values",object(&[("name",text(true)),("expression",text(true)),("title",title.clone()),("type",text(true)),("useRestriction",restriction.clone())],&["name"]),schema_target,"Patch only supplied calculation properties.",json!({"values":{"name":"DoubleAmount","expression":"Amount * 3"}})),
             "total.set" => ("values",object(&[("field",text(true)),("expression",text(true)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&["field"]),schema_target,"Patch supplied total expression/group.",json!({"values":{"field":"Amount","expression":"Максимум(Amount)"}})),
@@ -1010,6 +1011,29 @@ mod tests {
             structure.normalize(&json!({"values":{}}), "args").unwrap(),
             json!({"values":{"groupBy":[],"details":true}})
         );
+        // Набор и вариант называет адрес: ключи, которые его дублировали,
+        // контракт не принимает (П2, #1353).
+        for (op, values, key) in [
+            (
+                "query.set",
+                json!({"dataSet":"D","query":"ВЫБРАТЬ 1"}),
+                "dataSet",
+            ),
+            ("query.patch", json!({"dataSet":"D","find":"1"}), "dataSet"),
+            ("structure.set", json!({"variant":"V"}), "variant"),
+            (
+                "structure.patch",
+                json!({"variant":"V","name":"G","groupBy":["A"]}),
+                "variant",
+            ),
+        ] {
+            let error = OperationContract::dcs(op)
+                .unwrap()
+                .normalize(&json!({ "values": values }), "args")
+                .unwrap_err();
+            assert_eq!(error.path, format!("args.values.{key}"), "{op}");
+            assert_eq!(error.message, "unknown argument", "{op}");
+        }
         let field = OperationContract::dcs("field.add").unwrap();
         for args in [
             json!({"items":[{"name":"Alias"}]}),
