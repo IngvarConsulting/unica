@@ -225,6 +225,7 @@ fn top_child_object_line_offset<'t>(
             start
         },
     )
+}
 
 /// Дескриптор указывает родителя: `ExtendedConfigurationObject` с UUID.
 ///
