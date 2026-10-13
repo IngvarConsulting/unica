@@ -2022,7 +2022,7 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
              "valueListAllowed":true,"availableAsField":false,"denyIncompleteValues":true,"use":"Always"}
         ]}),
     );
-    add("", "variant.remove", json!({"values":{"name":"Основной"}}));
+    add(".Setting.Основной", "variant.remove", json!({}));
     add(
         "",
         "variant.add",
@@ -2105,8 +2105,8 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
             json!({"at":format!("{base}.Setting.Main"),"op":"structure.set","args":{"values":{"name":"Edited","groupBy":["Value"],"details":true}}}),
         ],
         "dcs-edit-modify-field-role-restriction" => vec![
-            json!({"at":format!("{base}.DataSet.CatalogObject"),"op":"field.set","args":{"values":{"field":"Description","title":"Updated","type":"String","useRestriction":{"field":true,"order":true}}}}),
-            json!({"at":format!("{base}.DataSet.CatalogObject"),"op":"fieldRole.set","args":{"values":{"field":"Description","role":{"required":true,"dimension":true}}}}),
+            json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"field.set","args":{"values":{"title":"Updated","type":"String","useRestriction":{"field":true,"order":true}}}}),
+            json!({"at":format!("{base}.DataSet.CatalogObject.Field.Description"),"op":"fieldRole.set","args":{"values":{"role":{"required":true,"dimension":true}}}}),
         ],
         _ => unreachable!("unknown DCS mutation case {case_id}"),
     };
@@ -3938,6 +3938,13 @@ fn require_dcs_fixture_xml(case_id: &str, xml: &str) -> Result<(), String> {
                     == Some("Main")
         })
         .ok_or("missing Main variant")?;
+    check(
+        !root.children().any(|node| {
+            node.has_tag_name((S, "settingsVariant"))
+                && dcs_child(node, T, "name").ok().and_then(|name| name.text()) == Some("Основной")
+        }),
+        "removed Основной variant is still present",
+    )?;
     let settings = dcs_child(variant, T, "settings")?;
     for tag in [
         "selection",
