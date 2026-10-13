@@ -2142,7 +2142,7 @@ fn host_visible_operation_schema() -> Value {
             },
             metadata_relation_operation_schema(),
         ],
-        "description": "Exactly one typed metadata edit operation. Legal collections, root properties and relations are narrowed by the object kind. The EventSubscription source relation is replace-only and requires at least one logical event source.",
+        "description": "Exactly one typed metadata edit operation. Legal collections, root properties and relations are narrowed by the object kind. EventSubscription source supports add/remove preserving existing members and replace with deterministic ordering; requests require at least one logical event source.",
     })
 }
 
@@ -2150,7 +2150,7 @@ fn metadata_relation_operation_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "description": "Edit one relation. Each relation selects its own mode and target contract; EventSubscription source is replace-only and non-empty.",
+        "description": "Edit one relation. Each relation selects its own mode and target contract; EventSubscription source supports non-empty add/remove/replace requests; removing the last logical source is refused.",
         "required": ["op", "relation", "mode", "targets"],
         "properties": {
             "op": {"type": "string", "enum": [MetaEditOperationTag::EditRelations.as_str()]},
@@ -2186,15 +2186,11 @@ fn metadata_relation_schema_branch(relation: MetaRelation) -> Value {
             "items": metadata_relation_target_schema(relation),
         })
     };
-    let modes = if relation == MetaRelation::Source {
-        vec![RelationEditMode::Replace.as_str()]
-    } else {
-        RelationEditMode::ALL
-            .iter()
-            .copied()
-            .map(RelationEditMode::as_str)
-            .collect()
-    };
+    let modes = RelationEditMode::ALL
+        .iter()
+        .copied()
+        .map(RelationEditMode::as_str)
+        .collect::<Vec<_>>();
     json!({
         "properties": {
             "relation": {"const": relation.as_str()},
@@ -3639,7 +3635,10 @@ mod tests {
         };
 
         let source = relation("source");
-        assert_eq!(source["properties"]["mode"]["enum"], json!(["replace"]));
+        assert_eq!(
+            source["properties"]["mode"]["enum"],
+            json!(["add", "remove", "replace"])
+        );
         let source_targets = &source["properties"]["targets"];
         assert_eq!(source_targets["type"], "array");
         assert_eq!(source_targets["minItems"], 1);
@@ -4759,9 +4758,18 @@ mod tests {
                 }],
             })
         };
+        for mode in ["add", "remove", "replace"] {
+            assert!(validate_schema_and_parse(
+                MetadataOperation::Edit,
+                &call(
+                    mode,
+                    json!([{"kind":"family", "sourceClass":"catalogObject"}])
+                )
+            ));
+        }
         for invalid_call in [
             call(
-                "add",
+                "append",
                 json!([{"kind": "family", "sourceClass": "catalogObject"}]),
             ),
             call(
@@ -5646,11 +5654,7 @@ mod tests {
                     json!({"kind": "family", "sourceClass": "catalogObject"}),
                 ),
             };
-            let modes = if *relation == MetaRelation::Source {
-                &[RelationEditMode::Replace][..]
-            } else {
-                RelationEditMode::ALL
-            };
+            let modes = RelationEditMode::ALL;
             for mode in modes {
                 let mode_name = mode.as_str();
                 let MetadataRequest::Edit(request) = parse_metadata_request(
