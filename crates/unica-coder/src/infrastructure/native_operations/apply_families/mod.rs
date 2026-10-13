@@ -748,7 +748,34 @@ pub(crate) fn staged_node_existence(
             .platform_profile()
             .unwrap_or_else(crate::domain::platform_profile::PlatformProfile::v8_3_27),
     )?;
-    (route == crate::domain::logical_route::RouteClass::Metadata).then_some(false)
+    // Запись прав роли и область макета живут в присоединённом файле: их
+    // создаёт операция родителя (`right.add`, `area.add`, #1354).
+    use crate::domain::address::NodeKind;
+    use crate::domain::logical_route::RouteClass;
+    let terminal = at.segments().last()?;
+    let resource = |name: &str| -> Option<Vec<u8>> {
+        let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+            &address,
+            name,
+            binding.source_kind(),
+        )
+        .ok()?;
+        admission.staged_state().ok()?.read(&relative).ok()?
+    };
+    match (route, terminal.kind(), at.segments().len() - covered) {
+        (RouteClass::Metadata, _, _) => Some(false),
+        (RouteClass::Role, NodeKind::Right, 1) => {
+            let (kind, name) = terminal.name()?.split_once('_')?;
+            form_resource::staged_rights_entry_exists(
+                &resource("Rights.xml")?,
+                &format!("{kind}.{name}"),
+            )
+        }
+        (RouteClass::Mxl, NodeKind::Area, 1) => {
+            dcs_mxl::spreadsheet_area_exists(&resource("Template.xml")?, terminal.name()?)
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn plan_hidden_v13_apply(
@@ -1059,7 +1086,7 @@ mod tests {
 
     /// Формат макета — фильтр реестра, и планировщик применяет его к
     /// промежуточному состоянию пакета: макет, добавленный раньше в том же
-    /// вызове, уже имеет формат, и `mxl.set` принимается только для
+    /// вызове, уже имеет формат, и `area.add` принимается только для
     /// табличного документа.
     #[test]
     fn template_format_filter_reads_the_template_added_in_the_same_request() {
@@ -1071,7 +1098,7 @@ mod tests {
                     "at": "main:Document.First",
                     "ops": [
                         {"op": "template.add", "args": {"items": [{"name": "Print", "templateType": template_type}]}},
-                        {"op": "mxl.set", "args": {"at": "main:Document.First.Template.Print", "values": {"area": "Header", "cells": {"R1C1": "Total"}}}}
+                        {"op": "area.add", "args": {"at": "main:Document.First.Template.Print", "items": [{"name": "Header", "cells": {"R1C1": "Total"}}]}}
                     ],
                     "dryRun": true,
                 })
@@ -1100,6 +1127,137 @@ mod tests {
             refused.to_string().contains("DataCompositionSchema"),
             "{refused}"
         );
+    }
+
+    /// Область создаёт только `area.add` на макете, а `mxl.set` пишет только
+    /// в существующую область по её адресу (#1354): опечатка в имени области
+    /// не заводит новую, повтор имени в `area.add` не перекрывает ячейки.
+    #[test]
+    fn an_area_is_written_only_where_it_exists_and_created_only_by_area_add() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let template = "main:Document.First.Template.Print";
+        let request = |ops: serde_json::Value| {
+            let mut all = vec![
+                serde_json::json!({"op": "template.add", "args": {"items": [{"name": "Print", "templateType": "SpreadsheetDocument"}]}}),
+            ];
+            all.extend(ops.as_array().unwrap().iter().cloned());
+            ApplyRequest::parse(
+                serde_json::json!({"at": "main:Document.First", "ops": all, "dryRun": true})
+                    .as_object()
+                    .unwrap(),
+                &["main"],
+            )
+            .unwrap()
+        };
+        let area = |name: &str| serde_json::json!({"op": "area.add", "args": {"at": template, "items": [{"name": name, "cells": {"R1C1": "Total"}}]}});
+        let set = |name: &str| serde_json::json!({"op": "mxl.set", "args": {"at": format!("{template}.Area.{name}"), "values": {"cells": {"R1C2": "Sum"}}}});
+        let (staged, _) = plan_hidden_v13_apply(
+            &request(serde_json::json!([area("Header"), set("Header")])),
+            &fixture.binding,
+            &admission,
+        )
+        .unwrap_or_else(|error| panic!("an added area accepts cells: {error}"));
+        let written = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path.ends_with("Print/Ext/Template.xml"))
+            .expect("the spreadsheet body is staged");
+        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
+            written.current
+        else {
+            panic!("the spreadsheet keeps bytes");
+        };
+        assert_eq!(
+            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Header"),
+            Some(true)
+        );
+        assert_eq!(
+            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Headr"),
+            Some(false)
+        );
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("Total") && text.contains("Sum"),
+            "both cells are written"
+        );
+        for (ops, kind, path) in [
+            (
+                serde_json::json!([area("Header"), set("Headr")]),
+                ApplyPlanErrorKind::NotFound,
+                "ops[2].args.at",
+            ),
+            (
+                serde_json::json!([area("Header"), area("Header")]),
+                ApplyPlanErrorKind::BadValue,
+                "ops[2].args.items[0].name",
+            ),
+            (
+                serde_json::json!([area("Head.er")]),
+                ApplyPlanErrorKind::BadValue,
+                "ops[1].args.items[0].name",
+            ),
+            (
+                serde_json::json!([area("1Header")]),
+                ApplyPlanErrorKind::BadValue,
+                "ops[1].args.items[0].name",
+            ),
+        ] {
+            let Err(error) = plan_hidden_v13_apply(&request(ops), &fixture.binding, &admission)
+            else {
+                panic!("the area's existence decides at {path}");
+            };
+            assert_eq!(error.kind(), kind, "{path}");
+            assert_eq!(error.path(), Some(path));
+        }
+    }
+
+    /// Запись прав и область макета живут в присоединённом файле: их
+    /// существование читается из него, и `not_found` по адресу такого узла
+    /// ведёт к родителю, где их создаёт `right.add` или `area.add` (#1354).
+    #[test]
+    fn a_missing_rights_entry_or_area_routes_next_to_the_parent() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        std::fs::create_dir_all(source.join("Roles/Reader/Ext")).unwrap();
+        std::fs::write(
+            source.join("Roles/Reader.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Role uuid=\"33333333-3333-4333-8333-333333333333\"><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Roles/Reader/Ext/Rights.xml"),
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\"><setForNewObjects>false</setForNewObjects><setForAttributesByDefault>true</setForAttributesByDefault><independentRightsOfChildObjects>false</independentRightsOfChildObjects><object><name>Document.First</name><right><name>Read</name><value>true</value></right></object></Rights>\n",
+        )
+        .unwrap();
+        let templates = source.join("Documents/First/Templates");
+        std::fs::create_dir_all(templates.join("Print/Ext")).unwrap();
+        let mxl = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates",
+        );
+        std::fs::copy(mxl.join("F06Template.xml"), templates.join("Print.xml")).unwrap();
+        std::fs::copy(
+            mxl.join("F06Template/Ext/Template.xml"),
+            templates.join("Print/Ext/Template.xml"),
+        )
+        .unwrap();
+        let admission = fixture.admission();
+        let exists = |raw: &str| {
+            super::staged_node_existence(
+                &admission,
+                &fixture.binding,
+                &crate::domain::address::QualifiedAddress::parse(raw).unwrap(),
+            )
+        };
+        for (raw, expected) in [
+            ("main:Role.Reader.Right.Document_First", Some(true)),
+            ("main:Role.Reader.Right.Document_Second", Some(false)),
+            ("main:Document.First.Template.Print.Area.A", Some(true)),
+            ("main:Document.First.Template.Print.Area.Z", Some(false)),
+            ("main:Role.Missing.Right.Document_First", Some(false)),
+        ] {
+            assert_eq!(exists(raw), expected, "{raw}");
+        }
     }
 
     /// Операция, исполнимая не на своём узле, отказывает в разборе цели,
@@ -1254,8 +1412,8 @@ mod tests {
             ),
             (
                 "main:Role.Reader",
-                "right.set",
-                serde_json::json!({"values": {"object": "Document.First", "right": "Read", "value": true}}),
+                "right.add",
+                serde_json::json!({"items": [{"object": "Document.First", "rights": {"Read": true}}]}),
             ),
             (
                 "main:Document.First.Template.Schema.DataSet.Main",
@@ -1264,8 +1422,8 @@ mod tests {
             ),
             (
                 "main:Document.First.Template.Print",
-                "mxl.set",
-                serde_json::json!({"values": {"area": "Header", "cells": {"R1C1": "Total"}}}),
+                "area.add",
+                serde_json::json!({"items": [{"name": "Header", "cells": {"R1C1": "Total"}}]}),
             ),
             (
                 "main:XDTOPackage.Types",
