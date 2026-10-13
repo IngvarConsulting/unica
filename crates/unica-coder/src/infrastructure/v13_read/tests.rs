@@ -3898,6 +3898,91 @@ fn role_right_projection_never_serializes_an_unbounded_rights_array_into_props()
 }
 
 #[test]
+fn xdto_property_view_preserves_type_identity_and_explicit_and_effective_bounds() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let xml = original.replace(
+        "</package>",
+        r#"<objectType name="ClusterAdministrationInfo">
+  <property name="ClusterPort" type="xs:decimal"/>
+  <property name="WorkServerUserName" type="xs:string" lowerBound="0" nillable="true"/>
+  <property name="Ports" type="xs:decimal" lowerBound="1" upperBound="-1"/>
+</objectType></package>"#,
+    );
+    fs::write(&package, &xml).unwrap();
+    let service = fixture.view_service();
+    for (name, local, lower, upper, lower_explicit, upper_explicit, unbounded) in [
+        ("ClusterPort", "decimal", "1", "1", false, false, false),
+        ("WorkServerUserName", "string", "0", "1", true, false, false),
+        ("Ports", "decimal", "1", "-1", true, true, true),
+    ] {
+        let at = format!(
+            "main:XDTOPackage.EnterpriseData_1_17_3.Type.ClusterAdministrationInfo.Property.{name}"
+        );
+        let result = service.view(ViewRequest::new(&at).unwrap());
+        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        let data = result.data.unwrap();
+        let props = &data["props"];
+        let type_info: serde_json::Value = serde_json::from_str(
+            props["type"]
+                .as_str()
+                .unwrap_or_else(|| panic!("missing type: {data}")),
+        )
+        .unwrap();
+        assert_eq!(type_info["namespace"], "http://www.w3.org/2001/XMLSchema");
+        assert_eq!(type_info["local"], local);
+        assert_eq!(type_info["raw"], format!("xs:{local}"));
+        let bounds: serde_json::Value = serde_json::from_str(
+            props["bounds"]
+                .as_str()
+                .unwrap_or_else(|| panic!("missing bounds: {data}")),
+        )
+        .unwrap();
+        assert_eq!(
+            bounds,
+            json!({
+                "lower": lower, "upper": upper,
+                "lowerExplicit": lower_explicit, "upperExplicit": upper_explicit,
+                "unbounded": unbounded
+            })
+        );
+        assert!(props.get("location").is_none());
+    }
+    assert_eq!(fs::read_to_string(package).unwrap(), xml);
+}
+
+#[test]
+fn xdto_property_view_names_facts_that_exceed_the_compact_limit() {
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let xml = original.replace(
+        "upperBound=\"3\"",
+        &format!("upperBound=\"{}\"", "9".repeat(2100)),
+    );
+    fs::write(&package, &xml).unwrap();
+    let result = fixture.view_service().view(ViewRequest::new(
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы"
+    ).unwrap());
+    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+    let data = result.data.unwrap();
+    assert!(data["props"]["type"].as_str().is_some(), "{data}");
+    assert!(data["props"].get("bounds").is_none(), "{data}");
+    assert!(
+        data["limits"].as_array().unwrap().iter().any(|limit| limit
+            .as_str()
+            .is_some_and(|text| text.contains("bounds") && text.contains("2048"))),
+        "{data}"
+    );
+    assert_eq!(fs::read_to_string(package).unwrap(), xml);
+}
+
+#[test]
 fn real_typed_readers_cover_every_task14_profile_without_skipping() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
@@ -4272,7 +4357,16 @@ pub(crate) fn typed_readers_never_publish_their_export_path_in_view_props() {
             .filter_map(|diagnostic| diagnostic["code"].as_str())
             .collect::<Vec<_>>();
         assert!(result.ok, "{at}: {codes:?}");
-        let props = result.data.as_ref().unwrap()["props"].to_string();
+        let mut props = result.data.as_ref().unwrap()["props"].clone();
+        if at.starts_with("main:XDTOPackage.") {
+            let mut type_info: serde_json::Value =
+                serde_json::from_str(props["type"].as_str().unwrap()).unwrap();
+            // A namespace URI is a type identity, not an exported file path.
+            assert_eq!(type_info["namespace"], "http://v8.1c.ru/8.1/data/core");
+            type_info.as_object_mut().unwrap().remove("namespace");
+            props["type"] = json!(serde_json::to_string(&type_info).unwrap());
+        }
+        let props = props.to_string();
         assert!(
             !props.contains(".xml") && !props.contains(".bsl") && !props.contains('/'),
             "{at} published a physical path in view props"
