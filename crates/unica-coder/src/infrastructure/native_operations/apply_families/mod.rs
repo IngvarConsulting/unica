@@ -940,7 +940,22 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    let xdto_operations = parsed
+        .iter()
+        .filter_map(|operation| match operation {
+            ParsedApplyOperation::Xdto(operation) => Some(operation.operation().clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let xdto_objects =
+        crate::infrastructure::native_operations::xdto::final_object_addition_details(
+            &mut staged,
+            binding.source_set_name(),
+            binding.source_kind(),
+            &xdto_operations,
+        )?;
     let mut effects = reconcile_effects(&staged, provisional);
+    effects.set_xdto_objects(xdto_objects);
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }

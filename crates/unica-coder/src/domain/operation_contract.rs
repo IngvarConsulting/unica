@@ -115,6 +115,50 @@ fn field_head(names: &[&str], required: &[&str]) -> Value {
 }
 
 impl OperationContract {
+    pub(crate) fn xdto(op: &str) -> Option<Self> {
+        if op != "objectType.add" {
+            return None;
+        }
+        let fields = [
+            ("name", text(true)),
+            (
+                "base",
+                json!({"type":"string", "pattern":r"^[^:\s]+:[^:\s]+$",
+                "description":"Existing local ObjectType as prefix:local. Its complete base chain must resolve locally without cycles."}),
+            ),
+            (
+                "before",
+                json!({"type":"string", "pattern":r"\S",
+                "description":"Insert immediately before this existing top-level ObjectType. Mutually exclusive with after."}),
+            ),
+            (
+                "after",
+                json!({"type":"string", "pattern":r"\S",
+                "description":"Insert immediately after this existing top-level ObjectType. Mutually exclusive with before."}),
+            ),
+        ];
+        let mut values = object(&fields, &["name"]);
+        values["not"] = json!({"required":["before","after"]});
+        let envelope = object(
+            &[("at", text(true)), ("values", values.clone())],
+            &["values"],
+        );
+        let mut flat_fields = fields.to_vec();
+        flat_fields.push(("at", text(true)));
+        let mut flat = object(&flat_fields, &["name"]);
+        flat["not"] = json!({"required":["before","after"]});
+        Some(Self {
+            schema: json!({"anyOf":[envelope,flat]}),
+            target: "The XDTO package itself: <source-set>:XDTOPackage.<Name>.",
+            effect: "Add an ObjectType with an optional local base and position among ObjectTypes, preserving existing bytes and order.",
+            notes: "Use values.name, optional values.base and either values.before or values.after. Names must be XML NCNames; base preserves a declared prefix. Without a position the type is appended. An equivalent repeat is a no-op; conflicting contents or position are refused without moving the existing type. Imported bases are not supported for this addition. Earlier operations in the same batch may create the base or neighbor. Legacy flat arguments remain accepted.",
+            example_args: json!({"values":{"name":"Sample"}}),
+            help: "skills/xdto/SKILL.md",
+        })
+    }
+}
+
+impl OperationContract {
     pub(crate) fn dcs(op: &str) -> Option<Self> {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
@@ -966,6 +1010,28 @@ fn normalize_aliases(schema: &Value, value: &mut Value) {
 mod tests {
     use super::*;
     use crate::domain::apply::{OperationFamily, OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+
+    #[test]
+    fn xdto_object_contract_publishes_base_position_and_preserves_legacy_arguments() {
+        let contract = OperationContract::xdto("objectType.add").unwrap();
+        let schema = jsonschema::validator_for(&contract.schema).unwrap();
+        for value in [
+            json!({"values":{"name":"Child","base":"tns:Base","before":"Next"}}),
+            json!({"values":{"name":"Child","after":"Previous"}}),
+            json!({"name":"Child"}),
+        ] {
+            assert!(schema.is_valid(&value));
+            assert!(contract.normalize(&value, "ops[0].args").is_ok());
+        }
+        for value in [
+            json!({"values":{"name":"Child","before":"A","after":"B"}}),
+            json!({"values":{"name":"Child","base":null}}),
+            json!({"values":{"name":"Child","unknown":true}}),
+        ] {
+            assert!(!schema.is_valid(&value));
+            assert!(contract.normalize(&value, "ops[0].args").is_err());
+        }
+    }
 
     #[test]
     fn mxl_and_template_contracts_cover_examples_and_keep_legacy_value_grammar() {

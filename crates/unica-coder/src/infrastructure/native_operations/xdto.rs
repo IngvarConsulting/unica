@@ -83,6 +83,9 @@ pub(crate) struct XdtoAddValueTypeArgs {
 pub(crate) struct XdtoAddObjectTypeArgs {
     pub(crate) at: QualifiedAddress,
     pub(crate) name: XmlNcName,
+    pub(crate) base: Option<PrefixedXmlQName>,
+    pub(crate) before: Option<XmlNcName>,
+    pub(crate) after: Option<XmlNcName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,7 +158,7 @@ pub(crate) fn parse_xdto_plan_operation(
     };
     let allowed = match operation {
         "valueType.add" => &["at", "name", "base"][..],
-        "objectType.add" => &["at", "name"][..],
+        "objectType.add" => &["at", "name", "base", "before", "after"][..],
         "property.add" => &["at", "property", "propertyPath"][..],
         "type.remove" => &["at"][..],
         "property.remove" => &["at", "name", "propertyPath"][..],
@@ -182,10 +185,30 @@ pub(crate) fn parse_xdto_plan_operation(
             name: parse_xdto_ncname(object, "name", &base)?,
             base: parse_xdto_qname(object, "base", &base)?,
         })),
-        "objectType.add" => Ok(XdtoPlanOperation::AddObjectType(XdtoAddObjectTypeArgs {
-            at,
-            name: parse_xdto_ncname(object, "name", &base)?,
-        })),
+        "objectType.add" => {
+            if object.contains_key("before") && object.contains_key("after") {
+                return Err(bad_xdto_argument(
+                    &format!("{base}.after"),
+                    "before and after are mutually exclusive",
+                ));
+            }
+            Ok(XdtoPlanOperation::AddObjectType(XdtoAddObjectTypeArgs {
+                at,
+                name: parse_xdto_ncname(object, "name", &base)?,
+                base: object
+                    .contains_key("base")
+                    .then(|| parse_xdto_qname(object, "base", &base))
+                    .transpose()?,
+                before: object
+                    .contains_key("before")
+                    .then(|| parse_xdto_ncname(object, "before", &base))
+                    .transpose()?,
+                after: object
+                    .contains_key("after")
+                    .then(|| parse_xdto_ncname(object, "after", &base))
+                    .transpose()?,
+            }))
+        }
         "property.add" => {
             let property_path = parse_xdto_property_path(object, &base)?;
             let property_base = format!("{base}.property");
@@ -350,6 +373,80 @@ fn validate_xdto_property_path(value: &str) -> bool {
         }
     }
     xml_ncname_is_valid(&segment)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct XdtoObjectPlanDetail {
+    at: String,
+    name: String,
+    present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<XdtoQNameInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<String>,
+}
+
+/// Describe additions from the final staged bytes, including later operations
+/// from other runs in the same apply request and equivalent no-op additions.
+pub(crate) fn final_object_addition_details(
+    staged: &mut ApplyStagedState,
+    source_set: &str,
+    source_kind: SourceSetKind,
+    operations: &[XdtoPlanOperation],
+) -> Result<Vec<XdtoObjectPlanDetail>, ApplyPlanError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut details = Vec::new();
+    for operation in operations {
+        let XdtoPlanOperation::AddObjectType(args) = operation else {
+            continue;
+        };
+        if !seen.insert((args.at.to_string(), args.name.0.clone())) {
+            continue;
+        }
+        let selected = staged_xdto_package(operation, source_set, source_kind, "ops")?;
+        let mut detail = XdtoObjectPlanDetail {
+            at: args.at.to_string(),
+            name: args.name.0.clone(),
+            present: false,
+            base: None,
+            previous: None,
+            next: None,
+        };
+        if let Some(bytes) = staged
+            .read(&selected.resource_relative)
+            .map_err(|error| ApplyPlanError::staging(error, "ops"))?
+        {
+            let text = decode(&bytes).map_err(|_| invalid_staged_xdto("ops"))?;
+            let model = PackageModel::parse(&text).map_err(|_| invalid_staged_xdto("ops"))?;
+            let objects = model
+                .types
+                .iter()
+                .filter(|named| named.kind == model::TypeKind::Object)
+                .collect::<Vec<_>>();
+            if let Some(index) = objects.iter().position(|named| {
+                named
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.value == args.name.0)
+            }) {
+                detail.present = true;
+                detail.base = objects[index].base.as_ref().map(qname_info);
+                detail.previous = index
+                    .checked_sub(1)
+                    .and_then(|index| objects[index].name.as_ref())
+                    .map(|name| name.value.clone());
+                detail.next = objects
+                    .get(index + 1)
+                    .and_then(|named| named.name.as_ref())
+                    .map(|name| name.value.clone());
+            }
+        }
+        details.push(detail);
+    }
+    Ok(details)
 }
 
 pub(crate) fn plan_xdto_batch(
@@ -672,9 +769,12 @@ fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWriter
             name: &args.name.0,
             base: &args.base.0,
         },
-        XdtoPlanOperation::AddObjectType(args) => {
-            writer::TypedWriterOperation::AddObjectType { name: &args.name.0 }
-        }
+        XdtoPlanOperation::AddObjectType(args) => writer::TypedWriterOperation::AddObjectType {
+            name: &args.name.0,
+            base: args.base.as_ref().map(|v| v.0.as_str()),
+            before: args.before.as_ref().map(|v| v.0.as_str()),
+            after: args.after.as_ref().map(|v| v.0.as_str()),
+        },
         XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddProperty {
             type_name: args.at.segments()[1]
                 .name()
@@ -716,6 +816,9 @@ fn staged_writer_error(
         writer::WriterErrorField::Source | writer::WriterErrorField::TypeTarget => {
             format!("{base}.at")
         }
+        writer::WriterErrorField::Base => format!("{base}.base"),
+        writer::WriterErrorField::Before => format!("{base}.before"),
+        writer::WriterErrorField::After => format!("{base}.after"),
         writer::WriterErrorField::PropertyPath => format!("{base}.propertyPath"),
         writer::WriterErrorField::PropertyName => match operation {
             XdtoPlanOperation::AddProperty(_) => format!("{base}.property.name"),
@@ -876,7 +979,7 @@ pub(crate) struct XdtoPropertyInfo {
     location: XdtoLocation,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct XdtoQNameInfo {
     raw: String,
@@ -895,6 +998,8 @@ pub(crate) struct XdtoTypeInfo {
     name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     base: Option<XdtoQNameInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_at: Option<String>,
     properties: Vec<XdtoPropertyInfo>,
     location: XdtoLocation,
 }
@@ -1186,7 +1291,11 @@ fn build_xdto_info(
                 format!("duplicate_type: XDTO type `{name}` is ambiguous")
             });
         }
-        (Vec::new(), Some(type_info(identity, matches[0])), None)
+        (
+            Vec::new(),
+            Some(type_info(identity, model, matches[0])),
+            None,
+        )
     } else {
         let (start, end, next_cursor) = page.unwrap_or((0, model.types.len(), None));
         (
@@ -1324,7 +1433,41 @@ fn qname_info(qname: &model::QNameRef) -> XdtoQNameInfo {
     }
 }
 
-fn type_info(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeInfo {
+fn local_base_address(
+    package: &impl XdtoIdentity,
+    model: &PackageModel,
+    named: &model::NamedType,
+) -> Option<String> {
+    let base = named.base.as_ref()?;
+    if base.namespace.as_deref() != model.target_namespace() {
+        return None;
+    }
+    let mut candidates = model.types.iter().filter(|candidate| {
+        candidate
+            .name
+            .as_ref()
+            .is_some_and(|name| name.value == base.local)
+    });
+    let parent = candidates.next()?;
+    if candidates.next().is_some() || parent.kind != named.kind {
+        return None;
+    }
+    let at = format!(
+        "{}:{}.Type.{}",
+        package.source_set(),
+        package.metadata_path(),
+        base.local
+    );
+    let address = QualifiedAddress::parse(&at).ok()?;
+    (address.segments().len() == 2 && address.segments()[1].name() == Some(base.local.as_str()))
+        .then_some(at)
+}
+
+fn type_info(
+    package: &impl XdtoIdentity,
+    model: &PackageModel,
+    named: &model::NamedType,
+) -> XdtoTypeInfo {
     XdtoTypeInfo {
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
@@ -1332,6 +1475,7 @@ fn type_info(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeI
         },
         name: named.name.as_ref().map(|name| name.value.clone()),
         base: named.base.as_ref().map(qname_info),
+        base_at: local_base_address(package, model, named),
         properties: named
             .properties
             .iter()
@@ -3504,6 +3648,9 @@ pub(crate) mod tests {
         XdtoPlanOperation::AddObjectType(XdtoAddObjectTypeArgs {
             at: qaddr(at),
             name: ncname(name),
+            base: None,
+            before: None,
+            after: None,
         })
     }
 
@@ -3567,6 +3714,45 @@ pub(crate) mod tests {
             }
         }
         observed
+    }
+
+    #[test]
+    fn staged_xdto_object_base_and_position_preserve_existing_bytes() {
+        let before = concat!(
+            "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n",
+            "\t<objectType name=\"Основа\"><property name=\"Код\" type=\"xs:string\"/></objectType>\r\n",
+            "\t<objectType name=\"ПримерА\"/>\r\n",
+            "\t<!-- сохранить комментарий -->\r\n",
+            "\t<objectType name=\"ПримерВ\"/>\r\n",
+            "</package>\r\n",
+        );
+        let fixture = staged_xdto_fixture("object-base-order", before.as_bytes());
+        let operation = parse_xdto_plan_operation(
+            "objectType.add",
+            &json!({"at":"main:XDTOPackage.Sample", "values": {
+                "name":"ПримерБ", "base":"tns:Основа", "before":"ПримерВ"
+            }}),
+            0,
+            &fixture.binding,
+        )
+        .expect("objectType.add must accept a base and relative position");
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let (mut staged, effects) =
+            plan_admitted_xdto(&admission, &fixture.binding, &[operation]).unwrap();
+        let expected = before.replace(
+            "\t<objectType name=\"ПримерВ\"/>",
+            "\t<objectType name=\"ПримерБ\" base=\"tns:Основа\"/>\r\n\t<objectType name=\"ПримерВ\"/>",
+        );
+        assert_eq!(
+            staged
+                .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+                .unwrap()
+                .unwrap(),
+            expected.as_bytes(),
+        );
+        assert_eq!(effects.events().len(), 1);
+        assert_eq!(fs::read(&fixture.package).unwrap(), before.as_bytes());
+        fixture.cleanup();
     }
 
     #[test]

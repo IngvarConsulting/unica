@@ -1181,6 +1181,7 @@ impl OperationDescriptor {
                 super::operation_contract::OperationContract::metadata(self.name)
             }
             OperationFamily::Role => super::operation_contract::OperationContract::role(self.name),
+            OperationFamily::Xdto => super::operation_contract::OperationContract::xdto(self.name),
             _ => None,
         }
     }
