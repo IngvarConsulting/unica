@@ -50,6 +50,7 @@ SOURCE_WORKSPACES = {
     MXL_WORKSPACE,
     "tests/fixtures/acceptance/workspace-code",
     "tests/fixtures/acceptance/workspace-resolve",
+    "tests/fixtures/acceptance/workspace-form-names",
     "tests/fixtures/acceptance/workspace-borrowed",
     "tests/fixtures/acceptance/workspace",
     "tests/fixtures/acceptance/workspace-format",

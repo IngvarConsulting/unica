@@ -35081,6 +35081,170 @@
   },
   {
    "id": "S407",
+   "name": "element-add-into-auto-command-bar",
+   "issue": 1392,
+   "area": "Формы",
+   "task": "Кнопка, добавленная через into в корневую или табличную автоматическую командную панель, ложится в её ChildItems как CommandBarButton",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "КнопкаЗакрытьФорму",
+           "type": "Button",
+           "stdCommand": "Close",
+           "into": "ФормаКоманднаяПанель"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.3/xcf/logform}AutoCommandBar[@name='ФормаКоманднаяПанель']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Button[@name='КнопкаЗакрытьФорму']/{http://v8.1c.ru/8.3/xcf/logform}Type",
+       "eq": [
+        "CommandBarButton"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "КнопкаОбновитьСписок",
+           "type": "Button",
+           "stdCommand": "List.Refresh",
+           "into": "ListCommandBar"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Table[@name='List']/{http://v8.1c.ru/8.3/xcf/logform}AutoCommandBar[@name='ListCommandBar']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Button[@name='КнопкаОбновитьСписок']/{http://v8.1c.ru/8.3/xcf/logform}Type",
+       "eq": [
+        "CommandBarButton"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S408",
+   "name": "element-add-ambiguous-placement-refused",
+   "issue": 1392,
+   "area": "Формы",
+   "task": "element.add с into, имя которого носят две командные панели формы, отказывает без записи",
+   "workspace": "tests/fixtures/acceptance/workspace-form-names",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Строки.Form.ФормаСписка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Строки.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "КнопкаЗакрыть",
+           "type": "Button",
+           "stdCommand": "Close",
+           "into": "Панель"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: [ERROR] Target element 'Панель' is ambiguous",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S409",
    "name": "borrowed-objects-without-own-content",
    "issue": 1381,
    "area": "Расширения конфигурации",
@@ -35379,7 +35543,7 @@
    ]
   },
   {
-   "id": "S408",
+   "id": "S410",
    "name": "incomplete-borrowed-metadata-without-parent",
    "issue": 1304,
    "area": "Навигация и чтение",
@@ -35754,7 +35918,7 @@
    ]
   },
   {
-   "id": "S409",
+   "id": "S411",
    "name": "common-module-rejects-duplicate-borrowing-identity",
    "issue": 1304,
    "area": "Навигация и чтение",

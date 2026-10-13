@@ -1,6 +1,6 @@
 # Incomplete borrowed metadata without a parent
 
-S408 reads five borrowed objects from a single EXTENSION source set. No parent
+S410 reads five borrowed objects from a single EXTENSION source set. No parent
 configuration is registered, so local observations must remain available without
 resolving inherited values.
 
