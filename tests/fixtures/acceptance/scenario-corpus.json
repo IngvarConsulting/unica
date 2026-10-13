@@ -34794,6 +34794,373 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S405",
+   "name": "tabular-section-rename-renames-generated-types",
+   "issue": 1385,
+   "area": "Реквизиты и состав",
+   "task": "Переименование табличной части через newName переименовывает и её созданные типы (`CatalogTabularSection…`, `CatalogTabularSectionRow…`), сохраняя их TypeId, как это делает выгрузка платформы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.TabularSection.Представления",
+      "ops": [
+       {
+        "op": "tabularSection.set",
+        "args": {
+         "values": {
+          "newName": "Переводы"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}InternalInfo/{*}GeneratedType[@name='CatalogTabularSection.Валюты.Переводы']/{*}TypeId",
+       "eq": [
+        "7c7863ac-88d7-43e6-a7a6-ac2c028d9ce6"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}InternalInfo/{*}GeneratedType[@name='CatalogTabularSectionRow.Валюты.Переводы']/{*}TypeId",
+       "eq": [
+        "d48be48d-cdf3-4bd4-b876-08c8528e8f58"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": ".//{*}GeneratedType[@name='CatalogTabularSection.Валюты.Представления']",
+       "eq": []
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": ".//{*}GeneratedType[@name='CatalogTabularSectionRow.Валюты.Представления']",
+       "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S406",
+   "name": "catalog-members-take-platform-slots",
+   "issue": 1385,
+   "area": "Реквизиты и состав",
+   "task": "Новый реквизит шапки справочника встаёт перед табличными частями, новая табличная часть — после имеющихся и перед формами, а её `Use` предшествует `LineNumberLength`, как в выгрузке платформы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Примечание",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 100,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       },
+       {
+        "op": "tabularSection.add",
+        "args": {
+         "items": [
+          {
+           "name": "ИсторияКурсов",
+           "attributes": [
+            {
+             "name": "Курс",
+             "type": {
+              "variants": [
+               {
+                "kind": "number",
+                "digits": 10,
+                "fraction": 4,
+                "sign": "nonNegative"
+               }
+              ]
+             }
+            }
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": "./{*}Catalog/{*}ChildObjects/*/{*}Properties/{*}Name",
+       "eq": [
+        "ЗагружаетсяИзИнтернета",
+        "НаименованиеПолное",
+        "Наценка",
+        "ОсновнаяВалюта",
+        "ПараметрыПрописи",
+        "ФормулаРасчетаКурса",
+        "СпособУстановкиКурса",
+        "Примечание",
+        "Представления",
+        "ИсторияКурсов"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/*",
+       "eq": [
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "TabularSection",
+        "TabularSection",
+        "Form",
+        "Form"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection[2]/{*}Properties/*",
+       "eq": [
+        "Name",
+        "Synonym",
+        "Comment",
+        "ToolTip",
+        "FillChecking",
+        "StandardAttributes",
+        "Use",
+        "LineNumberLength"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S407",
+   "name": "catalog-form-template-and-command-take-platform-slots",
+   "issue": 1385,
+   "area": "Формы",
+   "task": "Форма справочника регистрируется после его табличных частей и имеющихся форм, а макет — перед командами, как в выгрузке платформы",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.add",
+        "args": {
+         "items": [
+          {
+           "name": "ФормаНовая",
+           "type": "ObjectForm"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/*",
+       "eq": [
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "TabularSection",
+        "Form",
+        "Form",
+        "Form"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xml",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}Form",
+       "eq": [
+        "ФормаЭлемента",
+        "ФормаСписка",
+        "ФормаНовая"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "command.add",
+        "args": {
+         "items": [
+          {
+           "name": "ОткрытьКурсы"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/*",
+       "eq": [
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "TabularSection",
+        "Form",
+        "Form",
+        "Form",
+        "Command"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "template.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПечатнаяФорма",
+           "templateType": "SpreadsheetDocument"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты.xml",
+       "kind": "xmlTags",
+       "select": "./{*}Catalog/{*}ChildObjects/*",
+       "eq": [
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "Attribute",
+        "TabularSection",
+        "Form",
+        "Form",
+        "Form",
+        "Template",
+        "Command"
+       ]
+      }
+     ]
+    }
+   ]
   }
  ]
 }
