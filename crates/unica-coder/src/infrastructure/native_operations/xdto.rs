@@ -3717,6 +3717,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn staged_xdto_position_distinguishes_missing_and_wrong_kind_neighbors() {
+        let before = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:test">
+    <valueType name="Value" base="xs:string"/>
+</package>"#;
+        for field in ["before", "after"] {
+            for (anchor, expected) in [
+                ("Missing", ApplyPlanErrorKind::NotFound),
+                ("Value", ApplyPlanErrorKind::BadValue),
+            ] {
+                let fixture =
+                    staged_xdto_fixture(&format!("position-{field}-{anchor}"), before.as_bytes());
+                let mut values = json!({"name":"Added"});
+                values[field] = json!(anchor);
+                let operation = parse_xdto_plan_operation(
+                    "objectType.add",
+                    &json!({"at":"main:XDTOPackage.Sample", "values":values}),
+                    0,
+                    &fixture.binding,
+                )
+                .unwrap();
+                let admission = staged_xdto_admission(&fixture, None, true);
+                let error = plan_admitted_xdto(&admission, &fixture.binding, &[operation])
+                    .expect_err("invalid position accepted");
+                assert_eq!(error.kind(), expected, "{field}={anchor}");
+                assert_eq!(error.path(), Some(format!("ops[0].args.{field}").as_str()));
+                assert_eq!(fs::read(&fixture.package).unwrap(), before.as_bytes());
+                fixture.cleanup();
+            }
+        }
+    }
+
+    #[test]
     fn staged_xdto_object_base_and_position_preserve_existing_bytes() {
         let before = concat!(
             "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n",
