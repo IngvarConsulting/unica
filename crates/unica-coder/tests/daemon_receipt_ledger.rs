@@ -2530,7 +2530,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     encoded
 }
 
-#[allow(clippy::chunks_exact_to_as_chunks)]
 fn decode_hex(value: &str, maximum_bytes: usize) -> Vec<u8> {
     assert!(
         !value.is_empty(),
@@ -2549,7 +2548,9 @@ fn decode_hex(value: &str, maximum_bytes: usize) -> Vec<u8> {
     );
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let nibble = |byte: u8| match byte {
                 b'0'..=b'9' => byte - b'0',

@@ -24,7 +24,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 
 - Read schemas and layouts through `unica.view`, change them through
   `unica.apply`, and validate the template through `unica.check`.
-  Every node answer lists its operations in `can`. For a DCS operation, `mxl.set` or `template.add`, read its argument contract at the operation's own address `<node>.Can.<op>`:
+  Every node answer lists its operations in `can`. For a DCS operation, `area.add`, `mxl.set` or `template.add`, read its argument contract at the operation's own address `<node>.Can.<op>`:
 
   ```json
   {"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query.Can.query.set"}
@@ -58,8 +58,16 @@ layouts.
 Find the template through `unica.view`, then read its properties, `DataSet`
 and `Setting` branches. Request `can` on the actual target and the contract
 of the operation you need. The DCS Template is a writable target for schema
-components; an existing dataset is the target for its fields and query;
-an existing setting is the target for its selection, filters and structure.
+components; an existing dataset is the target for adding fields;
+an existing field `DataSet.<name>.Field.<dataPath>` is the target for its
+mapping, title and role; an existing parameter `Parameter.<name>` is the
+target for its properties and rename; an existing setting is the target for
+its presentation, selection, filters and structure, and for its removal.
+Creation stays at the parent: `field.add`, `parameter.add` and `variant.add`
+name the new node in `items`. A name argument that duplicated the address
+(`values.name`, `values.field`) is refused, and `next` names the node's
+address. A field with a composite `dataPath` (with a dot) has no address yet,
+so its properties and role cannot be changed until #1356.
 Use names returned by the reader. A variant need not be named `Основной`.
 
 To create a schema, use the owner's `template.add` contract with
@@ -186,9 +194,13 @@ Read actual names instead of inferring them from visible
 labels. A tabular document's `ПолучитьОбласть` can combine a row and a
 column area by their names; this does not make column areas editable.
 
-For exact arguments, read `<Template>.Can.mxl.set` at the Template or
-`<owner>.Can.template.add` at its owner. Creation must be executed before the new
-Template is addressed. An addressed parameter or text-template cell becomes
+For exact arguments, read `<Template>.Area.<name>.Can.mxl.set` at an
+existing area, `<Template>.Can.area.add` at the Template or
+`<owner>.Can.template.add` at its owner. `mxl.set` writes only an existing
+area: a missing area is refused with `not_found`, and `next` leads to the
+Template, where `area.add` creates new areas with their initial cells. An area
+argument at the Template is refused with the area's address in `next`.
+Creation must be executed before the new Template is addressed. An addressed parameter or text-template cell becomes
 ordinary text when written. Unaddressed neighbors should be verified after
 publication. Width can grow but the operation does not shrink it.
 

@@ -25,29 +25,62 @@ fn run(xml: &mut String, operation: Primitive, args: Value, target: &Target) -> 
     run_in(xml, operation, args, target, "ru")
 }
 
+/// Ключи, которыми фикстуры этих тестов называют подузел. С #1354 подузел
+/// (поле, параметр, вариант) задаёт адрес: помощник переносит имя из
+/// `values` в цель так, как её строит разбор адреса.
+fn subnode_keys(operation: Primitive) -> &'static [&'static str] {
+    match operation {
+        Primitive::FieldSet | Primitive::FieldRoleSet => &["field", "dataPath", "name"],
+        Primitive::ParameterSet
+        | Primitive::ParameterRename
+        | Primitive::VariantSet
+        | Primitive::VariantRemove => &["name"],
+        _ => &[],
+    }
+}
+
+fn take_subnode(operation: Primitive, args: &mut Value) -> Option<(&'static str, Value)> {
+    let values = args.get_mut("values")?.as_object_mut()?;
+    subnode_keys(operation)
+        .iter()
+        .find_map(|key| values.remove(*key).map(|value| (*key, value)))
+}
+
 /// Runs `operation` on a source set whose default language is `lang`.
 fn run_in(
     xml: &mut String,
     operation: Primitive,
-    args: Value,
+    mut args: Value,
     target: &Target,
     lang: &str,
 ) -> Result<(), String> {
+    let mut target = target.clone();
+    if let Some((_, Value::String(name))) = take_subnode(operation, &mut args) {
+        match operation {
+            Primitive::VariantSet | Primitive::VariantRemove => target.variant = name,
+            _ => target.terminal = Some(name),
+        }
+    }
     apply(
         xml,
         operation.as_str(),
         args.as_object().unwrap(),
-        target,
+        &target,
         Some(lang),
     )
     .map_err(|error| error.to_string())
 }
 
-fn normalized(operation: Primitive, args: Value) -> Value {
-    OperationContract::dcs(operation.as_str())
+fn normalized(operation: Primitive, mut args: Value) -> Value {
+    let subnode = take_subnode(operation, &mut args);
+    let mut normalized = OperationContract::dcs(operation.as_str())
         .unwrap()
         .normalize(&args, "args")
-        .unwrap_or_else(|error| panic!("{}: {error:?}", operation.as_str()))
+        .unwrap_or_else(|error| panic!("{}: {error:?}", operation.as_str()));
+    if let Some((key, value)) = subnode {
+        normalized["values"][key] = value;
+    }
+    normalized
 }
 
 fn direct<'a, 'i>(parent: Node<'a, 'i>, ns: &str, name: &str) -> Node<'a, 'i> {

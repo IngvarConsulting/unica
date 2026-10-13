@@ -48,6 +48,13 @@ enum InterfaceEdit {
     SubsystemOrder(Vec<String>),
 }
 
+/// Новая запись прав роли: объект и его начальные права.
+#[derive(Debug, Clone)]
+struct RightEntry {
+    object: String,
+    rights: Vec<(String, bool)>,
+}
+
 #[derive(Debug, Clone)]
 enum FormResourcePlanKind {
     /// `role.create`: descriptor, empty rights document and registration.
@@ -58,12 +65,21 @@ enum FormResourcePlanKind {
     CreateSubsystem {
         name: String,
     },
+    /// `right.set` на существующей записи прав `Role.R.Right.<Вид_Имя>`.
     RightSet {
         role: MetadataAddress,
+        /// Квалифицированный адрес роли для текста отказа.
+        role_at: String,
         object: String,
         right: String,
         value: Option<bool>,
         rls: Option<String>,
+    },
+    /// `right.add` на роли: новые записи прав с начальным набором прав.
+    RightAdd {
+        role: MetadataAddress,
+        role_at: String,
+        entries: Vec<RightEntry>,
     },
     Subsystem {
         address: String,
@@ -81,7 +97,7 @@ enum FormResourcePlanKind {
         target: MetadataAddress,
         rule: SupportObjectRule,
     },
-    /// `form.add` / `form.create`: a managed form from the platform shapes.
+    /// `form.add` on the owner: managed forms from the platform shapes.
     FormAdd {
         owner: MetadataAddress,
         forms: Vec<(String, String)>,
@@ -172,9 +188,8 @@ fn required_string<'a>(
 
 /// Разбор операций командного интерфейса.
 ///
-/// Адрес несёт интерфейс, а команда лежит в аргументах — тот же приём, что у
-/// `right.set`: предмет операции — пара «интерфейс и ссылка на команду», а
-/// адрес может нести только одно. Приписать факт подсистемы адресу команды,
+/// Адрес несёт интерфейс, а команда лежит в аргументах: предмет операции —
+/// пара «интерфейс и ссылка на команду», а адрес может нести только одно. Приписать факт подсистемы адресу команды,
 /// живущей в другом месте, было бы неверно.
 fn parse_command_interface_operation(
     section: &str,
@@ -519,6 +534,43 @@ pub(crate) fn parse_form_resource_plan_operation(
     })
 }
 
+/// Вид владельца записи прав: вид метаданных или корень конфигурации.
+/// Имя записи `<Вид>_<Имя>` делится по первому `_`, и вид без `_` отличает
+/// каноническое имя от короткого псевдонима чтения.
+fn role_right_owner_kind(kind: &str) -> bool {
+    kind == NodeKind::Configuration.as_str()
+        || crate::infrastructure::metadata_kinds::metadata_kind(kind).is_some()
+}
+
+/// Роль адреса: `Role.R` для `right.add`, `Role.R.Right.<Вид_Имя>` для
+/// `right.set`.
+fn role_of(
+    target: &QualifiedAddress,
+    entry: bool,
+    op_index: usize,
+) -> Result<MetadataAddress, ApplyPlanError> {
+    let shape = if entry {
+        "right.set addresses a rights entry: `Role.Name.Right.<Kind>_<Name>`"
+    } else {
+        "right.add targets one role: `Role.Name`"
+    };
+    let role_name = match (target.segments(), entry) {
+        ([role], false) if role.kind() == NodeKind::Role => role.name(),
+        ([role, right], true)
+            if role.kind() == NodeKind::Role && right.kind() == NodeKind::Right =>
+        {
+            role.name()
+        }
+        _ => None,
+    }
+    .ok_or_else(|| bad(op_index, "at", shape))?;
+    MetadataAddress::parse(
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
+        &format!("Role.{role_name}"),
+    )
+    .map_err(|error| bad(op_index, "at", error.to_string()))
+}
+
 fn parse_role_operation(
     operation: &str,
     args: &Map<String, Value>,
@@ -526,32 +578,152 @@ fn parse_role_operation(
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let target = qualified_target(args, op_index, binding)?;
+    // Опубликованный контракт и разбор планировщиком принимают одну форму
+    // аргументов (#1354): схема проверяется первой.
+    if let Some(contract) = crate::domain::operation_contract::OperationContract::role(operation) {
+        contract
+            .normalize(
+                &Value::Object(args.clone()),
+                &format!("ops[{op_index}].args"),
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    format!("{}: {}", error.path, error.message),
+                )
+                .at_path(error.path)
+            })?;
+    }
     match operation {
         "role.create" => {
             let values = required_values(args, op_index, &["name"])?;
             let name = creation_name(&target, NodeKind::Role, values, op_index)?;
             Ok(FormResourcePlanKind::CreateRole { name })
         }
-        "right.set" => {
-            let [role] = target.segments() else {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    "right.set targets one role: `Role.Name`",
-                ));
-            };
-            if role.kind() != NodeKind::Role {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    "right.set targets one role: `Role.Name`",
-                ));
+        "right.add" => {
+            let role = role_of(&target, false, op_index)?;
+            let items = args
+                .get("items")
+                .and_then(Value::as_array)
+                .filter(|items| !items.is_empty())
+                .ok_or_else(|| bad(op_index, "items", "`items` must list at least one object"))?;
+            let mut entries = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let location = format!("items[{index}]");
+                let item = item
+                    .as_object()
+                    .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
+                if let Some(field) = item
+                    .keys()
+                    .find(|field| !matches!(field.as_str(), "object" | "rights"))
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("{location}.{field}"),
+                        format!("an item accepts only `object` and `rights`, not `{field}`"),
+                    ));
+                }
+                let object = required_string(item, "object", op_index, &location)?.to_string();
+                // Запись адресуется `Right.<Вид>_<Имя>`; вложенный объект
+                // (`Kind.X.Command.Y`) адресом не выражается до экранирования
+                // точки (#1356): созданную запись нечем было бы изменить.
+                match object.split('.').collect::<Vec<_>>().as_slice() {
+                    [kind, name] if role_right_owner_kind(kind) && !name.is_empty() => {}
+                    [_, _, _, ..] => {
+                        return Err(bad(
+                            op_index,
+                            &format!("{location}.object"),
+                            "a nested object (`Kind.Name.Command.C`, attribute) has no rights-entry address until #1356; only `Kind.Name` objects are supported",
+                        ))
+                    }
+                    _ => {
+                        return Err(bad(
+                            op_index,
+                            &format!("{location}.object"),
+                            "`object` names a metadata object as `Kind.Name`",
+                        ))
+                    }
+                }
+                // Созданную запись `right.set` правит по адресу
+                // `Right.<Вид>_<Имя>`; адрес, который грамматика не разбирает,
+                // оставил бы запись без адреса.
+                let entry_name = object.replacen('.', "_", 1);
+                if QualifiedAddress::parse(&format!("{target}.Right.{entry_name}"))
+                    .ok()
+                    .and_then(|address| {
+                        address
+                            .segments()
+                            .last()
+                            .and_then(|s| s.name().map(str::to_string))
+                    })
+                    .as_deref()
+                    != Some(entry_name.as_str())
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("{location}.object"),
+                        "the object has no addressable `Right.<Kind>_<Name>` entry",
+                    ));
+                }
+                if entries
+                    .iter()
+                    .any(|entry: &RightEntry| entry.object == object)
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("{location}.object"),
+                        format!("`{object}` is listed twice"),
+                    ));
+                }
+                let rights = item
+                    .get("rights")
+                    .and_then(Value::as_object)
+                    .filter(|rights| !rights.is_empty())
+                    .ok_or_else(|| {
+                        bad(
+                            op_index,
+                            &format!("{location}.rights"),
+                            "`rights` maps at least one right name to true/false",
+                        )
+                    })?
+                    .iter()
+                    .map(|(right, value)| match value {
+                        Value::Bool(value) if !right.trim().is_empty() => {
+                            Ok((right.trim().to_string(), *value))
+                        }
+                        _ => Err(bad(
+                            op_index,
+                            &format!("{location}.rights.{right}"),
+                            "a right takes true or false",
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                entries.push(RightEntry { object, rights });
             }
-            let role_name = role
-                .name()
-                .ok_or_else(|| bad(op_index, "at", "the role must be named"))?;
-            let values = required_values(args, op_index, &["object", "right", "value", "rls"])?;
-            let object = required_string(values, "object", op_index, "values")?.to_string();
+            Ok(FormResourcePlanKind::RightAdd {
+                role,
+                role_at: target.to_string(),
+                entries,
+            })
+        }
+        "right.set" => {
+            let role = role_of(&target, true, op_index)?;
+            // Объект записи задаёт адрес `Role.R.Right.<Вид_Имя>` (#1354).
+            let object = target
+                .segments()
+                .get(1)
+                .and_then(|segment| segment.name())
+                .and_then(|name| name.split_once('_'))
+                .filter(|(kind, name)| role_right_owner_kind(kind) && !name.is_empty())
+                .map(|(kind, name)| format!("{kind}.{name}"))
+                .ok_or_else(|| {
+                    bad(
+                        op_index,
+                        "at",
+                        "right.set addresses a rights entry by its canonical name: `Role.Name.Right.<Kind>_<Name>`",
+                    )
+                })?;
+            let values = required_values(args, op_index, &["right", "value", "rls"])?;
             let right = required_string(values, "right", op_index, "values")?.to_string();
             let value = match values.get("value") {
                 None => None,
@@ -578,12 +750,8 @@ fn parse_role_operation(
                     "right.set needs `value` (true/false) and/or `rls` (a restriction condition)",
                 ));
             }
-            let role = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("Role.{role_name}"),
-            )
-            .map_err(|error| bad(op_index, "at", error.to_string()))?;
             Ok(FormResourcePlanKind::RightSet {
+                role_at: format!("{}:{}", target.source_set(), role.as_str()),
                 role,
                 object,
                 right,
@@ -1253,20 +1421,6 @@ fn parse_form_operation(
                 forms,
             })
         }
-        "form.create" => {
-            // Имя формы задаёт адрес `Owner.Name.Form.F` (#1353).
-            let form = form_of(&target)?;
-            let values = required_values(args, op_index, &["type"])?;
-            let purpose = form_purpose(
-                values.get("type").and_then(Value::as_str),
-                op_index,
-                "values",
-            )?;
-            Ok(FormResourcePlanKind::FormAdd {
-                owner: target.owner,
-                forms: vec![(form, purpose)],
-            })
-        }
         "form.set" => {
             let values = args
                 .get("values")
@@ -1929,6 +2083,121 @@ fn xml_escape(text: &str) -> String {
 }
 
 /// Ensures `<object><name>X</name></object>` exists in the rights document.
+/// Читает права роли, применяет правку и стадирует результат с проверкой
+/// документа до и после. Неизменный документ не пишется.
+fn stage_role_rights(
+    staged: &mut ApplyStagedState,
+    authority: &FormResourceApplyAuthority<'_>,
+    role: &MetadataAddress,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+    edit: impl FnOnce(String) -> Result<String, ApplyPlanError>,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let relative = attached_resource_relative(role, "Rights.xml", authority.source_kind())
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(at_path.clone())
+        })?;
+    let preimage = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "the role rights document (Ext/Rights.xml) was not found",
+            )
+            .at_path(at_path.clone())
+        })?;
+    let invalid = |message: String| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    };
+    let (bom, body) = crate::infrastructure::native_operations::role::decode_role_xml(&preimage)
+        .map_err(invalid)?;
+    crate::infrastructure::native_operations::role::validate_role_rights_document(
+        &body,
+        crate::infrastructure::native_operations::role::RoleValueScope::SourceImage,
+    )
+    .map_err(invalid)?;
+    let body = edit(body)?;
+    crate::infrastructure::native_operations::role::validate_role_rights_document(
+        &body,
+        crate::infrastructure::native_operations::role::RoleValueScope::SourceImage,
+    )
+    .map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message)
+            .at_path(format!("ops[{op_index}].args"))
+    })?;
+    let postimage = crate::infrastructure::native_operations::role::encode_role_xml(bom, &body);
+    if postimage == preimage {
+        return Ok(());
+    }
+    staged
+        .replace(&relative, &preimage, postimage)
+        .map_err(|error| ApplyPlanError::staging(error, at_path))?;
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(DomainEventKind::RoleChanged, role.as_str().to_string()),
+        op_index,
+    ));
+    Ok(())
+}
+
+/// Одно право объекта роли через общий редактор прав.
+fn set_role_right(
+    body: &str,
+    object: &str,
+    right: &str,
+    value: bool,
+    op_index: usize,
+) -> Result<String, ApplyPlanError> {
+    let edit = crate::domain::role::RoleEditOperation {
+        object_name: object.to_string(),
+        right: right.to_string(),
+        value,
+    };
+    crate::infrastructure::native_operations::role::apply_role_edit_operation(body, &edit, op_index)
+        .map(|(updated, _effect)| updated)
+        .map_err(|message| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message))
+}
+
+/// Есть ли запись прав на объект в стадированном документе прав роли.
+/// `None` — документ не читается.
+pub(super) fn staged_rights_entry_exists(bytes: &[u8], object: &str) -> Option<bool> {
+    let (_, body) = crate::infrastructure::native_operations::role::decode_role_xml(bytes).ok()?;
+    rights_object_exists(&body, object).ok()
+}
+
+/// Есть ли у роли запись прав на объект.
+fn rights_object_exists(body: &str, object: &str) -> Result<bool, ApplyPlanError> {
+    Ok(rights_entry_size(body, object)?.is_some())
+}
+
+/// Число прав в записи роли на объект; `None` — записи нет.
+fn rights_entry_size(body: &str, object: &str) -> Result<Option<usize>, ApplyPlanError> {
+    let document = roxmltree::Document::parse(body).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "Rights.xml is not well-formed XML",
+        )
+    })?;
+    let named = |node: &roxmltree::Node<'_, '_>, tag: &str| {
+        node.is_element() && node.tag_name().name() == tag
+    };
+    Ok(document
+        .root_element()
+        .children()
+        .filter(|node| named(node, "object"))
+        .find(|node| {
+            node.children()
+                .any(|child| named(&child, "name") && child.text().map(str::trim) == Some(object))
+        })
+        .map(|node| {
+            node.children()
+                .filter(|child| named(child, "right"))
+                .count()
+        }))
+}
+
 fn ensure_rights_object(body: &str, object: &str) -> Result<String, String> {
     let document = roxmltree::Document::parse(body)
         .map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
@@ -2246,88 +2515,102 @@ pub(crate) fn plan_form_resource_batch(
             }
             FormResourcePlanKind::RightSet {
                 role,
+                role_at,
                 object,
                 right,
                 value,
                 rls,
             } => {
-                let at_path = format!("ops[{op_index}].args.at");
-                let relative =
-                    attached_resource_relative(role, "Rights.xml", authority.source_kind())
-                        .map_err(|message| {
-                            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                                .at_path(at_path.clone())
-                        })?;
-                let preimage = staged
-                    .read(&relative)
-                    .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
-                    .ok_or_else(|| {
-                        ApplyPlanError::new(
-                            ApplyPlanErrorKind::NotFound,
-                            "the role rights document (Ext/Rights.xml) was not found",
-                        )
-                        .at_path(at_path.clone())
-                    })?;
-                let invalid = |message: String| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
-                        .at_path(at_path.clone())
-                };
-                let (bom, mut body) =
-                    crate::infrastructure::native_operations::role::decode_role_xml(&preimage)
-                        .map_err(invalid)?;
-                crate::infrastructure::native_operations::role::validate_role_rights_document(
-                    &body,
-                    crate::infrastructure::native_operations::role::RoleValueScope::SourceImage,
-                )
-                .map_err(invalid)?;
-                body = ensure_rights_object(&body, object).map_err(invalid)?;
                 let value_path = format!("ops[{op_index}].args.values");
-                let granted = value.or(if rls.is_some() { Some(true) } else { None });
-                if let Some(granted) = granted {
-                    let edit = crate::domain::role::RoleEditOperation {
-                        object_name: object.clone(),
-                        right: right.clone(),
-                        value: granted,
-                    };
-                    let (updated, _effect) =
-                        crate::infrastructure::native_operations::role::apply_role_edit_operation(
-                            &body, &edit, op_index,
-                        )
-                        .map_err(|message| {
-                            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                                .at_path(value_path.clone())
-                        })?;
-                    body = updated;
-                }
-                if let Some(condition) = rls {
-                    body = set_rights_restriction(&body, object, right, condition).map_err(
-                        |message| {
-                            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
-                                .at_path(format!("{value_path}.rls"))
-                        },
-                    )?;
-                }
-                crate::infrastructure::native_operations::role::validate_role_rights_document(
-                    &body,
-                    crate::infrastructure::native_operations::role::RoleValueScope::SourceImage,
-                )
-                .map_err(|message| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message)
-                        .at_path(value_path.clone())
-                })?;
-                let postimage =
-                    crate::infrastructure::native_operations::role::encode_role_xml(bom, &body);
-                if postimage == preimage {
-                    continue;
-                }
-                staged
-                    .replace(&relative, &preimage, postimage)
-                    .map_err(|error| ApplyPlanError::staging(error, at_path))?;
-                provisional.push(ProvisionalApplyEffect::single(
-                    relative,
-                    DomainEvent::new(DomainEventKind::RoleChanged, role.as_str().to_string()),
+                stage_role_rights(
+                    &mut staged,
+                    &authority,
+                    role,
                     op_index,
-                ));
+                    &mut provisional,
+                    |mut body| {
+                        // `right.set` пишет только в существующую запись:
+                        // опечатка в адресе не создаёт объект роли (#1354).
+                        if !rights_object_exists(&body, object)? {
+                            return Err(ApplyPlanError::new(
+                                ApplyPlanErrorKind::NotFound,
+                                format!(
+                                    "the role has no rights entry for `{object}`; create it with right.add at `{role_at}`"
+                                ),
+                            )
+                            .at_path(format!("ops[{op_index}].args.at")));
+                        }
+                        let granted = value.or(if rls.is_some() { Some(true) } else { None });
+                        if let Some(granted) = granted {
+                            body = set_role_right(&body, object, right, granted, op_index)
+                                .map_err(|error| error.at_path(value_path.clone()))?;
+                        }
+                        if let Some(condition) = rls {
+                            body = set_rights_restriction(&body, object, right, condition)
+                                .map_err(|message| {
+                                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                                        .at_path(format!("{value_path}.rls"))
+                                })?;
+                        }
+                        Ok(body)
+                    },
+                )?;
+            }
+            FormResourcePlanKind::RightAdd {
+                role,
+                role_at,
+                entries,
+            } => {
+                stage_role_rights(
+                    &mut staged,
+                    &authority,
+                    role,
+                    op_index,
+                    &mut provisional,
+                    |mut body| {
+                        for (index, entry) in entries.iter().enumerate() {
+                            let location = format!("ops[{op_index}].args.items[{index}]");
+                            // Новая запись не перекрывает существующую: её
+                            // права меняет `right.set` по её адресу.
+                            if rights_object_exists(&body, &entry.object)? {
+                                return Err(ApplyPlanError::new(
+                                    ApplyPlanErrorKind::BadValue,
+                                    format!(
+                                        "the role already has a rights entry for `{}`; change it with right.set at `{role_at}.Right.{}`",
+                                        entry.object,
+                                        entry.object.replacen('.', "_", 1)
+                                    ),
+                                )
+                                .at_path(format!("{location}.object")));
+                            }
+                            body =
+                                ensure_rights_object(&body, &entry.object).map_err(|message| {
+                                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                                        .at_path(location.clone())
+                                })?;
+                            for (right, granted) in &entry.rights {
+                                body =
+                                    set_role_right(&body, &entry.object, right, *granted, op_index)
+                                        .map_err(|error| {
+                                            error.at_path(format!("{location}.rights.{right}"))
+                                        })?;
+                            }
+                            // Права, равные умолчанию роли, платформа не хранит:
+                            // такая запись осталась бы пустой и не появилась бы.
+                            if rights_entry_size(&body, &entry.object)?.unwrap_or(0) == 0 {
+                                return Err(ApplyPlanError::new(
+                                    ApplyPlanErrorKind::BadValue,
+                                    format!(
+                                        "every right of `{}` equals the role default for new objects; the entry would stay empty",
+                                        entry.object
+                                    ),
+                                )
+                                .at_path(format!("{location}.rights")));
+                            }
+                        }
+                        Ok(body)
+                    },
+                )?;
             }
             FormResourcePlanKind::CommandInterface {
                 address,
@@ -3247,32 +3530,33 @@ mod tests {
         let authority = admission
             .form_resource_planning_authority(&fixture.binding)
             .unwrap();
-        let parse = |op: &str, values: serde_json::Value, index: usize| {
+        let parse = |op: &str, at: &str, args: serde_json::Value, index: usize| {
+            let mut args = args;
+            args["at"] = json!(at);
             IndexedPlanOperation::new(
                 index,
-                parse_form_resource_plan_operation(
-                    op,
-                    &json!({"at": "main:Role.Reader", "values": values}),
-                    index,
-                    &fixture.binding,
-                )
-                .unwrap(),
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding).unwrap(),
             )
         };
+        // Запись прав создаёт `right.add` на роли, а `right.set` меняет
+        // существующую запись по её адресу (#1354).
         let operations = [
             parse(
                 "right.set",
-                json!({"object": "Document.First", "right": "Update", "value": true}),
+                "main:Role.Reader.Right.Document_First",
+                json!({"values": {"right": "Update", "value": true}}),
                 0,
             ),
             parse(
-                "right.set",
-                json!({"object": "Document.Second", "right": "Read", "value": true}),
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "Document.Second", "rights": {"Read": true}}]}),
                 1,
             ),
             parse(
                 "right.set",
-                json!({"object": "Document.Second", "right": "Read", "rls": "ГДЕ Автор = &Пользователь"}),
+                "main:Role.Reader.Right.Document_Second",
+                json!({"values": {"right": "Read", "rls": "ГДЕ Автор = &Пользователь"}}),
                 2,
             ),
         ];
@@ -3287,6 +3571,98 @@ mod tests {
             text.contains("<condition>ГДЕ Автор = &amp;Пользователь</condition>"),
             "{text}"
         );
+
+        // Опечатка в адресе записи не создаёт объект роли, а повторное
+        // `right.add` не перекрывает существующую запись.
+        for (op, at, args, kind, path) in [
+            (
+                "right.set",
+                "main:Role.Reader.Right.Document_Frist",
+                json!({"values": {"right": "Read", "value": true}}),
+                ApplyPlanErrorKind::NotFound,
+                "ops[0].args.at",
+            ),
+            (
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "Document.First", "rights": {"Read": false}}]}),
+                ApplyPlanErrorKind::BadValue,
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "Document.Second", "rights": {"Read": false}}]}),
+                ApplyPlanErrorKind::BadValue,
+                "ops[0].args.items[0].rights",
+            ),
+        ] {
+            let admission = fixture.admission();
+            let staged = admission.staged_state().unwrap();
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            let Err(error) = plan_form_resource_batch(staged, authority, &[parse(op, at, args, 0)])
+            else {
+                panic!("{op} at {at}: the existing entry decides");
+            };
+            assert_eq!(error.kind(), kind, "{op}");
+            assert_eq!(error.path(), Some(path), "{op}");
+        }
+        // Объект записи назван адресом: прежний аргумент и адрес роли
+        // разбор отвергает.
+        for (op, at, args, path) in [
+            (
+                "right.set",
+                "main:Role.Reader.Right.Document_First",
+                json!({"values": {"object": "Document.First", "right": "Read", "value": true}}),
+                "ops[0].args.values.object",
+            ),
+            (
+                "right.set",
+                "main:Role.Reader",
+                json!({"values": {"right": "Read", "value": true}}),
+                "ops[0].args.at",
+            ),
+            (
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "Document.Third", "rights": {}}]}),
+                "ops[0].args.items[0].rights",
+            ),
+            (
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "Third", "rights": {"Read": true}}]}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "Document.A:B", "rights": {"Read": true}}]}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "DataProcessor.D.Command.C", "rights": {"Use": true}}]}),
+                "ops[0].args.items[0].object",
+            ),
+            // Короткий псевдоним чтения — не каноническое имя записи.
+            (
+                "right.set",
+                "main:Role.Reader.Right.Товары_Архив",
+                json!({"values": {"right": "Read", "value": true}}),
+                "ops[0].args.at",
+            ),
+        ] {
+            let mut args = args;
+            args["at"] = json!(at);
+            let error = parse_form_resource_plan_operation(op, &args, 0, &fixture.binding)
+                .expect_err("the subject comes from the address");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} {path}");
+            assert_eq!(error.path(), Some(path), "{op}");
+        }
     }
 
     #[test]
@@ -3573,17 +3949,23 @@ mod tests {
         );
     }
 
-    /// Имя формы и дочерней подсистемы задаёт адрес: аргумент, который их
-    /// повторял, отказывает и в разборе планировщиком (#1353).
+    /// Имя дочерней подсистемы задаёт адрес: аргумент, который его
+    /// повторял, отказывает и в разборе планировщиком (#1353). Форму создаёт
+    /// `form.add` на владельце: снятую `form.create` планировщик не знает.
     #[test]
     fn form_and_child_subsystem_names_come_only_from_the_address() {
         let fixture = ApplySeamFixture::new();
-        for (op, args, path) in [
-            (
+        assert!(matches!(
+            parse_form_resource_plan_operation(
                 "form.create",
-                json!({"at": "main:Catalog.Items.Form.Choice", "values": {"name": "Choice", "type": "ChoiceForm"}}),
-                "ops[0].args.values.name",
-            ),
+                &json!({"at": "main:Catalog.Items.Form.Choice", "values": {"type": "ChoiceForm"}}),
+                0,
+                &fixture.binding,
+            )
+            .map(|operation| operation.kind),
+            Ok(super::FormResourcePlanKind::Unsupported)
+        ));
+        for (op, args, path) in [
             (
                 "childSubsystem.remove",
                 json!({"at": "main:Subsystem.Sales", "items": [{"name": "Orders"}]}),
@@ -3606,13 +3988,6 @@ mod tests {
             assert_eq!(error.path(), Some(path), "{op}");
         }
         assert!(parse_form_resource_plan_operation(
-            "form.create",
-            &json!({"at": "main:Catalog.Items.Form.Choice", "values": {"type": "ChoiceForm"}}),
-            0,
-            &fixture.binding,
-        )
-        .is_ok());
-        assert!(parse_form_resource_plan_operation(
             "childSubsystem.remove",
             &json!({"at": "main:Subsystem.Sales.Subsystem.Orders"}),
             0,
@@ -3625,8 +4000,8 @@ mod tests {
     fn form_operations_refuse_a_root_target_and_name_the_argument() {
         let fixture = ApplySeamFixture::new();
         let error = parse_form_resource_plan_operation(
-            "form.create",
-            &json!({"at": "main:Configuration", "values": {"name": "Форма"}}),
+            "form.add",
+            &json!({"at": "main:Configuration", "items": [{"name": "Форма"}]}),
             0,
             &fixture.binding,
         )
