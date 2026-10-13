@@ -146,7 +146,7 @@ const ARGUMENT_DEPENDENT: &[(&str, &str)] = &[
     ),
     (
         "code.insert",
-        "на адресе модуля вставка с `selector` требует существующий метод",
+        "на адресе метода вставка требует `position` и существующий метод",
     ),
 ];
 
@@ -444,8 +444,9 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
         "form.set" => json!({"values": {"defaultObjectForm": "Sample"}}),
         "event.bind" => json!({"values": {"event": "OnOpen", "handler": "Sample"}}),
         "content.add" => json!({"items": [{"object": "Catalog.Sample"}]}),
-        "right.set" => {
-            json!({"values": {"object": "Catalog.Sample", "right": "Read", "value": true}})
+        "right.set" => json!({"values": {"right": "Read", "value": true}}),
+        "right.add" => {
+            json!({"items": [{"object": "Catalog.Sample", "rights": {"Read": true}}]})
         }
         "commandVisibility.set" => {
             json!({"items": [{"command": "Catalog.Sample.StandardCommand.OpenList", "visible": true}]})
@@ -475,8 +476,16 @@ fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
         .segments()
         .last()
         .is_some_and(|segment| segment.kind() == NodeKind::Item);
+    let method_address = at
+        .segments()
+        .last()
+        .is_some_and(|segment| segment.kind() == NodeKind::Method);
     match descriptor.name() {
         "element.remove" if item_address => json!({"at": ""}),
+        // Место вставки у метода — до или после него (#1354).
+        "code.insert" if method_address => {
+            json!({"at": "", "text": "// sample\n", "position": "after"})
+        }
         "element.remove" => json!({"items": [{"name": "Sample"}]}),
         _ => sample_args(descriptor),
     }
@@ -990,9 +999,16 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
     for (at, op, args, target, contract) in [
         (
             "cf:Report.Sales.Template.Print.Area.Header",
-            "mxl.set",
-            json!({"values": {"area": "Header", "cells": {"R1C1": "x"}}}),
+            "area.add",
+            json!({"items": [{"name": "Footer", "cells": {"R1C1": "x"}}]}),
             "cf:Report.Sales.Template.Print",
+            true,
+        ),
+        (
+            "cf:Role.Reader.Right.Catalog_Items",
+            "right.add",
+            json!({"items": [{"object": "Catalog.Orders", "rights": {"Read": true}}]}),
+            "cf:Role.Reader",
             true,
         ),
         (
@@ -1058,10 +1074,19 @@ fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
         ),
         (
             "cf:Report.Sales.Template.Schema.Area.Header",
-            "mxl.set",
-            json!({"values": {"area": "Header", "cells": {"R1C1": "x"}}}),
+            "area.add",
+            json!({"items": [{"name": "Footer", "cells": {"R1C1": "x"}}]}),
             "cf:Report.Sales.Template.Schema.Area.Header",
             "of a spreadsheet",
+        ),
+        // Запись `*.set` создаёт не предок: на владельце она не исполнима,
+        // и отказ называет форму адреса подузла (#1354).
+        (
+            "cf:Role.Reader",
+            "right.set",
+            json!({"values": {"right": "Read", "value": true}}),
+            "cf:Role.Reader",
+            "`Role.Name.Right.<Kind>_<Name>`",
         ),
     ] {
         let request = apply_request(at, op, args);
@@ -1421,17 +1446,6 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
             false,
         ),
         (
-            "cf:Catalog.Items.Form.Choice".to_string(),
-            "form.create",
-            json!({"values": {"name": "Choice", "type": "ChoiceForm"}}),
-            "ops[0].args.values.name",
-            // Форму создаёт сама операция: к несуществующему узлу `next`
-            // не ведёт, только к ветви форм.
-            String::new(),
-            "cf:Catalog.Items.Form".to_string(),
-            true,
-        ),
-        (
             "cf:Subsystem.Sales".to_string(),
             "childSubsystem.remove",
             json!({"items": [{"name": "Orders"}]}),
@@ -1478,6 +1492,125 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
             .collect::<Vec<_>>();
         assert_eq!(actual, expected, "{case}");
     }
+}
+
+/// Операции подузлов (#1354): подузел, прежде названный аргументом на
+/// владельце, задаёт адрес. Прежний вызов получает `bad_value` до
+/// планирования: первый `next` — к `can` подузла, второй — к ветви узлов
+/// этого вида. `*.set`, чей узел создаёт операция родителя, называет её.
+#[test]
+fn retired_subnode_arguments_route_next_to_the_subnode_address() {
+    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    let schema = "cf:Report.Sales.Template.Schema";
+    for (at, op, args, location, next_at, branch, creator) in [
+        (
+            "cf:Role.Reader".to_string(),
+            "right.set",
+            json!({"values": {"object": "Catalog.Items", "right": "Read", "value": true}}),
+            "ops[0].args.values.object",
+            "cf:Role.Reader.Right.Catalog_Items.Can.right.set".to_string(),
+            "cf:Role.Reader.Right".to_string(),
+            Some("right.add"),
+        ),
+        (
+            "cf:Report.Sales.Template.Print".to_string(),
+            "mxl.set",
+            json!({"values": {"area": "Header", "cells": {"R1C1": "x"}}}),
+            "ops[0].args.values.area",
+            "cf:Report.Sales.Template.Print.Area.Header.Can.mxl.set".to_string(),
+            "cf:Report.Sales.Template.Print.Area".to_string(),
+            Some("area.add"),
+        ),
+        (
+            schema.to_string(),
+            "variant.set",
+            json!({"values": {"name": "Main", "title": "x"}}),
+            "ops[0].args.values.name",
+            format!("{schema}.Setting.Main.Can.variant.set"),
+            format!("{schema}.Setting"),
+            None,
+        ),
+        (
+            schema.to_string(),
+            "parameter.rename",
+            json!({"values": {"name": "Period", "newName": "Range"}}),
+            "ops[0].args.values.name",
+            format!("{schema}.Parameter.Period.Can.parameter.rename"),
+            format!("{schema}.Parameter"),
+            None,
+        ),
+        (
+            format!("{schema}.DataSet.Main"),
+            "fieldRole.set",
+            json!({"values": {"field": "Amount", "role": {"dimension": true}}}),
+            "ops[0].args.values.field",
+            format!("{schema}.DataSet.Main.Field.Amount.Can.fieldRole.set"),
+            format!("{schema}.DataSet.Main.Field"),
+            None,
+        ),
+        (
+            "cf:CommonModule.Shared".to_string(),
+            "code.insert",
+            json!({"selector": {"method": "Run"}, "position": "after", "text": "x"}),
+            "ops[0].args.selector.method",
+            "cf:CommonModule.Shared.Method.Run".to_string(),
+            "cf:CommonModule.Shared.Method".to_string(),
+            None,
+        ),
+    ] {
+        let request = apply_request(&at, op, args);
+        let refusal = preflight_apply_operations(&request, traits, &|_| None)
+            .expect_err("a retired subnode argument refuses before planning");
+        let case = format!("{op} at {at}");
+        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{case}");
+        assert_eq!(refusal.at.as_deref(), Some(location), "{case}");
+        let message = refusal.diagnostics[0]["message"].as_str().unwrap();
+        match creator {
+            Some(creator) => assert!(
+                message.contains(&format!("created by `{creator}`")),
+                "{case}: {message}"
+            ),
+            None => assert!(!message.contains("created by"), "{case}: {message}"),
+        }
+        let actual = refusal
+            .next
+            .iter()
+            .map(|next| next["args"]["at"].clone())
+            .collect::<Vec<_>>();
+        // Узел создаёт операция родителя: её контракт — третий шаг.
+        let mut expected = vec![json!(next_at), json!(branch)];
+        if let Some(creator) = creator {
+            let parent = branch.rsplit_once('.').unwrap().0;
+            expected.push(json!(format!("{parent}.Can.{creator}")));
+        }
+        assert_eq!(actual, expected, "{case}");
+    }
+    // Контракт операций прав читается по адресу операции, как у других.
+    for op in ["right.add", "right.set"] {
+        let descriptor = OperationRegistry::closed().lookup(op).unwrap();
+        let contract = descriptor.argument_contract().expect("role contract");
+        assert!(
+            contract.normalize(&contract.example_args, "args").is_ok(),
+            "{op}"
+        );
+    }
+    // Снятая `form.create` называет `form.add` на владельце формы.
+    let request = apply_request(
+        "cf:Catalog.Items.Form.Choice",
+        "form.create",
+        json!({"values": {"type": "ChoiceForm"}}),
+    );
+    let refusal = preflight_apply_operations(&request, traits, &|_| None)
+        .expect_err("a retired operation refuses before planning");
+    assert_eq!(refusal.diagnostics[0]["code"], "bad_value");
+    assert_eq!(refusal.at.as_deref(), Some("ops[0].op"));
+    let message = refusal.diagnostics[0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("call `form.add` at `cf:Catalog.Items`"),
+        "{message}"
+    );
+    assert_eq!(refusal.next.len(), 1);
+    assert_eq!(refusal.next[0]["args"]["at"], "cf:Catalog.Items");
 }
 
 /// Снятые аргументы членов метаданных: прежний вызов на владельце получает
