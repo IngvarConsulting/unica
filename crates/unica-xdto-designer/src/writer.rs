@@ -592,10 +592,15 @@ fn object_position_anchor<'a>(
     let candidates = named_types(root, anchor);
     match candidates.as_slice() {
         [node] if node.has_tag_name((XDTO_NS, "objectType")) => Ok(Some((*node, is_before))),
-        [] | [_] => Err(WriterError::new(
+        [] => Err(WriterError::new(
             WriterErrorCause::NotFound,
             field,
             "position must name an existing local ObjectType",
+        )),
+        [_] => Err(WriterError::new(
+            WriterErrorCause::BadValue,
+            field,
+            "position must name an ObjectType, not a ValueType",
         )),
         _ => Err(WriterError::new(
             WriterErrorCause::AmbiguousTarget,
