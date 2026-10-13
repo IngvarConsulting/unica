@@ -136,7 +136,7 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
             .map(|descriptor| {
                 json!({
                     "op": descriptor.name(),
-                    "args": descriptor.skeleton_key(),
+                    "args": descriptor.skeleton_key_at(&site),
                     "implemented": IMPLEMENTED_APPLY_OPERATIONS.contains(&descriptor.name()),
                 })
             })
@@ -208,7 +208,7 @@ pub(super) fn operation_node(
         "title": operation,
         "props": {
             "op": operation,
-            "args": descriptor.skeleton_key(),
+            "args": descriptor.skeleton_key_at(&site),
             "implemented": implemented,
             "contract": contract.map(|contract| contract.details()),
         },
@@ -234,6 +234,41 @@ mod operation_dictionary_tests {
     fn can_of(mut data: Value) -> Value {
         attach_can(&mut data, super::configuration_context());
         data
+    }
+
+    #[test]
+    fn element_move_can_selects_operands_from_the_address() {
+        for (at, kind, key) in [
+            ("main:Catalog.Goods.Form.Main", "Form", "items"),
+            ("main:Catalog.Goods.Form.Main.Item.Value", "Item", "values"),
+            (
+                "main:Catalog.Goods.Form.Main.Item.Tabs.Item.Page.Item.Value",
+                "Item",
+                "values",
+            ),
+        ] {
+            let data = json!({"at":at,"kind":kind});
+            let brief = can_of(data.clone());
+            let entry = brief["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["op"] == "element.move")
+                .expect("move is available on forms and items");
+            assert_eq!(entry["args"], key);
+            let detailed = operation_node(
+                &data,
+                "element.move",
+                &format!("{at}.Can.element.move"),
+                super::configuration_context(),
+            )
+            .unwrap();
+            assert_eq!(detailed["props"]["args"], key);
+            assert_eq!(
+                detailed["props"]["contract"]["argsSchema"]["required"],
+                json!([key])
+            );
+        }
     }
 
     #[test]

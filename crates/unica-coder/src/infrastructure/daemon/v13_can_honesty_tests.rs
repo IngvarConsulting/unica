@@ -476,6 +476,7 @@ fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
         .last()
         .is_some_and(|segment| segment.kind() == NodeKind::Item);
     match descriptor.name() {
+        "element.move" if item_address => json!({"values": {}}),
         "element.remove" if item_address => json!({"at": ""}),
         "element.remove" => json!({"items": [{"name": "Sample"}]}),
         _ => sample_args(descriptor),

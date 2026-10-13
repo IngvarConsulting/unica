@@ -26,6 +26,15 @@ use std::path::PathBuf;
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 #[derive(Debug, Clone)]
+enum FormEditStep {
+    Definition(Value),
+    Move {
+        request: super::super::form_move::FormElementMove,
+        location: String,
+    },
+}
+
+#[derive(Debug, Clone)]
 enum SubsystemEdit {
     ContentAdd(Vec<String>),
     ContentRemove(Vec<String>),
@@ -99,7 +108,7 @@ enum FormResourcePlanKind {
     FormEdit {
         owner: MetadataAddress,
         form: String,
-        definitions: Vec<Value>,
+        definitions: Vec<FormEditStep>,
     },
     Unsupported,
 }
@@ -772,7 +781,11 @@ struct FormTarget {
     item: Option<String>,
 }
 
-fn form_target(target: &QualifiedAddress, op_index: usize) -> Result<FormTarget, ApplyPlanError> {
+fn form_target(
+    target: &QualifiedAddress,
+    op_index: usize,
+    nested_items: bool,
+) -> Result<FormTarget, ApplyPlanError> {
     let segments = target.segments();
     let [owner, rest @ ..] = segments else {
         return Err(bad(
@@ -810,8 +823,10 @@ fn form_target(target: &QualifiedAddress, op_index: usize) -> Result<FormTarget,
                     .to_string(),
             );
         }
-        [form_segment, item_segment]
-            if form_segment.kind() == NodeKind::Form && item_segment.kind() == NodeKind::Item =>
+        [form_segment, items @ ..]
+            if form_segment.kind() == NodeKind::Form && !items.is_empty()
+                && (nested_items || items.len() == 1)
+                && items.iter().all(|item| item.kind() == NodeKind::Item && item.name().is_some()) =>
         {
             form = Some(
                 form_segment
@@ -820,7 +835,7 @@ fn form_target(target: &QualifiedAddress, op_index: usize) -> Result<FormTarget,
                     .to_string(),
             );
             item = Some(
-                item_segment
+                items.last().expect("nonempty item path")
                     .name()
                     .ok_or_else(|| bad(op_index, "at", "the form item must be named"))?
                     .to_string(),
@@ -1180,12 +1195,12 @@ fn parse_form_operation(
     binding: &ProviderRootBinding,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let address = qualified_target(args, op_index, binding)?;
-    let target = form_target(&address, op_index)?;
+    let target = form_target(&address, op_index, operation == "element.move")?;
     // Узел, на котором исполняется операция, — ровно её `at`. Операции,
     // которые не читают элемент или форму из адреса, отказывают, а не пишут
     // молча в форму или во владельца (#1351).
     match operation {
-        "element.remove" | "event.bind" => {}
+        "element.remove" | "element.move" | "event.bind" => {}
         "form.add" | "form.set" if target.form.is_some() => {
             return Err(bad(
                 op_index,
@@ -1340,7 +1355,7 @@ fn parse_form_operation(
                 if let Some(after) = after {
                     wrapper.insert("after".to_string(), Value::String(after));
                 }
-                definitions.push(Value::Object(wrapper));
+                definitions.push(FormEditStep::Definition(Value::Object(wrapper)));
             }
             if definitions.is_empty() {
                 return Err(bad(
@@ -1349,6 +1364,65 @@ fn parse_form_operation(
                     "`items` must list at least one element",
                 ));
             }
+            Ok(FormResourcePlanKind::FormEdit {
+                owner: target.owner,
+                form,
+                definitions,
+            })
+        }
+        "element.move" => {
+            let form = form_of(&target)?;
+            let normalized = crate::domain::operation_contract::OperationContract::form_move(
+                target.item.is_some(),
+            )
+            .normalize(
+                &Value::Object(args.clone()),
+                &format!("ops[{op_index}].args"),
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+            })?;
+            let steps = if let Some(name) = &target.item {
+                vec![(
+                    name.clone(),
+                    normalized["values"].clone(),
+                    "values".to_string(),
+                )]
+            } else {
+                normalized["items"]
+                    .as_array()
+                    .expect("contract checked items")
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        (
+                            item["name"]
+                                .as_str()
+                                .expect("contract checked name")
+                                .to_string(),
+                            item.clone(),
+                            format!("items[{index}]"),
+                        )
+                    })
+                    .collect()
+            };
+            let definitions = steps
+                .into_iter()
+                .map(|(name, item, location)| FormEditStep::Move {
+                    request: super::super::form_move::FormElementMove {
+                        name,
+                        source_path: target.item.as_ref().map(|_| {
+                            address.segments()[2..]
+                                .iter()
+                                .map(|item| item.name().expect("validated item name").to_string())
+                                .collect()
+                        }),
+                        into: item.get("into").and_then(Value::as_str).map(str::to_owned),
+                        after: item.get("after").and_then(Value::as_str).map(str::to_owned),
+                    },
+                    location: format!("ops[{op_index}].args.{location}"),
+                })
+                .collect();
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
@@ -1386,7 +1460,7 @@ fn parse_form_operation(
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
-                definitions: vec![definition],
+                definitions: vec![FormEditStep::Definition(definition)],
             })
         }
         "formAttribute.add" | "formCommand.add" => {
@@ -1433,7 +1507,7 @@ fn parse_form_operation(
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
-                definitions: vec![Value::Object(wrapper)],
+                definitions: vec![FormEditStep::Definition(Value::Object(wrapper))],
             })
         }
         "event.bind" => {
@@ -1475,7 +1549,7 @@ fn parse_form_operation(
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
-                definitions: vec![definition],
+                definitions: vec![FormEditStep::Definition(definition)],
             })
         }
         _ => Ok(FormResourcePlanKind::Unsupported),
@@ -1818,7 +1892,7 @@ fn stage_form_edit(
     authority: &FormResourceApplyAuthority<'_>,
     owner: &MetadataAddress,
     form: &str,
-    definitions: &[Value],
+    definitions: &[FormEditStep],
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
@@ -1856,6 +1930,22 @@ fn stage_form_edit(
     // language and, if it needs one, applied again from the same image.
     let mut lang: Option<String> = None;
     for definition in definitions {
+        let definition = match definition {
+            FormEditStep::Definition(definition) => definition,
+            FormEditStep::Move { request, location } => {
+                xml_text =
+                    super::super::form_move::move_element(&xml_text, request).map_err(|error| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(
+                            if error.field == "name" && location.ends_with(".values") {
+                                at_path.clone()
+                            } else {
+                                format!("{location}.{}", error.field)
+                            },
+                        )
+                    })?;
+                continue;
+            }
+        };
         let apply = |xml_text: &mut String, lang: Option<&str>| {
             crate::infrastructure::native_operations::form::form_edit_apply_definition(
                 xml_text, definition, &absolute, root_start, lang,
@@ -1882,10 +1972,6 @@ fn stage_form_edit(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
         })?;
     }
-    let postimage = with_bom(&xml_text);
-    if postimage == preimage {
-        return Ok(());
-    }
     let validation = crate::infrastructure::native_operations::form::validate_form_with_source(
         &Map::new(),
         authority.workspace_context(),
@@ -1896,6 +1982,14 @@ fn stage_form_edit(
             ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message).at_path(args_path)
         },
     )?;
+    let postimage = if preimage.starts_with(UTF8_BOM) {
+        with_bom(&xml_text)
+    } else {
+        xml_text.into_bytes()
+    };
+    if postimage == preimage {
+        return Ok(());
+    }
     staged
         .replace(&relative, &preimage, postimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path))?;

@@ -2298,7 +2298,7 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         let mut args = common_args(workspace);
         args.insert(
             "at".to_string(),
-            Value::String("main:DataProcessor.ТестHTML".to_string()),
+            Value::String("main:Configuration".to_string()),
         );
         args.insert(
             "ops".to_string(),

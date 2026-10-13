@@ -519,6 +519,8 @@ enum OperationApplicability {
     Form,
     /// Форма объекта или её элемент.
     FormOrItem,
+    /// Форма объекта или элемент с полной цепочкой вложенных Item.
+    FormOrNestedItem,
     /// Роль верхнего уровня.
     Role,
     /// Подсистема любой вложенности.
@@ -587,6 +589,7 @@ impl OperationApplicability {
             Self::MetadataPredefinedItem => "`Kind.Name.PredefinedItem.P`",
             Self::Form => "`Kind.Name.Form.F`",
             Self::FormOrItem => "`Kind.Name.Form.F[.Item.I]`",
+            Self::FormOrNestedItem => "`Kind.Name.Form.F[.Item.I[.Item.J...]]`",
             Self::Role => "`Role.Name`",
             Self::Subsystem => "`Subsystem.Name[.Subsystem.Child]`",
             Self::NestedSubsystem => "`Subsystem.Parent.Subsystem.Child`",
@@ -693,6 +696,23 @@ impl OperationApplicability {
                         [owner, form, item] => {
                             item.kind() == NodeKind::Item
                                 && item.name().is_some()
+                                && form.kind() == NodeKind::Form
+                                && form.name().is_some()
+                                && owner.name().is_some()
+                                && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
+                        }
+                        _ => false,
+                    }
+            }
+            Self::FormOrNestedItem => {
+                site.route == RouteClass::Form
+                    && match segments {
+                        [_, _] => site.owned_form(),
+                        [owner, form, items @ ..] => {
+                            !items.is_empty()
+                                && items.iter().all(|item| {
+                                    item.kind() == NodeKind::Item && item.name().is_some()
+                                })
                                 && form.kind() == NodeKind::Form
                                 && form.name().is_some()
                                 && owner.name().is_some()
@@ -890,6 +910,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "form.create",
     "element.add",
     "element.remove",
+    "element.move",
     "formAttribute.add",
     "formCommand.add",
     "event.bind",
@@ -1005,6 +1026,14 @@ impl OperationDescriptor {
 
     pub(crate) const fn skeleton_key(self) -> &'static str {
         self.skeleton.key()
+    }
+
+    pub(crate) fn skeleton_key_at(self, site: &OperationSite<'_>) -> &'static str {
+        if self.name == "element.move" && site.terminal().kind() == NodeKind::Item {
+            "values"
+        } else {
+            self.skeleton_key()
+        }
     }
 
     pub(crate) const fn family(self) -> OperationFamily {
@@ -1143,6 +1172,9 @@ impl OperationDescriptor {
 
     pub(crate) fn argument_contract(self) -> Option<super::operation_contract::OperationContract> {
         match self.family {
+            OperationFamily::Form if self.name == "element.move" => Some(
+                super::operation_contract::OperationContract::form_move(false),
+            ),
             OperationFamily::Dcs => super::operation_contract::OperationContract::dcs(self.name),
             OperationFamily::Mxl => super::operation_contract::OperationContract::mxl(self.name),
             OperationFamily::Metadata if self.name == "template.add" => {
@@ -1162,6 +1194,11 @@ impl OperationDescriptor {
         self,
         site: &OperationSite<'_>,
     ) -> Option<super::operation_contract::OperationContract> {
+        if self.name == "element.move" {
+            return Some(super::operation_contract::OperationContract::form_move(
+                site.terminal().kind() == NodeKind::Item,
+            ));
+        }
         if self.family == OperationFamily::Metadata && self.name != "template.add" {
             let owner = site
                 .segments()
@@ -1275,6 +1312,7 @@ operation_descriptors!(
     ("form.create", Form, Form, Values),
     ("element.add", Form, Form, Items),
     ("element.remove", Form, FormOrItem, Target),
+    ("element.move", Form, FormOrNestedItem, Items),
     ("formAttribute.add", Form, Form, Items),
     ("formCommand.add", Form, Form, Items),
     ("event.bind", Form, FormOrItem, Values),
@@ -1789,7 +1827,14 @@ impl OperationRegistry {
             .iter()
             .copied()
             .filter(|descriptor| descriptor.applies_at(site))
-            .map(OperationDescriptor::copyable_skeleton)
+            .map(|descriptor| {
+                if descriptor.skeleton_key_at(site) == "values" && descriptor.name == "element.move"
+                {
+                    OperationRef::new(descriptor.name, OperationSkeleton::Values.args())
+                } else {
+                    descriptor.copyable_skeleton()
+                }
+            })
             .collect()
     }
 
@@ -2082,6 +2127,7 @@ mod tests {
             "form.create",
             "element.add",
             "element.remove",
+            "element.move",
             "formAttribute.add",
             "formCommand.add",
             "event.bind",
@@ -2163,7 +2209,7 @@ mod tests {
             "event.implement",
         ];
         let registry = OperationRegistry::closed();
-        assert_eq!(expected.len(), 120);
+        assert_eq!(expected.len(), 121);
         assert_eq!(registry.names(), expected);
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();

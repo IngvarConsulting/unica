@@ -19943,8 +19943,8 @@
   {
    "id": "S356",
    "issue": 919,
-   "area": "Известные пробелы",
-   "task": "Перенести существующее поле вместе с companions в существующую группу: element.move пока отсутствует (#919)",
+   "area": "Формы",
+   "task": "Перенести существующее поле в группу, сохранив ID, привязку, заголовок и companions; предпросмотр не пишет, опубликованный результат проходит check",
    "wire": [
     {
      "tool": "unica.apply",
@@ -19965,32 +19965,16 @@
       ]
      },
      "expect": [
-      "gap",
-      "unsupported"
+      "ok"
      ],
-     "gap": "#919: операция переноса существующего поля отсутствует в каноническом реестре",
      "assertions": [
       {
-       "pointer": "/ok",
-       "eq": false
+       "pointer": "/data/mode",
+       "eq": "preview"
       },
       {
-       "pointer": "/at",
-       "eq": "ops[0].op"
-      },
-      {
-       "pointer": "/diagnostics/0/code",
-       "eq": "unsupported_operation"
-      },
-      {
-       "pointer": "/diagnostics",
-       "eq": [
-        {
-         "code": "unsupported_operation",
-         "outcome": "goElsewhere",
-         "message": "apply operation `element.move` is not in the canonical registry"
-        }
-       ]
+       "pointer": "/data/executable",
+       "eq": true
       }
      ],
      "fileAssertions": [
@@ -19999,6 +19983,88 @@
        "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
        "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
       }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']",
+       "eq": [
+        "InputField"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}DataPath",
+       "eq": [
+        "Объект.НаименованиеПолное"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}Title/{*}item/{*}content",
+       "eq": [
+        "Полное наименование"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ContextMenu[@name='ПолеНаименованиеПолноеКонтекстноеМеню'][@id='5']",
+       "eq": [
+        "ContextMenu"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ExtendedTooltip[@name='ПолеНаименованиеПолноеРасширеннаяПодсказка'][@id='6']",
+       "eq": [
+        "ExtendedTooltip"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное']",
+       "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      }
+     ],
+     "status": "passed",
+     "validators": [
+      "form"
      ]
     }
    ]
@@ -36863,6 +36929,381 @@
         "Template",
         "Command"
        ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S417",
+   "issue": 919,
+   "name": "form-create-pages-and-move-existing-groups",
+   "area": "Формы",
+   "task": "Создать страницы и распределить существующие группы одним атомарным пакетом; сохранить вложенное поле, ID и companions; точный повтор не меняет файл",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.move",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеНаименованиеПолное",
+           "into": "ГруппаСлужебная"
+          }
+         ]
+        }
+       },
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ГруппаДополнительная",
+           "type": "Group"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']",
+       "eq": [
+        "InputField"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}DataPath",
+       "eq": [
+        "Объект.НаименованиеПолное"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}Title/{*}item/{*}content",
+       "eq": [
+        "Полное наименование"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ContextMenu[@name='ПолеНаименованиеПолноеКонтекстноеМеню'][@id='5']",
+       "eq": [
+        "ContextMenu"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ExtendedTooltip[@name='ПолеНаименованиеПолноеРасширеннаяПодсказка'][@id='6']",
+       "eq": [
+        "ExtendedTooltip"
+       ]
+      }
+     ],
+     "captures": {
+      "beforeTabs": {
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "sha256"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "СтраницыКорпуса",
+           "type": "Pages"
+          },
+          {
+           "name": "ОсновнаяСтраница",
+           "type": "Page",
+           "into": "СтраницыКорпуса"
+          },
+          {
+           "name": "ДополнительнаяСтраница",
+           "type": "Page",
+           "into": "СтраницыКорпуса"
+          }
+         ]
+        }
+       },
+       {
+        "op": "element.move",
+        "args": {
+         "items": [
+          {
+           "name": "ГруппаСлужебная",
+           "into": "ОсновнаяСтраница"
+          },
+          {
+           "name": "ГруппаДополнительная",
+           "into": "ДополнительнаяСтраница"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.beforeTabs"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']",
+       "eq": [
+        "InputField"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}DataPath",
+       "eq": [
+        "Объект.НаименованиеПолное"
+       ]
+      },
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}Title/{*}item/{*}content",
+       "eq": [
+        "Полное наименование"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ContextMenu[@name='ПолеНаименованиеПолноеКонтекстноеМеню'][@id='5']",
+       "eq": [
+        "ContextMenu"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ExtendedTooltip[@name='ПолеНаименованиеПолноеРасширеннаяПодсказка'][@id='6']",
+       "eq": [
+        "ExtendedTooltip"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ExtendedTooltip[@name='ГруппаСлужебнаяРасширеннаяПодсказка'][@id='8']",
+       "eq": [
+        "ExtendedTooltip"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ДополнительнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаДополнительная']",
+       "eq": [
+        "UsualGroup"
+       ]
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}UsualGroup",
+       "eq": []
+      },
+      {
+       "kind": "xmlTags",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "select": "./{*}ChildItems/{*}InputField[@name='ПолеНаименование'][@id='1']",
+       "eq": [
+        "InputField"
+       ]
+      }
+     ],
+     "captures": {
+      "afterTabs": {
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "sha256"
+      }
+     }
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      }
+     ],
+     "status": "passed",
+     "validators": [
+      "form"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.move",
+        "args": {
+         "items": [
+          {
+           "name": "ГруппаСлужебная",
+           "into": "ОсновнаяСтраница"
+          },
+          {
+           "name": "ГруппаДополнительная",
+           "into": "ДополнительнаяСтраница"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/executable",
+       "eq": true
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.afterTabs"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 0
+      },
+      {
+       "pointer": "/changed",
+       "absent": true
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.afterTabs"
       }
      ]
     }

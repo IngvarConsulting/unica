@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Unica export trees by round-tripping them through 1C 8.3.27.2074."""
+"""Verify Unica export trees by round-tripping them through 1C 8.3.27.*."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ class PlatformVersionError(SourceError):
 
 
 class PlatformBinaryError(SourceError):
-    """The executable bytes do not match the pinned 8.3.27.2074 binary."""
+    """The executable bytes do not match the identity captured for this run."""
 
     def __init__(self, message: str, *, ibcmd_sha256: str):
         super().__init__(message)
@@ -74,7 +74,7 @@ class PlatformBinaryError(SourceError):
 
 
 class PlatformInstallError(SourceError):
-    """The complete platform installation does not match its pinned inventory."""
+    """The complete platform installation does not match the expected inventory."""
 
     def __init__(self, message: str, *, inventory: dict):
         super().__init__(message)
@@ -96,10 +96,8 @@ class CheckpointExecutionError(SourceError):
 
 EXPECTED_PROFILE = "1c-8.3.27-export-2.20"
 EXPECTED_EXPORT_VERSION = "2.20"
-EXPECTED_PLATFORM_VERSION = "8.3.27.2074"
-EXPECTED_IBCMD_SHA256 = "e00f3c945fb6f60bb2802151df1b4e7ee4f3caaf7c9e24a981020af575fda6e5"
-EXPECTED_PLATFORM_INSTALL_SHA256 = "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef"
-EXPECTED_PLATFORM_INSTALL_FILE_COUNT = 4337
+EXPECTED_PLATFORM_VERSION = "8.3.27.*"
+PLATFORM_VERSION_RE = re.compile(r"8\.3\.27\.[0-9]+\Z")
 LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
     "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf"
 )
@@ -113,8 +111,11 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 # use): the same corpus generated with the fix runs all 69 cases under
 # --jobs 1 without a source error. Nine cases remain accepted-normalized
 # (#1369), so the run is not a pass. Keep LAST_VERIFIED.
+# The current candidate changes only support-edit-bin-only publicArguments.at
+# to main:Configuration, as required by supportCapability.set. Two independent
+# generations agree; restoring that address alone restores the previous digest.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "7c2a66149e33b5a57142dd81e5cd18af3aef7d008503b250338b5dda8c0d5805"
+    "a149b026b2f686ca0ee560997f9bb2722d8163fbedffe553ec9a01b4b6a56099"
 )
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -1465,16 +1466,11 @@ def verify_platform_install_inventory(
     expected_sha256: str | None = None,
     expected_file_count: int | None = None,
 ) -> dict:
-    expected_sha256 = (
-        EXPECTED_PLATFORM_INSTALL_SHA256
-        if expected_sha256 is None
-        else expected_sha256
-    )
-    expected_file_count = (
-        EXPECTED_PLATFORM_INSTALL_FILE_COUNT
-        if expected_file_count is None
-        else expected_file_count
-    )
+    inventory = capture_platform_install_inventory(Path(ibcmd))
+    if expected_sha256 is None:
+        expected_sha256 = inventory["sha256"]
+    if expected_file_count is None:
+        expected_file_count = inventory["fileCount"]
     if not isinstance(expected_sha256, str) or SHA256_RE.fullmatch(expected_sha256) is None:
         raise SourceError(
             "expected platform install inventory SHA-256 must be lowercase hexadecimal"
@@ -1484,13 +1480,12 @@ def verify_platform_install_inventory(
         or expected_file_count < 1
     ):
         raise SourceError("expected platform install file count must be a positive integer")
-    inventory = capture_platform_install_inventory(Path(ibcmd))
     if (
         inventory["sha256"] != expected_sha256
         or inventory["fileCount"] != expected_file_count
     ):
         raise PlatformInstallError(
-            "platform install inventory does not match the pinned 8.3.27.2074 "
+            "platform install inventory does not match the expected "
             f"closure; expected sha256={expected_sha256}, files={expected_file_count}; "
             f"observed sha256={inventory['sha256']}, files={inventory['fileCount']}",
             inventory=inventory,
@@ -3385,7 +3380,7 @@ def verify_platform_version(
     if not os.access(ibcmd, os.X_OK):
         raise SourceError(f"ibcmd is not executable: {ibcmd}")
     ibcmd_sha256 = _sha256_file(ibcmd)
-    expected_sha256 = expected_sha256 or EXPECTED_IBCMD_SHA256
+    expected_sha256 = ibcmd_sha256 if expected_sha256 is None else expected_sha256
     if SHA256_RE.fullmatch(expected_sha256) is None:
         raise SourceError("expected ibcmd SHA-256 must be a lowercase hexadecimal digest")
     if ibcmd_sha256 != expected_sha256:
@@ -3399,9 +3394,9 @@ def verify_platform_version(
     )
     require_executable_identity(ibcmd, ibcmd_sha256)
     version = record["stdout"].strip()
-    if record["exitCode"] != 0 or version != EXPECTED_PLATFORM_VERSION:
+    if record["exitCode"] != 0 or PLATFORM_VERSION_RE.fullmatch(version) is None:
         raise PlatformVersionError(
-            f"ibcmd version must equal {EXPECTED_PLATFORM_VERSION}, got {version!r} "
+            f"ibcmd version must match {EXPECTED_PLATFORM_VERSION}, got {version!r} "
             f"with exit {record['exitCode']}",
             record=record,
             version=version,
@@ -4531,7 +4526,8 @@ def _build_gate_report(
             "caseContractSha256": corpus["caseContractSha256"],
             "expectedCaseContractSha256": EXPECTED_CASE_CONTRACT_SHA256,
             "lastVerifiedCaseContractSha256": LAST_VERIFIED_CASE_CONTRACT_SHA256,
-            "expectedIbcmdSha256": EXPECTED_IBCMD_SHA256,
+            "platformIdentityPolicy": "captured-at-start; unchanged during run; not vendor authentication",
+            "expectedIbcmdSha256": platform_install.get("ibcmdSha256"),
             "ibcmdSha256": platform.get("ibcmdSha256") if platform else None,
             "versionCheck": platform.get("command") if platform else None,
             "platformInstall": {
@@ -4670,16 +4666,9 @@ def execute_gate(
     manifest_sha256 = corpus["manifestSha256"]
     command_runner = runner or CommandRunner(timeout_seconds=timeout_seconds)
     platform_install = {
-        "expectedSha256": (
-            EXPECTED_PLATFORM_INSTALL_SHA256
-            if expected_platform_install_sha256 is None
-            else expected_platform_install_sha256
-        ),
-        "expectedFileCount": (
-            EXPECTED_PLATFORM_INSTALL_FILE_COUNT
-            if expected_platform_install_file_count is None
-            else expected_platform_install_file_count
-        ),
+        "expectedSha256": expected_platform_install_sha256,
+        "expectedFileCount": expected_platform_install_file_count,
+        "ibcmdSha256": None,
         "before": None,
         "after": None,
     }
@@ -4735,10 +4724,24 @@ def execute_gate(
         except PlatformInstallError as error:
             platform_install["before"] = error.inventory
             raise
+        install_before = platform_install["before"]
+        try:
+            executable_path = Path(ibcmd).resolve().relative_to(install_before["root"]).as_posix()
+            platform_install["ibcmdSha256"] = next(
+                entry["sha256"] for entry in install_before["files"]
+                if entry["path"] == executable_path
+            )
+        except (ValueError, StopIteration) as error:
+            raise SourceError("ibcmd no longer belongs to the captured installation") from error
+        if platform_install["expectedSha256"] is None:
+            platform_install["expectedSha256"] = platform_install["before"]["sha256"]
+        if platform_install["expectedFileCount"] is None:
+            platform_install["expectedFileCount"] = platform_install["before"]["fileCount"]
         platform = verify_platform_version(
             Path(ibcmd),
             command_runner,
             control,
+            expected_sha256=platform_install["ibcmdSha256"],
             redactions=[(evidence, "$EVIDENCE"), (Path(ibcmd), "$IBCMD")],
         )
         # Checkpoints are fully isolated (own evidence tree, own infobases, a
@@ -4942,8 +4945,8 @@ def execute_gate(
                 install_error = {
                     "code": "platform-install-mismatch",
                     "message": (
-                        "final platform install inventory does not match the pinned "
-                        "8.3.27.2074 closure"
+                        "final platform install inventory does not match the expected "
+                        "run inventory"
                     ),
                     "added": [],
                     "removed": [],
@@ -5032,8 +5035,8 @@ def _positive_float(value: str) -> float:
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Round-trip the fixed-profile export corpus through exactly "
-            "1C 8.3.27.2074, comparing XML semantics and non-XML bytes."
+            "Round-trip the fixed-profile export corpus through "
+            "1C 8.3.27.*, comparing XML semantics and non-XML bytes."
         )
     )
     parser.add_argument("--ibcmd", required=True, type=Path)

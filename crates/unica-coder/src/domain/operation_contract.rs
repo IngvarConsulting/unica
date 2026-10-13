@@ -114,6 +114,35 @@ fn field_head(names: &[&str], required: &[&str]) -> Value {
 }
 
 impl OperationContract {
+    pub(crate) fn form_move(item_address: bool) -> Self {
+        let placement = [("into", text(true)), ("after", text(true))];
+        let (key, operand, example_args) = if item_address {
+            (
+                "values",
+                object(&placement, &[]),
+                json!({"values":{"into":"Destination"}}),
+            )
+        } else {
+            let mut fields = vec![("name", text(true))];
+            fields.extend(placement);
+            let mut operand = items(object(&fields, &["name"]));
+            operand["minItems"] = json!(1);
+            (
+                "items",
+                operand,
+                json!({"items":[{"name":"Existing","into":"Destination"}]}),
+            )
+        };
+        Self {
+            schema: object(&[("at", text(true)), (key, operand)], &[key]),
+            target: "A managed Form, or its existing Item at the full current Item path. At an Item the address alone selects the source; at a Form each items entry names its source regardless of nesting.",
+            effect: "Move existing XML subtrees in order, preserving IDs, properties, events and contained companions. Incompatible placements are refused without conversion.",
+            notes: "Names are exact. Omit into for the form root and after for the end. after must be a direct child of the selected container and cannot name the source. Exact placement is a no-op. All operations see earlier staged changes; a failure publishes nothing.",
+            example_args,
+            help: "skills/form-edit/SKILL.md",
+        }
+    }
+
     pub(crate) fn dcs(op: &str) -> Option<Self> {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
@@ -975,6 +1004,46 @@ mod tests {
             .is_err());
         assert!(creation.normalize(&json!({"items":[]}), "args").is_err());
         assert_eq!(parse_mxl_cell_address("R01C+01"), Some((1, 1)));
+    }
+
+    #[test]
+    fn form_move_contract_selects_one_source_and_preserves_exact_names() {
+        for (item_address, args, accepted) in [
+            (
+                false,
+                json!({"items":[{"name":" Field ","into":" Group ","after":" Previous "}]}),
+                true,
+            ),
+            (
+                false,
+                json!({"items":[{"name":"A"},{"name":"A","into":"G"}]}),
+                true,
+            ),
+            (true, json!({"values":{}}), true),
+            (true, json!({"values":{"into":"G","after":"A"}}), true),
+            (false, json!({"items":[]}), false),
+            (false, json!({"items":[{"name":" "}]}), false),
+            (false, json!({"items":[{"name":"A","into":""}]}), false),
+            (false, json!({"items":[{"name":"A","after":null}]}), false),
+            (false, json!({"items":[{"name":"A","before":"B"}]}), false),
+            (false, json!({"values":{"into":"G"}}), false),
+            (true, json!({"values":{"name":"A"}}), false),
+            (true, json!({"values":{},"items":[{"name":"A"}]}), false),
+            (true, json!({"values":{},"moveElements":[]}), false),
+        ] {
+            let contract = OperationContract::form_move(item_address);
+            let validator = jsonschema::validator_for(&contract.schema).unwrap();
+            assert_eq!(validator.is_valid(&args), accepted, "{args}");
+            let normalized = contract.normalize(&args, "ops[3].args");
+            assert_eq!(normalized.is_ok(), accepted, "{args}: {normalized:?}");
+            if accepted {
+                assert_eq!(normalized.unwrap(), args);
+            }
+        }
+        let error = OperationContract::form_move(false)
+            .normalize(&json!({"items":[{"name":"A","into":false}]}), "ops[3].args")
+            .unwrap_err();
+        assert_eq!(error.path, "ops[3].args.items[0].into");
     }
 
     #[test]

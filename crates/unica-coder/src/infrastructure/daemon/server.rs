@@ -1267,6 +1267,9 @@ impl DaemonServerConfig {
 
 #[cfg(test)]
 pub(crate) mod actor_capacity_tests {
+    mod form_move_tests {
+        include!("form_move_tests.rs");
+    }
     use super::super::client_v5::V5DaemonProcessOwner;
     use super::super::identity::DaemonStateDirectory;
     use super::super::protocol_v5::{
