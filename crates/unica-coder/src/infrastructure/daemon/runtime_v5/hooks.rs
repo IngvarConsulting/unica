@@ -108,6 +108,9 @@ pub(crate) enum V5PausePoint {
     /// A cancel holds its key's lock, has found no Task link for the key and
     /// has not written its ledger cancel yet.
     BeforeCancelReservation,
+    /// A cancel has read the bound Task it is about to mark and has not
+    /// written the mark yet.
+    BeforeTaskCancelWrite,
 }
 
 /// An injected workspace admission failure, in place of the real bind.

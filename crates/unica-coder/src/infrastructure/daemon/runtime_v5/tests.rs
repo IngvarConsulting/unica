@@ -3076,6 +3076,7 @@ fn startup_terminalizes_already_materialized_not_begun_task_bound() {
                 .cancel_bound_task(
                     key.reserved_task_id(),
                     Instant::now() + Duration::from_secs(2),
+                    runtime.hooks.as_ref(),
                 )
                 .unwrap_or_else(|failure| {
                     panic!("request materialized Task cancellation: {}", failure.error)
@@ -7391,7 +7392,8 @@ fn staged_handoff_completion_waits_for_the_key_lock() {
             )
         })
     };
-    // Long enough for the Task, its terminal and the link to be published.
+    // Long enough for a publisher that ignored the lock to publish the Task,
+    // its terminal and the link; one that waits for it publishes nothing yet.
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until
         && !matches!(
@@ -7619,8 +7621,9 @@ fn bound_handoff_completion_waits_for_the_key_lock() {
     ));
 }
 
-/// Shortens the bound of the known-long handoff and spends it while the Task
-/// is materialized, so the committed handoff is left with an elapsed deadline.
+/// Hands the committed handoff an already elapsed deadline before its Task
+/// is materialized: nothing after the commit may depend on what is left of
+/// it, however long the materialization takes (#1395).
 #[derive(Default)]
 struct SpentHandoffDeadlineHooks {
     fail_stopped: AtomicBool,
@@ -7632,18 +7635,11 @@ impl V5RuntimeHooks for SpentHandoffDeadlineHooks {
     }
 
     fn commit_deadline_at(&self, point: V5PausePoint, deadline: Instant) -> Instant {
-        // Enough for the re-read and the materialization even under load;
-        // the sleep at its end then spends the rest.
         if point == V5PausePoint::BeforeTaskStoreCreate {
-            Instant::now() + Duration::from_millis(1_000)
+            let now = Instant::now();
+            now.checked_sub(Duration::from_millis(1)).unwrap_or(now)
         } else {
             deadline
-        }
-    }
-
-    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
-        if event == V5ReceiptRuntimeEventKind::TaskLinkReservationConverted {
-            thread::sleep(Duration::from_millis(1_300));
         }
     }
 
@@ -7652,10 +7648,10 @@ impl V5RuntimeHooks for SpentHandoffDeadlineHooks {
     }
 }
 
-/// Once the handoff of a known-long call is committed, completing it gets
-/// the daemon's own step budget. A deadline the materialization already
-/// spent leaves no Task unexecuted. (A begun handoff materializes its Task
-/// already working, so no separate start step needs a budget here.)
+/// Once the handoff of a known-long call is committed, materializing and
+/// completing it get the daemon's own step budget. A deadline spent before
+/// the Task exists leaves no Task unexecuted. (A begun handoff materializes
+/// its Task already working, so no separate start step needs a budget here.)
 #[test]
 fn committed_handoff_starts_its_task_after_the_deadline_was_spent() {
     let state = tempfile::tempdir().expect("temporary daemon state");
@@ -7854,4 +7850,414 @@ fn promised_continuation_runs_its_task_after_the_deadline_was_spent() {
         .join()
         .expect("daemon thread did not panic")
         .expect("daemon exits cleanly");
+}
+
+/// Which handoff materializes the Task while an exact cancel races it (#1395).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaterializationRace {
+    /// The handler promotes a begun attempt held before prepare and
+    /// materializes its Task itself (`promote_at_cutoff`).
+    PromotedBegun,
+    /// The handler commits the handoff intent of an actor-bound attempt; the
+    /// attempt materializes the Task as its continuation (`continue_handoff`).
+    PromotedActorBound,
+    /// The inline drive of a running execution reaches the cutoff and
+    /// materializes the Task it hands the execution to (`commit_cutoff_handoff`).
+    InlineCutoff,
+    /// The same, but the cancel marks the committed handoff before the Task
+    /// is materialized: the running execution must hear it all the same.
+    InlineCutoffMarkedBeforeTask,
+    /// An admission outlives the cutoff; its continuation binds the promised
+    /// Task and materializes it (`continue_promised`).
+    PromisedAdmission,
+}
+
+/// Holds the attempt before the cutoff where the race needs it, the handoff
+/// between the Task store create and the Task link, a not-begun Task before
+/// it starts, and, when asked, the cancel between its read of the Task and
+/// its write.
+struct MaterializationRaceHooks {
+    hold_point: Option<V5PausePoint>,
+    hold_before_task: bool,
+    hold_cancel_write: bool,
+    cancel_write_held: Mutex<mpsc::Sender<()>>,
+    cancel_write_gate: (Mutex<bool>, std::sync::Condvar),
+    started: Mutex<mpsc::Sender<()>>,
+    attempt_held: Mutex<mpsc::Sender<()>>,
+    attempt_gate: (Mutex<bool>, std::sync::Condvar),
+    attempt_passes: AtomicUsize,
+    materializing: Mutex<mpsc::Sender<()>>,
+    materialize_gate: (Mutex<bool>, std::sync::Condvar),
+    start_gate: (Mutex<bool>, std::sync::Condvar),
+    creates: AtomicUsize,
+    fail_stopped: AtomicBool,
+}
+
+impl MaterializationRaceHooks {
+    fn wait_gate(gate: &(Mutex<bool>, std::sync::Condvar)) {
+        let (lock, changed) = gate;
+        let _ = changed
+            .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(30), |open| !*open)
+            .unwrap();
+    }
+
+    fn open_gate(gate: &(Mutex<bool>, std::sync::Condvar)) {
+        let (lock, changed) = gate;
+        *lock.lock().unwrap() = true;
+        changed.notify_all();
+    }
+}
+
+impl V5RuntimeHooks for MaterializationRaceHooks {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn pause(&self, point: V5PausePoint, _deadline: Instant) -> Result<(), ReceiptLedgerError> {
+        if Some(point) == self.hold_point && self.attempt_passes.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            let _ = self.attempt_held.lock().unwrap().send(());
+            Self::wait_gate(&self.attempt_gate);
+        }
+        if self.hold_before_task
+            && point == V5PausePoint::BeforeTaskStoreCreate
+            && self.creates.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            // The handoff is committed, its Task does not exist yet.
+            let _ = self.materializing.lock().unwrap().send(());
+            Self::wait_gate(&self.materialize_gate);
+        }
+        if point == V5PausePoint::AfterFalseCancelObservation {
+            Self::wait_gate(&self.start_gate);
+        }
+        if self.hold_cancel_write
+            && point == V5PausePoint::BeforeTaskCancelWrite
+            && !*self.cancel_write_gate.0.lock().unwrap()
+        {
+            let _ = self.cancel_write_held.lock().unwrap().send(());
+            Self::wait_gate(&self.cancel_write_gate);
+        }
+        Ok(())
+    }
+
+    fn event(&self, event: V5ReceiptRuntimeEventKind, _epoch_ms: u64) {
+        if event == V5ReceiptRuntimeEventKind::TaskStoreWorkingReadback {
+            let _ = self.started.lock().unwrap().send(());
+        }
+        // The Task row exists, its link does not yet.
+        if !self.hold_before_task
+            && event == V5ReceiptRuntimeEventKind::TaskStoreCreated
+            && self.creates.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            let _ = self.materializing.lock().unwrap().send(());
+            Self::wait_gate(&self.materialize_gate);
+        }
+    }
+
+    fn forced_process_exit(&self, _grace: Option<Duration>) {
+        self.fail_stopped.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Executes inline or known-long and runs until its cancellation; counts
+/// every domain callback.
+struct CancelRaceService {
+    class: ExecutionClass,
+    prepares: AtomicUsize,
+    executions: AtomicUsize,
+    cancels_observed: AtomicUsize,
+    entered: Mutex<mpsc::Sender<()>>,
+}
+
+impl CanonicalInvocationService for CancelRaceService {
+    fn prepare(
+        &self,
+        _invocation: &crate::infrastructure::daemon::server::ActorBoundInvocation,
+    ) -> Result<ExecutionClass, Box<DomainResult>> {
+        self.prepares.fetch_add(1, Ordering::SeqCst);
+        Ok(self.class)
+    }
+
+    fn execute(
+        &self,
+        _invocation: &crate::infrastructure::daemon::server::ActorBoundExecution,
+        cancellation: CancellationToken,
+    ) -> Result<DomainResult, InvocationFailure> {
+        self.executions.fetch_add(1, Ordering::SeqCst);
+        let _ = self.entered.lock().unwrap().send(());
+        let until = Instant::now() + Duration::from_secs(30);
+        while !cancellation.is_cancelled() && Instant::now() < until {
+            thread::sleep(Duration::from_millis(5));
+        }
+        if cancellation.is_cancelled() {
+            self.cancels_observed.fetch_add(1, Ordering::SeqCst);
+        }
+        Err(InvocationFailure::new(
+            "cancelled",
+            "race execution cancelled",
+        ))
+    }
+}
+
+/// #1395: an exact cancel arrives while a handoff has created the Task row
+/// but not yet its link. Whatever the path, the cancel reaches that Task, no
+/// cancel row is left beside it, the daemon keeps serving, and an attempt
+/// that has not started yet never starts. With `cancel_races_start` the
+/// cancel reads the continued Task, the Task starts, and only then the cancel
+/// writes: it reads the Task again and ends the running attempt.
+fn cancel_during_task_materialization(race: MaterializationRace, cancel_races_start: bool) {
+    let state = tempfile::tempdir().expect("temporary daemon state");
+    let state_root = std::fs::canonicalize(state.path()).expect("physical state root");
+    let (_workspace, root) = catalog_workspace();
+    let admission = (race == MaterializationRace::PromisedAdmission).then(|| {
+        crate::infrastructure::daemon::server::admission_test_control::AdmissionPause::install(
+            root.clone(),
+        )
+    });
+    let clock = Arc::new(InspectionClock {
+        start: Instant::now(),
+        elapsed_ms: AtomicU64::new(0),
+    });
+    let inline = matches!(
+        race,
+        MaterializationRace::InlineCutoff | MaterializationRace::InlineCutoffMarkedBeforeTask
+    );
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let service = Arc::new(CancelRaceService {
+        class: if inline {
+            ExecutionClass::InlineCandidate
+        } else {
+            ExecutionClass::KnownLong(KnownLongReason::ExternalProcess)
+        },
+        prepares: AtomicUsize::new(0),
+        executions: AtomicUsize::new(0),
+        cancels_observed: AtomicUsize::new(0),
+        entered: Mutex::new(entered_tx),
+    });
+    let (held_tx, held_rx) = mpsc::channel();
+    let (cancel_write_tx, cancel_write_rx) = mpsc::channel();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (materializing_tx, materializing_rx) = mpsc::channel();
+    let hooks = Arc::new(MaterializationRaceHooks {
+        hold_point: match race {
+            MaterializationRace::PromotedBegun => Some(V5PausePoint::PrepareEntered),
+            MaterializationRace::PromotedActorBound => Some(V5PausePoint::ActorBound),
+            MaterializationRace::InlineCutoff
+            | MaterializationRace::InlineCutoffMarkedBeforeTask
+            | MaterializationRace::PromisedAdmission => None,
+        },
+        hold_before_task: race == MaterializationRace::InlineCutoffMarkedBeforeTask,
+        hold_cancel_write: cancel_races_start,
+        cancel_write_held: Mutex::new(cancel_write_tx),
+        cancel_write_gate: (Mutex::new(false), std::sync::Condvar::new()),
+        started: Mutex::new(started_tx),
+        attempt_held: Mutex::new(held_tx),
+        attempt_gate: (Mutex::new(false), std::sync::Condvar::new()),
+        attempt_passes: AtomicUsize::new(0),
+        materializing: Mutex::new(materializing_tx),
+        materialize_gate: (Mutex::new(false), std::sync::Condvar::new()),
+        start_gate: (Mutex::new(false), std::sync::Condvar::new()),
+        creates: AtomicUsize::new(0),
+        fail_stopped: AtomicBool::new(false),
+    });
+    let canonical_runtime = Arc::new(V5CanonicalInvocationRuntime::new(
+        service.clone(),
+        clock.clone(),
+    ));
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_secs(600),
+    )
+    .with_canonical_runtime_for_test(canonical_runtime)
+    .with_runtime_hooks_for_test(hooks.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        run_daemon_configured_until(
+            config,
+            |runtime| runtime,
+            || server_stop.load(Ordering::SeqCst),
+        )
+    });
+    wait_for_v5_record(&state_root, &identity);
+    let mut owner = V5DaemonProcessOwner::connect_or_spawn(
+        &state_root,
+        identity.clone(),
+        std::path::PathBuf::from("unused-existing-v5-endpoint"),
+        Duration::from_secs(2),
+    )
+    .expect("connect v5 owner");
+    let task_id = TaskId::new();
+    let call = view_catalog_request(task_id, &root);
+    let key = ReceiptKey::new(
+        call.invocation_id(),
+        task_id,
+        RequestIdentity::new(
+            identity.digest().clone(),
+            V5ToolIdentity::View,
+            normalized_arguments_hash(call.arguments()),
+            request_scope_hash(call.workspace_hint()).expect("request scope"),
+        ),
+    );
+
+    let mut submit_session = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .expect("connect the submit session");
+    let submit = thread::spawn(move || submit_session.submit_invocation(call));
+    match race {
+        MaterializationRace::PromotedBegun | MaterializationRace::PromotedActorBound => held_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the attempt stops before the cutoff"),
+        MaterializationRace::InlineCutoff | MaterializationRace::InlineCutoffMarkedBeforeTask => {
+            entered_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the inline execution runs")
+        }
+        MaterializationRace::PromisedAdmission => admission
+            .as_ref()
+            .expect("admission pause")
+            .wait_until_entered(),
+    }
+    clock.elapsed_ms.store(7_000, Ordering::SeqCst);
+    // These two answer with the handoff intent; the attempt materializes the
+    // Task as its continuation once released.
+    let answered_early = matches!(
+        race,
+        MaterializationRace::PromotedActorBound | MaterializationRace::PromisedAdmission
+    );
+    let mut submit = Some(submit);
+    let mut answered = None;
+    if answered_early {
+        answered = Some(submitted_task_snapshot(
+            submit.take().unwrap().join().expect("submit thread"),
+        ));
+        match race {
+            MaterializationRace::PromotedActorBound => {
+                MaterializationRaceHooks::open_gate(&hooks.attempt_gate);
+            }
+            _ => admission.as_ref().expect("admission pause").release(),
+        }
+    }
+    materializing_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the handoff stands before its Task link");
+
+    let mut cancel_session = owner
+        .connect_peer_before(Instant::now() + Duration::from_secs(2))
+        .expect("connect the cancel session");
+    let cancel_key = key.clone();
+    let cancel = thread::spawn(move || cancel_session.cancel_invocation(cancel_key));
+    // A cancel that does not wait for the handoff lands in the window now.
+    thread::sleep(Duration::from_millis(200));
+    MaterializationRaceHooks::open_gate(&hooks.materialize_gate);
+    if cancel_races_start {
+        cancel_write_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the cancel read the Task");
+        MaterializationRaceHooks::open_gate(&hooks.start_gate);
+        started_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the Task started under the cancel");
+        MaterializationRaceHooks::open_gate(&hooks.cancel_write_gate);
+    }
+
+    let cancelled = cancel
+        .join()
+        .expect("cancel thread")
+        .expect("cancel answered");
+    if let Some(submit) = submit.take() {
+        answered = Some(submitted_task_snapshot(
+            submit.join().expect("submit thread"),
+        ));
+    }
+    assert_eq!(answered.expect("submit answered").task_id(), task_id);
+    MaterializationRaceHooks::open_gate(&hooks.attempt_gate);
+    MaterializationRaceHooks::open_gate(&hooks.start_gate);
+    assert!(
+        matches!(
+            &cancelled,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot }
+            } if snapshot.task_id() == task_id && snapshot.cancel_requested()
+        ),
+        "{race:?}: the cancel reaches the Task: {cancelled:?}"
+    );
+    let terminal = wait_task_terminal(&mut owner, task_id, Duration::from_secs(30));
+    assert!(
+        matches!(terminal, V5DaemonTaskSnapshot::Cancelled { .. }),
+        "{race:?}: the Task ends cancelled: {terminal:?}"
+    );
+    let recovered = owner
+        .recover_invocation_receipt(key)
+        .expect("recover the call");
+    assert!(
+        matches!(
+            &recovered,
+            V5ServerResponse::Invocation {
+                outcome: V5InvocationResponse::Task { snapshot }
+            } if snapshot.task_id() == task_id
+        ),
+        "{race:?}: recovery reads the Task, not a stray cancel row: {recovered:?}"
+    );
+    if inline || cancel_races_start {
+        // The execution was already running, or may be: the cancel stops it.
+        assert_eq!(
+            service.cancels_observed.load(Ordering::SeqCst),
+            service.executions.load(Ordering::SeqCst),
+            "{race:?}: an execution ran past the cancel"
+        );
+        assert!(service.prepares.load(Ordering::SeqCst) <= 1);
+    } else {
+        assert_eq!(
+            service.prepares.load(Ordering::SeqCst),
+            0,
+            "{race:?}: the cancelled attempt was prepared"
+        );
+        assert_eq!(service.executions.load(Ordering::SeqCst), 0);
+    }
+    assert!(
+        !hooks.fail_stopped.load(Ordering::SeqCst),
+        "{race:?}: the daemon stopped"
+    );
+    drop(owner);
+    drop(admission);
+    stop.store(true, Ordering::SeqCst);
+    server
+        .join()
+        .expect("daemon thread did not panic")
+        .expect("daemon exits cleanly");
+}
+
+#[test]
+fn exact_cancel_during_the_begun_promotion_cancels_the_unstarted_task() {
+    cancel_during_task_materialization(MaterializationRace::PromotedBegun, false);
+}
+
+#[test]
+fn exact_cancel_during_the_handoff_continuation_cancels_the_unstarted_task() {
+    cancel_during_task_materialization(MaterializationRace::PromotedActorBound, false);
+}
+
+#[test]
+fn exact_cancel_during_the_inline_cutoff_cancels_the_running_task() {
+    cancel_during_task_materialization(MaterializationRace::InlineCutoff, false);
+}
+
+#[test]
+fn exact_cancel_during_the_promised_continuation_cancels_the_unstarted_task() {
+    cancel_during_task_materialization(MaterializationRace::PromisedAdmission, false);
+}
+
+#[test]
+fn exact_cancel_marking_the_inline_handoff_cancels_the_running_task() {
+    cancel_during_task_materialization(MaterializationRace::InlineCutoffMarkedBeforeTask, false);
+}
+
+/// The continued Task starts between the cancel's read and its write: the
+/// moved Task neither fails the cancel nor stops the daemon.
+#[test]
+fn exact_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled() {
+    cancel_during_task_materialization(MaterializationRace::PromotedActorBound, true);
 }
