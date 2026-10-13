@@ -406,7 +406,7 @@ fn mltext_update(
         let only_default = items
             .iter()
             .all(|item| text(*item, V, "lang").trim() == lang);
-        if !items.is_empty() && !(new_text.is_empty() && only_default) {
+        if !(items.is_empty() || new_text.is_empty() && only_default) {
             return Ok(super::meta::meta_mltext_property_replacement(
                 xml_text, existing, "", lang, new_text,
             ));

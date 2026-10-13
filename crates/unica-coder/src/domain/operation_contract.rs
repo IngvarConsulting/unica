@@ -731,14 +731,14 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
         return Err(error(path, format!("expected {}", schema["type"])));
     }
     if let Some(minimum) = schema["minimum"].as_i64() {
-        if !value.as_i64().is_some_and(|number| number >= minimum) {
+        if value.as_i64().is_none_or(|number| number < minimum) {
             return Err(error(path, "integer is below the supported minimum"));
         }
     }
     if schema["format"] == "unica-mxl-cell-address"
-        && !value
+        && value
             .as_str()
-            .is_some_and(|key| parse_mxl_cell_address(key).is_some())
+            .is_none_or(|key| parse_mxl_cell_address(key).is_none())
     {
         return Err(error(
             path,

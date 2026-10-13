@@ -333,9 +333,9 @@ fn validate_hidden_v13_request(request: &InvocationRequest) -> Result<(), String
             if arguments.len() != 1 {
                 return Err("executionToken must be the only apply argument; at and ops belong to the planning call".to_string());
             }
-            if !arguments["executionToken"]
+            if arguments["executionToken"]
                 .as_str()
-                .is_some_and(|token| !token.is_empty())
+                .is_none_or(|token| token.is_empty())
             {
                 return Err(
                     "executionToken must be non-empty text returned by a successful apply plan"
