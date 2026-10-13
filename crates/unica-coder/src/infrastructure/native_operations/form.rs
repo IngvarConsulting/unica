@@ -29,9 +29,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::common::*;
 use super::compile_transaction::CompileTransaction;
 use super::form_event_registry::{
-    context_from_root, validate_event, FormDefinitionKind, FormElementKind, FormEventBinding,
-    FormEventContext, FormEventDiagnostic, FormEventDiagnosticCode, FormEventTarget,
-    MainAttributeKind, MainAttributeProvenance,
+    context_from_root, foreign_handler_signature_8_3_27, form_owner_event_parameters_8_3_27,
+    validate_event, FormDefinitionKind, FormElementKind, FormEventBinding, FormEventContext,
+    FormEventDiagnostic, FormEventDiagnosticCode, FormEventOwnerKind, FormEventParameterForms,
+    FormEventTarget, HandlerParameter, HandlerSignatureFinding, MainAttributeKind,
+    MainAttributeProvenance,
 };
 use super::{
     cf::*, cfe::*, dcs::*, interface::*, meta::*, mxl::*, role::*, subsystem::*, template::*,
@@ -101,6 +103,9 @@ pub(crate) struct FormValidationReporter {
     pub(crate) max_errors: usize,
     pub(crate) detailed: bool,
     pub(crate) lines: Vec<String>,
+    /// Warnings `check` reports as diagnostics. Older form warnings stay in
+    /// the text report only, so their visibility does not change here.
+    pub(crate) surfaced_warnings: Vec<String>,
 }
 
 impl FormValidationReporter {
@@ -112,6 +117,7 @@ impl FormValidationReporter {
             stopped: false,
             max_errors,
             detailed,
+            surfaced_warnings: Vec::new(),
             lines: vec![
                 format!("=== Validation: Form.{form_name} ==="),
                 String::new(),
@@ -137,6 +143,11 @@ impl FormValidationReporter {
     pub(crate) fn warn(&mut self, message: impl Into<String>) {
         self.warnings += 1;
         self.lines.push(format!("[WARN]  {}", message.into()));
+    }
+
+    fn warn_surfaced(&mut self, message: String) {
+        self.surfaced_warnings.push(message.clone());
+        self.warn(message);
     }
 
     pub(crate) fn finalize(mut self, form_name: &str) -> (bool, String, Vec<String>) {
@@ -176,15 +187,45 @@ pub(crate) fn validate_form(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
 ) -> AdapterOutcome {
-    validate_form_with_source(args, context, None)
+    validate_form_inner(args, context, None, HandlerSignatures::Check)
 }
+
+/// Whether form validation compares bound handlers with their events.
+/// `form.edit` discards warnings, so it skips the module read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandlerSignatures {
+    Check,
+    Skip,
+}
+
+/// Validation inside `form.edit`: the verdict only, without handler
+/// signature warnings that the edit path does not report.
+pub(crate) fn validate_form_for_edit(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    source_override: Option<(&Path, &str)>,
+) -> AdapterOutcome {
+    validate_form_inner(args, context, source_override, HandlerSignatures::Skip)
+}
+
+/// Verdict, text report, validated file, errors and surfaced warnings.
+type FormValidationRun = (bool, String, PathBuf, Vec<String>, Vec<String>);
 
 pub(crate) fn validate_form_with_source(
     args: &Map<String, Value>,
     context: &WorkspaceContext,
     source_override: Option<(&Path, &str)>,
 ) -> AdapterOutcome {
-    let result = (|| -> Result<(bool, String, PathBuf, Vec<String>), String> {
+    validate_form_inner(args, context, source_override, HandlerSignatures::Check)
+}
+
+fn validate_form_inner(
+    args: &Map<String, Value>,
+    context: &WorkspaceContext,
+    source_override: Option<(&Path, &str)>,
+    signatures: HandlerSignatures,
+) -> AdapterOutcome {
+    let result = (|| -> Result<FormValidationRun, String> {
         let form_path = match source_override {
             Some((path, _)) => path.to_path_buf(),
             None => {
@@ -218,6 +259,7 @@ pub(crate) fn validate_form_with_source(
                     stdout,
                     form_path,
                     vec![format!("[ERROR] XML parse error: {err}")],
+                    Vec::new(),
                 ));
             }
         };
@@ -227,7 +269,7 @@ pub(crate) fn validate_form_with_source(
         if let Err(error) = require_form_root(root) {
             report.error(error);
             let (ok, stdout, errors) = report.finalize(&form_name);
-            return Ok((ok, stdout, form_path, errors));
+            return Ok((ok, stdout, form_path, errors, Vec::new()));
         }
 
         let has_base_form = form_validation_child(root, "BaseForm").is_some();
@@ -403,7 +445,9 @@ pub(crate) fn validate_form_with_source(
             form_validate_button_commands(&elements, &cmd_map, &mut report);
         }
         if !report.stopped {
-            form_validate_events(root, &mut report);
+            let signature_check = (signatures == HandlerSignatures::Check)
+                .then(|| HandlerSignatureCheck::new(&form_path));
+            form_validate_events(root, signature_check, &mut report);
         }
         if !report.stopped {
             form_validate_command_actions(&cmd_nodes, &mut report);
@@ -451,12 +495,13 @@ pub(crate) fn validate_form_with_source(
             form_validate_types(root, form_is_config_context(&form_path), &mut report);
         }
 
+        let warnings = report.surfaced_warnings.clone();
         let (ok, stdout, errors) = report.finalize(&form_name);
-        Ok((ok, stdout, form_path, errors))
+        Ok((ok, stdout, form_path, errors, warnings))
     })();
 
     match result {
-        Ok((ok, stdout, artifact, validation_errors)) => AdapterOutcome {
+        Ok((ok, stdout, artifact, validation_errors, validation_warnings)) => AdapterOutcome {
             ok,
             summary: if ok {
                 "unica.form.validate completed with native form validator".to_string()
@@ -464,7 +509,7 @@ pub(crate) fn validate_form_with_source(
                 "unica.form.validate failed in native form validator".to_string()
             },
             changes: Vec::new(),
-            warnings: Vec::new(),
+            warnings: validation_warnings,
             errors: validation_errors,
             artifacts: vec![artifact.display().to_string()],
             stdout: Some(stdout),
@@ -853,12 +898,103 @@ pub(crate) fn form_validate_button_commands(
     }
 }
 
+/// Lazily read facts for comparing bound handlers with their events: the
+/// form module next to `Ext/Form.xml` and the owner's event lists.
+pub(crate) struct HandlerSignatureCheck {
+    module_path: Option<PathBuf>,
+    module: Option<Option<Vec<crate::infrastructure::bsl_outline::BslMethodParameters>>>,
+    metadata_owner: Option<crate::domain::address::NodeKind>,
+    owners: HashMap<(FormEventOwnerKind, Option<String>), Vec<FormEventParameterForms>>,
+}
+
+impl HandlerSignatureCheck {
+    pub(crate) fn new(form_path: &Path) -> Self {
+        Self {
+            module_path: form_path
+                .parent()
+                .map(|ext| ext.join("Form").join("Module.bsl")),
+            module: None,
+            metadata_owner: form_metadata_owner(form_path),
+            owners: HashMap::new(),
+        }
+    }
+
+    /// The module methods, parsed on first use. An absent or unparsable
+    /// module gives `None`: handler presence and BSL syntax have their own
+    /// checks, and a guessed method list must not produce findings.
+    fn module(&mut self) -> Option<&[crate::infrastructure::bsl_outline::BslMethodParameters]> {
+        let path = &self.module_path;
+        self.module
+            .get_or_insert_with(|| {
+                let text = fs::read_to_string(path.as_ref()?).ok()?;
+                crate::infrastructure::bsl_outline::bsl_method_parameters(
+                    text.trim_start_matches('\u{feff}'),
+                )
+                .ok()
+            })
+            .as_deref()
+    }
+
+    fn owner_events(
+        &mut self,
+        context: &FormEventContext,
+        owner: FormEventOwnerKind,
+        data_path: Option<&str>,
+    ) -> &[FormEventParameterForms] {
+        let metadata_owner = self.metadata_owner;
+        self.owners
+            .entry((owner, data_path.map(str::to_string)))
+            .or_insert_with(|| {
+                let mut context = context.clone();
+                context.metadata_owner = metadata_owner;
+                form_owner_event_parameters_8_3_27(&context, owner, data_path)
+            })
+    }
+}
+
+/// The metadata kind that owns a dumped form, from its
+/// `<Category>/<Object>/Forms/<Form>/Ext/Form.xml` path. Other layouts, such
+/// as external processors, give `None`, and the form-kind-specific event
+/// lists are then not selected.
+fn form_metadata_owner(form_path: &Path) -> Option<crate::domain::address::NodeKind> {
+    let ext = form_path.parent()?;
+    let forms = ext.parent()?.parent()?;
+    if ext.file_name()? != "Ext" || forms.file_name()? != "Forms" {
+        return None;
+    }
+    let category = forms.parent()?.parent()?.file_name()?.to_str()?;
+    let kind = match category {
+        "Catalogs" => "Catalog",
+        "Documents" => "Document",
+        "ExchangePlans" => "ExchangePlan",
+        "ChartsOfAccounts" => "ChartOfAccounts",
+        "ChartsOfCharacteristicTypes" => "ChartOfCharacteristicTypes",
+        "ChartsOfCalculationTypes" => "ChartOfCalculationTypes",
+        "BusinessProcesses" => "BusinessProcess",
+        "Tasks" => "Task",
+        "DataProcessors" => "DataProcessor",
+        "Reports" => "Report",
+        "InformationRegisters" => "InformationRegister",
+        "AccumulationRegisters" => "AccumulationRegister",
+        "AccountingRegisters" => "AccountingRegister",
+        "CalculationRegisters" => "CalculationRegister",
+        "DocumentJournals" => "DocumentJournal",
+        "Enums" => "Enum",
+        "FilterCriteria" => "FilterCriterion",
+        "SettingsStorages" => "SettingsStorage",
+        _ => return None,
+    };
+    crate::domain::address::NodeKind::parse(kind).ok()
+}
+
 pub(crate) fn form_validate_events(
     root: roxmltree::Node<'_, '_>,
+    signatures: Option<HandlerSignatureCheck>,
     report: &mut FormValidationReporter,
 ) {
     struct EventValidationState<'report> {
         context: FormEventContext,
+        signatures: Option<HandlerSignatureCheck>,
         report: &'report mut FormValidationReporter,
         errors: usize,
         checked: usize,
@@ -866,6 +1002,83 @@ pub(crate) fn form_validate_events(
     }
 
     impl EventValidationState<'_> {
+        /// A bound handler whose signature belongs to another event (#791).
+        /// Shorter signatures are legal earlier forms and are not checked.
+        /// `callType` bindings of extension forms are skipped: their handlers
+        /// wrap a borrowed one and are not compared here. The platform does not check
+        /// parameter names, so the finding is a warning, not a failed check.
+        fn validate_handler_signature(
+            &mut self,
+            owner_node: roxmltree::Node<'_, '_>,
+            target: FormEventTarget,
+            target_label: &str,
+            binding: &FormEventBinding<'_>,
+        ) {
+            if binding.call_type.is_some() {
+                return;
+            }
+            let Some(check) = self.signatures.as_mut() else {
+                return;
+            };
+            let Some(module) = check.module() else {
+                return;
+            };
+            let folded = binding.handler.to_lowercase();
+            let mut methods = module
+                .iter()
+                .filter(|method| method.name.to_lowercase() == folded);
+            let (Some(method), None) = (methods.next(), methods.next()) else {
+                return;
+            };
+            let parameters = method
+                .parameters
+                .iter()
+                .map(|(name, optional)| HandlerParameter {
+                    name: name.clone(),
+                    optional: *optional,
+                })
+                .collect::<Vec<_>>();
+            let declared = method
+                .parameters
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let handler_name = method.name.clone();
+            let owner = match target {
+                FormEventTarget::Form => FormEventOwnerKind::Form,
+                FormEventTarget::Element(FormElementKind::Table) => FormEventOwnerKind::Table,
+                FormEventTarget::Element(kind) => FormEventOwnerKind::Element(kind),
+            };
+            let data_path = (owner == FormEventOwnerKind::Table)
+                .then(|| form_validation_child_text(owner_node, "DataPath"))
+                .flatten();
+            let owner_events = check.owner_events(&self.context, owner, data_path.as_deref());
+            let message = match foreign_handler_signature_8_3_27(owner_events, binding.name, &parameters)
+            {
+                None => return,
+                Some(HandlerSignatureFinding::ForeignEvent {
+                    bound_ru,
+                    expected,
+                    other_ru,
+                    other,
+                }) => format!(
+                    "Event '{bound_ru}' of {target_label}: handler '{handler_name}' ({declared}) matches the signature of event '{other_ru}' ({}), not the bound event ({})",
+                    other.join(", "),
+                    expected.join(", ")
+                ),
+                Some(HandlerSignatureFinding::ExtraRequired {
+                    bound_ru,
+                    required,
+                    expected,
+                }) => format!(
+                    "Event '{bound_ru}' of {target_label}: handler '{handler_name}' ({declared}) requires {required} parameter(s), more than the platform passes ({})",
+                    expected.join(", ")
+                ),
+            };
+            self.report.warn_surfaced(message);
+        }
+
         fn validate_owner(
             &mut self,
             owner: roxmltree::Node<'_, '_>,
@@ -908,6 +1121,9 @@ pub(crate) fn form_validate_events(
                             .and_then(|_| validate_event(&self.context, target, &binding))
                     },
                 );
+                if let (Ok(()), Some(target)) = (&validation, target) {
+                    self.validate_handler_signature(owner, target, target_label, &binding);
+                }
                 if let Err(mut diagnostic) = validation {
                     diagnostic.target = target_label.to_string();
                     if diagnostic.code == FormEventDiagnosticCode::ContextUnknown
@@ -934,6 +1150,7 @@ pub(crate) fn form_validate_events(
     let base_form = form_validation_child(root, "BaseForm");
     let mut state = EventValidationState {
         context: context_from_root(root),
+        signatures,
         report,
         errors: 0,
         checked: 0,
@@ -4721,7 +4938,7 @@ fn form_edit_with_mode_data(
             form_root_start,
             Some(LEGACY_FORM_TEXT_LANGUAGE),
         )?;
-        form_edit_require_valid(validate_form_with_source(
+        form_edit_require_valid(validate_form_for_edit(
             args,
             context,
             Some((&form_path, &xml_text)),
@@ -6317,7 +6534,7 @@ pub(crate) fn form_edit_publish_preserving_bom(
             "FormPath".to_string(),
             Value::String(validation_path.display().to_string()),
         )]);
-        form_edit_require_valid(validate_form(&validation_args, context))
+        form_edit_require_valid(validate_form_for_edit(&validation_args, context, None))
     })?;
     Ok(report.cleanup_warnings)
 }
@@ -20442,5 +20659,337 @@ pub(super) mod form_read_selector_bridge_tests {
         assert_eq!(logical.ok, physical.ok, "{logical:?} vs {physical:?}");
         assert_eq!(logical.errors, physical.errors);
         let _ = fs::remove_dir_all(&context.workspace_root);
+    }
+}
+
+#[cfg(test)]
+mod form_handler_parameter_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NONCE: AtomicU64 = AtomicU64::new(0);
+
+    const CHOICE_LIST: &str =
+        "Элемент, ВыбранноеЗначение, ДополнительныеДанные, ВыборДобавлением, СтандартнаяОбработка";
+
+    /// A catalog item form with one input field, one bound table and form
+    /// events; `module` is the form module text or `None` for no module.
+    fn validate(
+        events: &str,
+        table_events: &str,
+        form_events: &str,
+        module: Option<&str>,
+    ) -> AdapterOutcome {
+        validate_with_base_form(events, table_events, form_events, module, "")
+    }
+
+    fn validate_with_base_form(
+        events: &str,
+        table_events: &str,
+        form_events: &str,
+        module: Option<&str>,
+        base_form: &str,
+    ) -> AdapterOutcome {
+        validate_form_fixture(FormFixture {
+            events,
+            table_events,
+            form_events,
+            module,
+            base_form,
+            main_type: "cfg:CatalogObject.Items",
+            table_path: "Объект.Строки",
+        })
+    }
+
+    struct FormFixture<'a> {
+        events: &'a str,
+        table_events: &'a str,
+        form_events: &'a str,
+        module: Option<&'a str>,
+        base_form: &'a str,
+        main_type: &'a str,
+        table_path: &'a str,
+    }
+
+    fn validate_form_fixture(fixture: FormFixture<'_>) -> AdapterOutcome {
+        let FormFixture {
+            events,
+            table_events,
+            form_events,
+            module,
+            base_form,
+            main_type,
+            table_path,
+        } = fixture;
+        let root = std::env::temp_dir().join(format!(
+            "unica-form-handler-parameters-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let ext = root.join("Catalogs/Items/Forms/Item/Ext");
+        fs::create_dir_all(ext.join("Form")).unwrap();
+        let form_path = ext.join("Form.xml");
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" version=\"2.20\">\n\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n\t<Events>{form_events}</Events>\n\t<ChildItems>\n\t\t<InputField name=\"Поле\" id=\"1\">\n\t\t\t<DataPath>Объект.Description</DataPath>\n\t\t\t<ContextMenu name=\"ПолеКонтекстноеМеню\" id=\"2\"/>\n\t\t\t<ExtendedTooltip name=\"ПолеРасширеннаяПодсказка\" id=\"3\"/>\n\t\t\t<Events>{events}</Events>\n\t\t</InputField>\n\t\t<Table name=\"Список\" id=\"4\">\n\t\t\t<DataPath>{table_path}</DataPath>\n\t\t\t<ContextMenu name=\"СписокКонтекстноеМеню\" id=\"5\"/>\n\t\t\t<AutoCommandBar name=\"СписокКоманднаяПанель\" id=\"6\"/>\n\t\t\t<ExtendedTooltip name=\"СписокРасширеннаяПодсказка\" id=\"7\"/>\n\t\t\t<SearchStringAddition name=\"СписокСтрокаПоиска\" id=\"8\"/>\n\t\t\t<ViewStatusAddition name=\"СписокСостояниеПросмотра\" id=\"9\"/>\n\t\t\t<SearchControlAddition name=\"СписокУправлениеПоиском\" id=\"10\"/>\n\t\t\t<Events>{table_events}</Events>\n\t\t</Table>\n\t</ChildItems>\n\t<Attributes>\n\t\t<Attribute name=\"Объект\" id=\"1\">\n\t\t\t<Type><v8:Type>{main_type}</v8:Type></Type>\n\t\t\t<MainAttribute>true</MainAttribute>\n\t\t</Attribute>\n\t</Attributes>\n{base_form}</Form>\n"
+        );
+        fs::write(&form_path, &xml).unwrap();
+        if let Some(module) = module {
+            fs::write(ext.join("Form/Module.bsl"), format!("\u{feff}{module}")).unwrap();
+        }
+        let context = WorkspaceContext {
+            cwd: root.clone(),
+            workspace_root: root.clone(),
+            cache_root: root.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let args = Map::from_iter([(
+            "FormPath".to_string(),
+            json!(form_path.display().to_string()),
+        )]);
+        let outcome = validate_form_with_source(&args, &context, Some((&form_path, &xml)));
+        // `form.edit` keeps the verdict but never reads the module.
+        let edit = validate_form_for_edit(&args, &context, Some((&form_path, &xml)));
+        assert_eq!(edit.ok, outcome.ok);
+        assert!(edit.warnings.is_empty());
+        let _ = fs::remove_dir_all(&root);
+        outcome
+    }
+
+    fn input_event(event: &str, handler: &str) -> String {
+        format!("<Event name=\"{event}\">{handler}</Event>")
+    }
+
+    fn client_method(name: &str, parameters: &str) -> String {
+        format!("&НаКлиенте\nПроцедура {name}({parameters})\nКонецПроцедуры\n")
+    }
+
+    const START_CHOICE_LIST: &str = "Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка";
+
+    #[test]
+    fn legacy_shorter_signatures_give_no_finding() {
+        for parameters in [
+            "Элемент, ВыбранноеЗначение, СтандартнаяОбработка",
+            "Элемент, ВыбранноеЗначение, ДополнительныеДанные, СтандартнаяОбработка",
+            CHOICE_LIST,
+            "Знач Элемент, ВыбранноеЗначение, ДополнительныеДанные, ВыборДобавлением, СтандартнаяОбработка, Лишний = Неопределено",
+        ] {
+            let outcome = validate(
+                &input_event("ChoiceProcessing", "ПолеОбработкаВыбора"),
+                "",
+                "",
+                Some(&client_method("ПолеОбработкаВыбора", parameters)),
+            );
+            assert!(outcome.ok);
+            assert!(outcome.warnings.is_empty(), "unexpected finding for {parameters:?}");
+        }
+    }
+
+    #[test]
+    fn foreign_event_signature_is_a_warning_naming_both_events() {
+        let outcome = validate(
+            &input_event("AutoComplete", "поленачаловыбора"),
+            "",
+            "",
+            Some(&client_method("ПолеНачалоВыбора", START_CHOICE_LIST)),
+        );
+        assert!(outcome.ok, "a foreign signature keeps the verdict");
+        assert!(outcome.errors.is_empty());
+        assert_eq!(outcome.warnings.len(), 1);
+        let warning = &outcome.warnings[0];
+        for expected in [
+            "Event 'АвтоПодбор' of InputField element 'Поле'",
+            "handler 'ПолеНачалоВыбора'",
+            &format!("matches the signature of event 'НачалоВыбора' ({START_CHOICE_LIST})"),
+            "not the bound event (Элемент, Текст, ДанныеВыбора, ПараметрыПолученияДанных, Ожидание, СтандартнаяОбработка)",
+        ] {
+            assert!(warning.contains(expected), "missing {expected:?}");
+        }
+        assert!(outcome
+            .stdout
+            .as_deref()
+            .is_some_and(|stdout| stdout.contains("[WARN]  Event 'АвтоПодбор'")));
+    }
+
+    #[test]
+    fn same_count_renames_pass_and_table_foreign_signature_is_found() {
+        let renamed = validate(
+            "",
+            &input_event("ValueChoice", "СписокВыборЗначения"),
+            "",
+            Some(&client_method(
+                "СписокВыборЗначения",
+                "Элемент, ВыбранноеЗначение, СтандартнаяОбработка",
+            )),
+        );
+        assert!(renamed.warnings.is_empty());
+        let foreign = validate(
+            "",
+            &input_event("ValueChoice", "СписокВыбор"),
+            "",
+            Some(&client_method(
+                "СписокВыбор",
+                "Элемент, ВыбраннаяСтрока, Поле, СтандартнаяОбработка",
+            )),
+        );
+        assert_eq!(foreign.warnings.len(), 1);
+        assert!(foreign.warnings[0].contains("Table element 'Список'"));
+        assert!(foreign.warnings[0].contains("event 'Выбор'"));
+    }
+
+    #[test]
+    fn required_parameter_beyond_every_known_list_is_a_warning() {
+        let form_event = input_event("URLProcessing", "ОбработкаНавигационнойСсылки");
+        let item_style = validate(
+            "",
+            "",
+            &form_event,
+            Some(&client_method(
+                "ОбработкаНавигационнойСсылки",
+                "Элемент, НавигационнаяСсылкаФорматированнойСтроки, СтандартнаяОбработка",
+            )),
+        );
+        assert_eq!(item_style.warnings.len(), 1);
+        let warning = &item_style.warnings[0];
+        assert!(warning.contains("Event 'ОбработкаНавигационнойСсылки' of form"));
+        assert!(warning.contains("requires 3 parameter(s)"));
+        assert!(warning.contains(
+            "platform passes (НавигационнаяСсылкаФорматированнойСтроки, СтандартнаяОбработка)"
+        ));
+        let optional = validate(
+            "",
+            "",
+            &form_event,
+            Some(&client_method(
+                "ОбработкаНавигационнойСсылки",
+                "Ссылка, СтандартнаяОбработка, Режим = Неопределено",
+            )),
+        );
+        assert!(optional.warnings.is_empty());
+    }
+
+    #[test]
+    fn extension_forms_compare_only_bindings_without_call_type() {
+        let method = client_method("ПолеНачалоВыбора", START_CHOICE_LIST);
+        // A borrowed form wraps the base handler: a callType binding is not
+        // compared, and a binding without callType is already an error there.
+        let base_form = "\t<BaseForm version=\"2.20\"/>\n";
+        let wrapped = validate_with_base_form(
+            "<Event name=\"AutoComplete\" callType=\"After\">ПолеНачалоВыбора</Event>",
+            "",
+            "",
+            Some(&method),
+            base_form,
+        );
+        assert!(wrapped.ok, "the extension fixture must validate");
+        assert!(wrapped.warnings.is_empty());
+        let unwrapped = validate_with_base_form(
+            "<Event name=\"AutoComplete\">ПолеНачалоВыбора</Event>",
+            "",
+            "",
+            Some(&method),
+            base_form,
+        );
+        assert!(!unwrapped.ok);
+        assert!(unwrapped.warnings.is_empty());
+        // A form of the extension's own has no BaseForm and is compared like
+        // any configuration form.
+        let own = validate(
+            &input_event("AutoComplete", "ПолеНачалоВыбора"),
+            "",
+            "",
+            Some(&method),
+        );
+        assert_eq!(own.warnings.len(), 1);
+    }
+
+    #[test]
+    fn object_form_events_follow_the_owner_found_by_the_dump_path() {
+        // The fixture lives under `Catalogs/Items/Forms/Item`, so the object
+        // form's write events are known and a legacy document-style signature
+        // has more required parameters than the platform passes.
+        let outcome = validate(
+            "",
+            "",
+            &input_event("BeforeWrite", "ПередЗаписью"),
+            Some(&client_method(
+                "ПередЗаписью",
+                "Отказ, РежимЗаписи, РежимПроведения",
+            )),
+        );
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("Event 'ПередЗаписью' of form"));
+        assert!(outcome.warnings[0].contains("platform passes (Отказ, ПараметрыЗаписи)"));
+    }
+
+    #[test]
+    fn a_table_bound_to_the_dynamic_list_gets_its_extra_events() {
+        let event = input_event(
+            "OnUpdateUserSettingSetAtServer",
+            "СписокПриОбновленииСоставаПользовательскихНастроекНаСервере",
+        );
+        let module = "&НаСервере\nПроцедура СписокПриОбновленииСоставаПользовательскихНастроекНаСервере(Элемент, СтандартнаяОбработка, Лишний)\nКонецПроцедуры\n";
+        let outcome = validate_form_fixture(FormFixture {
+            events: "",
+            table_events: &event,
+            form_events: "",
+            module: Some(module),
+            base_form: "",
+            main_type: "cfg:DynamicList",
+            table_path: "Объект",
+        });
+        assert_eq!(outcome.warnings.len(), 1);
+        assert!(outcome.warnings[0].contains("requires 3 parameter(s)"));
+        assert!(outcome.warnings[0].contains("platform passes (Элемент, СтандартнаяОбработка)"));
+    }
+
+    #[test]
+    fn by_value_names_and_async_handlers_are_compared_by_their_names() {
+        // Without stripping `Знач` no name would match StartChoice.
+        let by_value = validate(
+            &input_event("AutoComplete", "ПолеНачалоВыбора"),
+            "",
+            "",
+            Some(&client_method(
+                "ПолеНачалоВыбора",
+                "Знач Элемент, Знач ДанныеВыбора, Знач ВыборДобавлением, Знач СтандартнаяОбработка",
+            )),
+        );
+        assert_eq!(by_value.warnings.len(), 1);
+        assert!(by_value.warnings[0].contains("event 'НачалоВыбора'"));
+        let asynchronous = validate(
+            &input_event("AutoComplete", "ПолеНачалоВыбора"),
+            "",
+            "",
+            Some(&format!(
+                "&НаКлиенте\nАсинх Процедура ПолеНачалоВыбора({START_CHOICE_LIST})\nКонецПроцедуры\n"
+            )),
+        );
+        assert_eq!(asynchronous.warnings.len(), 1);
+        assert!(asynchronous.warnings[0].contains("handler 'ПолеНачалоВыбора'"));
+    }
+
+    #[test]
+    fn missing_or_unreadable_module_and_absent_or_ambiguous_method_give_no_finding() {
+        let event = input_event("AutoComplete", "ПолеНачалоВыбора");
+        let foreign = client_method("ПолеНачалоВыбора", START_CHOICE_LIST);
+        assert_eq!(validate(&event, "", "", Some(&foreign)).warnings.len(), 1);
+        assert!(validate(&event, "", "", None).warnings.is_empty());
+        assert!(
+            validate(&event, "", "", Some("Процедура ПолеНачалоВыбора(\n"))
+                .warnings
+                .is_empty()
+        );
+        assert!(validate(
+            &input_event("AutoComplete", "ДругойОбработчик"),
+            "",
+            "",
+            Some(&foreign)
+        )
+        .warnings
+        .is_empty());
+        let duplicated = format!("{foreign}\n{foreign}");
+        assert!(validate(&event, "", "", Some(&duplicated))
+            .warnings
+            .is_empty());
     }
 }

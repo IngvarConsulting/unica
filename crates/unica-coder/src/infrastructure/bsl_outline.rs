@@ -262,6 +262,31 @@ pub(crate) fn exact_bsl_method_facts(
         }))
 }
 
+/// Declared parameters of one module method: names and whether each has a
+/// default value. `Знач` does not change either.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BslMethodParameters {
+    pub(crate) name: String,
+    pub(crate) parameters: Vec<(String, bool)>,
+}
+
+/// Parameters of every method of one module from the same parser AST as the
+/// outline. A module the parser cannot read yields an error, not a guess.
+pub(crate) fn bsl_method_parameters(text: &str) -> Result<Vec<BslMethodParameters>, String> {
+    let (methods, _) = parse_module(text)?;
+    Ok(methods
+        .into_iter()
+        .map(|method| BslMethodParameters {
+            parameters: method
+                .parameters
+                .into_iter()
+                .map(|parameter| (parameter.name, parameter.default_value.is_some()))
+                .collect(),
+            name: method.name,
+        })
+        .collect())
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum BslProcedureRequirement {
     ExactArity(usize),
