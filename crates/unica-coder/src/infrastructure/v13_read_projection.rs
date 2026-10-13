@@ -2210,44 +2210,88 @@ fn project_xdto(
                 .with_branches(branches),
         ));
     }
-    let property = &suffix[1];
-    if suffix.len() != 2 {
-        return Err(ViewError::new(
-            RefusalCode::NotFound,
-            "XDTO property projection did not consume the complete suffix",
-        ));
+    let mut current = item;
+    let mut current_is_property = segment.kind() == NodeKind::Property;
+    for (index, segment) in suffix[1..].iter().enumerate() {
+        if segment.kind() != NodeKind::Property {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "XDTO child must be a property",
+            ));
+        }
+        let properties = if current_is_property {
+            xdto_anonymous_properties(current)
+        } else {
+            current.get("properties")
+        }
+        .ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                "XDTO node has no anonymous property collection",
+            )
+        })?;
+        let final_segment = index + 2 == suffix.len();
+        let Some(name) = segment.name() else {
+            if !final_segment {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "XDTO property collection must end the address",
+                ));
+            }
+            return Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(address.to_string(), "Property", "Properties", Map::new()),
+                collection_items(LogicalReader::Xdto, address, NodeKind::Property, properties),
+            )));
+        };
+        current = select_named(properties, name).ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                format!("XDTO property `{name}` was not found"),
+            )
+        })?;
+        current_is_property = true;
+        if final_segment {
+            return Ok(NodeViewData::Node(xdto_property_node(
+                address, name, current,
+            )));
+        }
     }
-    let properties = item
-        .get("properties")
-        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "XDTO type has no properties"))?;
-    if property.name().is_none() {
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "Property", "Properties", Map::new()),
-            collection_items(LogicalReader::Xdto, address, NodeKind::Property, properties),
-        )));
-    }
-    let property_name = property.name().unwrap();
-    let property = select_named(properties, property_name).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("XDTO property `{property_name}` was not found"),
-        )
-    })?;
-    Ok(NodeViewData::Node(xdto_property_node(
-        address,
-        property_name,
-        property,
-    )))
+    Err(ViewError::new(
+        RefusalCode::NotFound,
+        "XDTO property projection did not consume the address",
+    ))
+}
+
+fn xdto_anonymous_properties(property: &Value) -> Option<&Value> {
+    let definitions = property.get("typeDefs")?.as_array()?;
+    let [definition] = definitions.as_slice() else {
+        return None;
+    };
+    (definition.get("discriminator").and_then(Value::as_str) == Some("ObjectType"))
+        .then(|| definition.get("properties"))
+        .flatten()
 }
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
-    let props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
+    let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
     let limits = ["type", "reference", "bounds"]
         .into_iter()
         .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
         .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
         .collect();
-    NodeView::new(address.to_string(), "Property", name, props).with_limits(limits)
+    let branches = xdto_anonymous_properties(property)
+        .and_then(Value::as_array)
+        .map(|children| {
+            props.insert("anonymousType".to_string(), json!("ObjectType"));
+            vec![BranchRef::new(
+                format!("{address}.Property"),
+                children.len(),
+            )]
+        })
+        .unwrap_or_default();
+    NodeView::new(address.to_string(), "Property", name, props)
+        .with_limits(limits)
+        .with_branches(branches)
 }
 
 /// Свойства объекта метаданных — это `props` его узла.
@@ -2645,6 +2689,20 @@ fn collection_item(
             data_row(value)
         };
     };
+    if reader == LogicalReader::Xdto && kind == NodeKind::Property {
+        let at = QualifiedAddress::parse(&format!("{address}.{name}"))
+            .ok()
+            .filter(|at| {
+                at.segments().len() == address.segments().len()
+                    && at.segments().last().and_then(AddressSegment::name) == Some(name)
+            });
+        return match at {
+            Some(at) => serde_json::to_value(xdto_property_node(&at, name, value))
+                .expect("XDTO property node serializes"),
+            None => json!({"name":name,"props":reader_node_props(reader,kind,value),
+                "limits":["This XDTO property name cannot be represented by the current logical address grammar (#1356)."]}),
+        };
+    }
     let at = format!("{address}.{name}");
     let Ok(at) = QualifiedAddress::parse(&at) else {
         return Value::Object(reader_node_props(reader, kind, value));

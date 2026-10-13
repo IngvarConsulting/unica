@@ -68,8 +68,15 @@ pub(crate) struct XdtoPropertyPath(String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct XdtoPropertySpec {
     pub(crate) name: XmlNcName,
-    pub(crate) type_ref: PrefixedXmlQName,
+    pub(crate) definition: XdtoPropertyDefinition,
     pub(crate) min_occurs: Option<u8>,
+    pub(crate) max_occurs: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum XdtoPropertyDefinition {
+    Named(PrefixedXmlQName),
+    Object(Vec<XdtoPropertySpec>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,33 +200,9 @@ pub(crate) fn parse_xdto_plan_operation(
                 .get("property")
                 .and_then(Value::as_object)
                 .ok_or_else(|| bad_xdto_argument(&property_base, "property must be an object"))?;
-            let property_allowed = ["name", "type", "minOccurs"];
-            if let Some(field) = property
-                .keys()
-                .find(|field| !property_allowed.contains(&field.as_str()))
-            {
-                return Err(bad_xdto_argument(
-                    &format!("{property_base}.{field}"),
-                    "unknown XDTO property argument",
-                ));
-            }
-            let min_occurs = property
-                .get("minOccurs")
-                .map(|value| match value.as_u64() {
-                    Some(value @ 0..=1) => Ok(value as u8),
-                    _ => Err(bad_xdto_argument(
-                        &format!("{property_base}.minOccurs"),
-                        "minOccurs must be 0 or 1",
-                    )),
-                })
-                .transpose()?;
             Ok(XdtoPlanOperation::AddProperty(XdtoAddPropertyArgs {
                 at,
-                property: XdtoPropertySpec {
-                    name: parse_xdto_ncname(property, "name", &property_base)?,
-                    type_ref: parse_xdto_qname(property, "type", &property_base)?,
-                    min_occurs,
-                },
+                property: parse_property_spec(property, &property_base)?,
                 property_path,
             }))
         }
@@ -231,6 +214,97 @@ pub(crate) fn parse_xdto_plan_operation(
         })),
         _ => unreachable!("operation was closed above"),
     }
+}
+
+fn parse_property_spec(
+    property: &Map<String, Value>,
+    base: &str,
+) -> Result<XdtoPropertySpec, ApplyPlanError> {
+    let allowed = ["name", "type", "objectType", "minOccurs", "maxOccurs"];
+    if let Some(field) = property
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err(bad_xdto_argument(
+            &format!("{base}.{field}"),
+            "unknown XDTO property argument",
+        ));
+    }
+    let min_occurs = property
+        .get("minOccurs")
+        .map(|v| match v.as_u64() {
+            Some(v @ 0..=1) => Ok(v as u8),
+            _ => Err(bad_xdto_argument(
+                &format!("{base}.minOccurs"),
+                "minOccurs must be 0 or 1",
+            )),
+        })
+        .transpose()?;
+    let max_occurs = property
+        .get("maxOccurs")
+        .map(|v| match v.as_i64() {
+            Some(v) if v == -1 || v >= 1 => Ok(v),
+            _ => Err(bad_xdto_argument(
+                &format!("{base}.maxOccurs"),
+                "maxOccurs must be -1 or a positive integer",
+            )),
+        })
+        .transpose()?;
+    let definition = match (property.get("type"), property.get("objectType")) {
+        (Some(_), None) => XdtoPropertyDefinition::Named(parse_xdto_qname(property, "type", base)?),
+        (None, Some(value)) => {
+            let object = value.as_object().ok_or_else(|| {
+                bad_xdto_argument(
+                    &format!("{base}.objectType"),
+                    "objectType must be an object",
+                )
+            })?;
+            if object.keys().any(|key| key != "properties") {
+                return Err(bad_xdto_argument(
+                    &format!("{base}.objectType"),
+                    "unknown anonymous ObjectType argument",
+                ));
+            }
+            let properties = object
+                .get("properties")
+                .and_then(Value::as_array)
+                .ok_or_else(|| {
+                    bad_xdto_argument(
+                        &format!("{base}.objectType.properties"),
+                        "properties must be an array",
+                    )
+                })?;
+            let mut children = Vec::new();
+            let mut names = std::collections::HashSet::new();
+            for (index, value) in properties.iter().enumerate() {
+                let path = format!("{base}.objectType.properties[{index}]");
+                let value = value
+                    .as_object()
+                    .ok_or_else(|| bad_xdto_argument(&path, "property must be an object"))?;
+                let child = parse_property_spec(value, &path)?;
+                if !names.insert(child.name.0.clone()) {
+                    return Err(bad_xdto_argument(
+                        &format!("{path}.name"),
+                        "duplicate anonymous ObjectType property name",
+                    ));
+                }
+                children.push(child);
+            }
+            XdtoPropertyDefinition::Object(children)
+        }
+        _ => {
+            return Err(bad_xdto_argument(
+                base,
+                "property requires exactly one of type or objectType",
+            ))
+        }
+    };
+    Ok(XdtoPropertySpec {
+        name: parse_xdto_ncname(property, "name", base)?,
+        definition,
+        min_occurs,
+        max_occurs,
+    })
 }
 
 fn bad_xdto_argument(path: &str, message: impl Into<String>) -> ApplyPlanError {
@@ -675,13 +749,11 @@ fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWriter
         XdtoPlanOperation::AddObjectType(args) => {
             writer::TypedWriterOperation::AddObjectType { name: &args.name.0 }
         }
-        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddProperty {
+        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddPropertyTree {
             type_name: args.at.segments()[1]
                 .name()
                 .expect("closed XDTO type target has a name"),
-            name: &args.property.name.0,
-            type_ref: &args.property.type_ref.0,
-            min_occurs: args.property.min_occurs.map(u64::from),
+            property: &args.property,
             property_path: args.property_path.as_ref().map(|path| path.0.as_str()),
         },
         XdtoPlanOperation::RemoveType(args) => writer::TypedWriterOperation::RemoveType {
@@ -3526,8 +3598,9 @@ pub(crate) mod tests {
             at: qaddr(at),
             property: XdtoPropertySpec {
                 name: ncname(name),
-                type_ref: qname(type_ref),
+                definition: super::XdtoPropertyDefinition::Named(qname(type_ref)),
                 min_occurs,
+                max_occurs: None,
             },
             property_path: property_path.map(|value| XdtoPropertyPath(value.to_string())),
         })
@@ -3567,6 +3640,157 @@ pub(crate) mod tests {
             }
         }
         observed
+    }
+
+    #[test]
+    fn staged_xdto_anonymous_property_tree_is_atomic_and_repeatable() {
+        use super::{model, parse, staged_writer_operation};
+        let fixture = staged_xdto_fixture("anonymous-tree", PACKAGE.as_bytes());
+        let request = json!({"at":"main:XDTOPackage.Sample.Type.ЛюбаяСсылка", "values": {
+            "property": {"name":"Строки", "minOccurs":0, "maxOccurs":-1,
+                "objectType":{"properties":[
+                    {"name":"Основание", "type":"tns:ЛюбаяСсылка", "minOccurs":0, "maxOccurs":1},
+                    {"name":"Получатель", "type":"tns:СоставнойЛюбойОбъект", "minOccurs":0, "maxOccurs":1}
+                ]}}
+        }});
+        let operation =
+            parse_xdto_plan_operation("property.add", &request, 0, &fixture.binding).unwrap();
+        let first = writer::plan_typed(PACKAGE, staged_writer_operation(&operation)).unwrap();
+        assert!(!first.blocks());
+        let doc = parse(&first.after).unwrap();
+        let rows = doc
+            .descendants()
+            .find(|n| n.attribute("name") == Some("Строки"))
+            .unwrap();
+        assert_eq!(rows.attribute("lowerBound"), Some("0"));
+        assert_eq!(rows.attribute("upperBound"), Some("-1"));
+        assert_eq!(rows.attribute("type"), None);
+        let definition = rows
+            .children()
+            .find(|n| n.has_tag_name((model::XDTO_NS, "typeDef")))
+            .unwrap();
+        assert_eq!(definition.attribute("name"), None);
+        assert_eq!(
+            definition.attribute((model::XSI_NS, "type")),
+            Some("ObjectType")
+        );
+        assert_eq!(
+            definition
+                .children()
+                .filter(|n| n.is_element())
+                .map(|n| n.attribute("name").unwrap())
+                .collect::<Vec<_>>(),
+            ["Основание", "Получатель"]
+        );
+        let repeated =
+            writer::plan_typed(&first.after, staged_writer_operation(&operation)).unwrap();
+        assert_eq!(repeated.after, first.after);
+        assert!(repeated.edits.is_empty());
+        assert!(!repeated.blocks());
+        let admission = staged_xdto_admission(&fixture, None, true);
+        assert!(plan_admitted_xdto(&admission, &fixture.binding, &[operation]).is_ok());
+        let mut invalid = request.clone();
+        invalid["values"]["property"]["objectType"]["properties"][1]["type"] = json!("tns:Missing");
+        let invalid =
+            parse_xdto_plan_operation("property.add", &invalid, 0, &fixture.binding).unwrap();
+        assert!(plan_admitted_xdto(&admission, &fixture.binding, &[invalid]).is_err());
+        assert_eq!(fs::read(&fixture.package).unwrap(), PACKAGE.as_bytes());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn anonymous_property_tree_preserves_prefixes_crlf_and_conflicting_children() {
+        use super::{model, parse, parse_property_spec};
+        let before = "<d:package xmlns:d=\"http://v8.1c.ru/8.1/xdto\" xmlns=\"urn:other\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"urn:occupied\" targetNamespace=\"urn:test\">\r\n\t<d:objectType name=\"T\"/>\r\n</d:package>";
+        let property = json!({"name":"Rows", "minOccurs":0, "maxOccurs":-1, "objectType":{"properties":[
+            {"name":"Nested", "objectType":{"properties":[{"name":"Code","type":"xs:string"}]}},
+            {"name":"Other","type":"xs:decimal"}
+        ]}});
+        let spec = parse_property_spec(property.as_object().unwrap(), "property").unwrap();
+        let operation = writer::TypedWriterOperation::AddPropertyTree {
+            type_name: "T",
+            property: &spec,
+            property_path: None,
+        };
+        let result = writer::plan_typed(before, operation).unwrap();
+        assert!(result
+            .after
+            .starts_with(before.split("<d:objectType").next().unwrap()));
+        assert!(result.after.ends_with("\r\n</d:package>"));
+        assert!(!result.after.replace("\r\n", "").contains('\n'));
+        let document = parse(&result.after).unwrap();
+        let definitions = document
+            .descendants()
+            .filter(|n| n.has_tag_name((model::XDTO_NS, "typeDef")))
+            .collect::<Vec<_>>();
+        assert_eq!(definitions.len(), 2);
+        for node in definitions {
+            assert_eq!(node.attribute((model::XSI_NS, "type")), Some("ObjectType"));
+            assert_eq!(node.lookup_namespace_uri(None), Some(model::XDTO_NS));
+            assert_eq!(node.lookup_namespace_uri(Some("xsi")), Some("urn:occupied"));
+        }
+        let repeated = writer::plan_typed(&result.after, operation).unwrap();
+        assert!(repeated.edits.is_empty() && !repeated.blocks());
+        for change in ["type", "order", "bounds", "extra"] {
+            let mut changed = property.clone();
+            let children = changed["objectType"]["properties"].as_array_mut().unwrap();
+            match change {
+                "type" => children[1]["type"] = json!("xs:string"),
+                "order" => children.reverse(),
+                "bounds" => children[1]["maxOccurs"] = json!(2),
+                "extra" => children.push(json!({"name":"Extra","type":"xs:string"})),
+                _ => unreachable!(),
+            }
+            let spec = parse_property_spec(changed.as_object().unwrap(), "property").unwrap();
+            let refusal = writer::plan_typed(
+                &result.after,
+                writer::TypedWriterOperation::AddPropertyTree {
+                    type_name: "T",
+                    property: &spec,
+                    property_path: None,
+                },
+            )
+            .unwrap();
+            assert!(refusal.blocks(), "{change}");
+            assert_eq!(refusal.after, result.after);
+        }
+    }
+
+    #[test]
+    fn anonymous_discriminator_binding_never_resolves_requested_unbound_prefixes() {
+        for (label, prefix, declaration) in [
+            ("direct", "xsi", ""),
+            ("nested", "xdtoXsi1", r#" xmlns:xsi="urn:occupied""#),
+        ] {
+            let before = format!(
+                r#"<package xmlns="http://v8.1c.ru/8.1/xdto"{declaration} targetNamespace="urn:test">
+    <import namespace="http://www.w3.org/2001/XMLSchema-instance"/>
+    <objectType name="T"/>
+</package>"#
+            );
+            let fixture = staged_xdto_fixture(
+                &format!("anonymous-prefix-capture-{label}"),
+                before.as_bytes(),
+            );
+            let mut child = json!({"name":"Value","type":format!("{prefix}:Remote")});
+            if label == "nested" {
+                child = json!({"name":"Nested","objectType":{"properties":[child]}});
+            }
+            let request = json!({"at":"main:XDTOPackage.Sample.Type.T", "values":{"property":{
+                "name":"Rows", "objectType":{"properties":[child]}
+            }}});
+            let operation =
+                parse_xdto_plan_operation("property.add", &request, 0, &fixture.binding).unwrap();
+            let admission = staged_xdto_admission(&fixture, None, true);
+            let before_tree = snapshot_tree(&fixture.source);
+            let error = match plan_admitted_xdto(&admission, &fixture.binding, &[operation]) {
+                Err(error) => error,
+                Ok(_) => panic!("the sole undeclared requested prefix must remain invalid"),
+            };
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidState);
+            assert_eq!(snapshot_tree(&fixture.source), before_tree);
+            fixture.cleanup();
+        }
     }
 
     #[test]
