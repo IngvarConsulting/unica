@@ -135,6 +135,7 @@ pub(super) enum TypedWriterOperation<'a> {
     AddValueType {
         name: &'a str,
         base: &'a str,
+        facets: Option<&'a super::facets::ValueFacets>,
     },
     AddObjectType {
         name: &'a str,
@@ -143,6 +144,14 @@ pub(super) enum TypedWriterOperation<'a> {
         type_name: &'a str,
         name: &'a str,
         type_ref: &'a str,
+        min_occurs: Option<u64>,
+        property_path: Option<&'a str>,
+    },
+    AddValueProperty {
+        type_name: &'a str,
+        name: &'a str,
+        base: &'a str,
+        facets: &'a super::facets::ValueFacets,
         min_occurs: Option<u64>,
         property_path: Option<&'a str>,
     },
@@ -170,12 +179,20 @@ pub(super) fn plan_typed(
     let root = document.root_element();
     let mut finding = None;
     let edit = match operation {
-        TypedWriterOperation::AddValueType { name, base } => {
+        TypedWriterOperation::AddValueType { name, base, facets } => {
             let desired_base = desired_qname(root, root, base);
+            let empty_facets = super::facets::ValueFacets::default();
+            let facets = facets.unwrap_or(&empty_facets);
+            facets
+                .validate_base(
+                    desired_base.semantic.namespace.as_deref(),
+                    &desired_base.semantic.local,
+                )
+                .map_err(|message| writer_invalid_source(message.to_owned()))?;
             let existing = named_types(root, name);
             if !existing.is_empty() {
                 let exact = existing.len() == 1
-                    && compatible_value_type(existing[0], &desired_base.semantic);
+                    && compatible_value_type(existing[0], &desired_base.semantic, facets);
                 finding = Some(duplicate_finding(
                     "duplicate_type",
                     existing[0],
@@ -187,10 +204,11 @@ pub(super) fn plan_typed(
                 let element_name = lexical_xdto_child_name(before, root, "valueType")
                     .map_err(writer_invalid_source)?;
                 let fragment = format!(
-                    "<{element_name}{} name=\"{}\" base=\"{}\"/>",
+                    "<{element_name}{} name=\"{}\" base=\"{}\"{}/>",
                     desired_base.namespace_declaration(),
                     escape_attribute(name),
-                    escape_attribute(&desired_base.raw)
+                    escape_attribute(&desired_base.raw),
+                    facet_attributes(facets)
                 );
                 Some(
                     insert_top_level(before, root, TopLevelInsert::ValueType, &fragment)
@@ -256,6 +274,50 @@ pub(super) fn plan_typed(
                 Some(insert_child(before, target, &fragment).map_err(writer_invalid_source)?)
             }
         }
+        TypedWriterOperation::AddValueProperty {
+            type_name,
+            name,
+            base,
+            facets,
+            min_occurs,
+            property_path,
+        } => {
+            let target = property_target(root, type_name, property_path)?;
+            let base = desired_qname(root, target, base);
+            facets
+                .validate_anonymous_base(base.semantic.namespace.as_deref(), &base.semantic.local)
+                .map_err(|message| writer_invalid_source(message.to_owned()))?;
+            let existing = direct_named_properties(target, name);
+            if !existing.is_empty() {
+                let exact = existing.len() == 1
+                    && compatible_value_property(existing[0], &base.semantic, facets, min_occurs);
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing[0],
+                    exact,
+                    "property",
+                ));
+                None
+            } else {
+                let element = lexical_xdto_child_name(before, target, "property")
+                    .map_err(writer_invalid_source)?;
+                let lower = min_occurs
+                    .map(|value| format!(" lowerBound=\"{value}\""))
+                    .unwrap_or_default();
+                let prefix = (0..)
+                    .map(|n| format!("xdtoXsi{n}"))
+                    .find(|prefix| {
+                        target.lookup_namespace_uri(Some(prefix)).is_none()
+                            && base
+                                .raw
+                                .split_once(':')
+                                .is_none_or(|(requested, _)| requested != prefix)
+                    })
+                    .expect("a fresh prefix exists");
+                let fragment = format!("<{element} name=\"{}\"{lower}><typeDef xmlns=\"{XDTO_NS}\" xmlns:{prefix}=\"{XSI_NS}\" {prefix}:type=\"ValueType\"{} base=\"{}\"{}/></{element}>", escape_attribute(name), base.namespace_declaration(), escape_attribute(&base.raw), facet_attributes(facets));
+                Some(insert_child(before, target, &fragment).map_err(writer_invalid_source)?)
+            }
+        }
         TypedWriterOperation::RemoveType { name } => {
             let node = exactly_one(
                 named_types(root, name),
@@ -296,7 +358,7 @@ pub(super) fn plan(
         "add-value-type" => {
             let name = super::required(args, "name")?;
             let base = super::required(args, "base")?;
-            TypedWriterOperation::AddValueType { name, base }
+            TypedWriterOperation::AddValueType { name, base, facets: None }
         }
         "add-object-type" => {
             let name = super::required(args, "name")?;
@@ -453,14 +515,85 @@ fn semantic_qname(node: Node<'_, '_>, raw: &str) -> SemanticQName {
     }
 }
 
-fn compatible_value_type(node: Node<'_, '_>, base: &SemanticQName) -> bool {
+fn facet_attributes(facets: &super::facets::ValueFacets) -> String {
+    facets
+        .attributes()
+        .into_iter()
+        .map(|(name, value)| format!(" {name}=\"{}\"", escape_attribute(&value)))
+        .collect()
+}
+
+fn compatible_value_type(
+    node: Node<'_, '_>,
+    base: &SemanticQName,
+    facets: &super::facets::ValueFacets,
+) -> bool {
     node.has_tag_name((XDTO_NS, "valueType"))
-        && has_only_plain_attributes(node, &["name", "base"])
+        && has_only_plain_attributes(
+            node,
+            &[
+                "name",
+                "base",
+                "maxLength",
+                "totalDigits",
+                "fractionDigits",
+                "minInclusive",
+                "maxInclusive",
+            ],
+        )
+        && super::facets::ValueFacets::from_node(node)
+            .is_ok_and(|existing| existing.equivalent(facets))
         && has_exact_compatible_content(node)
         && node.attribute("base").is_some_and(|existing| {
             let existing = semantic_qname(node, existing);
             existing.lexical_valid && base.lexical_valid && existing == *base
         })
+}
+
+fn compatible_value_property(
+    node: Node<'_, '_>,
+    base: &SemanticQName,
+    facets: &super::facets::ValueFacets,
+    lower: Option<u64>,
+) -> bool {
+    if !has_only_plain_attributes(node, &["name", "lowerBound", "upperBound"])
+        || node
+            .attribute("lowerBound")
+            .unwrap_or("1")
+            .parse::<u64>()
+            .ok()
+            != Some(lower.unwrap_or(1))
+        || node
+            .attribute("upperBound")
+            .unwrap_or("1")
+            .parse::<u64>()
+            .ok()
+            != Some(1)
+    {
+        return false;
+    }
+    let children = node.children().filter(Node::is_element).collect::<Vec<_>>();
+    if children.len() != 1
+        || node
+            .children()
+            .any(|n| n.is_text() && n.text().is_some_and(|text| !text.trim().is_empty()))
+    {
+        return false;
+    }
+    let child = children[0];
+    child.has_tag_name((XDTO_NS, "typeDef"))
+        && child.attribute((XSI_NS, "type")) == Some("ValueType")
+        && child.attributes().all(|a| {
+            (a.namespace() == Some(XSI_NS) && a.name() == "type")
+                || (a.namespace().is_none()
+                    && (a.name() == "base" || super::facets::NAMES.contains(&a.name())))
+        })
+        && has_exact_compatible_content(child)
+        && child
+            .attribute("base")
+            .is_some_and(|raw| semantic_qname(child, raw) == *base)
+        && super::facets::ValueFacets::from_node(child)
+            .is_ok_and(|actual| actual.equivalent(facets))
 }
 
 fn compatible_empty_object_type(node: Node<'_, '_>) -> bool {

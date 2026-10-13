@@ -89,14 +89,14 @@ writer-а её не обещает.
 | `supported` | `typeDef:ObjectType/property` | `direct-child` |
 | `supported` | `property-identity` | `exactly-one(name,ref)` |
 | `supported` | `ref-target` | `global-property` |
-| `supported` | `owned-type` | `zero-or-one(type,typeDef:ObjectType)` |
+| `supported` | `owned-type` | `zero-or-one(type,typeDef:ObjectType,typeDef:ValueType)` |
 | `supported` | `lowerBound` | `0-or-1;default=1` |
 | `supported` | `upperBound` | `-1-or-integer>=1;default=1` |
 | `supported` | `finite-bounds` | `lower<=upper` |
 | `unsupported` | `valueType/enumeration` | `writer-contract` |
 | `unsupported` | `valueType/pattern` | `writer-contract` |
 | `unsupported` | `valueType/typeDef:ValueType` | `writer-contract` |
-| `unsupported` | `property/typeDef:ValueType` | `writer-contract` |
+| `supported` | `property/typeDef:ValueType` | `direct-child` |
 | `unsupported` | `valueType/memberTypes` | `writer-contract` |
 <!-- xdto-evidence-contract:end -->
 
@@ -154,7 +154,8 @@ writer-а её не обещает.
 объявленного `import` и не сочетается с `type` или вложенным `typeDef`.
 
 Собственное объявление с `name` имеет не более одного определения типа: QName
-в `type` либо вложенный `typeDef xsi:type="ObjectType"`. Они взаимоисключающие;
+в `type` либо вложенный `typeDef xsi:type="ObjectType"` или
+`typeDef xsi:type="ValueType"`. Они взаимоисключающие;
 отсутствие обоих означает произвольный тип. Остальные формы `typeDef` таблица
 явно оставляет unsupported.
 
@@ -195,3 +196,40 @@ namespace-объявления, литералы умолчаний, самоз�
 корня, порядок четырёх групп, импорты и QName-ссылки, локальные типы,
 `ЛюбаяСсылка/СсылкаНаОбъект/typeDef` и самозакрывающийся
 `СоставнойЛюбойОбъект`.
+
+## 9. Ограниченные типы значений
+
+`valueType.add` принимает необязательный объект `facets`. Для анонимного
+определения `property.add` принимает `property.valueType` с `base` и
+необязательным `facets`, взаимоисключающий с `property.type`. Писатель создаёт
+`typeDef xsi:type="ValueType"` без имени, с атрибутом `base`; фасеты также
+записываются атрибутами определения. Это не именованный заменитель.
+
+Поддержаны независимые ограничения `maxLength` для основы XML Schema
+`string` и `totalDigits`, `fractionDigits`, `minInclusive`, `maxInclusive`
+для основы XML Schema `decimal`. Основу определяет URI и локальное имя,
+поэтому алиас префикса допустим. Производные основы с фасетами и другие
+сочетания не поддержаны; прежние типы без фасетов сохраняют прежний договор.
+Пустой объект фасетов равнозначен отсутствию ограничений. Для нового
+анонимного ValueType основа ограничена XML Schema `string` или `decimal`
+даже при пустом объекте фасетов; наследование от локального типа не поддержано.
+
+`maxLength` и `fractionDigits` — неотрицательные целые; `totalDigits` —
+положительное целое. При наличии обоих `fractionDigits <= totalDigits`.
+Границы задаются строками XML decimal без экспоненты; сравнение точное,
+без преобразования к двоичному числу с плавающей точкой. При наличии обеих
+`minInclusive <= maxInclusive`. Неизвестные фасеты и несовместимые сочетания
+отвергаются до записи. Повтор сравнивает весь набор ограничений, QName основы
+и числовое значение границ; он не переписывает существующие литералы.
+
+Чтение именованного типа возвращает `props.facets` как компактную JSON-строку.
+У свойства с анонимным типом доступны `props.anonymousType="ValueType"`,
+`props.base` и `props.facets`. Числовые границы сохраняют исходные строки.
+
+Форма закреплена `tests/fixtures/xdto/restricted-values/Package.bin` и
+проверкой чтения XML в 1С 8.3.27.2214: строка длиной 10 принимается,
+длиной 11 отклоняется, включая кириллицу и анонимное определение.
+Для числа `totalDigits=5`, `fractionDigits=2`, `minInclusive=0` дополнены
+`maxInclusive=999.99`: именно последняя граница запрещает 1000.00.
+Значения 0 и 999.99 принимаются, −0.01, 1000.00 и 0.001 отклоняются.
+Проверка формы не заменяет приёмку результата операции через MCP.

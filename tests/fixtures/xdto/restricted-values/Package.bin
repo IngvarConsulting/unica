@@ -1,0 +1,10 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:unica:anonymous" targetNamespace="urn:unica:anonymous">
+ <valueType name="КодПримера" base="xs:string" maxLength="10"/>
+ <valueType name="СуммаПримера" base="xs:decimal" totalDigits="5" fractionDigits="2" minInclusive="0" maxInclusive="999.99"/>
+ <objectType name="Пример">
+  <property name="Код" type="tns:КодПримера"/>
+  <property name="Сумма" type="tns:СуммаПримера"/>
+  <property name="АнонимныйКод"><typeDef xsi:type="ValueType" base="xs:string" maxLength="10"/></property>
+ </objectType>
+</package>

@@ -2199,15 +2199,29 @@ fn project_xdto(
                 Value::String(serde_json::to_string(base).unwrap_or_default()),
             );
         }
+        if let Some(facets) = item
+            .get("facets")
+            .and_then(|value| bounded_prop("facets", value))
+        {
+            props.insert("facets".to_owned(), facets);
+        }
         let branches = item
             .get("properties")
             .and_then(Value::as_array)
             .filter(|items| !items.is_empty())
             .map(|items| vec![BranchRef::new(format!("{}.Property", address), items.len())])
             .unwrap_or_default();
+        let limits = if item.get("facets").is_some() && !props.contains_key("facets") {
+            vec![format!(
+                "XDTO facets exceed the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"
+            )]
+        } else {
+            Vec::new()
+        };
         return Ok(NodeViewData::Node(
             NodeView::new(address.to_string(), segment.kind().as_str(), name, props)
-                .with_branches(branches),
+                .with_branches(branches)
+                .with_limits(limits),
         ));
     }
     let property = &suffix[1];
@@ -2241,12 +2255,43 @@ fn project_xdto(
 }
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
-    let props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
-    let limits = ["type", "reference", "bounds"]
+    let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
+    if let Some(definitions) = property.get("typeDefs").and_then(Value::as_array) {
+        if let [definition] = definitions.as_slice() {
+            if definition.get("discriminator").and_then(Value::as_str) == Some("ValueType") {
+                props.insert(
+                    "anonymousType".to_owned(),
+                    Value::String("ValueType".to_owned()),
+                );
+                for key in ["base", "facets"] {
+                    if let Some(value) = definition
+                        .get(key)
+                        .and_then(|value| bounded_prop(key, value))
+                    {
+                        props.insert(key.to_owned(), value);
+                    }
+                }
+            }
+        }
+    }
+    let mut limits: Vec<String> = ["type", "reference", "bounds"]
         .into_iter()
         .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
         .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
         .collect();
+    if let Some(definition) = property
+        .get("typeDefs")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+    {
+        if definition.get("discriminator").and_then(Value::as_str) == Some("ValueType") {
+            for key in ["base", "facets"] {
+                if definition.get(key).is_some() && !props.contains_key(key) {
+                    limits.push(format!("XDTO anonymous {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"));
+                }
+            }
+        }
+    }
     NodeView::new(address.to_string(), "Property", name, props).with_limits(limits)
 }
 

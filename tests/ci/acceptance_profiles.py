@@ -52,6 +52,7 @@ SOURCE_WORKSPACES = {
     "tests/fixtures/acceptance/workspace-resolve",
     "tests/fixtures/acceptance/workspace-form-names",
     "tests/fixtures/acceptance/workspace-borrowed",
+    "tests/fixtures/acceptance/workspace-xdto-facets",
     "tests/fixtures/acceptance/workspace",
     "tests/fixtures/acceptance/workspace-format",
     "tests/fixtures/acceptance/workspace-bare",
