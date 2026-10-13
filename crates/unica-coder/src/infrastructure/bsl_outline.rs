@@ -357,7 +357,9 @@ fn method_outline(
     })
 }
 
-fn parameters(syntax: &SyntaxNode) -> Result<Vec<CodeOutlineParameter>, String> {
+/// Declared parameters of one method node, in order, from the parser AST.
+/// The module projection reads them through the same rule as the outline.
+pub(crate) fn parameters(syntax: &SyntaxNode) -> Result<Vec<CodeOutlineParameter>, String> {
     let Some(list) = syntax
         .children()
         .find(|child| child.kind() == SyntaxKind::PARAM_LIST)
