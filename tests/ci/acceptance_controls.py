@@ -128,6 +128,9 @@ def file_value(workspace, descriptor):
     if descriptor["kind"] == "sha256":
         return hashlib.sha256(raw).hexdigest()
     nodes = xml_root(raw).findall(descriptor["select"])
+    if descriptor["kind"] == "xmlTags":
+        # Element order across kinds, which text alone cannot show (#1385).
+        return [node.tag.rpartition("}")[2] for node in nodes]
     return ["".join(node.itertext()) for node in nodes]
 
 
@@ -171,6 +174,8 @@ def validate_file_operand(assertion, expected):
     elif assertion["kind"] == "sha256":
         if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
             raise ValueError("SHA256 operand must be a 64-character lowercase digest")
+    elif assertion["kind"] == "xmlTags" and op not in {"eq", "notEq"}:
+        raise ValueError("xmlTags requires eq or notEq")
     elif op == "contains":
         if not isinstance(expected, str):
             raise ValueError("XML contains operand must be one text string")
@@ -212,7 +217,7 @@ def validate_controls(step, declared=None):
                     expected = assertion[op]
                     if not isinstance(expected, str) or not (re.fullmatch(r"[a-f0-9]{64}", expected) or expected.startswith("$capture.")):
                         raise ValueError("sha256 requires a digest or an earlier capture")
-                elif kind == "xml":
+                elif kind in {"xml", "xmlTags"}:
                     if set(assertion) != {"path", "kind", "select", op} or op == "absent":
                         raise ValueError("unknown XML assertion field or operator")
                     if not isinstance(assertion["select"], str) or not assertion["select"]:

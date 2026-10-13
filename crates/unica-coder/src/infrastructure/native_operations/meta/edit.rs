@@ -194,13 +194,23 @@ pub(super) fn emit_meta_simple_child<F>(
             ));
         }
         "Command" => {
+            // The full property set of an owner command in the 8.3.27
+            // export: a load fills the omitted ones in (#1385).
             lines.push(format!(
                 "{indent}\t\t<Group>FormNavigationPanelGoTo</Group>"
             ));
+            lines.push(format!("{indent}\t\t<CommandParameterType/>"));
+            lines.push(format!(
+                "{indent}\t\t<ParameterUseMode>Single</ParameterUseMode>"
+            ));
+            lines.push(format!("{indent}\t\t<ModifiesData>false</ModifiesData>"));
             lines.push(format!("{indent}\t\t<Representation>Auto</Representation>"));
             lines.push(format!("{indent}\t\t<ToolTip/>"));
             lines.push(format!("{indent}\t\t<Picture/>"));
             lines.push(format!("{indent}\t\t<Shortcut/>"));
+            lines.push(format!(
+                "{indent}\t\t<OnMainServerUnavalableBehavior>Auto</OnMainServerUnavalableBehavior>"
+            ));
         }
         _ => {}
     }
@@ -374,19 +384,6 @@ pub(super) fn meta_edit_ensure_tabular_child_name_free(
     Ok(())
 }
 
-/// The 8.3.27 export orders register children `Resource` before `Attribute`
-/// before `Dimension` (uniform across the reference dump), so appended
-/// collections must land in their canonical slot or the platform reorders the
-/// file on the first roundtrip.
-fn register_collection_slot(tag: &str) -> Option<u8> {
-    match tag {
-        "Resource" => Some(0),
-        "Attribute" => Some(1),
-        "Dimension" => Some(2),
-        _ => None,
-    }
-}
-
 fn inserted_tag(lines: &[String]) -> Option<String> {
     let first = lines.first()?.trim_start();
     let rest = first.strip_prefix('<')?;
@@ -402,23 +399,20 @@ pub(super) fn meta_edit_insert_top_child_object(
         .map_err(|err| format!("XML parse error: {err}"))?;
     let object = meta_edit_object_node(&doc)?;
     if let Some(child_objects) = meta_info_child(object, "ChildObjects") {
-        if let Some(slot) = inserted_tag(lines)
-            .as_deref()
-            .and_then(register_collection_slot)
-        {
-            let anchor = child_objects
-                .children()
-                .filter(|child| child.is_element())
-                .find(|child| {
-                    register_collection_slot(child.tag_name().name())
-                        .is_some_and(|existing| existing > slot)
-                })
-                .map(|child| child.range());
-            if let Some(anchor_range) = anchor {
-                drop(doc);
-                meta_edit_insert_lines_near_node(xml_text, anchor_range, false, lines);
-                return Ok(());
-            }
+        // A new entry lands in its kind's platform slot: before the first
+        // entry of a kind the export writes later, else after all of them.
+        let anchor = inserted_tag(lines).and_then(|tag| {
+            super::xml_model::platform_child_object_successor(
+                object.tag_name().name(),
+                child_objects,
+                &tag,
+            )
+            .map(|child| child.range())
+        });
+        if let Some(anchor_range) = anchor {
+            drop(doc);
+            meta_edit_insert_lines_near_node(xml_text, anchor_range, false, lines);
+            return Ok(());
         }
         let range = child_objects.range();
         drop(doc);
@@ -5117,6 +5111,15 @@ fn update_typed_element(
     let mut updated_node = node_xml;
     updated_node.replace_range(properties_range, &properties_text);
     xml_text.replace_range(range, &updated_node);
+    if let Some(new_name) = update
+        .new_name
+        .as_deref()
+        .filter(|name| *name != update.name)
+    {
+        if collection == MetaCollection::TabularSections {
+            rename_tabular_section_generated_types(xml_text, new_name)?;
+        }
+    }
     if let Some(position) = &update.position {
         let current_name = update.new_name.as_deref().unwrap_or(&update.name);
         let range = find_typed_element_range(xml_text, tag, scope, current_name)?;
@@ -5139,6 +5142,62 @@ fn update_typed_element(
                 Some("position"),
             )
         })?;
+    }
+    Ok(())
+}
+
+/// A tabular section's generated types carry its name
+/// (`CatalogTabularSection.<Owner>.<Name>`, `CatalogTabularSectionRow.<Owner>.<Name>`).
+/// The platform renames them with the section, so a rename that kept the old
+/// names would be rewritten by the first load and export (#1385). Their
+/// `TypeId`/`ValueId` stay: the types are the same, only their names change.
+fn rename_tabular_section_generated_types(
+    xml_text: &mut String,
+    section_name: &str,
+) -> Result<(), MetaDiagnostic> {
+    let body = xml_text.trim_start_matches('\u{feff}');
+    let shift = xml_text.len() - body.len();
+    let unavailable = || {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "tabular section generated types could not be renamed",
+            Some("newName"),
+        )
+    };
+    let doc = Document::parse(body).map_err(|_| unavailable())?;
+    let object = meta_edit_object_node(&doc).map_err(|_| unavailable())?;
+    let section = meta_edit_find_tabular_section(object, section_name).ok_or_else(unavailable)?;
+    let mut edits = Vec::new();
+    if let Some(internal_info) = meta_info_child(section, "InternalInfo") {
+        for generated in internal_info
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "GeneratedType")
+        {
+            if !matches!(
+                generated.attribute("category"),
+                Some("TabularSection" | "TabularSectionRow")
+            ) {
+                continue;
+            }
+            let Some(name) = generated
+                .attributes()
+                .find(|attribute| attribute.name() == "name" && attribute.namespace().is_none())
+            else {
+                continue;
+            };
+            let Some((prefix, _)) = name.value().rsplit_once('.') else {
+                continue;
+            };
+            let range = name.range_value();
+            edits.push((
+                shift + range.start..shift + range.end,
+                escape_xml(&format!("{prefix}.{section_name}")),
+            ));
+        }
+    }
+    drop(doc);
+    for (range, value) in edits.into_iter().rev() {
+        xml_text.replace_range(range, &value);
     }
     Ok(())
 }
@@ -6036,6 +6095,150 @@ pub(crate) mod tests {
         }
     }
 
+    /// #1385: the 8.3.27 export groups an owner's `ChildObjects` by kind in an
+    /// order of its own per owner kind (settled by load and export of
+    /// reverse-ordered descriptors), so a new entry lands before the first
+    /// entry of a later kind, else at the end.
+    #[test]
+    fn child_objects_insert_into_the_platform_slot_of_their_owner_kind() {
+        fn owner_xml(kind: &str, children: &[(&str, &str)]) -> String {
+            let mut body = String::new();
+            for (tag, name) in children {
+                if matches!(*tag, "Form" | "Template") {
+                    body.push_str(&format!("\t\t\t<{tag}>{name}</{tag}>\n"));
+                } else {
+                    body.push_str(&format!(
+                        "\t\t\t<{tag} uuid=\"22222222-2222-4222-8222-222222222222\">\n\t\t\t\t<Properties><Name>{name}</Name></Properties>\n\t\t\t</{tag}>\n"
+                    ));
+                }
+            }
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\n\t<{kind} uuid=\"11111111-1111-4111-8111-111111111111\">\n\t\t<Properties><Name>Owner</Name></Properties>\n\t\t<ChildObjects>\n{body}\t\t</ChildObjects>\n\t</{kind}>\n</MetaDataObject>\n"
+            )
+        }
+        fn child_names(xml: &str) -> Vec<String> {
+            let doc = Document::parse(xml).unwrap();
+            let object = meta_edit_object_node(&doc).unwrap();
+            meta_info_child(object, "ChildObjects")
+                .unwrap()
+                .children()
+                .filter(|child| child.is_element())
+                .map(|child| {
+                    meta_edit_child_object_name(child)
+                        .unwrap_or_else(|| child.text().unwrap_or_default().to_string())
+                })
+                .collect()
+        }
+        type Case = (
+            &'static str,
+            &'static [(&'static str, &'static str)],
+            &'static str,
+            &'static [&'static str],
+        );
+        let cases: &[Case] = &[
+            // the header attribute of a catalog goes before its sections
+            (
+                "Catalog",
+                &[
+                    ("Attribute", "A"),
+                    ("TabularSection", "T"),
+                    ("Form", "F"),
+                    ("Command", "C"),
+                ],
+                "Attribute",
+                &["A", "New", "T", "F", "C"],
+            ),
+            (
+                "Catalog",
+                &[("Attribute", "A"), ("TabularSection", "T"), ("Form", "F")],
+                "TabularSection",
+                &["A", "T", "New", "F"],
+            ),
+            // a document writes its forms before its tabular sections
+            (
+                "Document",
+                &[
+                    ("Attribute", "A"),
+                    ("Form", "F"),
+                    ("TabularSection", "T"),
+                    ("Command", "C"),
+                ],
+                "TabularSection",
+                &["A", "F", "T", "New", "C"],
+            ),
+            (
+                "Document",
+                &[("Form", "F"), ("TabularSection", "T")],
+                "Attribute",
+                &["New", "F", "T"],
+            ),
+            // commands close every object; templates come before them
+            (
+                "Enum",
+                &[("EnumValue", "V"), ("Command", "C")],
+                "EnumValue",
+                &["V", "New", "C"],
+            ),
+            (
+                "Task",
+                &[
+                    ("Attribute", "A"),
+                    ("AddressingAttribute", "AA"),
+                    ("Command", "C"),
+                ],
+                "TabularSection",
+                &["A", "New", "AA", "C"],
+            ),
+            // an accounting register starts with its dimensions
+            (
+                "AccountingRegister",
+                &[("Dimension", "D"), ("Resource", "R"), ("Attribute", "A")],
+                "Dimension",
+                &["D", "New", "R", "A"],
+            ),
+            (
+                "AccumulationRegister",
+                &[
+                    ("Resource", "R"),
+                    ("Attribute", "A"),
+                    ("Dimension", "D"),
+                    ("Command", "C"),
+                ],
+                "Dimension",
+                &["R", "A", "D", "New", "C"],
+            ),
+            (
+                "CalculationRegister",
+                &[("Resource", "R"), ("Recalculation", "P"), ("Template", "M")],
+                "Dimension",
+                &["R", "New", "P", "M"],
+            ),
+            (
+                "DocumentJournal",
+                &[("Column", "K"), ("Template", "M")],
+                "Command",
+                &["K", "M", "New"],
+            ),
+        ];
+        for (kind, existing, inserted, expected) in cases {
+            let mut xml = owner_xml(kind, existing);
+            meta_edit_insert_top_child_object(
+                &mut xml,
+                &[
+                    format!("\t\t\t<{inserted} uuid=\"33333333-3333-4333-8333-333333333333\">"),
+                    "\t\t\t\t<Properties><Name>New</Name></Properties>".to_string(),
+                    format!("\t\t\t</{inserted}>"),
+                ],
+            )
+            .unwrap();
+            assert_eq!(
+                child_names(&xml),
+                *expected,
+                "{kind}: insert {inserted} into {existing:?}"
+            );
+        }
+    }
+
     #[test]
     fn typed_fill_parser_uses_the_exact_xsd_timezone_boundary() {
         for (timezone, valid) in [
@@ -6819,6 +7022,151 @@ pub(crate) mod tests {
             apply_typed_operations(&mut xml, &operations).unwrap();
             assert!(!xml.contains(&format!("<{tag} uuid=")), "{collection:?}");
         }
+    }
+
+    /// #1385: the platform names a tabular section's generated types after
+    /// it and renames them with it; their ids stay. Every other byte of the
+    /// platform descriptor survives the rename.
+    #[test]
+    fn tabular_section_rename_renames_its_generated_types_and_keeps_their_ids() {
+        let original = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acceptance/workspace/src/Catalogs/Валюты.xml"
+        ));
+        let mut xml = original.to_string();
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::update(
+                MetaCollection::TabularSections,
+                None,
+                vec![MetaElementUpdateInput {
+                    name: "Представления".into(),
+                    new_name: Some("Переводы".into()),
+                    ..MetaElementUpdateInput::default()
+                }],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+
+        let expected = original
+            .replacen(
+                r#"name="CatalogTabularSection.Валюты.Представления""#,
+                r#"name="CatalogTabularSection.Валюты.Переводы""#,
+                1,
+            )
+            .replacen(
+                r#"name="CatalogTabularSectionRow.Валюты.Представления""#,
+                r#"name="CatalogTabularSectionRow.Валюты.Переводы""#,
+                1,
+            )
+            .replacen("<Name>Представления</Name>", "<Name>Переводы</Name>", 1);
+        assert_ne!(expected, original, "fixture must name the section's types");
+        let first_difference = xml
+            .char_indices()
+            .zip(expected.chars())
+            .find(|((_, left), right)| left != right)
+            .map(|((index, _), _)| index);
+        assert!(
+            xml == expected,
+            "renamed descriptor differs from the platform shape at byte {first_difference:?} \
+             (lengths {} and {})",
+            xml.len(),
+            expected.len()
+        );
+    }
+
+    /// #1385: the 8.3.27 export writes `Use` before `LineNumberLength`; the
+    /// sections of catalogs and characteristic-type charts carry both,
+    /// documents only `LineNumberLength`, data processors neither.
+    #[test]
+    fn new_tabular_section_properties_end_in_the_platform_order() {
+        for (kind, tail) in [
+            (
+                "Catalog",
+                &["StandardAttributes", "Use", "LineNumberLength"][..],
+            ),
+            (
+                "ChartOfCharacteristicTypes",
+                &["StandardAttributes", "Use", "LineNumberLength"][..],
+            ),
+            (
+                "Document",
+                &["FillChecking", "StandardAttributes", "LineNumberLength"][..],
+            ),
+            (
+                "DataProcessor",
+                &["ToolTip", "FillChecking", "StandardAttributes"][..],
+            ),
+        ] {
+            let mut xml = object_xml(kind, "Owner", "");
+            apply_typed_operations(
+                &mut xml,
+                &[MetaEditOperation::add(
+                    MetaCollection::TabularSections,
+                    None,
+                    vec![MetaElementInput::named("Rows")],
+                )
+                .unwrap()],
+            )
+            .unwrap();
+            let document = Document::parse(&xml).unwrap();
+            let object = meta_edit_object_node(&document).unwrap();
+            let section = meta_edit_find_tabular_section(object, "Rows").unwrap();
+            let properties = meta_info_child(section, "Properties")
+                .unwrap()
+                .children()
+                .filter(|node| node.is_element())
+                .map(|node| node.tag_name().name())
+                .collect::<Vec<_>>();
+            assert_eq!(&properties[properties.len() - tail.len()..], tail, "{kind}");
+        }
+    }
+
+    /// #1385: an owner command carries the property set of the 8.3.27 export.
+    #[test]
+    fn new_owner_command_has_the_platform_property_set() {
+        let mut xml = object_xml("Catalog", "Owner", "");
+        apply_typed_operations(
+            &mut xml,
+            &[MetaEditOperation::add(
+                MetaCollection::Commands,
+                None,
+                vec![MetaElementInput::named("Open")],
+            )
+            .unwrap()],
+        )
+        .unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let object = meta_edit_object_node(&document).unwrap();
+        let command =
+            meta_info_children(meta_info_child(object, "ChildObjects").unwrap(), "Command")
+                .into_iter()
+                .next()
+                .unwrap();
+        let properties = meta_info_child(command, "Properties")
+            .unwrap()
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            properties,
+            [
+                "Name",
+                "Synonym",
+                "Comment",
+                "Group",
+                "CommandParameterType",
+                "ParameterUseMode",
+                "ModifiesData",
+                "Representation",
+                "ToolTip",
+                "Picture",
+                "Shortcut",
+                "OnMainServerUnavalableBehavior",
+            ]
+        );
     }
 
     #[test]

@@ -55,9 +55,13 @@ repeated in the message) instead of calling again; a client with native
 Tasks receives that Task directly. `task_not_found` for that id means the
 daemon no longer knows the call, for example after a restart: inspect the
 actual state before repeating `apply` or `run`. `submit_not_delivered` means
-the call never reached the daemon and will not run; repeat it as is. A
-refused connection (`task_backend_failed` with `needsHuman`) will not pass on
-a repeat. An identical read repeated shortly after the first one joins that
+the call never reached the daemon and will not run; repeat it as is.
+`provider_limit_exceeded` whose message names the daemon request limit means
+the call is larger than the daemon accepts: it was not sent and will not run,
+and the message names both sizes. Reduce the call; several smaller calls each
+apply separately.
+A refused connection (`task_backend_failed` with `needsHuman`) will not pass
+on a repeat. An identical read repeated shortly after the first one joins that
 work under its own `taskId` only while no source changed since it began;
 `apply` and `run` never do, so never repeat them blindly.
 
