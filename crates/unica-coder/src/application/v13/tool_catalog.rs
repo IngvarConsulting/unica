@@ -348,17 +348,8 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                 },
                 V13ToolContract {
                     name: "diff",
-                    description: "Compare two readable logical nodes of the same kind without changing files.",
-                    input_schema: schema(
-                        json!({
-                            "left": logical_address_with("Qualified logical address of the left node."),
-                            "right": logical_address_with("Qualified logical address of the right node."),
-                            // No `cursor` until continuation is wired (#1217): a truncated
-                            // answer says so and asks for a narrower comparison instead.
-                            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Maximum differences to return, from 1 to 1000; omit for 100. A truncated answer has no continuation: compare smaller nodes or raise limit."},
-                        }),
-                        json!(["left", "right"]),
-                    ),
+                    description: "Compare readable logical nodes, or read exact source changes from a saved apply plan before execution.",
+                    input_schema: schema_for_plan_diff(),
                 },
                 V13ToolContract {
                     name: "run",
@@ -426,6 +417,33 @@ fn schema_for_saved_apply_plan(properties: Value, required: Value) -> Value {
     result["if"] = json!({"required": ["executionToken"]});
     result["then"] = execute;
     result["else"] = plan;
+    result
+}
+
+fn schema_for_plan_diff() -> Value {
+    let limit = json!({"type": "integer", "minimum": 1, "maximum": 1000,
+        "description": "Maximum differences or saved source chunks; default 100. Saved-plan pages are also bounded by encoded bytes."});
+    let compare = schema(
+        json!({"left": logical_address_with("Qualified logical address of the left node."), "right": logical_address_with("Qualified logical address of the right node."), "limit": limit}),
+        json!(["left", "right"]),
+    );
+    let saved = schema(
+        json!({
+            "executionToken": {"type": "string", "minLength": 1, "description": "Token from apply planning; reads stored before/after bytes without executing."},
+            "limit": limit,
+            "cursor": cursor("Continue the same saved plan with the same limit. Only saved-plan reads support continuation.")
+        }),
+        json!(["executionToken"]),
+    );
+    let mut properties = compare["properties"].clone();
+    properties
+        .as_object_mut()
+        .unwrap()
+        .extend(saved["properties"].as_object().unwrap().clone());
+    let mut result = schema(properties, json!([]));
+    result["if"] = json!({"required": ["executionToken"]});
+    result["then"] = saved;
+    result["else"] = compare;
     result
 }
 
@@ -784,12 +802,12 @@ mod tests {
         for (field, kind) in [("at", "string"), ("limit", "integer"), ("cursor", "string")] {
             assert_eq!(check.input_schema["properties"][field]["type"], kind);
         }
-        // Diff continuation is not wired (#1217); the schema must not offer it.
+        // Only the saved-plan alternative supports continuation.
         assert_schema(
             &catalog.tools,
             "diff",
-            json!(["left", "right"]),
-            &["left", "right", "limit"],
+            json!([]),
+            &["left", "right", "limit", "executionToken", "cursor"],
         );
         assert_schema(
             &catalog.tools,

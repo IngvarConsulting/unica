@@ -3,6 +3,7 @@ pub(crate) mod body_snapshot;
 pub(crate) mod check;
 pub(crate) mod diff;
 pub(crate) mod find;
+pub(crate) mod plan_diff;
 pub(crate) mod resolve;
 pub(crate) mod task_tools;
 pub(crate) mod tool_catalog;

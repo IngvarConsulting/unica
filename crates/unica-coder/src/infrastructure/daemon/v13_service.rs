@@ -388,6 +388,9 @@ impl CanonicalV13ReadService {
                     json!(token);
                 result
                     .next
+                    .push(json!({"tool": "unica.diff", "arguments": {"executionToken": token}}));
+                result
+                    .next
                     .push(json!({"tool": "unica.apply", "arguments": {"executionToken": token}}));
                 result
             }
@@ -2062,6 +2065,65 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let arguments = invocation.arguments();
+        if arguments.contains_key("executionToken") {
+            let Some(token) = arguments
+                .get("executionToken")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+            else {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "diff executionToken must be a nonempty string",
+                );
+            };
+            if arguments
+                .keys()
+                .any(|key| !matches!(key.as_str(), "executionToken" | "limit" | "cursor"))
+            {
+                return error_result(
+                    None,
+                    RefusalCode::BadValue,
+                    "saved-plan diff accepts only executionToken, limit and cursor",
+                );
+            }
+            let limit = match arguments.get("limit") {
+                None => 100,
+                Some(value) => match bounded_usize(value).filter(|limit| *limit <= 1000) {
+                    Some(limit) => limit,
+                    None => {
+                        return error_result(
+                            None,
+                            RefusalCode::BadValue,
+                            "diff limit must be an integer from 1 through 1000",
+                        )
+                    }
+                },
+            };
+            let cursor = match arguments.get("cursor") {
+                None => None,
+                Some(Value::String(cursor)) => Some(cursor.as_str()),
+                Some(_) => {
+                    return error_result(
+                        None,
+                        RefusalCode::BadValue,
+                        "diff cursor must be a string",
+                    )
+                }
+            };
+            return match invocation.read_saved_apply_diff(token, limit, cursor, cancellation) {
+                Ok(page) => {
+                    let mut result =
+                        DomainResult::success("exact saved source ranges read without execution");
+                    if let Some(cursor) = page["cursor"].as_str() {
+                        result.next.push(json!({"tool": "unica.diff", "arguments": {"executionToken": token, "limit": limit, "cursor": cursor}}));
+                    }
+                    result.data = Some(page);
+                    result
+                }
+                Err(error) => saved_apply_execution_error_result(error),
+            };
+        }
         let Some(left) = arguments.get("left").and_then(Value::as_str) else {
             return error_result(
                 None,
@@ -3227,6 +3289,11 @@ fn apply_staging_refusal(
 
 fn saved_apply_execution_error_result(error: SavedApplyExecutionError) -> DomainResult {
     match error {
+        SavedApplyExecutionError::Busy => error_result_detailed(
+            None,
+            RefusalDetail::BackendBusy,
+            "saved plan is busy; retry the read after the current operation",
+        ),
         SavedApplyExecutionError::Unavailable(message) => {
             error_result(None, RefusalCode::BadValue, message)
         }
@@ -4465,6 +4532,11 @@ mod tests {
         use super::SavedApplyExecutionError;
         use crate::infrastructure::workspace_actor::ApplyPublicationError;
         for (error, code, outcome) in [
+            (
+                SavedApplyExecutionError::Busy,
+                "task_backend_failed",
+                "retry",
+            ),
             (
                 SavedApplyExecutionError::RegistryUnavailable,
                 "invalid_state",

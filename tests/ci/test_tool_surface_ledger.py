@@ -216,8 +216,9 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             # логические: ни один не называет файл.
             "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "limit", "cursor"},
             "unica.check": {"at", "limit", "cursor"},
-            # Продолжения сравнения нет (#1218): курсор не публикуется.
-            "unica.diff": {"left", "right", "limit"},
+            # Курсор есть только у чтения сохранённого плана; сравнение
+            # left/right по-прежнему не публикует продолжение (#1218).
+            "unica.diff": {"left", "right", "limit", "executionToken", "cursor"},
             "unica.run": {"op", "args", "dryRun", "infobase"},
             "unica.docs": {"query", "source", "limit", "cursor"},
         }
