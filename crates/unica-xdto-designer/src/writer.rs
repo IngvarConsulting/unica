@@ -278,34 +278,41 @@ pub fn plan_typed(
                 ));
                 None
             } else {
-                let indent = infer_child_indent(before, target).map_err(writer_invalid_source)?;
-                let parent_indent = exact_line_indent(before, target.range().start)
-                    .map_err(writer_invalid_source)?;
-                let unit = indent
-                    .strip_prefix(parent_indent)
-                    .filter(|v| !v.is_empty())
-                    .unwrap_or("\t");
-                let eol = observed_eol(
-                    before,
-                    local_eol_after(before, target.range().end).or_else(|| {
-                        local_eol_before(before, line_start(before, target.range().start))
-                    }),
-                )
-                .map_err(writer_invalid_source)?;
                 let property_name = lexical_xdto_child_name(before, target, "property")
                     .map_err(writer_invalid_source)?;
-                let definition_name = lexical_xdto_child_name(before, target, "typeDef")
+                let fragment = if matches!(property.definition, XdtoPropertyDefinition::Named(_)) {
+                    // A leaf property needs only the existing insertion layout.
+                    // Requiring a multiline ObjectType layout here rejects legacy inputs.
+                    render_property_tree(root, target, property, &property_name, "", "", "", "")
+                } else {
+                    let indent =
+                        infer_child_indent(before, target).map_err(writer_invalid_source)?;
+                    let parent_indent = exact_line_indent(before, target.range().start)
+                        .map_err(writer_invalid_source)?;
+                    let unit = indent
+                        .strip_prefix(parent_indent)
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or("\t");
+                    let eol = observed_eol(
+                        before,
+                        local_eol_after(before, target.range().end).or_else(|| {
+                            local_eol_before(before, line_start(before, target.range().start))
+                        }),
+                    )
                     .map_err(writer_invalid_source)?;
-                let fragment = render_property_tree(
-                    root,
-                    target,
-                    property,
-                    &property_name,
-                    &definition_name,
-                    &indent,
-                    unit,
-                    eol,
-                );
+                    let definition_name = lexical_xdto_child_name(before, target, "typeDef")
+                        .map_err(writer_invalid_source)?;
+                    render_property_tree(
+                        root,
+                        target,
+                        property,
+                        &property_name,
+                        &definition_name,
+                        &indent,
+                        unit,
+                        eol,
+                    )
+                };
                 Some(insert_child(before, target, &fragment).map_err(writer_invalid_source)?)
             }
         }
