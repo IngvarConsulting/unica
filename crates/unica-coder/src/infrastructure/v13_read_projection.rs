@@ -2189,6 +2189,12 @@ fn project_xdto(
         )
     })?;
     if suffix.len() == 1 {
+        if segment.kind() == NodeKind::Property {
+            return Ok(NodeViewData::Node(
+                xdto_property_node(address, name, item)
+                    .with_branches(xdto_property_branch(address, item)?),
+            ));
+        }
         let mut props = reader_node_props(LogicalReader::Xdto, segment.kind(), item);
         if let Some(base) = item.get("base") {
             props.insert(
@@ -2236,13 +2242,8 @@ fn project_xdto(
         })?;
         if last {
             return Ok(NodeViewData::Node(
-                NodeView::new(
-                    address.to_string(),
-                    "Property",
-                    property_name,
-                    reader_node_props(LogicalReader::Xdto, NodeKind::Property, current),
-                )
-                .with_branches(xdto_property_branch(address, current)?),
+                xdto_property_node(address, property_name, current)
+                    .with_branches(xdto_property_branch(address, current)?),
             ));
         }
     }
@@ -2285,6 +2286,16 @@ fn xdto_property_branch(
         .filter(|items| !items.is_empty())
         .map(|items| vec![BranchRef::new(format!("{address}.Property"), items.len())])
         .unwrap_or_default())
+}
+
+fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
+    let props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
+    let limits = ["type", "reference", "bounds"]
+        .into_iter()
+        .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
+        .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
+        .collect();
+    NodeView::new(address.to_string(), "Property", name, props).with_limits(limits)
 }
 
 /// Свойства объекта метаданных — это `props` его узла.
@@ -2524,7 +2535,15 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         }
         (LogicalReader::Xdto, NodeKind::Type) => &["kind", "abstract", "mixed"],
         (LogicalReader::Xdto, NodeKind::Property) => {
-            &["type", "minOccurs", "maxOccurs", "nillable"]
+            return ["type", "reference", "bounds"]
+                .into_iter()
+                .filter_map(|key| {
+                    value
+                        .get(key)
+                        .and_then(|value| bounded_prop(key, value))
+                        .map(|value| (key.to_string(), value))
+                })
+                .collect();
         }
         _ => &[],
     };

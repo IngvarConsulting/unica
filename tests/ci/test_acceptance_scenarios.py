@@ -524,13 +524,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 422)
+        self.assertEqual(len(scenarios), 423)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1121,
-            "a wire step went missing: the corpus freezes 1121 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1124,
+            "a wire step went missing: the corpus freezes 1124 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 423)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 424)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
