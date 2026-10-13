@@ -523,14 +523,18 @@ enum OperationApplicability {
     Role,
     /// Подсистема любой вложенности.
     Subsystem,
+    /// Вложенная подсистема: исключение из состава её родителя.
+    NestedSubsystem,
     /// Командный интерфейс подсистемы.
     Interface,
     /// Макет-схема компоновки как узел владельца.
     DcsSchema,
     /// Макет-схема или её набор данных: место нового набора.
     DcsDataContainer,
-    /// Набор данных или запрос схемы.
+    /// Набор данных схемы.
     DcsData,
+    /// Набор данных схемы или его запрос `DataSet.D.Query`.
+    DcsQuery,
     /// Вариант настроек схемы.
     DcsSettings,
     /// Параметр схемы.
@@ -585,10 +589,12 @@ impl OperationApplicability {
             Self::FormOrItem => "`Kind.Name.Form.F[.Item.I]`",
             Self::Role => "`Role.Name`",
             Self::Subsystem => "`Subsystem.Name[.Subsystem.Child]`",
+            Self::NestedSubsystem => "`Subsystem.Parent.Subsystem.Child`",
             Self::Interface => "`Subsystem.Name[.Subsystem.Child].Interface`",
             Self::DcsSchema => "`Kind.Name.Template.T` of a data composition schema",
             Self::DcsDataContainer => "`Kind.Name.Template.T[.DataSet.D]` of a schema",
-            Self::DcsData => "`Kind.Name.Template.T.DataSet.D` or `.Query.Q`",
+            Self::DcsData => "`Kind.Name.Template.T.DataSet.D`",
+            Self::DcsQuery => "`Kind.Name.Template.T.DataSet.D` or `.DataSet.D.Query`",
             Self::DcsSettings => "`Kind.Name.Template.T.Setting.S`",
             Self::DcsParameter => "`Kind.Name.Template.T.Parameter.P`",
             Self::DcsField => "`Kind.Name.Template.T.DataSet.D.Field.F`",
@@ -705,6 +711,7 @@ impl OperationApplicability {
                         segment.kind() == NodeKind::Subsystem && segment.name().is_some()
                     })
             }
+            Self::NestedSubsystem => Self::Subsystem.matches(site) && site.segments().len() > 1,
             Self::Interface => {
                 site.route == RouteClass::Interface
                     && terminal.kind() == NodeKind::Interface
@@ -716,7 +723,16 @@ impl OperationApplicability {
             Self::DcsDataContainer => {
                 site.owned_template() || site.dcs_terminal(&[NodeKind::DataSet])
             }
-            Self::DcsData => site.dcs_terminal(&[NodeKind::DataSet, NodeKind::Query]),
+            Self::DcsData => site.dcs_terminal(&[NodeKind::DataSet]),
+            Self::DcsQuery => {
+                site.dcs_terminal(&[NodeKind::DataSet])
+                    || (site.route == RouteClass::Dcs
+                        && matches!(segments, [.., data_set, query]
+                            if query.kind() == NodeKind::Query
+                                && query.name().is_none()
+                                && data_set.kind() == NodeKind::DataSet
+                                && data_set.name().is_some()))
+            }
             Self::DcsSettings => site.dcs_terminal(&[NodeKind::Setting]),
             Self::DcsParameter => site.dcs_terminal(&[NodeKind::Parameter]),
             Self::DcsField => site.dcs_terminal(&[NodeKind::Field]),
@@ -1056,6 +1072,43 @@ impl OperationDescriptor {
         })
     }
 
+    /// Операция создаёт узел своего адреса: до её исполнения узла нет, и
+    /// `next` не ведёт к нему, а только к ветви узлов этого вида.
+    pub(crate) fn creates_its_subject(self) -> bool {
+        self.name == "form.create"
+    }
+
+    /// Адрес, на котором операция исполнима вместо снятого псевдонима
+    /// запроса `Template.T.Query.D` (#1353): запрос набора
+    /// `Template.T.DataSet.D.Query` или сам набор.
+    pub(crate) fn retired_query_alias_target(
+        self,
+        site: &OperationSite<'_>,
+    ) -> Option<QualifiedAddress> {
+        let segments = site.segments();
+        let position = segments
+            .iter()
+            .position(|segment| segment.kind() == NodeKind::Query && segment.name().is_some())?;
+        if site.route != RouteClass::Dcs
+            || position == 0
+            || segments[position - 1].kind() != NodeKind::Template
+        {
+            return None;
+        }
+        let name = segments[position].name()?;
+        let template = QualifiedAddress {
+            source_set: site.at.source_set().to_string(),
+            segments: segments[..position].to_vec(),
+        };
+        [".Query", ""].into_iter().find_map(|suffix| {
+            let candidate =
+                QualifiedAddress::parse(&format!("{template}.DataSet.{name}{suffix}")).ok()?;
+            OperationSite::new(&candidate, site.source)
+                .is_some_and(|target| self.applies_at(&target))
+                .then_some(candidate)
+        })
+    }
+
     /// Форма адреса, на котором операция исполнима: подсказка отказа, когда
     /// ближайшего такого узла нет.
     pub(crate) const fn address_shape(self) -> &'static str {
@@ -1223,8 +1276,8 @@ operation_descriptors!(
     ("variant.add", Dcs, DcsSchema, Items),
     ("variant.set", Dcs, DcsSchema, Values),
     ("variant.remove", Dcs, DcsSchema, Values),
-    ("query.set", Dcs, DcsData, Values),
-    ("query.patch", Dcs, DcsData, Values),
+    ("query.set", Dcs, DcsQuery, Values),
+    ("query.patch", Dcs, DcsQuery, Values),
     ("filter.add", Dcs, DcsSettings, Items),
     ("filter.set", Dcs, DcsSettings, Values),
     ("filter.remove", Dcs, DcsSettings, Values),
@@ -1264,7 +1317,7 @@ operation_descriptors!(
     ("content.add", Subsystem, Subsystem, Items),
     ("content.remove", Subsystem, Subsystem, Target),
     ("childSubsystem.add", Subsystem, Subsystem, Items),
-    ("childSubsystem.remove", Subsystem, Subsystem, Target),
+    ("childSubsystem.remove", Subsystem, NestedSubsystem, Target),
     ("supportCapability.set", Support, Configuration, Values),
     ("supportRule.set", Support, SupportRule, Values),
     ("commandVisibility.set", Interface, Interface, Items),
@@ -1284,14 +1337,18 @@ operation_descriptors!(
 /// адреса, где этот предмет теперь задаётся.
 ///
 /// Предмет операции задаёт `at`; аргумент, называвший подузел, снимается,
-/// когда операция переезжает на адрес подузла. Таблица — единственный
+/// когда операция переезжает на адрес подузла, а аргумент, дублировавший
+/// или переопределявший `at`, — без переезда (П2, #1353). Таблица — единственный
 /// владелец этого отображения: предварительная проверка `apply` читает её до
 /// вердикта «не тот узел», и старый вызов получает `bad_value` с адресом в
 /// `next`, а не тупик «операция не применима здесь».
 ///
 /// `key` — путь внутри `args`: точки разделяют ключи объектов, `[]` обходит
-/// массив (`items[].into`). В `address` подставляются `{at}` — адрес вызова —
-/// и `{value}` — строковое значение снятого ключа. Шаблон, который
+/// массив (`items[].into`), а `items[]` без продолжения берёт элемент-строку. В `address` подставляются `{at}` — адрес вызова,
+/// `{at^Kind}` — начало адреса вызова до последнего сегмента вида `Kind`
+/// включительно (`Module` — и общий модуль), и `{value}` — строковое
+/// значение снятого ключа. Если в адресе вызова нет сегмента `Kind`, запись
+/// адреса не строит. Шаблон, который
 /// кончается на `.{name}` вместо `{value}`, — для ключа, который называл
 /// подузел не его именем (идентификатором предопределённого элемента):
 /// адрес из значения не строится, и отказ ведёт к чтению коллекции, где
@@ -1400,6 +1457,59 @@ retired_arguments!(
         "{at}.PredefinedItem.{name}",
         true
     ),
+    // Аргументы, дублировавшие `at` (П2, #1353). Значение называло узел
+    // в обход адреса: отказ ведёт к узлу, который оно называло.
+    (
+        "query.set",
+        "values.dataSet",
+        "{at^Template}.DataSet.{value}",
+        true
+    ),
+    (
+        "query.patch",
+        "values.dataSet",
+        "{at^Template}.DataSet.{value}",
+        true
+    ),
+    (
+        "structure.set",
+        "values.variant",
+        "{at^Template}.Setting.{value}",
+        true
+    ),
+    (
+        "structure.patch",
+        "values.variant",
+        "{at^Template}.Setting.{value}",
+        true
+    ),
+    // Имя формы повторяло её адрес; на владельце оно называло форму.
+    ("form.create", "values.name", "{at}", true),
+    ("form.create", "values.name", "{at}.Form.{value}", true),
+    (
+        "childSubsystem.remove",
+        "items[].name",
+        "{at}.Subsystem.{value}",
+        true
+    ),
+    (
+        "childSubsystem.remove",
+        "items[]",
+        "{at}.Subsystem.{value}",
+        true
+    ),
+    (
+        "childSubsystem.remove",
+        "values.name",
+        "{at}.Subsystem.{value}",
+        true
+    ),
+    (
+        "code.replace",
+        "selector.method",
+        "{at^Module}.Method.{value}",
+        true
+    ),
     // Формы (П4, #1355): элемент события задаётся адресом `Item`.
     ("event.bind", "values.element", "{at}.Item.{value}", false),
 );
@@ -1433,7 +1543,7 @@ impl RetiredArgument {
         // Адрес собирается подстановкой в строку и разбирается заново: единого
         // построителя адреса пока нет, он появится в П5 (#1356) вместе с
         // экранированием точки в именах; тогда подстановку заменит он.
-        let raw = self.address.replace("{at}", &at.to_string());
+        let raw = expand_anchor(self.address, at)?.replace("{at}", &at.to_string());
         if let Some(collection) = raw.strip_suffix(".{name}") {
             return Some(ArgumentRedirect {
                 location,
@@ -1461,6 +1571,31 @@ impl ArgumentRedirect {
     }
 }
 
+/// Подставляет `{at^Kind}`: начало `at` до последнего сегмента вида `Kind`
+/// включительно. `None` — такого сегмента в адресе нет.
+fn expand_anchor(template: &str, at: &QualifiedAddress) -> Option<String> {
+    let Some(start) = template.find("{at^") else {
+        return Some(template.to_string());
+    };
+    let rest = &template[start + "{at^".len()..];
+    let end = rest.find('}')?;
+    let kind = &rest[..end];
+    let matches = |segment: &AddressSegment| match kind {
+        "Module" => matches!(segment.kind(), NodeKind::Module | NodeKind::CommonModule),
+        kind => segment.kind().as_str() == kind,
+    };
+    let length = at.segments().iter().rposition(matches)? + 1;
+    let anchor = QualifiedAddress {
+        source_set: at.source_set().to_string(),
+        segments: at.segments()[..length].to_vec(),
+    };
+    Some(format!(
+        "{}{anchor}{}",
+        &template[..start],
+        &rest[end + 1..]
+    ))
+}
+
 /// Первое строковое значение по пути `key` и его точное место.
 fn find_key(value: &Value, key: &str, prefix: String) -> Option<(String, String)> {
     let (head, rest) = match key.split_once('.') {
@@ -1476,7 +1611,14 @@ fn find_key(value: &Value, key: &str, prefix: String) -> Option<(String, String)
     };
     if let Some(name) = head.strip_suffix("[]") {
         let items = value.get(name)?.as_array()?;
-        let rest = rest?;
+        // `items[]` без продолжения — сам элемент массива строкой.
+        let Some(rest) = rest else {
+            return items.iter().enumerate().find_map(|(index, item)| {
+                item.as_str()
+                    .filter(|text| !text.is_empty())
+                    .map(|text| (format!("{}[{index}]", join(name)), text.to_string()))
+            });
+        };
         return items
             .iter()
             .enumerate()
@@ -2113,6 +2255,42 @@ mod tests {
             ("supportCapability.set", "main:Configuration", true),
             ("supportCapability.set", "main:Catalog.Items", false),
             ("supportRule.set", "main:Catalog.Items", true),
+            // Запрос — узел набора без имени; прежний псевдоним набора
+            // `Template.T.Query.D` снят (#1353), и остальные операции набора
+            // на запросе не исполнимы.
+            (
+                "query.set",
+                "main:Report.Sales.Template.Schema.DataSet.Main",
+                true,
+            ),
+            (
+                "query.patch",
+                "main:Report.Sales.Template.Schema.DataSet.Main.Query",
+                true,
+            ),
+            (
+                "query.set",
+                "main:Report.Sales.Template.Schema.Query.Main",
+                false,
+            ),
+            (
+                "field.add",
+                "main:Report.Sales.Template.Schema.DataSet.Main.Query",
+                false,
+            ),
+            (
+                "field.add",
+                "main:Report.Sales.Template.Schema.Query.Main",
+                false,
+            ),
+            // Дочерняя подсистема исключается по своему адресу.
+            ("childSubsystem.remove", "main:Subsystem.Sales", false),
+            (
+                "childSubsystem.remove",
+                "main:Subsystem.Sales.Subsystem.Orders",
+                true,
+            ),
+            ("childSubsystem.add", "main:Subsystem.Sales", true),
             // Командный интерфейс — у подсистемы, порядок верхнего уровня — у корня.
             ("commandOrder.set", "main:Subsystem.Sales.Interface", true),
             ("subsystemOrder.set", "main:Configuration", true),
@@ -2249,6 +2427,7 @@ mod tests {
     #[test]
     fn every_retired_argument_entry_builds_a_routable_member_address() {
         let registry = OperationRegistry::closed();
+        let duplicates = DUPLICATE_ARGUMENT_OPERATIONS;
         let traits =
             SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let owners = [
@@ -2260,7 +2439,10 @@ mod tests {
             "main:Catalog.Items",
             "main:Document.Order.Form.Main",
         ];
-        for entry in RETIRED_ARGUMENTS {
+        for entry in RETIRED_ARGUMENTS
+            .iter()
+            .filter(|entry| !duplicates.contains(&entry.op))
+        {
             let descriptor = registry
                 .lookup(entry.op)
                 .unwrap_or_else(|| panic!("{} is registered", entry.op));
@@ -2354,6 +2536,173 @@ mod tests {
         assert!(redirect.listing);
         assert_eq!(redirect.location, "values.id");
         assert_eq!(redirect.at.to_string(), "main:Catalog.Items.PredefinedItem");
+    }
+
+    /// Операции пакета П2 (#1353): их снятый аргумент дублировал `at` или
+    /// называл узел в обход адреса, а сами они не переезжали.
+    const DUPLICATE_ARGUMENT_OPERATIONS: &[&str] = &[
+        "query.set",
+        "query.patch",
+        "structure.set",
+        "structure.patch",
+        "form.create",
+        "childSubsystem.remove",
+        "code.replace",
+    ];
+
+    /// Аргумент, который дублировал или переопределял `at`, отказывает и
+    /// тогда, когда операция исполнима на самом адресе вызова: `next` ведёт
+    /// к узлу, который называло значение, и операция там исполнима. Без
+    /// снятого ключа вызов отказа по таблице не получает. Каждая операция
+    /// пакета представлена в таблице.
+    #[test]
+    fn a_duplicate_argument_is_refused_with_the_node_its_value_named() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let template = "main:Report.Sales.Template.Schema";
+        let cases = [
+            (
+                "query.set",
+                format!("{template}.DataSet.Main"),
+                json!({"values": {"dataSet": "Other", "query": "ВЫБРАТЬ 1"}}),
+                "values.dataSet",
+                format!("{template}.DataSet.Other"),
+            ),
+            (
+                "query.patch",
+                format!("{template}.DataSet.Main.Query"),
+                json!({"values": {"dataSet": "Main", "find": "1"}}),
+                "values.dataSet",
+                format!("{template}.DataSet.Main"),
+            ),
+            // На самом макете операция не исполнима, но значение называет
+            // набор: отказ ведёт к нему, а не к форме адреса.
+            (
+                "query.set",
+                template.to_string(),
+                json!({"values": {"dataSet": "Main", "query": "ВЫБРАТЬ 1"}}),
+                "values.dataSet",
+                format!("{template}.DataSet.Main"),
+            ),
+            (
+                "structure.set",
+                format!("{template}.Setting.Main"),
+                json!({"values": {"variant": "Main", "groupBy": []}}),
+                "values.variant",
+                format!("{template}.Setting.Main"),
+            ),
+            (
+                "structure.patch",
+                format!("{template}.Setting.Main"),
+                json!({"values": {"variant": "Extra", "name": "G", "groupBy": ["A"]}}),
+                "values.variant",
+                format!("{template}.Setting.Extra"),
+            ),
+            (
+                "form.create",
+                "main:Catalog.Items.Form.Choice".to_string(),
+                json!({"values": {"name": "Choice", "type": "ChoiceForm"}}),
+                "values.name",
+                "main:Catalog.Items.Form.Choice".to_string(),
+            ),
+            (
+                "form.create",
+                "main:Catalog.Items".to_string(),
+                json!({"values": {"name": "Choice", "type": "ChoiceForm"}}),
+                "values.name",
+                "main:Catalog.Items.Form.Choice".to_string(),
+            ),
+            (
+                "childSubsystem.remove",
+                "main:Subsystem.Sales".to_string(),
+                json!({"items": [{"name": "Orders"}]}),
+                "items[0].name",
+                "main:Subsystem.Sales.Subsystem.Orders".to_string(),
+            ),
+            (
+                "childSubsystem.remove",
+                "main:Subsystem.Sales".to_string(),
+                json!({"items": ["Orders"]}),
+                "items[0]",
+                "main:Subsystem.Sales.Subsystem.Orders".to_string(),
+            ),
+            (
+                "childSubsystem.remove",
+                "main:Subsystem.Sales.Subsystem.Orders".to_string(),
+                json!({"values": {"name": "Archive"}}),
+                "values.name",
+                "main:Subsystem.Sales.Subsystem.Orders.Subsystem.Archive".to_string(),
+            ),
+            (
+                "code.replace",
+                "main:CommonModule.Shared".to_string(),
+                json!({"selector": {"method": "Run"}, "text": "x"}),
+                "selector.method",
+                "main:CommonModule.Shared.Method.Run".to_string(),
+            ),
+            (
+                "code.replace",
+                "main:Catalog.Items.Module.Object.Method.Other".to_string(),
+                json!({"selector": {"method": "Run"}, "text": "x"}),
+                "selector.method",
+                "main:Catalog.Items.Module.Object.Method.Run".to_string(),
+            ),
+        ];
+        for (op, raw, args, location, expected) in cases {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let args = args.as_object().unwrap();
+            let redirect = registry
+                .retired_argument_redirect(op, &site, args)
+                .unwrap_or_else(|| panic!("{op} at {raw} keeps its retired argument"));
+            assert_eq!(redirect.location, location, "{op} at {raw}");
+            assert_eq!(redirect.at.to_string(), expected, "{op} at {raw}");
+            assert!(!redirect.listing, "{op} at {raw}");
+            let target = OperationSite::new(&redirect.at, traits).unwrap();
+            assert!(
+                registry.lookup(op).unwrap().applies_at(&target),
+                "{op} applies at {expected}"
+            );
+            // Тот же вызов без снятого ключа таблица не трогает.
+            let mut cleaned = args.clone();
+            let (container, rest) = location.split_once(['.', '[']).unwrap();
+            match cleaned.get_mut(container).unwrap() {
+                Value::Object(object) => {
+                    object.remove(rest).expect("the retired key is present");
+                }
+                Value::Array(items) => {
+                    items.remove(0);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                registry.retired_argument_redirect(op, &site, &cleaned),
+                None,
+                "{op} at {raw} without {location}"
+            );
+        }
+        // Якорь в коде — аргумент, а не адрес: он не снят.
+        let module = address("main:CommonModule.Shared");
+        let site = OperationSite::new(&module, traits).unwrap();
+        assert_eq!(
+            registry.retired_argument_redirect(
+                "code.replace",
+                &site,
+                json!({"selector": {"anchor": "Run"}, "text": "x"})
+                    .as_object()
+                    .unwrap()
+            ),
+            None
+        );
+        for op in DUPLICATE_ARGUMENT_OPERATIONS {
+            assert!(
+                RETIRED_ARGUMENTS
+                    .iter()
+                    .any(|entry| entry.op == *op && entry.retired),
+                "{op} has a retired entry"
+            );
+        }
     }
 
     /// Механизм перехода: запись переехавшей операции отдаёт место снятого

@@ -59,12 +59,14 @@ impl DcsMxlPlanOperation {
 }
 
 /// The DCS parts of a logical address: the template owner, plus the dataset,
-/// query, settings variant, field or parameter the address descends into.
+/// settings variant, field or parameter the address descends into, and
+/// whether it ends at the dataset's unnamed `Query`.
 struct DcsTarget {
     template: MetadataAddress,
     datasets: Vec<String>,
     variant: String,
     terminal: Option<(NodeKind, String)>,
+    query: bool,
 }
 
 fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, ApplyPlanError> {
@@ -76,7 +78,7 @@ fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, A
     let segments = target.segments();
     let [owner, template, rest @ ..] = segments else {
         return Err(bad(
-            "DCS operations address a schema template: `Owner.Name.Template.Name[.DataSet|Setting|Query.Name]`",
+            "DCS operations address a schema template: `Owner.Name.Template.Name[.DataSet.Name[.Query]|.Setting.Name]`",
         ));
     };
     if template.kind() != NodeKind::Template {
@@ -101,9 +103,30 @@ fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, A
     let mut datasets = Vec::new();
     let mut variant = String::new();
     let mut terminal = None;
+    let mut query = false;
     for segment in rest {
-        if terminal.is_some() {
+        if terminal.is_some() || query {
             return Err(bad("a DCS terminal has no addressed children"));
+        }
+        if segment.kind() == NodeKind::Query {
+            // Запрос — узел набора без имени: `DataSet.D.Query`. Прежний
+            // псевдоним набора `Template.T.Query.D` не принимается (#1353).
+            match segment.name() {
+                None if !datasets.is_empty() && variant.is_empty() => {
+                    query = true;
+                    continue;
+                }
+                Some(name) => {
+                    return Err(bad(&format!(
+                    "a query is addressed through its dataset: `Template.T.DataSet.{name}.Query`"
+                )))
+                }
+                None => {
+                    return Err(bad(
+                        "a query is addressed through its dataset: `DataSet.D.Query`",
+                    ))
+                }
+            }
         }
         let name = segment
             .name()
@@ -111,7 +134,6 @@ fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, A
             .to_string();
         match segment.kind(){
             NodeKind::DataSet if variant.is_empty()=>datasets.push(name),
-            NodeKind::Query if datasets.is_empty()&&variant.is_empty()=>datasets.push(name),
             NodeKind::Setting if datasets.is_empty()&&variant.is_empty()=>variant=name,
             NodeKind::Field if !datasets.is_empty()&&variant.is_empty()=>terminal=Some((NodeKind::Field,name)),
             NodeKind::Parameter if variant.is_empty()=>terminal=Some((NodeKind::Parameter,name)),
@@ -123,6 +145,7 @@ fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, A
         datasets,
         variant,
         terminal,
+        query,
     })
 }
 
@@ -234,6 +257,13 @@ fn parse_dcs_operation(
         .expect("the DCS contract requires object arguments");
     let address = qualified_target(args, op_index, binding)?;
     let target = dcs_target(&address, op_index)?;
+    if target.query && !matches!(operation, "query.set" | "query.patch") {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("{operation} addresses the dataset, not its Query"),
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
     if matches!(operation, "field.remove" | "parameter.remove") {
         let expected = if operation == "field.remove" {
             NodeKind::Field
@@ -922,6 +952,83 @@ mod tests {
                 "{op}: {error:?}"
             );
             assert_eq!(error.path(), Some(format!("ops[0].args.{path}").as_str()));
+        }
+    }
+
+    /// Запрос — безымянный узел набора `DataSet.D.Query`: его правят только
+    /// операции запроса, а прежний псевдоним набора `Template.T.Query.D`
+    /// и аргументы, дублировавшие адрес, отказывают (#1353).
+    #[test]
+    fn a_query_is_addressed_through_its_dataset_and_retired_spellings_refuse() {
+        let fixture = ApplySeamFixture::new();
+        let schema = "main:Report.Versions.Template.Schema";
+        for (op, at, values) in [
+            (
+                "query.set",
+                "DataSet.НаборДанных1",
+                json!({"query": "ВЫБРАТЬ 1"}),
+            ),
+            (
+                "query.set",
+                "DataSet.НаборДанных1.Query",
+                json!({"query": "ВЫБРАТЬ 1"}),
+            ),
+            (
+                "query.patch",
+                "DataSet.НаборДанных1.Query",
+                json!({"find": "1"}),
+            ),
+        ] {
+            let args = json!({"at": format!("{schema}.{at}"), "values": values});
+            let Ok(DcsMxlPlanKind::Dcs(plan)) =
+                parse_dcs_mxl_plan_operation(op, &args, 0, &fixture.binding)
+                    .map(|operation| operation.kind)
+            else {
+                panic!("{op} at {at} is a DCS plan");
+            };
+            assert_eq!(plan.target.datasets, vec!["НаборДанных1".to_string()]);
+        }
+        for (op, at, values, path, says) in [
+            (
+                "query.set",
+                "Query.НаборДанных1",
+                json!({"query": "ВЫБРАТЬ 1"}),
+                "at",
+                "DataSet.НаборДанных1.Query",
+            ),
+            (
+                "dataSet.set",
+                "DataSet.НаборДанных1.Query",
+                json!({"autoFillFields": false}),
+                "at",
+                "not its Query",
+            ),
+            (
+                "query.set",
+                "DataSet.НаборДанных1",
+                json!({"dataSet": "НаборДанных1", "query": "ВЫБРАТЬ 1"}),
+                "values.dataSet",
+                "unknown argument",
+            ),
+            (
+                "structure.set",
+                "Setting.Основной",
+                json!({"variant": "Основной"}),
+                "values.variant",
+                "unknown argument",
+            ),
+        ] {
+            let args = json!({"at": format!("{schema}.{at}"), "values": values});
+            let error = parse_dcs_mxl_plan_operation(op, &args, 0, &fixture.binding)
+                .expect_err("a retired spelling is refused");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} at {at}");
+            assert_eq!(
+                error.path(),
+                Some(format!("ops[0].args.{path}").as_str()),
+                "{op} at {at}"
+            );
+            let message = error.to_string();
+            assert!(message.contains(says), "{op} at {at}: {message}");
         }
     }
 

@@ -4,16 +4,16 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **404 сценариев** реальных задач разработчика конфигурации и **1001 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованный общий модуль без свойств из выгрузки платформы — на `workspace-borrowed/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **405 сценариев** реальных задач разработчика конфигурации и **1013 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованный общий модуль без свойств из выгрузки платформы — на `workspace-borrowed/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 388 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 389 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 830 |
-| `refused` | умышленный типизированный отказ | 120 |
+| `ok` | результат | 836 |
+| `refused` | умышленный типизированный отказ | 126 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 26 |
 | `provider` | провайдер недоступен | 17 |
 | `unsupported` | закрытый список | 3 |
@@ -127,7 +127,7 @@
 | `form.add` | `items` | да | S125, S126, S136, S137, S138, S145, S273, S283, S312, S388 |
 | `form.set` | `values` | да | S127 |
 | `form.remove` | только `at` | да | S128, S295 |
-| `form.create` | `values` | да | S129 |
+| `form.create` | `values` | да | S129, S405 |
 | `element.add` | `items` | да | S130, S139, S141, S142, S388, S393 |
 | `element.remove` | только `at` | да | S131 |
 | `formAttribute.add` | `items` | да | S132, S388 |
@@ -167,7 +167,7 @@
 | `variant.add` | `items` | да | S192, S363 |
 | `variant.set` | `values` | да | S363, S388 |
 | `variant.remove` | `values` | да | S363 |
-| `query.set` | `values` | да | S188, S326, S327, S329, S361 |
+| `query.set` | `values` | да | S188, S326, S327, S329, S361, S405 |
 | `query.patch` | `values` | да | S189, S327, S329, S361, S367 |
 | `filter.add` | `items` | да | S186, S363, S364, S365 |
 | `filter.set` | `values` | да | S363 |
@@ -183,7 +183,7 @@
 | `conditionalAppearance.add` | `items` | да | S363, S365, S373, S377 |
 | `conditionalAppearance.clear` | `values` | да | S365 |
 | `structure.add` | `items` | да | S364, S375 |
-| `structure.set` | `values` | да | S193, S364 |
+| `structure.set` | `values` | да | S193, S364, S405 |
 | `structure.patch` | `values` | да | S326, S327, S364, S375 |
 | `structure.remove` | `values` | да | S364 |
 | `dataSetLink.add` | `items` | да | S361, S370 |
@@ -223,7 +223,7 @@
 | `content.add` | `items` | да | S206, S207 |
 | `content.remove` | только `at` | да | S207 |
 | `childSubsystem.add` | `items` | да | S208 |
-| `childSubsystem.remove` | только `at` | да | S209 |
+| `childSubsystem.remove` | только `at` | да | S209, S405 |
 
 ### Поддержка поставщика
 
@@ -273,8 +273,8 @@
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 225 |
-| `unica.view` | 118 |
+| `unica.apply` | 226 |
+| `unica.view` | 119 |
 | `unica.check` | 71 |
 | `unica.search` | 35 |
 | `unica.docs` | 26 |
@@ -283,7 +283,7 @@
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (54) · Свойства объектов (29) · Реквизиты и состав (49) · Создание и удаление объектов (23) · Формы (29) · Код BSL (44) · Роли и права (15) · СКД (41) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (19) · Поддержка поставщика (16) · Расширения конфигурации (9) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1)
+Области: Навигация и чтение (54) · Свойства объектов (29) · Реквизиты и состав (49) · Создание и удаление объектов (23) · Формы (29) · Код BSL (44) · Роли и права (15) · СКД (42) · Макеты (14) · Подсистемы и интерфейс (12) · XDTO и обмены (9) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (19) · Поддержка поставщика (16) · Расширения конфигурации (9) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1)
 
 ### Навигация и чтение
 
@@ -535,7 +535,7 @@
 | S344 | Пустой поток называет отсутствие start и действие восстановления без номера строки | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S345 | Повреждённый JSONL называет безопасную строку и причину без исходного payload | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S346 | Неизвестная severity даёт безопасный отказ без секретных значений | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
-| S357 | Выделить три helper-метода одной заменой метода: селектор и адрес метода дают одну запись, опубликованный повтор пустой, повторно объявленный helper отказывает | `source` | `apply` `code.replace`<br>`apply`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused` |
+| S357 | Выделить три helper-метода одной заменой метода по его адресу: одна запись, опубликованный повтор пустой, повторно объявленный helper отказывает; снятый селектор метода отказывает без записи и ведёт к адресу метода | `source` | `apply` `code.replace`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace`<br>`apply`<br>`apply` `code.replace` | `refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused` |
 | S389 | Движок анализа завершился ошибкой: отказ называет причину и действие без stderr движка | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S390 | Движка анализа нет на машине: check сам запускает доставку и при её отказе называет класс сбоя и действие, а не голое unproven | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S392 | Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку | `source` | `search`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
@@ -608,6 +608,7 @@
 | S378 | Folder создаётся отдельно от детей; parentIndexes из чтения точно выбирают вложенную выборку при set/remove и сохраняют соседей, заголовки и placement | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.clear` `selection.add` `selection.add` `selection.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.set` `selection.set` `selection.remove`<br>`apply`<br>`view`<br>`apply` `selection.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S379 | Один итог имеет несколько explicit group bindings; set заменяет весь список, пустой список снимает привязки, соседний итог сохраняется | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `total.add`<br>`apply`<br>`view`<br>`apply` `total.set` `total.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S380 | Явные пустые value/title/expression/presentationExpression записываются; повтор такого же сохранённого плана оставляет XML без изменений и имеет нулевой эффект | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add` `field.add` `parameter.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S405 | Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, имя формы, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; прежний адрес запроса Template.T.Query.<набор> отвергается с next к запросу набора | `source` | `view`<br>`apply` `query.set`<br>`view`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `structure.set`<br>`apply` `form.create`<br>`apply` `form.create`<br>`apply` `childSubsystem.remove`<br>`view`<br>`view` | `ok`<br>`refused`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`ok` |
 
 ### Макеты
 

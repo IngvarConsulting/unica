@@ -620,50 +620,55 @@ fn parse_subsystem_operation(
         "content.remove" => SubsystemEdit::ContentRemove(listed_names(args, "object", op_index)?),
         "childSubsystem.add" => SubsystemEdit::ChildAdd(listed_names(args, "name", op_index)?),
         "childSubsystem.remove" => {
-            // The child may travel in the address (`...Subsystem.Parent.Subsystem.Child`)
-            // or in `items`.
-            if args.contains_key("items") || args.contains_key("values") {
-                SubsystemEdit::ChildRemove(listed_names(args, "name", op_index)?)
-            } else {
-                let segments = target.segments();
-                let [.., parent_segment, child] = segments else {
-                    return Err(bad(
-                        op_index,
-                        "at",
-                        "childSubsystem.remove names the child in `items` or addresses it: `Subsystem.Parent.Subsystem.Child`",
-                    ));
-                };
-                let _ = parent_segment;
-                let child_name = child
-                    .name()
-                    .ok_or_else(|| bad(op_index, "at", "the child subsystem must be named"))?
-                    .to_string();
-                let parent = QualifiedAddress::resolve_input(
-                    &format!(
-                        "{}:{}",
-                        target.source_set(),
-                        segments[..segments.len() - 1]
-                            .iter()
-                            .map(|segment| {
-                                format!(
-                                    "{}.{}",
-                                    segment.kind().as_str(),
-                                    segment.name().unwrap_or("")
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(".")
-                    ),
-                    &[binding.source_set_name()],
-                )
-                .map_err(|error| bad(op_index, "at", error.to_string()))?;
-                let (address, relative) = subsystem_descriptor_relative(&parent, op_index)?;
-                return Ok(FormResourcePlanKind::Subsystem {
-                    address,
-                    relative,
-                    edit: SubsystemEdit::ChildRemove(vec![child_name]),
-                });
+            // The child travels only in the address
+            // (`...Subsystem.Parent.Subsystem.Child`, #1353).
+            if let Some(key) = ["items", "values"]
+                .into_iter()
+                .find(|key| args.contains_key(*key))
+            {
+                return Err(bad(
+                    op_index,
+                    key,
+                    "childSubsystem.remove takes the child from its address: `Subsystem.Parent.Subsystem.Child`",
+                ));
             }
+            let segments = target.segments();
+            let [_, .., child] = segments else {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    "childSubsystem.remove addresses the child: `Subsystem.Parent.Subsystem.Child`",
+                ));
+            };
+            let child_name = child
+                .name()
+                .ok_or_else(|| bad(op_index, "at", "the child subsystem must be named"))?
+                .to_string();
+            let parent = QualifiedAddress::resolve_input(
+                &format!(
+                    "{}:{}",
+                    target.source_set(),
+                    segments[..segments.len() - 1]
+                        .iter()
+                        .map(|segment| {
+                            format!(
+                                "{}.{}",
+                                segment.kind().as_str(),
+                                segment.name().unwrap_or("")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(".")
+                ),
+                &[binding.source_set_name()],
+            )
+            .map_err(|error| bad(op_index, "at", error.to_string()))?;
+            let (address, relative) = subsystem_descriptor_relative(&parent, op_index)?;
+            return Ok(FormResourcePlanKind::Subsystem {
+                address,
+                relative,
+                edit: SubsystemEdit::ChildRemove(vec![child_name]),
+            });
         }
         _ => return Ok(FormResourcePlanKind::Unsupported),
     };
@@ -1249,17 +1254,9 @@ fn parse_form_operation(
             })
         }
         "form.create" => {
+            // Имя формы задаёт адрес `Owner.Name.Form.F` (#1353).
             let form = form_of(&target)?;
-            let values = required_values(args, op_index, &["name", "type"])?;
-            if let Some(name) = values.get("name").and_then(Value::as_str) {
-                if name != form {
-                    return Err(bad(
-                        op_index,
-                        "values.name",
-                        "`values.name` must match the form named in `at`",
-                    ));
-                }
-            }
+            let values = required_values(args, op_index, &["type"])?;
             let purpose = form_purpose(
                 values.get("type").and_then(Value::as_str),
                 op_index,
@@ -3574,6 +3571,54 @@ mod tests {
             text.contains("1,0,11111111-1111-4111-8111-111111111111"),
             "the object rule flips to editable: {text}"
         );
+    }
+
+    /// Имя формы и дочерней подсистемы задаёт адрес: аргумент, который их
+    /// повторял, отказывает и в разборе планировщиком (#1353).
+    #[test]
+    fn form_and_child_subsystem_names_come_only_from_the_address() {
+        let fixture = ApplySeamFixture::new();
+        for (op, args, path) in [
+            (
+                "form.create",
+                json!({"at": "main:Catalog.Items.Form.Choice", "values": {"name": "Choice", "type": "ChoiceForm"}}),
+                "ops[0].args.values.name",
+            ),
+            (
+                "childSubsystem.remove",
+                json!({"at": "main:Subsystem.Sales", "items": [{"name": "Orders"}]}),
+                "ops[0].args.items",
+            ),
+            (
+                "childSubsystem.remove",
+                json!({"at": "main:Subsystem.Sales.Subsystem.Orders", "values": {"name": "Orders"}}),
+                "ops[0].args.values",
+            ),
+            (
+                "childSubsystem.remove",
+                json!({"at": "main:Subsystem.Sales"}),
+                "ops[0].args.at",
+            ),
+        ] {
+            let error = parse_form_resource_plan_operation(op, &args, 0, &fixture.binding)
+                .expect_err("a name outside the address is refused");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} {path}");
+            assert_eq!(error.path(), Some(path), "{op}");
+        }
+        assert!(parse_form_resource_plan_operation(
+            "form.create",
+            &json!({"at": "main:Catalog.Items.Form.Choice", "values": {"type": "ChoiceForm"}}),
+            0,
+            &fixture.binding,
+        )
+        .is_ok());
+        assert!(parse_form_resource_plan_operation(
+            "childSubsystem.remove",
+            &json!({"at": "main:Subsystem.Sales.Subsystem.Orders"}),
+            0,
+            &fixture.binding,
+        )
+        .is_ok());
     }
 
     #[test]

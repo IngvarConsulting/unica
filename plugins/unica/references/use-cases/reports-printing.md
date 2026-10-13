@@ -87,9 +87,11 @@ these components does not rewrite their references or variant settings.
 Plan those changes explicitly in the same batch.
 
 Read a query through `DataSet.<name>.Query`: join `data.items[].text` with
-newlines in page order. Query replacement takes literal text, not an
-`@file` path. A patch with `once:true` requires exactly one match; zero or
-multiple matches fail. An empty replacement deletes the matched text.
+newlines in page order. `query.set` and `query.patch` take the dataset from
+their address, `DataSet.<name>` or `DataSet.<name>.Query`; a `dataSet`
+argument is refused and `next` names the dataset's address. Query
+replacement takes literal text, not an `@file` path. A patch with
+`once:true` requires exactly one match; zero or multiple matches fail. An empty replacement deletes the matched text.
 Keep the fields needed by the schema in the query result.
 
 Adding a field does not select it for output. Configure selection separately
@@ -120,6 +122,9 @@ Indices identify rows within that variant, not logical nodes. Names may be
 absent or repeated, and rows have no `at`. Use an exact, uniquely named
 item as a selector; unknown or ambiguous names fail before publication.
 `structure.patch` takes the item's `name` separately from its `groupBy`.
+Both `structure.set` and `structure.patch` take the variant from the
+`Setting.<name>` address; a `variant` argument is refused and `next` names
+the variant's address.
 
 Compose nested structure by adding each named group, table or chart
 separately. Select its parent explicitly; a table's row/column or a chart's

@@ -113,10 +113,13 @@ impl Fixture {
     }
 
     fn operation(&self, replace: bool) -> CodePlanOperation {
-        let mut args = json!({"at":self.at,"text":"Procedure Added()\nEndProcedure"});
-        if replace {
-            args["selector"] = json!({"method":"Base"});
-        }
+        // Метод целиком заменяется по своему адресу.
+        let at = if replace {
+            format!("{}.Method.Base", self.at)
+        } else {
+            self.at.to_string()
+        };
+        let args = json!({"at":at,"text":"Procedure Added()\nEndProcedure"});
         parse_code_plan_operation(
             if replace {
                 "code.replace"

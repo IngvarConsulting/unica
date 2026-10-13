@@ -4036,20 +4036,30 @@ pub(super) fn preflight_apply_operations(
                 segments: owner.to_vec(),
             };
             let branch = format!("{branch}.{}", member.kind().as_str());
-            let mut refusal = with_operation_dictionary(
-                error_result(
-                    location,
-                    RefusalCode::BadValue,
-                    format!(
-                        "`{}` names its subject by address, not by `{}`; call it at `{}`",
-                        operation.name(),
-                        redirect.location,
-                        redirect.at
-                    ),
-                ),
-                &redirect.at.to_string(),
-                descriptor,
-            );
+            // Аргумент, повторявший сам адрес вызова, просто лишний.
+            let message = if redirect.at == *operation.at() {
+                format!(
+                    "`{}` takes its subject from `at`; remove `{}` and call it at `{}`",
+                    operation.name(),
+                    redirect.location,
+                    redirect.at
+                )
+            } else {
+                format!(
+                    "`{}` names its subject by address, not by `{}`; call it at `{}`",
+                    operation.name(),
+                    redirect.location,
+                    redirect.at
+                )
+            };
+            let refusal = error_result(location, RefusalCode::BadValue, message);
+            // Узел, который операция создаёт, ещё не существует: к нему
+            // `next` не ведёт, остаётся ветвь с существующими именами.
+            let mut refusal = if descriptor.creates_its_subject() {
+                refusal
+            } else {
+                with_operation_dictionary(refusal, &redirect.at.to_string(), descriptor)
+            };
             refusal.next.push(json!({
                 "tool": "unica.view",
                 "args": {"at": branch},
@@ -4059,6 +4069,22 @@ pub(super) fn preflight_apply_operations(
         }
         if descriptor.applies_at(&site) {
             continue;
+        }
+        // Прежний псевдоним запроса `Template.T.Query.D` снят (#1353): отказ
+        // называет адрес набора, где операция исполнима.
+        if let Some(target) = descriptor.retired_query_alias_target(&site) {
+            return Err(Box::new(with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    format!(
+                        "a query is addressed through its dataset: `{}` applies at `{target}`",
+                        operation.name()
+                    ),
+                ),
+                &target.to_string(),
+                descriptor,
+            )));
         }
         let refused = format!(
             "apply operation `{}` does not apply to {} `{}`",

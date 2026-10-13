@@ -3874,7 +3874,6 @@
         "op": "form.create",
         "args": {
          "values": {
-          "name": "ФормаПодбора",
           "type": "ChoiceForm"
          }
         }
@@ -4571,10 +4570,8 @@
        {
         "op": "code.replace",
         "args": {
-         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции",
-         "selector": {
-          "method": "МаксимальныйРазмерПорции"
-         }
+         "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции"
         }
        }
       ]
@@ -5328,13 +5325,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Query.НаборДанных1",
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query",
       "ops": [
        {
         "op": "query.set",
         "args": {
          "values": {
-          "dataSet": "НаборДанных1",
           "query": "ВЫБРАТЬ 1 КАК Поле1"
          }
         }
@@ -5355,13 +5351,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Query.НаборДанных1",
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query",
       "ops": [
        {
         "op": "query.patch",
         "args": {
          "values": {
-          "dataSet": "НаборДанных1",
           "find": "1",
           "replace": "2"
          }
@@ -5475,7 +5470,6 @@
         "op": "structure.set",
         "args": {
          "values": {
-          "variant": "Основной",
           "groupBy": [
            "ТипОбъекта"
           ]
@@ -5882,17 +5876,11 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Subsystem.Администрирование",
+      "at": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей",
       "ops": [
        {
         "op": "childSubsystem.remove",
-        "args": {
-         "items": [
-          {
-           "name": "КонтрольРаботыПользователей"
-          }
-         ]
-        }
+        "args": {}
        }
       ]
      },
@@ -8561,10 +8549,8 @@
        {
         "op": "code.replace",
         "args": {
-         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции",
-         "selector": {
-          "method": "МаксимальныйРазмерПорции"
-         }
+         "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+         "text": "Функция МаксимальныйРазмерПорции()\n\tВозврат 100;\nКонецФункции"
         }
        }
       ]
@@ -10145,7 +10131,7 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "bad_value: apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D` or `.Query.Q`",
+     "refusal": "bad_value: apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D` or `.DataSet.D.Qu",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -10153,7 +10139,7 @@
         {
          "code": "bad_value",
          "outcome": "fixCall",
-         "message": "apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D` or `.Query.Q`"
+         "message": "apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D` or `.DataSet.D.Query`"
         }
        ]
       }
@@ -20021,7 +20007,7 @@
    "id": "S357",
    "issue": 895,
    "area": "Код BSL",
-   "task": "Выделить три helper-метода одной заменой метода: селектор и адрес метода дают одну запись, опубликованный повтор пустой, повторно объявленный helper отказывает",
+   "task": "Выделить три helper-метода одной заменой метода по его адресу: одна запись, опубликованный повтор пустой, повторно объявленный helper отказывает; снятый селектор метода отказывает без записи и ведёт к адресу метода",
    "wire": [
     {
      "tool": "unica.apply",
@@ -20034,6 +20020,46 @@
          "selector": {
           "method": "МаксимальныйРазмерПорции"
          },
+         "text": "Функция МаксимальныйРазмерПорции() Экспорт\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.selector.method"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+       "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
+      }
+     ],
+     "refusal": "bad_value: `code.replace` names its subject by address, not by `selector.method`; call it at `main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции`"
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
          "text": "Функция МаксимальныйРазмерПорции() Экспорт\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
         }
        }
@@ -34790,6 +34816,324 @@
       {
        "pointer": "/data/diagnostics",
        "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S405",
+   "name": "retired-duplicate-arguments-route-to-the-address",
+   "issue": 1353,
+   "area": "СКД",
+   "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, имя формы, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; прежний адрес запроса Template.T.Query.<набор> отвергается с next к запросу набора",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "schema": {
+       "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "kind": "sha256"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "query.set",
+        "args": {
+         "values": {
+          "dataSet": "НаборДанных1",
+          "query": "ВЫБРАТЬ 1 КАК Поле1"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `query.set` takes its subject from `at`; remove `values.dataSet` and call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.dataSet"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Can.query.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Can.query.set"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/op",
+       "eq": "query.set"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query",
+      "ops": [
+       {
+        "op": "query.set",
+        "args": {
+         "values": {
+          "query": "ВЫБРАТЬ 1 КАК Поле1"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Query.НаборДанных1",
+      "ops": [
+       {
+        "op": "query.set",
+        "args": {
+         "values": {
+          "query": "ВЫБРАТЬ 1 КАК Поле1"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: a query is addressed through its dataset: `query.set` applies at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Q",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].at"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+      "ops": [
+       {
+        "op": "structure.set",
+        "args": {
+         "values": {
+          "variant": "Основной",
+          "groupBy": [
+           "ТипОбъекта"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `structure.set` takes its subject from `at`; remove `values.variant` and call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Set",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.variant"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Can.structure.set"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "form.create",
+        "args": {
+         "values": {
+          "name": "ФормаПодбора",
+          "type": "ChoiceForm"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `form.create` names its subject by address, not by `values.name`; call it at `main:Catalog.Валюты.Form.ФормаПодбора`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.name"
+      },
+      {
+       "pointer": "/next",
+       "eq": [
+        {
+         "tool": "unica.view",
+         "args": {
+          "at": "main:Catalog.Валюты.Form"
+         },
+         "reason": "существующие узлы этого вида у владельца"
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/Catalogs/Валюты/Forms/ФормаПодбора.xml",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаПодбора",
+      "ops": [
+       {
+        "op": "form.create",
+        "args": {
+         "values": {
+          "type": "ChoiceForm"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование",
+      "ops": [
+       {
+        "op": "childSubsystem.remove",
+        "args": {
+         "items": [
+          {
+           "name": "КонтрольРаботыПользователей"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `childSubsystem.remove` names its subject by address, not by `items[0].name`; call it at `main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].name"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Subsystem.Администрирование.Subsystem"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "childSubsystem.remove",
+        "args": "at",
+        "implemented": true
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Subsystem.Администрирование"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "childSubsystem.add",
+        "args": "items",
+        "implemented": true
+       }
       }
      ]
     }

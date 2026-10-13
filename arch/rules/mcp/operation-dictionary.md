@@ -27,6 +27,12 @@ check:
   - crates/unica-coder/src/domain/apply.rs::member_operations_apply_at_the_member_address_not_at_the_owner
   - crates/unica-coder/src/domain/apply.rs::every_retired_argument_entry_builds_a_routable_member_address
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs::member_operation_contracts_and_the_planner_agree_on_structure
+  - crates/unica-coder/src/domain/apply.rs::a_duplicate_argument_is_refused_with_the_node_its_value_named
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_duplicate_arguments_route_next_to_the_addressed_node
+  - crates/unica-coder/src/domain/operation_contract.rs::dcs_contract_defaults_aliases_and_roles_match_the_typed_boundary
+  - crates/unica-coder/src/infrastructure/native_operations/code.rs::code_replace_refuses_a_method_selector_and_names_the_method_address
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs::a_query_is_addressed_through_its_dataset_and_retired_spellings_refuse
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::form_and_child_subsystem_names_come_only_from_the_address
 gap: https://github.com/IngvarConsulting/unica/issues/1358
 ---
 
@@ -88,7 +94,26 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 Перекрёстные правила полей — значение заполнения требует явный тип
 и соответствует ему — схема не выражает; их проверяет только планировщик.
 
-До переноса остальных операций на адреса подузлов (пакеты П2–П6 зонта
+Аргумент, который повторял адрес вызова или называл узел в обход него, снят:
+набор у `query.set` и `query.patch` (`values.dataSet`), вариант у
+`structure.set` и `structure.patch` (`values.variant`), имя формы у
+`form.create` (`values.name`), дочерняя подсистема у `childSubsystem.remove`
+(`items[].name`, элемент-строка `items[]`, `values.name`) и метод у
+`code.replace` (`selector.method`). Если из значения строится адрес, где
+операция исполнима, вызов получает `bad_value` до планирования, даже когда
+операция исполнима и на адресе вызова. Первый `next` ведёт к узлу, который
+называло значение, второй — к ветви узлов этого вида; к форме, которую
+`form.create` только создаёт, `next` не ведёт, остаётся ветвь форм. Если
+значение повторяло адрес вызова, отказ говорит снять аргумент. Иначе
+снятый ключ отвергают контракт или разбор планировщиком, тоже `bad_value`.
+Запрос набора адресуется `DataSet.<набор>` или `DataSet.<набор>.Query`.
+Прежний адрес `Template.<макет>.Query.<набор>` отвергается с `next`
+к запросу этого набора, а для операций набора — к самому набору; остальные
+операции набора на узле запроса не исполнимы.
+Дочерняя подсистема исключается из родителя только по своему адресу.
+Текстовый якорь `selector.anchor` у `code.replace` остаётся аргументом.
+
+До переноса остальных операций на адреса подузлов (пакеты П3–П6 зонта
 #1358) обещание «не пишет в другой узел» выполнено не для всех операций:
 те, что ещё называют подузел аргументом (записи таблицы снятых аргументов
 в реестре, например `values.element` у `event.bind`), пишут в подузел,
