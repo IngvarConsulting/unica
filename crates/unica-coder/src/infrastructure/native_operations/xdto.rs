@@ -47,6 +47,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+mod facets;
 mod model;
 mod validation;
 mod writer;
@@ -68,8 +69,17 @@ pub(crate) struct XdtoPropertyPath(String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct XdtoPropertySpec {
     pub(crate) name: XmlNcName,
-    pub(crate) type_ref: PrefixedXmlQName,
+    pub(crate) definition: XdtoPropertyDefinition,
     pub(crate) min_occurs: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum XdtoPropertyDefinition {
+    Named(PrefixedXmlQName),
+    Value {
+        base: PrefixedXmlQName,
+        facets: facets::ValueFacets,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +87,7 @@ pub(crate) struct XdtoAddValueTypeArgs {
     pub(crate) at: QualifiedAddress,
     pub(crate) name: XmlNcName,
     pub(crate) base: PrefixedXmlQName,
+    pub(crate) facets: facets::ValueFacets,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,7 +165,7 @@ pub(crate) fn parse_xdto_plan_operation(
         None => raw_object,
     };
     let allowed = match operation {
-        "valueType.add" => &["at", "name", "base"][..],
+        "valueType.add" => &["at", "name", "base", "facets"][..],
         "objectType.add" => &["at", "name"][..],
         "property.add" => &["at", "property", "propertyPath"][..],
         "type.remove" => &["at"][..],
@@ -181,6 +192,8 @@ pub(crate) fn parse_xdto_plan_operation(
             at,
             name: parse_xdto_ncname(object, "name", &base)?,
             base: parse_xdto_qname(object, "base", &base)?,
+            facets: facets::ValueFacets::from_json(object.get("facets"))
+                .map_err(|message| bad_xdto_argument(&format!("{base}.facets"), message))?,
         })),
         "objectType.add" => Ok(XdtoPlanOperation::AddObjectType(XdtoAddObjectTypeArgs {
             at,
@@ -193,7 +206,7 @@ pub(crate) fn parse_xdto_plan_operation(
                 .get("property")
                 .and_then(Value::as_object)
                 .ok_or_else(|| bad_xdto_argument(&property_base, "property must be an object"))?;
-            let property_allowed = ["name", "type", "minOccurs"];
+            let property_allowed = ["name", "type", "valueType", "minOccurs"];
             if let Some(field) = property
                 .keys()
                 .find(|field| !property_allowed.contains(&field.as_str()))
@@ -217,7 +230,41 @@ pub(crate) fn parse_xdto_plan_operation(
                 at,
                 property: XdtoPropertySpec {
                     name: parse_xdto_ncname(property, "name", &property_base)?,
-                    type_ref: parse_xdto_qname(property, "type", &property_base)?,
+                    definition: match (property.get("type"), property.get("valueType")) {
+                        (Some(_), None) => XdtoPropertyDefinition::Named(parse_xdto_qname(
+                            property,
+                            "type",
+                            &property_base,
+                        )?),
+                        (None, Some(value)) => {
+                            let value_path = format!("{property_base}.valueType");
+                            let object = value.as_object().ok_or_else(|| {
+                                bad_xdto_argument(&value_path, "valueType must be an object")
+                            })?;
+                            if object
+                                .keys()
+                                .any(|key| !matches!(key.as_str(), "base" | "facets"))
+                            {
+                                return Err(bad_xdto_argument(
+                                    &value_path,
+                                    "unknown valueType field",
+                                ));
+                            }
+                            XdtoPropertyDefinition::Value {
+                                base: parse_xdto_qname(object, "base", &value_path)?,
+                                facets: facets::ValueFacets::from_json(object.get("facets"))
+                                    .map_err(|message| {
+                                        bad_xdto_argument(&format!("{value_path}.facets"), message)
+                                    })?,
+                            }
+                        }
+                        _ => {
+                            return Err(bad_xdto_argument(
+                                &property_base,
+                                "property requires exactly one of type or valueType",
+                            ))
+                        }
+                    },
                     min_occurs,
                 },
                 property_path,
@@ -671,19 +718,38 @@ fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWriter
         XdtoPlanOperation::AddValueType(args) => writer::TypedWriterOperation::AddValueType {
             name: &args.name.0,
             base: &args.base.0,
+            facets: Some(&args.facets),
         },
         XdtoPlanOperation::AddObjectType(args) => {
             writer::TypedWriterOperation::AddObjectType { name: &args.name.0 }
         }
-        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddProperty {
-            type_name: args.at.segments()[1]
+        XdtoPlanOperation::AddProperty(args) => {
+            let type_name = args.at.segments()[1]
                 .name()
-                .expect("closed XDTO type target has a name"),
-            name: &args.property.name.0,
-            type_ref: &args.property.type_ref.0,
-            min_occurs: args.property.min_occurs.map(u64::from),
-            property_path: args.property_path.as_ref().map(|path| path.0.as_str()),
-        },
+                .expect("closed XDTO type target has a name");
+            let property_path = args.property_path.as_ref().map(|path| path.0.as_str());
+            match &args.property.definition {
+                XdtoPropertyDefinition::Named(type_ref) => {
+                    writer::TypedWriterOperation::AddProperty {
+                        type_name,
+                        name: &args.property.name.0,
+                        type_ref: &type_ref.0,
+                        min_occurs: args.property.min_occurs.map(u64::from),
+                        property_path,
+                    }
+                }
+                XdtoPropertyDefinition::Value { base, facets } => {
+                    writer::TypedWriterOperation::AddValueProperty {
+                        type_name,
+                        name: &args.property.name.0,
+                        base: &base.0,
+                        facets,
+                        min_occurs: args.property.min_occurs.map(u64::from),
+                        property_path,
+                    }
+                }
+            }
+        }
         XdtoPlanOperation::RemoveType(args) => writer::TypedWriterOperation::RemoveType {
             name: args.at.segments()[1]
                 .name()
@@ -857,6 +923,10 @@ pub(crate) struct XdtoBoundsInfo {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct XdtoAnonymousTypeInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<XdtoQNameInfo>,
+    #[serde(skip_serializing_if = "facets::ValueFacets::is_empty")]
+    facets: facets::ValueFacets,
+    #[serde(skip_serializing_if = "Option::is_none")]
     discriminator: Option<String>,
     properties: Vec<XdtoPropertyInfo>,
     location: XdtoLocation,
@@ -890,6 +960,8 @@ pub(crate) struct XdtoQNameInfo {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct XdtoTypeInfo {
+    #[serde(skip_serializing_if = "facets::ValueFacets::is_empty")]
+    facets: facets::ValueFacets,
     kind: XdtoTypeKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
@@ -1326,6 +1398,7 @@ fn qname_info(qname: &model::QNameRef) -> XdtoQNameInfo {
 
 fn type_info(package: &impl XdtoIdentity, named: &model::NamedType) -> XdtoTypeInfo {
     XdtoTypeInfo {
+        facets: named.facets.clone(),
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
             model::TypeKind::Object => XdtoTypeKind::Object,
@@ -1387,6 +1460,8 @@ fn anonymous_type_info(
     anonymous: &model::AnonymousObject,
 ) -> XdtoAnonymousTypeInfo {
     XdtoAnonymousTypeInfo {
+        facets: anonymous.facets.clone(),
+        base: anonymous.base.as_ref().map(qname_info),
         discriminator: anonymous
             .discriminator
             .as_ref()
@@ -3512,6 +3587,7 @@ pub(crate) mod tests {
             at: qaddr(at),
             name: ncname(name),
             base: qname(base),
+            facets: super::facets::ValueFacets::default(),
         })
     }
 
@@ -3526,7 +3602,7 @@ pub(crate) mod tests {
             at: qaddr(at),
             property: XdtoPropertySpec {
                 name: ncname(name),
-                type_ref: qname(type_ref),
+                definition: super::XdtoPropertyDefinition::Named(qname(type_ref)),
                 min_occurs,
             },
             property_path: property_path.map(|value| XdtoPropertyPath(value.to_string())),
@@ -3567,6 +3643,212 @@ pub(crate) mod tests {
             }
         }
         observed
+    }
+
+    #[test]
+    fn staged_xdto_restricted_value_types_preserve_facets_and_anonymity() {
+        let fixture = staged_xdto_fixture("restricted-values", PACKAGE.as_bytes());
+        let requests = [
+            (
+                "valueType.add",
+                json!({"at":"main:XDTOPackage.Sample", "values":{
+                    "name":"Code", "base":"xs:string", "facets":{"maxLength":10}
+                }}),
+            ),
+            (
+                "valueType.add",
+                json!({"at":"main:XDTOPackage.Sample", "values":{
+                    "name":"Amount", "base":"xs:decimal", "facets":{
+                        "totalDigits":5, "fractionDigits":2,
+                        "minInclusive":"0", "maxInclusive":"999.99"
+                    }
+                }}),
+            ),
+            (
+                "objectType.add",
+                json!({"at":"main:XDTOPackage.Sample", "values":{"name":"Example"}}),
+            ),
+            (
+                "property.add",
+                json!({"at":"main:XDTOPackage.Sample.Type.Example", "values":{
+                    "property":{"name":"Code", "type":"tns:Code"}
+                }}),
+            ),
+            (
+                "property.add",
+                json!({"at":"main:XDTOPackage.Sample.Type.Example", "values":{
+                    "property":{"name":"Amount", "type":"tns:Amount"}
+                }}),
+            ),
+            (
+                "property.add",
+                json!({"at":"main:XDTOPackage.Sample.Type.Example", "values":{
+                    "property":{"name":"Inline", "valueType":{
+                        "base":"xs:string", "facets":{"maxLength":10}
+                    }}
+                }}),
+            ),
+        ];
+        let operations = requests
+            .iter()
+            .enumerate()
+            .map(|(i, (op, args))| {
+                parse_xdto_plan_operation(op, args, i, &fixture.binding).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let (mut staged, effects) =
+            plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap();
+        let bytes = staged
+            .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+            .unwrap()
+            .unwrap();
+        let text = std::str::from_utf8(&bytes).unwrap();
+        let document = roxmltree::Document::parse(text).unwrap();
+        let root = document.root_element();
+        let code = root
+            .children()
+            .find(|n| n.attribute("name") == Some("Code"))
+            .unwrap();
+        assert_eq!(code.attribute("maxLength"), Some("10"));
+        let amount = root
+            .children()
+            .find(|n| n.attribute("name") == Some("Amount"))
+            .unwrap();
+        for (name, value) in [
+            ("totalDigits", "5"),
+            ("fractionDigits", "2"),
+            ("minInclusive", "0"),
+            ("maxInclusive", "999.99"),
+        ] {
+            assert_eq!(amount.attribute(name), Some(value));
+        }
+        let inline = root
+            .descendants()
+            .find(|n| n.attribute("name") == Some("Inline"))
+            .unwrap();
+        assert_eq!(inline.attribute("type"), None);
+        let definition = inline
+            .children()
+            .find(|n| n.has_tag_name((super::model::XDTO_NS, "typeDef")))
+            .unwrap();
+        assert_eq!(
+            definition.attribute((super::model::XSI_NS, "type")),
+            Some("ValueType")
+        );
+        assert_eq!(definition.attribute("name"), None);
+        assert_eq!(definition.attribute("base"), Some("xs:string"));
+        assert_eq!(definition.attribute("maxLength"), Some("10"));
+        assert_eq!(effects.events().len(), 1);
+        assert_eq!(fs::read(&fixture.package).unwrap(), PACKAGE.as_bytes());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_restricted_values_repeat_exactly_and_reject_conflicts_atomically() {
+        let before =
+            include_str!("../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+                .replace("urn:unica:anonymous", "urn:test");
+        let fixture = staged_xdto_fixture("restricted-repeat", before.as_bytes());
+        let tree = snapshot_tree(&fixture.source);
+        let admission = staged_xdto_admission(&fixture, None, true);
+        let named = json!({"at":"main:XDTOPackage.Sample", "values":{
+            "name":"СуммаПримера", "base":"xs:decimal", "facets":{
+                "totalDigits":5, "fractionDigits":2, "minInclusive":"-0.00", "maxInclusive":"+0999.990"
+            }
+        }});
+        let anonymous = json!({"at":"main:XDTOPackage.Sample.Type.Пример", "values":{
+            "property":{"name":"АнонимныйКод", "valueType":{"base":"xs:string", "facets":{"maxLength":10}}}
+        }});
+        let operations = [("valueType.add", &named), ("property.add", &anonymous)]
+            .iter()
+            .enumerate()
+            .map(|(index, (op, request))| {
+                parse_xdto_plan_operation(op, request, index, &fixture.binding).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let (mut staged, effects) =
+            plan_admitted_xdto(&admission, &fixture.binding, &operations).unwrap();
+        assert!(effects.events().is_empty());
+        assert_eq!(
+            staged
+                .read(Path::new("XDTOPackages/Sample/Ext/Package.bin"))
+                .unwrap()
+                .unwrap(),
+            before.as_bytes()
+        );
+        for (base, facets) in [
+            ("xs:decimal", json!({"maxLength":10})),
+            ("xs:string", json!({"fractionDigits":2})),
+            ("tns:КодПримера", json!({"maxLength":5})),
+        ] {
+            let bad = parse_xdto_plan_operation("valueType.add", &json!({"at":"main:XDTOPackage.Sample", "values":{"name":"Bad", "base":base,"facets":facets}}), 1, &fixture.binding).unwrap();
+            assert!(plan_admitted_xdto(
+                &admission,
+                &fixture.binding,
+                &[
+                    add_value("main:XDTOPackage.Sample", "Early", "xs:string"),
+                    bad
+                ]
+            )
+            .is_err());
+            assert_eq!(snapshot_tree(&fixture.source), tree);
+        }
+        for (op, mut request) in [("valueType.add", named), ("property.add", anonymous)] {
+            if op == "valueType.add" {
+                request["values"]["facets"]["maxInclusive"] = json!("999.98");
+            } else {
+                request["values"]["property"]["valueType"]["facets"]["maxLength"] = json!(9);
+            }
+            let bad = parse_xdto_plan_operation(op, &request, 1, &fixture.binding).unwrap();
+            assert!(plan_admitted_xdto(
+                &admission,
+                &fixture.binding,
+                &[
+                    add_value("main:XDTOPackage.Sample", "Early", "xs:string"),
+                    bad
+                ]
+            )
+            .is_err());
+            assert_eq!(snapshot_tree(&fixture.source), tree);
+        }
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn staged_xdto_anonymous_value_rejects_object_base_even_without_facets() {
+        let fixture = staged_xdto_fixture("anonymous-value-object-base", PACKAGE.as_bytes());
+        let before = snapshot_tree(&fixture.source);
+        let admission = staged_xdto_admission(&fixture, None, true);
+        for extra in [json!({}), json!({"facets":{}})] {
+            let mut value_type = extra;
+            value_type["base"] = json!("tns:NewObject");
+            let operation = parse_xdto_plan_operation(
+                "property.add",
+                &json!({
+                    "at":"main:XDTOPackage.Sample.Type.NewObject", "values":{
+                        "property":{"name":"Bad","valueType":value_type}
+                    }
+                }),
+                1,
+                &fixture.binding,
+            )
+            .unwrap();
+            assert!(
+                plan_admitted_xdto(
+                    &admission,
+                    &fixture.binding,
+                    &[
+                        add_object("main:XDTOPackage.Sample", "NewObject"),
+                        operation
+                    ]
+                )
+                .is_err(),
+                "anonymous value type must not derive from object type"
+            );
+            assert_eq!(snapshot_tree(&fixture.source), before);
+        }
+        fixture.cleanup();
     }
 
     #[test]

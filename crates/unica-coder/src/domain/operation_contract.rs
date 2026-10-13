@@ -115,6 +115,66 @@ fn field_head(names: &[&str], required: &[&str]) -> Value {
 }
 
 impl OperationContract {
+    pub(crate) fn xdto(op: &str) -> Option<Self> {
+        let qname = json!({"type":"string", "pattern":r"^[^:\s]+:[^:\s]+$"});
+        let decimal = json!({"type":"string", "pattern":r"^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$"});
+        let facets = object(
+            &[
+                ("maxLength", json!({"type":"integer", "minimum":0})),
+                ("totalDigits", json!({"type":"integer", "minimum":1})),
+                ("fractionDigits", json!({"type":"integer", "minimum":0})),
+                ("minInclusive", decimal.clone()),
+                ("maxInclusive", decimal),
+            ],
+            &[],
+        );
+        let value_type = object(
+            &[("base", qname.clone()), ("facets", facets.clone())],
+            &["base"],
+        );
+        let (fields, required, example_args, target) = match op {
+            "valueType.add" => (
+                vec![
+                    ("name", text(true)),
+                    ("base", qname.clone()),
+                    ("facets", facets),
+                ],
+                vec!["name", "base"],
+                json!({"values":{"name":"Amount", "base":"xs:decimal", "facets":{"totalDigits":5,"fractionDigits":2,"minInclusive":"0","maxInclusive":"999.99"}}}),
+                "An XDTOPackage; name identifies the new value type.",
+            ),
+            "property.add" => {
+                let mut property = object(
+                    &[
+                        ("name", text(true)),
+                        ("type", qname),
+                        ("valueType", value_type),
+                        ("minOccurs", json!({"type":"integer", "enum":[0,1]})),
+                    ],
+                    &["name"],
+                );
+                property["anyOf"] = json!([{"required":["type"]},{"required":["valueType"]}]);
+                property["not"] = json!({"required":["type","valueType"]});
+                (vec![("property", property), ("propertyPath", text(true))], vec!["property"], json!({"values":{"property":{"name":"Code", "valueType":{"base":"xs:string", "facets":{"maxLength":10}}}}}), "A named XDTO Type; propertyPath optionally selects an existing anonymous ObjectType.")
+            }
+            _ => return None,
+        };
+        let values = object(&fields, &required);
+        let envelope = object(&[("at", text(true)), ("values", values)], &["values"]);
+        let mut flat_fields = fields;
+        flat_fields.push(("at", text(true)));
+        Some(Self {
+            schema: json!({"anyOf":[envelope, object(&flat_fields, &required)]}),
+            target,
+            effect: "Create a named value type or a property with an anonymous ValueType, preserving its restrictions.",
+            notes: "Facets are optional independent restrictions: maxLength for XML Schema string; totalDigits, fractionDigits, minInclusive and maxInclusive for XML Schema decimal. Bounds are exact decimal strings without exponent. fractionDigits cannot exceed totalDigits when both are supplied; minInclusive cannot exceed maxInclusive. Other facet/base combinations are unsupported. Existing named value type bases without facets remain accepted. Anonymous ValueType supports only XML Schema string or decimal bases even without facets. A property requires exactly one of type or valueType. Exact repeats do not write; changed restrictions conflict. Legacy flat arguments remain accepted.",
+            example_args,
+            help: "skills/xdto/SKILL.md",
+        })
+    }
+}
+
+impl OperationContract {
     pub(crate) fn dcs(op: &str) -> Option<Self> {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
@@ -966,6 +1026,39 @@ fn normalize_aliases(schema: &Value, value: &mut Value) {
 mod tests {
     use super::*;
     use crate::domain::apply::{OperationFamily, OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+
+    #[test]
+    fn xdto_value_contract_preserves_legacy_calls_and_closes_facet_shapes() {
+        for op in ["valueType.add", "property.add"] {
+            let contract = OperationContract::xdto(op).unwrap();
+            let validator = jsonschema::validator_for(&contract.schema).unwrap();
+            assert!(validator.is_valid(&contract.example_args));
+            assert!(contract.normalize(&contract.example_args, "args").is_ok());
+        }
+        let contract = OperationContract::xdto("valueType.add").unwrap();
+        for valid in [
+            json!({"name":"Old","base":"tns:Existing"}),
+            json!({"values":{"name":"Code","base":"xs:string","facets":{}}}),
+        ] {
+            assert!(contract.normalize(&valid, "args").is_ok());
+        }
+        for facets in [
+            json!({"maxLength":-1}),
+            json!({"totalDigits":0}),
+            json!({"minInclusive":0}),
+            json!({"maxInclusive":"1e3"}),
+            json!({"pattern":".*"}),
+        ] {
+            let args = json!({"values":{"name":"Bad","base":"xs:decimal","facets":facets}});
+            assert!(!jsonschema::validator_for(&contract.schema)
+                .unwrap()
+                .is_valid(&args));
+            assert!(contract.normalize(&args, "args").is_err());
+        }
+        let contract = OperationContract::xdto("property.add").unwrap();
+        let both = json!({"values":{"property":{"name":"Bad","type":"xs:string","valueType":{"base":"xs:string"}}}});
+        assert!(contract.normalize(&both, "args").is_err());
+    }
 
     #[test]
     fn mxl_and_template_contracts_cover_examples_and_keep_legacy_value_grammar() {
