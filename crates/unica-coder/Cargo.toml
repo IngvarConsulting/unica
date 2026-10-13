@@ -36,6 +36,7 @@ path = "tests/research/cf_init_checkpoint.rs"
 required-features = ["research"]
 
 [dependencies]
+base64.workspace = true
 bsl-parser.workspace = true
 # Доставку движка по требованию ведёт тот же установщик, что ставит ядро:
 # формат манифеста, ключ кеша, блокировка и докачка у них общие, и вторая

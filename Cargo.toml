@@ -9,6 +9,7 @@ license = "LGPL-3.0-or-later"
 repository = "https://github.com/IngvarConsulting/unica"
 
 [workspace.dependencies]
+base64 = "0.22.1"
 # Keep these revisions aligned with the bundled analyzer in tools.lock.json.
 bsl-parser = { package = "parser", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }
 bsl-syntax = { package = "syntax", git = "https://github.com/itrous/bsl-analyzer", rev = "53d8765288adf3b9277b7a4112dba167e51690b7" }

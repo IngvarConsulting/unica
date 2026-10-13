@@ -30,6 +30,41 @@ mod tests {
     use serde_json::{json, Value};
 
     #[test]
+    fn saved_plan_diff_has_a_read_only_shape_separate_from_node_comparison() {
+        let catalog = catalog_for(SurfaceRelease::V13).unwrap();
+        let schema = &catalog
+            .tools
+            .iter()
+            .find(|tool| tool.name == "diff")
+            .unwrap()
+            .input_schema;
+        let validator = jsonschema::validator_for(schema).unwrap();
+        for valid in [
+            json!({"executionToken":"saved-plan"}),
+            json!({"executionToken":"saved-plan", "limit":2, "cursor":"saved-cursor"}),
+            json!({"left":"main:Document.Order", "right":"ext:Document.Order", "limit":2}),
+        ] {
+            assert!(
+                validator.is_valid(&valid),
+                "valid diff request rejected: {valid}"
+            );
+        }
+        for invalid in [
+            json!({"executionToken":""}),
+            json!({"executionToken":"saved-plan", "left":"main:Document.Order"}),
+            json!({"executionToken":"saved-plan", "ops":[]}),
+            json!({"executionToken":"saved-plan", "limit":0}),
+            json!({"executionToken":"saved-plan", "limit":1001}),
+            json!({"left":"main:Document.Order", "right":"ext:Document.Order", "cursor":"saved-cursor"}),
+        ] {
+            assert!(
+                !validator.is_valid(&invalid),
+                "invalid diff request accepted: {invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn planning_and_saved_plan_execution_have_disjoint_public_shapes() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("v0.13 catalog");
         let schema = &catalog
