@@ -84,6 +84,34 @@ pub(crate) fn parse_meta_borrowing(bytes: &[u8]) -> Result<MetaBorrowing, String
     Ok(MetaBorrowing { extends, overrides })
 }
 
+/// Дескриптор указывает родителя: `ExtendedConfigurationObject` с UUID.
+///
+/// Это признак заимствования; `ObjectBelonging=Adopted` без родителя есть и у
+/// корня самого расширения. Платформа 8.3.27 выгружает такой объект без
+/// сопутствующих файлов (`Rights.xml`, `Form.xml`, `Package.bin`,
+/// `Template.xml`), когда расширение их не меняет.
+pub(crate) fn descriptor_extends_parent(bytes: &[u8]) -> bool {
+    parse_meta_borrowing(bytes)
+        .ok()
+        .and_then(|borrowing| borrowing.extends)
+        .is_some_and(|id| uuid::Uuid::parse_str(id.trim()).is_ok())
+}
+
+/// Корень набора — расширение: в свойствах `Configuration.xml` записано
+/// `ConfigurationExtensionPurpose`. Заимствование бывает только там.
+pub(crate) fn configuration_is_extension(bytes: &[u8]) -> bool {
+    let Ok((_, document)) = parse_metadata_image(bytes) else {
+        return false;
+    };
+    document
+        .root_element()
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == "Configuration")
+        .and_then(|configuration| meta_info_child(configuration, "Properties"))
+        .and_then(|properties| meta_info_child(properties, "ConfigurationExtensionPurpose"))
+        .is_some()
+}
+
 pub(crate) fn meta_info_child<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
     local_name: &str,

@@ -3194,7 +3194,9 @@ fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
         }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
     };
-    error_result(at, code, error.to_string())
+    let mut result = error_result(at, code, error.to_string());
+    result.next.extend(error.next().cloned());
+    result
 }
 
 /// Отказ подготовки staged-исходников называет нарушенное предусловие.

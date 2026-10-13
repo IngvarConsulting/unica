@@ -1011,6 +1011,29 @@ impl OperationDescriptor {
         self.family
     }
 
+    /// Сопутствующий файл, содержимое которого пишет операция: права роли,
+    /// описание формы (её модуль и обработчики событий тоже), тело макета или
+    /// пакет XDTO. У заимствованного объекта без такого файла содержимое
+    /// унаследовано от родителя, и операция там не исполнима. `None` —
+    /// операция пишет описание объекта или вне такого содержимого.
+    pub(crate) fn content_resource(self) -> Option<&'static str> {
+        match self.family {
+            OperationFamily::Role if self.name != "role.create" => Some("Rights.xml"),
+            OperationFamily::Form
+                if !matches!(
+                    self.name,
+                    "form.add" | "form.set" | "form.remove" | "form.create"
+                ) =>
+            {
+                Some("Form.xml")
+            }
+            OperationFamily::Event | OperationFamily::Code => Some("Form.xml"),
+            OperationFamily::Dcs | OperationFamily::Mxl => Some("Template.xml"),
+            OperationFamily::Xdto => Some("Package.bin"),
+            _ => None,
+        }
+    }
+
     /// Применима ли операция к месту: вид набора, маршрут и форма адреса.
     /// Формат макета этим ответом не проверяется — см. `admits_template_format`.
     pub(crate) fn applies_at(self, site: &OperationSite<'_>) -> bool {
@@ -1824,6 +1847,34 @@ mod tests {
             value.as_object().expect("apply fixture must be an object"),
             &["main", "extension"],
         )
+    }
+
+    /// #1381: операции, которые пишут содержимое из сопутствующего файла,
+    /// называют его; операции над описанием объекта — нет.
+    #[test]
+    fn content_writers_name_the_companion_file_they_write() {
+        let registry = OperationRegistry::closed();
+        let resource = |op: &str| registry.lookup(op).unwrap().content_resource();
+        for (op, expected) in [
+            ("right.set", Some("Rights.xml")),
+            ("element.add", Some("Form.xml")),
+            ("event.bind", Some("Form.xml")),
+            ("event.implement", Some("Form.xml")),
+            ("code.insert", Some("Form.xml")),
+            ("mxl.set", Some("Template.xml")),
+            ("query.set", Some("Template.xml")),
+            ("objectType.add", Some("Package.bin")),
+            ("role.create", None),
+            ("form.remove", None),
+            ("form.create", None),
+            ("form.add", None),
+            ("form.set", None),
+            ("props.set", None),
+            ("template.set", None),
+            ("supportRule.set", None),
+        ] {
+            assert_eq!(resource(op), expected, "{op}");
+        }
     }
 
     #[test]

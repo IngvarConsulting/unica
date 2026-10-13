@@ -5125,12 +5125,28 @@ pub(crate) fn form_edit_apply_definition(
                     defn.get("into").and_then(Value::as_str),
                     defn.get("after").and_then(Value::as_str),
                 )?;
+                let in_command_bar = {
+                    let document = Document::parse(xml_text)
+                        .map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
+                    form_edit_placement_is_command_bar(
+                        document.root_element(),
+                        defn.get("into").and_then(Value::as_str),
+                        defn.get("after").and_then(Value::as_str),
+                    )?
+                };
                 let element_indent = insert_target.child_indent().to_string();
                 let start = elem_ids.next;
                 let mut lines = Vec::<String>::new();
                 for element in elements {
                     let record = form_edit_element_record(element);
-                    emit_form_element(&mut lines, element, &element_indent, &mut elem_ids, lang)?;
+                    emit_form_element_with_context(
+                        &mut lines,
+                        element,
+                        &element_indent,
+                        &mut elem_ids,
+                        in_command_bar,
+                        lang,
+                    )?;
                     if let Some(record) = record {
                         added_elements.push(record);
                     }
@@ -6834,11 +6850,12 @@ fn form_edit_element_fingerprint(node: roxmltree::Node<'_, '_>) -> FormEditEleme
 fn form_edit_expected_element_fingerprint(
     xml_text: &str,
     element: &Value,
+    in_command_bar: bool,
     lang: Option<&str>,
 ) -> Result<FormEditElementFingerprint, String> {
     let mut lines = Vec::new();
     let mut ids = FormIdAllocator::new();
-    emit_form_element(&mut lines, element, "\t", &mut ids, lang)?;
+    emit_form_element_with_context(&mut lines, element, "\t", &mut ids, in_command_bar, lang)?;
     let fragment = lines.join("\n");
 
     let source_document =
@@ -6867,12 +6884,13 @@ fn form_edit_elements_match_target(
     into_name: Option<&str>,
     after_name: Option<&str>,
 ) -> bool {
-    let Some(root_child_items) = form_child(root, "ChildItems") else {
-        return false;
-    };
+    let root_child_items = form_child(root, "ChildItems");
     let (target_child_items, required_predecessor) =
         if let Some(into_name) = into_name.filter(|name| !name.is_empty()) {
-            let Some(target) = form_edit_find_element(root_child_items, into_name) else {
+            let Some(target) = form_edit_find_placement_element(root, into_name)
+                .ok()
+                .flatten()
+            else {
                 return false;
             };
             let Some(child_items) = form_child(target, "ChildItems") else {
@@ -6880,7 +6898,10 @@ fn form_edit_elements_match_target(
             };
             (child_items, None)
         } else if let Some(after_name) = after_name.filter(|name| !name.is_empty()) {
-            let Some(after) = form_edit_find_element(root_child_items, after_name) else {
+            let Some(after) = form_edit_find_placement_element(root, after_name)
+                .ok()
+                .flatten()
+            else {
                 return false;
             };
             let Some(child_items) = after
@@ -6891,6 +6912,9 @@ fn form_edit_elements_match_target(
             };
             (child_items, Some(after_name))
         } else {
+            let Some(root_child_items) = root_child_items else {
+                return false;
+            };
             (root_child_items, None)
         };
     if existing
@@ -6945,6 +6969,7 @@ fn form_edit_elements_are_idempotent_noop(
     let document =
         Document::parse(xml_text).map_err(|error| format!("[ERROR] XML parse error: {error}"))?;
     let root = document.root_element();
+    let in_command_bar = form_edit_placement_is_command_bar(root, into_name, after_name)?;
     let mut requested_names = Vec::with_capacity(elements.len());
     let mut existing = Vec::with_capacity(elements.len());
     for element in elements {
@@ -6960,7 +6985,8 @@ fn form_edit_elements_are_idempotent_noop(
         let [node] = matches.as_slice() else {
             return Ok(false);
         };
-        let expected = form_edit_expected_element_fingerprint(xml_text, element, lang)?;
+        let expected =
+            form_edit_expected_element_fingerprint(xml_text, element, in_command_bar, lang)?;
         if form_edit_element_fingerprint(*node) != expected {
             return Ok(false);
         }
@@ -7206,9 +7232,7 @@ pub(crate) fn form_edit_target_child_items_range(
     let root = doc.root_element();
     let root_child_items = form_child(root, "ChildItems");
     if let Some(into_name) = into_name.filter(|name| !name.is_empty()) {
-        let Some(target) =
-            root_child_items.and_then(|child_items| form_edit_find_element(child_items, into_name))
-        else {
+        let Some(target) = form_edit_find_placement_element(root, into_name)? else {
             return Err(format!("[ERROR] Target group '{into_name}' not found"));
         };
         if let Some(child_items) = form_child(target, "ChildItems") {
@@ -7229,14 +7253,12 @@ pub(crate) fn form_edit_target_child_items_range(
         });
     }
     if let Some(after_name) = after_name.filter(|name| !name.is_empty()) {
-        let Some(after_element) = root_child_items
-            .and_then(|child_items| form_edit_find_element(child_items, after_name))
-        else {
+        let Some(after_element) = form_edit_find_placement_element(root, after_name)? else {
             return Err(format!("[ERROR] Element '{after_name}' not found"));
         };
         let child_items = after_element
-            .ancestors()
-            .find(|node| node.is_element() && node.tag_name().name() == "ChildItems")
+            .parent_element()
+            .filter(|node| node.has_tag_name((FORM_LOGFORM_NS, "ChildItems")))
             .ok_or_else(|| {
                 format!("No parent <ChildItems> section found for form element '{after_name}'")
             })?;
@@ -7274,21 +7296,37 @@ pub(crate) fn form_edit_target_child_items_range(
     })
 }
 
-pub(crate) fn form_edit_find_element<'a>(
-    child_items: roxmltree::Node<'a, 'a>,
+fn form_edit_placement_is_command_bar(
+    root: roxmltree::Node<'_, '_>,
+    into_name: Option<&str>,
+    after_name: Option<&str>,
+) -> Result<bool, String> {
+    let container = if let Some(name) = into_name.filter(|name| !name.is_empty()) {
+        form_edit_find_placement_element(root, name)?
+    } else if let Some(name) = after_name.filter(|name| !name.is_empty()) {
+        form_edit_find_placement_element(root, name)?
+            .and_then(|node| node.parent_element())
+            .filter(|node| node.has_tag_name((FORM_LOGFORM_NS, "ChildItems")))
+            .and_then(|node| node.parent_element())
+    } else {
+        None
+    };
+    Ok(container
+        .is_some_and(|node| matches!(node.tag_name().name(), "AutoCommandBar" | "CommandBar")))
+}
+
+fn form_edit_find_placement_element<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
     name: &str,
-) -> Option<roxmltree::Node<'a, 'a>> {
-    for child in child_items.children().filter(|child| child.is_element()) {
-        if child.attribute("name") == Some(name) {
-            return Some(child);
-        }
-        if let Some(nested_child_items) = form_child(child, "ChildItems") {
-            if let Some(found) = form_edit_find_element(nested_child_items, name) {
-                return Some(found);
-            }
-        }
+) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
+    // Share the working-tree lookup used for event targets. It includes
+    // root/table AutoCommandBar but never descends into the root BaseForm.
+    let matches = form_edit_find_element_nodes(root, name);
+    match matches.as_slice() {
+        [] => Ok(None),
+        [node] => Ok(Some(*node)),
+        _ => Err(format!("[ERROR] Target element '{name}' is ambiguous")),
     }
-    None
 }
 
 pub(crate) fn form_edit_insert_lines_into_target(
@@ -14561,6 +14599,167 @@ pub(crate) mod tests {
                 "expected {expected:?}, got {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn auto_command_bar_placement_covers_root_and_table_panels() {
+        for self_closing in [true, false] {
+            for populated in [true, false] {
+                for target in ["RootBar", "RowsBar"] {
+                    let content = if populated {
+                        "<ChildItems><Button name=\"Existing\" id=\"3\"/></ChildItems>"
+                    } else {
+                        ""
+                    };
+                    let panel = |name: &str, id: &str| {
+                        if self_closing && !populated {
+                            format!("<AutoCommandBar name=\"{name}\" id=\"{id}\"/>")
+                        } else {
+                            format!("<AutoCommandBar name=\"{name}\" id=\"{id}\">{content}</AutoCommandBar>")
+                        }
+                    };
+                    let mut xml = format!("<Form xmlns=\"{FORM_LOGFORM_NS}\">{}<ChildItems><Table name=\"Rows\" id=\"1\">{}</Table></ChildItems><BaseForm><AutoCommandBar name=\"BaselineBar\" id=\"-1\"/></BaseForm></Form>",panel("RootBar","-1"),panel("RowsBar","2"));
+                    let insert =
+                        form_edit_target_child_items_range(&xml, Some(target), None).unwrap();
+                    form_edit_insert_lines_into_target(
+                        &mut xml,
+                        insert,
+                        &["<Button name=\"Added\" id=\"4\"/>".to_string()],
+                    )
+                    .unwrap();
+                    let doc = Document::parse(&xml).unwrap();
+                    let added = doc
+                        .descendants()
+                        .find(|n| n.attribute("name") == Some("Added"))
+                        .unwrap();
+                    let items = added.parent_element().unwrap();
+                    assert_eq!(items.tag_name().name(), "ChildItems");
+                    assert_eq!(
+                        items.parent_element().unwrap().attribute("name"),
+                        Some(target)
+                    );
+                    if populated {
+                        assert_eq!(items.children().filter(|n| n.is_element()).count(), 2);
+                    }
+                    assert!(
+                        form_edit_target_child_items_range(&xml, Some("BaselineBar"), None)
+                            .is_err()
+                    );
+                    assert!(
+                        form_edit_target_child_items_range(&xml, Some("Missing"), None).is_err()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn auto_command_bar_targets_reject_ambiguous_names_and_support_empty_forms() {
+        let xml=format!("<Form xmlns=\"{FORM_LOGFORM_NS}\"><AutoCommandBar name=\"Duplicate\" id=\"-1\"/><ChildItems><Table name=\"Rows\" id=\"1\"><AutoCommandBar name=\"Duplicate\" id=\"2\"/></Table></ChildItems></Form>");
+        assert!(
+            form_edit_target_child_items_range(&xml, Some("Duplicate"), None)
+                .err()
+                .expect("ambiguous placement must fail")
+                .contains("ambiguous")
+        );
+        let mut xml=format!("<Form xmlns=\"{FORM_LOGFORM_NS}\"><AutoCommandBar name=\"EmptyBar\" id=\"-1\"/></Form>");
+        let target = form_edit_target_child_items_range(&xml, Some("EmptyBar"), None).unwrap();
+        form_edit_insert_lines_into_target(
+            &mut xml,
+            target,
+            &["<Button name=\"Only\" id=\"1\"/>".to_string()],
+        )
+        .unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let only = doc
+            .descendants()
+            .find(|n| n.attribute("name") == Some("Only"))
+            .unwrap();
+        assert!(form_edit_elements_match_target(
+            doc.root_element(),
+            &[only],
+            &["Only".to_string()],
+            Some("EmptyBar"),
+            None
+        ));
+        assert!(form_child(doc.root_element(), "ChildItems").is_none());
+    }
+
+    #[test]
+    fn auto_command_bar_after_requires_direct_child_items_parent() {
+        let mut xml=format!("<Form xmlns=\"{FORM_LOGFORM_NS}\"><AutoCommandBar name=\"RootBar\" id=\"-1\"><ChildItems><Button name=\"First\" id=\"4\"/></ChildItems></AutoCommandBar><ChildItems><Table name=\"Rows\" id=\"1\"><AutoCommandBar name=\"RowsBar\" id=\"2\"/></Table></ChildItems></Form>");
+        assert!(form_edit_target_child_items_range(&xml, None, Some("RootBar")).is_err());
+        assert!(form_edit_target_child_items_range(&xml, None, Some("RowsBar")).is_err());
+        assert!(form_edit_placement_is_command_bar(
+            Document::parse(&xml).unwrap().root_element(),
+            None,
+            Some("First")
+        )
+        .unwrap());
+        let target = form_edit_target_child_items_range(&xml, None, Some("First")).unwrap();
+        form_edit_insert_lines_into_target(
+            &mut xml,
+            target,
+            &["<Button name=\"Second\" id=\"5\"/>".to_string()],
+        )
+        .unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let items = doc
+            .descendants()
+            .find(|n| n.attribute("name") == Some("First"))
+            .unwrap()
+            .parent_element()
+            .unwrap();
+        let names = items
+            .children()
+            .filter(|n| n.is_element())
+            .filter_map(|n| n.attribute("name"))
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["First", "Second"]);
+    }
+
+    #[test]
+    fn auto_command_bar_preview_apply_and_repeat_are_safe() {
+        let context = temp_context("auto-command-bar");
+        let path = context.cwd.join("Form.xml");
+        fs::write(&path, editable_form_xml(false)).unwrap();
+        let args = Map::from_iter([
+            ("FormPath".to_string(), json!(path.display().to_string())),
+            (
+                "definition".to_string(),
+                json!({"elements":[{"button":"RunButton","command":"Refresh"}],"into":"ФормаКоманднаяПанель"}),
+            ),
+        ]);
+        let before = crate::test_support::tree_snapshot(&context.cwd);
+        let preview = preview_form_edit(&args, &context);
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(crate::test_support::tree_snapshot(&context.cwd), before);
+        let applied = edit_form(&args, &context);
+        assert!(applied.ok, "{applied:?}");
+        let after = crate::test_support::tree_snapshot(&context.cwd);
+        let repeated = edit_form(&args, &context);
+        assert!(repeated.ok, "{repeated:?}");
+        assert_eq!(crate::test_support::tree_snapshot(&context.cwd), after);
+        let xml = fs::read_to_string(&path).unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let button = doc
+            .descendants()
+            .find(|n| n.attribute("name") == Some("RunButton"))
+            .unwrap();
+        assert_eq!(
+            button
+                .parent_element()
+                .unwrap()
+                .parent_element()
+                .unwrap()
+                .tag_name()
+                .name(),
+            "AutoCommandBar"
+        );
+        assert!(button
+            .children()
+            .any(|n| n.has_tag_name("Type") && n.text() == Some("CommandBarButton")));
+        fs::remove_dir_all(&context.cwd).unwrap();
     }
 
     #[test]

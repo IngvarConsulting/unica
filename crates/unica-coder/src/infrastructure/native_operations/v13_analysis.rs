@@ -242,9 +242,15 @@ pub(crate) fn node_facts(
         None if is_template => template_flavour_from_descriptor(address, context),
         None => None,
     };
+    let inherited = viewed
+        .and_then(|data| data.get("props"))
+        .and_then(|props| props.get("content"))
+        .and_then(Value::as_str)
+        == Some(crate::infrastructure::v13_read::INHERITED_CONTENT);
     NodeFacts {
         extension: source_set_is_extension(address, context),
         template,
+        inherited,
     }
 }
 
@@ -488,7 +494,8 @@ mod tests {
             node_facts(&at, Some(&dcs), &context),
             NodeFacts {
                 extension: false,
-                template: Some(TemplateFlavour::DataCompositionSchema)
+                template: Some(TemplateFlavour::DataCompositionSchema),
+                inherited: false,
             }
         );
         let mxl =
@@ -498,6 +505,12 @@ mod tests {
             Some(TemplateFlavour::SpreadsheetDocument)
         );
         assert_eq!(node_facts(&at, None, &context).template, None);
+        assert!(!node_facts(&at, Some(&dcs), &context).inherited);
+        let inherited =
+            json!({"props": {"format": "DataCompositionSchema", "content": "inherited"}});
+        assert!(node_facts(&at, Some(&inherited), &context).inherited);
+        let other = json!({"props": {"content": "own"}});
+        assert!(!node_facts(&at, Some(&other), &context).inherited);
         fs::remove_dir_all(root).unwrap();
     }
 }

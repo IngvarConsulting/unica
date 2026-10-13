@@ -30,8 +30,8 @@ use crate::infrastructure::native_operations::dcs::parse_dcs_info_xml;
 use crate::infrastructure::native_operations::form::parse_form_info_xml;
 use crate::infrastructure::native_operations::form::FormInfoData;
 use crate::infrastructure::native_operations::meta::{
-    parse_child_profile_from_bytes, parse_meta_borrowing, parse_typed_meta_local_info,
-    MetaBorrowing,
+    descriptor_extends_parent, parse_child_profile_from_bytes, parse_meta_borrowing,
+    parse_typed_meta_local_info, MetaBorrowing,
 };
 use crate::infrastructure::native_operations::mxl::parse_mxl_info_xml;
 use crate::infrastructure::native_operations::role::parse_role_info_xml;
@@ -838,6 +838,17 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
+    /// Заимствование объекта, чей сопутствующий файл расширение не несёт;
+    /// см. [`inherited_companion`].
+    pub(crate) fn inherited_resource(
+        &self,
+        target: &MetadataAddress,
+        resource: &str,
+    ) -> Result<Option<MetaBorrowing>, ViewError> {
+        inherited_companion(&self.root, self.source_set_kind, target, resource)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+    }
+
     /// Локальное чтение объекта: разбор дескриптора и заимствование берутся из
     /// одних и тех же байтов.
     ///
@@ -915,7 +926,12 @@ impl ProviderReadAuthority {
                 items: Vec::new(),
             }));
         };
-        let code_type = match code_type.unwrap_or("String") {
+        let code_type = match code_type.ok_or_else(|| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                crate::infrastructure::native_operations::meta::MISSING_PREDEFINED_CODE_TYPE,
+            )
+        })? {
             "String" => crate::infrastructure::native_operations::meta::PredefinedCodeType::String,
             "Number" => crate::infrastructure::native_operations::meta::PredefinedCodeType::Number,
             other => {
@@ -1686,6 +1702,92 @@ impl ProviderReadAuthority {
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         )
     }
+}
+
+/// Объект, чей сопутствующий файл `resource` держит содержимое, в котором
+/// лежит адрес: роль для `Rights.xml`, пакет для `Package.bin`, общая форма
+/// или форма владельца для `Form.xml` (её модуль тоже), общий макет или макет
+/// владельца для `Template.xml`. `None` — адрес вне такого содержимого.
+pub(crate) fn companion_owner(
+    at: &crate::domain::address::QualifiedAddress,
+    resource: &str,
+) -> Option<MetadataAddress> {
+    let (top, child) = match resource {
+        "Rights.xml" => (NodeKind::Role, None),
+        "Package.bin" => (NodeKind::XdtoPackage, None),
+        "Form.xml" => (NodeKind::CommonForm, Some(NodeKind::Form)),
+        "Template.xml" => (NodeKind::CommonTemplate, Some(NodeKind::Template)),
+        _ => return None,
+    };
+    let segments = at.segments();
+    let end = segments.iter().enumerate().find_map(|(index, segment)| {
+        let kind = segment.kind();
+        let matches = if index == 0 {
+            kind == top
+        } else {
+            Some(kind) == child
+        };
+        (matches && segment.name().is_some()).then_some(index)
+    })?;
+    let path = segments[..=end]
+        .iter()
+        .map(|segment| {
+            format!(
+                "{}.{}",
+                segment.kind().as_str(),
+                segment.name().unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(".");
+    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &path).ok()
+}
+
+/// Заимствование объекта, чей сопутствующий файл расширение не несёт.
+///
+/// Платформа 8.3.27 импортирует и выгружает заимствованные роль, форму,
+/// пакет XDTO и макет без `Rights.xml`, `Form.xml`, `Package.bin` и
+/// `Template.xml`: своего содержимого у такого объекта в расширении нет,
+/// действует содержимое родителя. `Some` — именно этот случай: набор вида
+/// `extension`, файла нет, а описание объекта указывает родителя через
+/// `ExtendedConfigurationObject`. У дочернего объекта (формы или макета
+/// владельца) родителя обязано указывать и описание владельца: у
+/// собственного владельца расширения нет родителя, от которого ребёнок
+/// унаследовал бы содержимое. Единственный владелец этого решения: его
+/// спрашивают и чтение, и запись.
+pub(crate) fn inherited_companion(
+    root: &RetainedDirectoryCapability,
+    source_kind: SourceSetKind,
+    target: &MetadataAddress,
+    resource: &str,
+) -> Result<Option<MetaBorrowing>, String> {
+    if source_kind != SourceSetKind::Extension {
+        return Ok(None);
+    }
+    let relative = shared_attached_resource_relative(target, resource, source_kind)?;
+    match root.open_relative_regular_nofollow(&relative) {
+        Ok(_) => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    let descriptor_of = |target: &MetadataAddress| -> Result<Vec<u8>, String> {
+        let relative = shared_metadata_descriptor_relative(target, source_kind)?;
+        root.read_relative_regular_bounded(&relative, MAX_CONFIGURATION_BYTES)
+            .map_err(|error| error.to_string())
+    };
+    let descriptor = descriptor_of(target)?;
+    if !descriptor_extends_parent(&descriptor) {
+        return Ok(None);
+    }
+    let parts = target.as_str().split('.').collect::<Vec<_>>();
+    if parts.len() > 2 {
+        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
+            .map_err(|error| error.to_string())?;
+        if !descriptor_extends_parent(&descriptor_of(&owner)?) {
+            return Ok(None);
+        }
+    }
+    parse_meta_borrowing(&descriptor).map(Some)
 }
 
 /// `Subsystems/A.xml` → `Subsystems/A/Subsystems/B.xml`.

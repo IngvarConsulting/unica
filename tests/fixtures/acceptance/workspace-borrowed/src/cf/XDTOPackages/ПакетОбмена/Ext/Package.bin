@@ -1,0 +1,5 @@
+﻿<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" targetNamespace="http://example.org/unica/probe1381">
+	<objectType name="Товар">
+		<property name="Код" type="xs:string"/>
+	</objectType>
+</package>

@@ -34858,6 +34858,1249 @@
   },
   {
    "id": "S405",
+   "name": "item-event-handler-receives-the-item",
+   "issue": 1390,
+   "area": "Формы",
+   "task": "Реализовать обработчик события элемента формы: `event.implement` пишет `Элемент` первым параметром, `view` показывает событие реализованным; обработчик с полной сигнатурой, написанный вручную, тоже реализован, а с сигнатурой другого события элемента — нет",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.implement",
+        "args": {
+         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ПолеНаименованиеПриИзменении"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура ПолеНаименованиеПриИзменении(Элемент)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/state",
+       "eq": "implemented"
+      },
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура ПриИзменении(Элемент)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "НачалоВыбора",
+          "handler": "ПолеНаименованиеПолноеНачалоВыбора",
+          "element": "ПолеНаименованиеПолное"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ПолеНаименованиеПолноеНачалоВыбора(Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное.Event.StartChoice"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/state",
+       "eq": "implemented"
+      },
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура НачалоВыбора(Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "ПриИзменении",
+          "handler": "ПолеНаименованиеПолноеПриИзменении",
+          "element": "ПолеНаименованиеПолное"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ПолеНаименованиеПолноеПриИзменении(Элемент, Текст, СтандартнаяОбработка)\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное.Event.OnChange"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/state",
+       "eq": "invalid"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S406",
+   "name": "form-event-handler-has-no-item-parameter",
+   "issue": 1390,
+   "area": "Формы",
+   "task": "Реализовать обработчик события самой формы: `event.implement` пишет сигнатуру без `Элемент`, `view` показывает событие реализованным",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.implement",
+        "args": {
+         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ПриОткрытии"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура ПриОткрытии(Отказ)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/state",
+       "eq": "implemented"
+      },
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура ПриОткрытии(Отказ)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S407",
+   "name": "element-add-into-auto-command-bar",
+   "issue": 1392,
+   "area": "Формы",
+   "task": "Кнопка, добавленная через into в корневую или табличную автоматическую командную панель, ложится в её ChildItems как CommandBarButton",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "КнопкаЗакрытьФорму",
+           "type": "Button",
+           "stdCommand": "Close",
+           "into": "ФормаКоманднаяПанель"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.3/xcf/logform}AutoCommandBar[@name='ФормаКоманднаяПанель']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Button[@name='КнопкаЗакрытьФорму']/{http://v8.1c.ru/8.3/xcf/logform}Type",
+       "eq": [
+        "CommandBarButton"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "КнопкаОбновитьСписок",
+           "type": "Button",
+           "stdCommand": "List.Refresh",
+           "into": "ListCommandBar"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Table[@name='List']/{http://v8.1c.ru/8.3/xcf/logform}AutoCommandBar[@name='ListCommandBar']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Button[@name='КнопкаОбновитьСписок']/{http://v8.1c.ru/8.3/xcf/logform}Type",
+       "eq": [
+        "CommandBarButton"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S408",
+   "name": "element-add-ambiguous-placement-refused",
+   "issue": 1392,
+   "area": "Формы",
+   "task": "element.add с into, имя которого носят две командные панели формы, отказывает без записи",
+   "workspace": "tests/fixtures/acceptance/workspace-form-names",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Строки.Form.ФормаСписка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Строки.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "КнопкаЗакрыть",
+           "type": "Button",
+           "stdCommand": "Close",
+           "into": "Панель"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: [ERROR] Target element 'Панель' is ambiguous",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S409",
+   "name": "borrowed-objects-without-own-content",
+   "issue": 1381,
+   "area": "Расширения конфигурации",
+   "task": "Прочитать и проверить заимствованные роль, общую форму, форму и макет обработки и пакет XDTO, которые платформа выгрузила без Rights.xml, Form.xml, Template.xml и Package.bin: узел читается по описанию с адресом родителя и унаследованным содержимым, адрес внутри содержимого отказывает с указанием на родителя, запись в унаследованное содержимое и в модуль такой формы отказывает с продолжением к объекту расширения, проверка не требует отсутствующих файлов",
+   "workspace": "tests/fixtures/acceptance/workspace-borrowed",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/content",
+       "eq": "inherited"
+      },
+      {
+       "pointer": "/data/props/belonging",
+       "eq": "borrowed"
+      },
+      {
+       "pointer": "/data/props/extends",
+       "eq": "main:Role.SalesReader"
+      },
+      {
+       "pointer": "/data/branches",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Role.SalesReader.Right"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: `ext:Role.SalesReader.Right` lies inside content this borrowed object does not carry: the extension has no `Rights.xml`, so its content is inherited from the pa"
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:Role.SalesReader"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "readable",
+     "validators": []
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:Role.SalesReader",
+      "ops": [
+       {
+        "op": "right.set",
+        "args": {
+         "values": {
+          "object": "DataProcessor.Обработка",
+          "right": "Use",
+          "value": true
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: apply operation `right.set` writes content of `ext:Role.SalesReader` that is inherited from the parent: the extension does not hold its `Rights.xml`; read the p",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "ext:Role.SalesReader"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonForm.ОбщаяФорма"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/content",
+       "eq": "inherited"
+      },
+      {
+       "pointer": "/data/props/belonging",
+       "eq": "borrowed"
+      },
+      {
+       "pointer": "/data/props/extends",
+       "eq": "main:CommonForm.ОбщаяФорма"
+      },
+      {
+       "pointer": "/data/branches",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:CommonForm.ОбщаяФорма"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "readable",
+     "validators": []
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonForm.ОбщаяФорма.Module"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: `ext:CommonForm.ОбщаяФорма.Module` lies inside content this borrowed object does not carry: the extension has no `Form.xml`, so its content is inherited from th"
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "ext:CommonForm.ОбщаяФорма.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "\nПроцедура ПР_А()\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: apply operation `code.insert` writes content of `ext:CommonForm.ОбщаяФорма` that is inherited from the parent: the extension does not hold its `Form.xml`; read ",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "ext:CommonForm.ОбщаяФорма"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "exists",
+       "path": "src/ext/CommonForms/ОбщаяФорма/Ext/Form/Module.bsl",
+       "eq": false
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:DataProcessor.Обработка.Form.Форма"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/content",
+       "eq": "inherited"
+      },
+      {
+       "pointer": "/data/props/belonging",
+       "eq": "borrowed"
+      },
+      {
+       "pointer": "/data/branches",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:DataProcessor.Обработка.Template.СхемаКомпоновки"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/format",
+       "eq": null
+      },
+      {
+       "pointer": "/data/props/content",
+       "eq": "inherited"
+      },
+      {
+       "pointer": "/data/props/belonging",
+       "eq": "borrowed"
+      },
+      {
+       "pointer": "/data/branches",
+       "absent": true
+      },
+      {
+       "pointer": "/data/props/parentReason",
+       "contains": "props.extends of `ext:DataProcessor.Обработка`"
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:DataProcessor.Обработка.Template.СхемаКомпоновки"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "readable",
+     "validators": []
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonTemplate.ОбщийМакет"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/belonging",
+       "eq": "borrowed"
+      },
+      {
+       "pointer": "/data/props/extends",
+       "eq": "main:CommonTemplate.ОбщийМакет"
+      },
+      {
+       "pointer": "/data/props/content",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:XDTOPackage.ПакетОбмена"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/content",
+       "eq": "inherited"
+      },
+      {
+       "pointer": "/data/props/belonging",
+       "eq": "borrowed"
+      },
+      {
+       "pointer": "/data/props/extends",
+       "eq": "main:XDTOPackage.ПакетОбмена"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:XDTOPackage.ПакетОбмена.Type"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: `ext:XDTOPackage.ПакетОбмена.Type` lies inside content this borrowed object does not carry: the extension has no `Package.bin`, so its content is inherited from"
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "ext:DataProcessor.Обработка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "meta"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S410",
+   "name": "incomplete-borrowed-metadata-without-parent",
+   "issue": 1304,
+   "area": "Навигация и чтение",
+   "task": "Прочитать неполные заимствованные метаданные без родителя: сохранить локальные факты и исходник BSL, неизвестность контекстов и отказ зависимого фильтра без записи файлов",
+   "workspace": "tests/fixtures/acceptance/workspace-incomplete-borrowed",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.CorpusModule"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/commonModule",
+       "eq": {
+        "global": null,
+        "clientManagedApplication": null,
+        "server": null,
+        "externalConnection": null,
+        "clientOrdinaryApplication": null,
+        "serverCall": null,
+        "privileged": null,
+        "returnValuesReuse": null
+       }
+      },
+      {
+       "pointer": "/data/limits",
+       "contains": "compilation contexts are unknown because the borrowed common module does not state its execution environment"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/CorpusCatalog.xml",
+       "kind": "sha256",
+       "eq": "0ce535de5f0b4295212b7c20de8514944b33f6566143ad1632f11024c819313b"
+      },
+      {
+       "path": "src/ChartsOfCalculationTypes/CorpusCalculationTypes.xml",
+       "kind": "sha256",
+       "eq": "bcdef0a5c0c732a4e27ce57692e1930c506f3c4fca531f535d82af01d1644491"
+      },
+      {
+       "path": "src/CommonModules/CorpusModule/Ext/Module.bsl",
+       "kind": "sha256",
+       "eq": "4aac93927e340996c103d5beefaa26a6bca09cfcb4e6ce550e21704568e42c4e"
+      },
+      {
+       "path": "src/CommonModules/CorpusModule.xml",
+       "kind": "sha256",
+       "eq": "c00a82ba7181202e43c1f38b47748155923d65b6f4b53624d5afeb9e149c1890"
+      },
+      {
+       "path": "src/Configuration.xml",
+       "kind": "sha256",
+       "eq": "541a30541727a522c29e118bfae3caad145d226f09e42d4e24ca81e36a965b06"
+      },
+      {
+       "path": "src/Documents/CorpusDocument.xml",
+       "kind": "sha256",
+       "eq": "f5db7ff2e306f41046abae9ab4d537178705f083d38d2804638bde6e0c64e5c8"
+      },
+      {
+       "path": "src/InformationRegisters/CorpusRegister.xml",
+       "kind": "sha256",
+       "eq": "63d463efbe9c304594e65bc0e137f4da809013c277d353521c987067c85c1ef6"
+      },
+      {
+       "path": "src/Languages/Русский.xml",
+       "kind": "sha256",
+       "eq": "7d8b52ab4bebed8a42ac1c8eb80bb22d96a679733785365e461336e4c16f5b00"
+      },
+      {
+       "path": "v8project.yaml",
+       "kind": "sha256",
+       "eq": "4c905657f7eed74f32e2bf03e873ca17f3440e378d2cd83c4952ecd63011ea59"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.CorpusModule.Method"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/at",
+       "eq": "ext:CommonModule.CorpusModule.Method.Проверка"
+      },
+      {
+       "pointer": "/data/items/0/props/export",
+       "eq": true
+      },
+      {
+       "pointer": "/data/items/0/props/compile/contexts",
+       "eq": null
+      },
+      {
+       "pointer": "/data/items/1",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.CorpusModule.Method.Проверка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/compile/contexts",
+       "eq": null
+      },
+      {
+       "pointer": "/data/props/compile/guard",
+       "eq": "Server"
+      },
+      {
+       "pointer": "/data/props/export",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.CorpusModule.Compilation"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/contexts",
+       "eq": null
+      },
+      {
+       "pointer": "/data/items/0/guard",
+       "eq": "Server"
+      },
+      {
+       "pointer": "/data/items/0/fromLine",
+       "eq": 2
+      },
+      {
+       "pointer": "/data/items/0/toLine",
+       "eq": 3
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.CorpusModule.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "line": 1,
+         "text": "#Если Сервер Тогда"
+        },
+        {
+         "line": 2,
+         "text": "Процедура Проверка() Экспорт"
+        },
+        {
+         "line": 3,
+         "text": "КонецПроцедуры"
+        },
+        {
+         "line": 4,
+         "text": "#КонецЕсли"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Catalog.CorpusCatalog"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/Hierarchical",
+       "eq": false
+      },
+      {
+       "pointer": "/data/props/CodeLength",
+       "eq": 3
+      },
+      {
+       "pointer": "/data/props/Comment",
+       "eq": ""
+      },
+      {
+       "pointer": "/data/props/CodeType",
+       "absent": true
+      },
+      {
+       "pointer": "/data/props/parentStatus",
+       "eq": "unavailable"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Document.CorpusDocument"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/Comment",
+       "eq": ""
+      },
+      {
+       "pointer": "/data/props/Posting",
+       "absent": true
+      },
+      {
+       "pointer": "/data/props/parentStatus",
+       "eq": "unavailable"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:InformationRegister.CorpusRegister"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/Comment",
+       "eq": ""
+      },
+      {
+       "pointer": "/data/props/WriteMode",
+       "absent": true
+      },
+      {
+       "pointer": "/data/props/parentStatus",
+       "eq": "unavailable"
+      },
+      {
+       "pointer": "/data/limits",
+       "contains": "relations.registrars не прочитано: registrar applicability is unknown because WriteMode is absent"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:ChartOfCalculationTypes.CorpusCalculationTypes"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/Comment",
+       "eq": ""
+      },
+      {
+       "pointer": "/data/props/CodeType",
+       "absent": true
+      },
+      {
+       "pointer": "/data/props/parentStatus",
+       "eq": "unavailable"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:Catalog.CorpusCatalog.Relation"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/limits",
+       "contains": "relations.owners is absent; the relation list may be incomplete"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:ChartOfCalculationTypes.CorpusCalculationTypes.Relation"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/limits",
+       "contains": "details.baseCalculationTypes is absent; the relation list may be incomplete"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/CorpusCatalog.xml",
+       "kind": "sha256",
+       "eq": "0ce535de5f0b4295212b7c20de8514944b33f6566143ad1632f11024c819313b"
+      },
+      {
+       "path": "src/ChartsOfCalculationTypes/CorpusCalculationTypes.xml",
+       "kind": "sha256",
+       "eq": "bcdef0a5c0c732a4e27ce57692e1930c506f3c4fca531f535d82af01d1644491"
+      },
+      {
+       "path": "src/CommonModules/CorpusModule/Ext/Module.bsl",
+       "kind": "sha256",
+       "eq": "4aac93927e340996c103d5beefaa26a6bca09cfcb4e6ce550e21704568e42c4e"
+      },
+      {
+       "path": "src/CommonModules/CorpusModule.xml",
+       "kind": "sha256",
+       "eq": "c00a82ba7181202e43c1f38b47748155923d65b6f4b53624d5afeb9e149c1890"
+      },
+      {
+       "path": "src/Configuration.xml",
+       "kind": "sha256",
+       "eq": "541a30541727a522c29e118bfae3caad145d226f09e42d4e24ca81e36a965b06"
+      },
+      {
+       "path": "src/Documents/CorpusDocument.xml",
+       "kind": "sha256",
+       "eq": "f5db7ff2e306f41046abae9ab4d537178705f083d38d2804638bde6e0c64e5c8"
+      },
+      {
+       "path": "src/InformationRegisters/CorpusRegister.xml",
+       "kind": "sha256",
+       "eq": "63d463efbe9c304594e65bc0e137f4da809013c277d353521c987067c85c1ef6"
+      },
+      {
+       "path": "src/Languages/Русский.xml",
+       "kind": "sha256",
+       "eq": "7d8b52ab4bebed8a42ac1c8eb80bb22d96a679733785365e461336e4c16f5b00"
+      },
+      {
+       "path": "v8project.yaml",
+       "kind": "sha256",
+       "eq": "4c905657f7eed74f32e2bf03e873ca17f3440e378d2cd83c4952ecd63011ea59"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S411",
+   "name": "common-module-rejects-duplicate-borrowing-identity",
+   "issue": 1304,
+   "area": "Навигация и чтение",
+   "task": "Отклонить чтение общего модуля и его методов при дубликате идентичности заимствования, сохранив исходные файлы",
+   "workspace": "tests/fixtures/acceptance/workspace-invalid-borrowing",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.CorpusModule.Method"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "source_unreadable"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/CommonModules/CorpusModule/Ext/Module.bsl",
+       "kind": "sha256",
+       "eq": "4aac93927e340996c103d5beefaa26a6bca09cfcb4e6ce550e21704568e42c4e"
+      },
+      {
+       "path": "src/CommonModules/CorpusModule.xml",
+       "kind": "sha256",
+       "eq": "b79ca789e4c10164d2b9047f81efcd24a0b785118c213e8d4cfe0087b3ef80aa"
+      },
+      {
+       "path": "src/Configuration.xml",
+       "kind": "sha256",
+       "eq": "821173da7e3cb2e1cc013450fb6212ddf76f73d135df920bee93231958f505cf"
+      },
+      {
+       "path": "src/Languages/Русский.xml",
+       "kind": "sha256",
+       "eq": "7d8b52ab4bebed8a42ac1c8eb80bb22d96a679733785365e461336e4c16f5b00"
+      },
+      {
+       "path": "v8project.yaml",
+       "kind": "sha256",
+       "eq": "4c905657f7eed74f32e2bf03e873ca17f3440e378d2cd83c4952ecd63011ea59"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.CorpusModule"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "source_unreadable"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "ext:CommonModule.CorpusModule.Method.Проверка"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/detailCode",
+       "eq": "source_unreadable"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/CommonModules/CorpusModule/Ext/Module.bsl",
+       "kind": "sha256",
+       "eq": "4aac93927e340996c103d5beefaa26a6bca09cfcb4e6ce550e21704568e42c4e"
+      },
+      {
+       "path": "src/CommonModules/CorpusModule.xml",
+       "kind": "sha256",
+       "eq": "b79ca789e4c10164d2b9047f81efcd24a0b785118c213e8d4cfe0087b3ef80aa"
+      },
+      {
+       "path": "src/Configuration.xml",
+       "kind": "sha256",
+       "eq": "821173da7e3cb2e1cc013450fb6212ddf76f73d135df920bee93231958f505cf"
+      },
+      {
+       "path": "src/Languages/Русский.xml",
+       "kind": "sha256",
+       "eq": "7d8b52ab4bebed8a42ac1c8eb80bb22d96a679733785365e461336e4c16f5b00"
+      },
+      {
+       "path": "v8project.yaml",
+       "kind": "sha256",
+       "eq": "4c905657f7eed74f32e2bf03e873ca17f3440e378d2cd83c4952ecd63011ea59"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S412",
    "name": "retired-duplicate-arguments-route-to-the-address",
    "issue": 1353,
    "area": "СКД",
