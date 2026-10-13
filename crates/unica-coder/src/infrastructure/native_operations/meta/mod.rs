@@ -73,6 +73,10 @@ fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
 }
 
 mod edit;
+mod exchange_content;
+pub(crate) use exchange_content::{
+    read_content as read_exchange_content, update_content as update_exchange_content,
+};
 mod format_contract;
 mod help_facet;
 mod info;

@@ -29,6 +29,10 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 enum MetadataPlanKind {
+    ExchangeContent {
+        owner: MetadataAddress,
+        items: Vec<crate::domain::metadata::MetaExchangeContentItem>,
+    },
     Edit {
         target: MetadataAddress,
         operation: MetaEditOperation,
@@ -135,6 +139,69 @@ pub(crate) struct MetadataPlanOperation {
     kind: MetadataPlanKind,
 }
 
+impl MetadataPlanOperation {
+    pub(super) fn exchange_content_owner(&self) -> Option<&MetadataAddress> {
+        match &self.kind {
+            MetadataPlanKind::ExchangeContent { owner, .. } => Some(owner),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn final_exchange_content(
+    staged: &mut ApplyStagedState,
+    binding: &ProviderRootBinding,
+    owners: impl Iterator<Item = MetadataAddress>,
+) -> Result<
+    Vec<crate::infrastructure::native_operations::apply::ExchangeContentPlanDetail>,
+    ApplyPlanError,
+> {
+    use crate::infrastructure::native_operations::apply::{
+        ExchangeContentPlanDetail, ExchangeContentPlanItem,
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut details = Vec::new();
+    for owner in owners {
+        if !seen.insert(owner.as_str().to_lowercase()) {
+            continue;
+        }
+        let fail = |message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path("ops")
+        };
+        let relative = metadata_descriptor_relative(&owner, binding.source_kind()).map_err(fail)?;
+        if staged
+            .read(&relative)
+            .map_err(|e| ApplyPlanError::staging(e, "ops"))?
+            .is_none()
+        {
+            continue;
+        }
+        let content = relative.with_extension("").join("Ext/Content.xml");
+        let bytes = staged
+            .read(&content)
+            .map_err(|e| ApplyPlanError::staging(e, "ops"))?
+            .ok_or_else(|| fail("final ExchangePlan Content.xml is absent".to_owned()))?;
+        let text = std::str::from_utf8(&bytes).map_err(|e| fail(e.to_string()))?;
+        let observed = crate::infrastructure::native_operations::meta::read_exchange_content(text)
+            .map_err(fail)?;
+        if !observed.errors.is_empty() {
+            return Err(fail(observed.errors.join("; ")));
+        }
+        details.push(ExchangeContentPlanDetail {
+            at: format!("{}:{}", binding.source_set_name(), owner.as_str()),
+            items: observed
+                .items
+                .into_iter()
+                .map(|item| ExchangeContentPlanItem {
+                    at: format!("{}:{}", binding.source_set_name(), item.target.as_str()),
+                    auto_record: item.auto_record,
+                })
+                .collect(),
+        });
+    }
+    Ok(details)
+}
+
 pub(crate) fn parse_metadata_plan_operation(
     operation: &str,
     args: &Value,
@@ -150,6 +217,7 @@ pub(crate) fn parse_metadata_plan_operation(
         .at_path(format!("ops[{op_index}].args"))
     })?;
     let kind = match operation {
+        "content.set" => parse_exchange_content(object, op_index, binding)?,
         "props.set" => parse_props_set(object, op_index, binding)?,
         "attribute.add" => parse_attribute_add(object, op_index, binding)?,
         "attribute.set" => parse_attribute_set(object, op_index, binding)?,
@@ -1153,6 +1221,208 @@ fn parse_relation(
     )
 }
 
+fn parse_exchange_content(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    use crate::domain::metadata::{MetaExchangeAutoRecord, MetaExchangeContentItem};
+    reject_unknown_args("content.set", args, &["at", "items"], op_index)?;
+    let (owner, kind) = metadata_owner(&qualified_target(args, op_index, binding)?, op_index)?;
+    let bad = |message: &str| {
+        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+            .at_path(format!("ops[{op_index}].args.items"))
+    };
+    if kind != MetadataKind::ExchangePlan {
+        return Err(bad("content.set requires an ExchangePlan"));
+    }
+    let values = args
+        .get("items")
+        .and_then(Value::as_array)
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| bad("items must be a nonempty array"))?;
+    let mut items = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (index, item) in values.iter().enumerate() {
+        let item_path = format!("ops[{op_index}].args.items[{index}]");
+        let bad_field = |field: &str, message: &str| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(
+                if field.is_empty() {
+                    item_path.clone()
+                } else {
+                    format!("{item_path}.{field}")
+                },
+            )
+        };
+        let object = item
+            .as_object()
+            .ok_or_else(|| bad_field("", "content item must be an object"))?;
+        if let Some(key) = object
+            .keys()
+            .find(|k| !matches!(k.as_str(), "at" | "autoRecord"))
+        {
+            return Err(bad_field(
+                key,
+                "content item expects only at and autoRecord",
+            ));
+        }
+        let target = qualified_target(object, op_index, binding)
+            .map_err(|e| e.at_path(format!("{item_path}.at")))?;
+        let [segment] = target.segments() else {
+            return Err(bad_field("at", "content target must be a top-level object"));
+        };
+        let name = segment
+            .name()
+            .ok_or_else(|| bad_field("at", "content target must be a named object"))?;
+        let target = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{}.{name}", segment.kind().as_str()),
+        )
+        .map_err(|_| bad_field("at", "content target must be a metadata object"))?;
+        if !seen.insert(target.as_str().to_lowercase()) {
+            return Err(bad_field("at", "content target is repeated in items"));
+        }
+        let auto_record = match object.get("autoRecord").and_then(Value::as_str) {
+            Some("Allow") => MetaExchangeAutoRecord::Allow,
+            Some("Deny") => MetaExchangeAutoRecord::Deny,
+            _ => return Err(bad_field("autoRecord", "autoRecord must be Allow or Deny")),
+        };
+        items.push(MetaExchangeContentItem {
+            target,
+            auto_record,
+        });
+    }
+    Ok(MetadataPlanKind::ExchangeContent { owner, items })
+}
+
+fn stage_exchange_content(
+    staged: &mut ApplyStagedState,
+    authority: &MetadataApplyAuthority<'_>,
+    owner: &MetadataAddress,
+    items: &[crate::domain::metadata::MetaExchangeContentItem],
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    let path = format!("ops[{op_index}].args.items");
+    let configuration = staged
+        .read(Path::new("Configuration.xml"))
+        .map_err(|e| ApplyPlanError::staging(e, path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "Configuration.xml is absent",
+            )
+            .at_path(path.clone())
+        })?;
+    let invalid_configuration = |message: String| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(path.clone())
+    };
+    let configuration_text = std::str::from_utf8(&configuration)
+        .map_err(|_| invalid_configuration("Configuration.xml is not UTF-8".into()))?;
+    let configuration_doc = roxmltree::Document::parse(configuration_text)
+        .map_err(|e| invalid_configuration(format!("invalid Configuration.xml: {e}")))?;
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let root = configuration_doc.root_element();
+    if !root.has_tag_name((MD_NS, "MetaDataObject")) {
+        return Err(invalid_configuration(
+            "expected MetaDataObject in Configuration.xml".into(),
+        ));
+    }
+    let mut configurations = root
+        .children()
+        .filter(|n| n.has_tag_name((MD_NS, "Configuration")));
+    let configuration_node = configurations.next().ok_or_else(|| {
+        invalid_configuration("Configuration.xml has no Configuration element".into())
+    })?;
+    if configurations.next().is_some() {
+        return Err(invalid_configuration(
+            "Configuration.xml has repeated Configuration elements".into(),
+        ));
+    }
+    let mut compositions = configuration_node
+        .children()
+        .filter(|n| n.has_tag_name((MD_NS, "ChildObjects")));
+    let composition = compositions.next().ok_or_else(|| {
+        invalid_configuration("Configuration.xml has no ChildObjects element".into())
+    })?;
+    if compositions.next().is_some() {
+        return Err(invalid_configuration(
+            "Configuration.xml has repeated ChildObjects elements".into(),
+        ));
+    }
+    for target in std::iter::once(owner).chain(items.iter().map(|i| &i.target)) {
+        let (_, _, text) = owner_descriptor_and_text(staged, authority, target, op_index)?;
+        let (kind, name) = meta_edit_object_identity(&text).map_err(|e| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(path.clone())
+        })?;
+        if !crate::domain::metadata::metadata_name_eq(target.as_str(), &format!("{kind}.{name}")) {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "content target descriptor identity does not match its address",
+            )
+            .at_path(path.clone()));
+        }
+        let registered = composition.children().any(|entry| {
+            entry.has_tag_name((MD_NS, kind.as_str()))
+                && entry.attributes().len() == 0
+                && !entry.children().any(|n| n.is_element())
+                && crate::domain::metadata::metadata_name_eq(
+                    &entry
+                        .children()
+                        .filter(|n| n.is_text())
+                        .filter_map(|n| n.text())
+                        .collect::<String>(),
+                    &name,
+                )
+        });
+        if !registered {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "content target is not registered in Configuration.xml",
+            )
+            .at_path(path.clone()));
+        }
+    }
+    let relative = metadata_descriptor_relative(owner, authority.source_kind())
+        .map_err(|e| ApplyPlanError::new(ApplyPlanErrorKind::BadValue, e).at_path(path.clone()))?
+        .with_extension("")
+        .join("Ext/Content.xml");
+    let before = staged
+        .read(&relative)
+        .map_err(|e| ApplyPlanError::staging(e, path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "ExchangePlan Content.xml is absent; its composition is unknown",
+            )
+            .at_path(path.clone())
+        })?;
+    let text = std::str::from_utf8(&before).map_err(|_| {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "ExchangePlan Content.xml is not UTF-8",
+        )
+        .at_path(path.clone())
+    })?;
+    let after =
+        crate::infrastructure::native_operations::meta::update_exchange_content(text, items)
+            .map_err(|e| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(path.clone())
+            })?
+            .into_bytes();
+    if before != after {
+        staged
+            .replace(&relative, &before, after)
+            .map_err(|e| ApplyPlanError::staging(e, path))?;
+        provisional.push(ProvisionalApplyEffect::single(
+            relative,
+            DomainEvent::new(DomainEventKind::MetadataChanged, owner.as_str().to_owned()),
+            op_index,
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn plan_metadata_batch(
     staged: ApplyStagedState,
     authority: MetadataApplyAuthority<'_>,
@@ -1173,6 +1443,17 @@ pub(crate) fn plan_metadata_batch(
     for operation in operations {
         let op_index = operation.index();
         let (target, edit, addressed) = match &operation.operation().kind {
+            MetadataPlanKind::ExchangeContent { owner, items } => {
+                stage_exchange_content(
+                    &mut staged,
+                    &authority,
+                    owner,
+                    items,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
             MetadataPlanKind::Edit {
                 target,
                 operation: edit,
@@ -4362,6 +4643,313 @@ mod tests {
                 (child("lang"), child("content"))
             })
             .collect()
+    }
+
+    #[test]
+    fn exchange_content_parser_rejects_invalid_items_at_their_fields() {
+        let fixture = MetadataFixture::new();
+        for (items, suffix) in [
+            (json!([]), "items"),
+            (
+                json!([{"at":"other:Catalog.Items","autoRecord":"Allow"}]),
+                "items[0].at",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items.Attribute.Code","autoRecord":"Allow"}]),
+                "items[0].at",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items","autoRecord":"Unknown"}]),
+                "items[0].autoRecord",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items","autoRecord":"Allow","extra":true}]),
+                "items[0].extra",
+            ),
+            (
+                json!([{"at":"main:Catalog.Items","autoRecord":"Allow"},{"at":"main:Catalog.items","autoRecord":"Deny"}]),
+                "items[1].at",
+            ),
+        ] {
+            let error = parse_metadata_plan_operation(
+                "content.set",
+                &json!({"at":"main:ExchangePlan.Nodes","items":items}),
+                2,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+            assert_eq!(error.path(), Some(format!("ops[2].args.{suffix}").as_str()));
+        }
+    }
+
+    #[test]
+    fn exchange_content_preview_uses_final_images_and_keeps_noop_out_of_events() {
+        let config = RU_CONFIGURATION_XML.replace("</ChildObjects>", "<ExchangePlan>Nodes</ExchangePlan><ExchangePlan>Other</ExchangePlan><Catalog>Old</Catalog></ChildObjects>");
+        let descriptor = |kind: &str, name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+            )
+        };
+        let content = r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Item><Metadata>Catalog.Old</Metadata><AutoRecord>Deny</AutoRecord></Item></ExchangePlanContent>"#;
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &config),
+            ("Documents/Order.xml", ORDER_XML),
+            (
+                "ExchangePlans/Nodes.xml",
+                &descriptor("ExchangePlan", "Nodes"),
+            ),
+            (
+                "ExchangePlans/Other.xml",
+                &descriptor("ExchangePlan", "Other"),
+            ),
+            ("Catalogs/Old.xml", &descriptor("Catalog", "Old")),
+            ("ExchangePlans/Nodes/Ext/Content.xml", content),
+            ("ExchangePlans/Other/Ext/Content.xml", content),
+        ]);
+        let admission = fixture.admission();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let operations = [("Nodes", "Allow"), ("Other", "Allow"), ("Nodes", "Deny")].into_iter().enumerate()
+            .map(|(index,(name,mode))| fixture.parse("content.set", json!({"at":format!("main:ExchangePlan.{name}"),"items":[{"at":"main:Catalog.Old","autoRecord":mode}]}), index)).collect::<Vec<_>>();
+        let (mut state, provisional) =
+            plan_metadata_batch(admission.staged_state().unwrap(), authority, &operations).unwrap();
+        let owners = || {
+            operations
+                .iter()
+                .filter_map(|op| op.operation().exchange_content_owner().cloned())
+        };
+        let details =
+            super::final_exchange_content(&mut state, &fixture.binding, owners()).unwrap();
+        assert_eq!(
+            details.iter().map(|d| d.at.as_str()).collect::<Vec<_>>(),
+            ["main:ExchangePlan.Nodes", "main:ExchangePlan.Other"]
+        );
+        assert_eq!(
+            details[0].items[0].auto_record,
+            crate::domain::metadata::MetaExchangeAutoRecord::Deny
+        );
+        assert_eq!(
+            details[1].items[0].auto_record,
+            crate::domain::metadata::MetaExchangeAutoRecord::Allow
+        );
+        let effects =
+            crate::infrastructure::native_operations::apply_families::request::reconcile_effects(
+                &state,
+                provisional,
+            );
+        assert_eq!(effects.events().len(), 1);
+        assert_eq!(effects.events()[0].artifact, "ExchangePlan.Other");
+        let descriptor_path = Path::new("ExchangePlans/Nodes.xml");
+        let bytes = state.read(descriptor_path).unwrap().unwrap();
+        state.remove(descriptor_path, &bytes).unwrap();
+        let removed =
+            super::final_exchange_content(&mut state, &fixture.binding, owners()).unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].at, "main:ExchangePlan.Other");
+        // Finalizer must observe replacement content, even if the logical owner
+        // is present again; no snapshot from the earlier set survives.
+        state.create(descriptor_path, bytes).unwrap();
+        let content_path = Path::new("ExchangePlans/Nodes/Ext/Content.xml");
+        let before = state.read(content_path).unwrap().unwrap();
+        state.replace(content_path, &before, br#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#.to_vec()).unwrap();
+        let replaced =
+            super::final_exchange_content(&mut state, &fixture.binding, owners()).unwrap();
+        assert!(replaced[0].items.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(fixture.binding.source_root().join(content_path)).unwrap(),
+            content
+        );
+    }
+
+    #[test]
+    fn exchange_content_requires_structural_configuration_registration() {
+        for (registration, accepted) in [
+            ("<!-- <Catalog>New</Catalog> -->", false),
+            ("<Catalog xmlns='foreign'>New</Catalog>", false),
+            ("<Wrapper><Catalog>New</Catalog></Wrapper>", false),
+            (
+                "<x:Catalog xmlns:x='http://v8.1c.ru/8.3/MDClasses'>N&#101;w</x:Catalog>",
+                true,
+            ),
+        ] {
+            let config = RU_CONFIGURATION_XML.replace(
+                "</ChildObjects>",
+                &format!("<ExchangePlan>Nodes</ExchangePlan>{registration}</ChildObjects>"),
+            );
+            let descriptor = |kind: &str, name: &str| {
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+                )
+            };
+            let content = r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#;
+            let fixture = MetadataFixture::with_files(&[
+                ("Configuration.xml", &config),
+                ("Documents/Order.xml", ORDER_XML),
+                (
+                    "ExchangePlans/Nodes.xml",
+                    &descriptor("ExchangePlan", "Nodes"),
+                ),
+                ("Catalogs/New.xml", &descriptor("Catalog", "New")),
+                ("ExchangePlans/Nodes/Ext/Content.xml", content),
+            ]);
+            let result = plan_all(
+                &fixture,
+                &[(
+                    "content.set",
+                    json!({"at":"main:ExchangePlan.Nodes", "items":[{"at":"main:Catalog.New", "autoRecord":"Allow"}]}),
+                )],
+            );
+            assert_eq!(
+                result.is_ok(),
+                accepted,
+                "{registration}: {:?}",
+                result.as_ref().err()
+            );
+            assert_eq!(
+                std::fs::read_to_string(
+                    fixture
+                        .binding
+                        .source_root()
+                        .join("ExchangePlans/Nodes/Ext/Content.xml")
+                )
+                .unwrap(),
+                content
+            );
+        }
+    }
+
+    #[test]
+    fn exchange_content_plan_upserts_modes_without_writing_sources() {
+        let config = RU_CONFIGURATION_XML.replace("</ChildObjects>", "<ExchangePlan>Nodes</ExchangePlan><Catalog>Old</Catalog><Catalog>New</Catalog></ChildObjects>");
+        let descriptor = |kind: &str, name: &str| {
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="12345678-1234-4234-8234-123456789012"><Properties><Name>{name}</Name></Properties><ChildObjects/></{kind}></MetaDataObject>"#
+            )
+        };
+        let content = r#"<ExchangePlanContent xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"><Item><Metadata>Catalog.Old</Metadata><AutoRecord>Deny</AutoRecord></Item></ExchangePlanContent>"#;
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &config),
+            ("Documents/Order.xml", ORDER_XML),
+            (
+                "ExchangePlans/Nodes.xml",
+                &descriptor("ExchangePlan", "Nodes"),
+            ),
+            ("Catalogs/Old.xml", &descriptor("Catalog", "Old")),
+            ("Catalogs/New.xml", &descriptor("Catalog", "New")),
+            ("ExchangePlans/Nodes/Ext/Content.xml", content),
+        ]);
+        let request = |mode: &str| json!({"at":"main:ExchangePlan.Nodes", "items":[{"at":"main:Catalog.New", "autoRecord":mode}]});
+        let staged = plan_all(
+            &fixture,
+            &[
+                ("content.set", request("Allow")),
+                ("content.set", request("Deny")),
+            ],
+        )
+        .unwrap();
+        let texts = staged_texts(&staged);
+        let post = &texts[Path::new("ExchangePlans/Nodes/Ext/Content.xml")];
+        let read =
+            crate::infrastructure::native_operations::meta::read_exchange_content(post).unwrap();
+        assert!(read.errors.is_empty());
+        assert_eq!(read.items.len(), 2);
+        assert!(read
+            .items
+            .iter()
+            .all(|i| i.auto_record == crate::domain::metadata::MetaExchangeAutoRecord::Deny));
+        assert_eq!(
+            std::fs::read_to_string(
+                fixture
+                    .binding
+                    .source_root()
+                    .join("ExchangePlans/Nodes/Ext/Content.xml")
+            )
+            .unwrap(),
+            content
+        );
+        let noop = plan_all(&fixture, &[("content.set", json!({"at":"main:ExchangePlan.Nodes", "items":[{"at":"main:Catalog.Old","autoRecord":"Deny"}]}))]).unwrap();
+        assert!(noop.planned_changes().is_empty());
+        let missing = plan_all(&fixture, &[("content.set", json!({"at":"main:ExchangePlan.Nodes", "items":[{"at":"main:Catalog.New","autoRecord":"Allow"},{"at":"main:Catalog.Missing","autoRecord":"Allow"}]}))]).unwrap_err();
+        assert_eq!(missing.kind(), ApplyPlanErrorKind::NotFound);
+        assert_eq!(
+            std::fs::read_to_string(
+                fixture
+                    .binding
+                    .source_root()
+                    .join("ExchangePlans/Nodes/Ext/Content.xml")
+            )
+            .unwrap(),
+            content
+        );
+        for remove in [false, true] {
+            let admission = fixture.admission();
+            let state = admission.staged_state().unwrap();
+            let authority = admission
+                .metadata_planning_authority(&fixture.binding)
+                .unwrap();
+            let operations = [fixture.parse("content.set", request("Allow"), 0)];
+            let (mut state, _) = plan_metadata_batch(state, authority, &operations).unwrap();
+            let detail = super::final_exchange_content(
+                &mut state,
+                &fixture.binding,
+                operations
+                    .iter()
+                    .filter_map(|op| op.operation().exchange_content_owner().cloned()),
+            )
+            .unwrap();
+            assert_eq!(detail.len(), 1);
+            assert_eq!(detail[0].items[0].at, "main:Catalog.Old");
+            assert_eq!(detail[0].items[1].at, "main:Catalog.New");
+            assert_eq!(
+                detail[0].items[1].auto_record,
+                crate::domain::metadata::MetaExchangeAutoRecord::Allow
+            );
+            let prepared = admission
+                .prepare_with_effects(state, Default::default())
+                .unwrap();
+            let token = fixture
+                .actor
+                .save_prepared_apply(
+                    prepared,
+                    crate::domain::invocation::DomainResult::success("test preview"),
+                )
+                .unwrap();
+            let dependency = fixture.binding.source_root().join("Catalogs/New.xml");
+            if remove {
+                std::fs::remove_file(&dependency).unwrap();
+            } else {
+                std::fs::write(
+                    &dependency,
+                    descriptor("Catalog", "New")
+                        .replace("<ChildObjects/>", "<!--external--><ChildObjects/>"),
+                )
+                .unwrap();
+            }
+            fixture.actor.execute_saved_apply(&token, ProviderDeadline::from_budget(Duration::from_secs(5)), &CancellationToken::new(), |preview, result| {
+                let error = result.expect_err("the saved content plan must retain the target descriptor");
+                let expected = if remove {
+                    crate::infrastructure::workspace_actor::ApplyPublicationErrorKind::ContainmentIdentity
+                } else {
+                    crate::infrastructure::workspace_actor::ApplyPublicationErrorKind::ConcurrentRevision
+                };
+                assert_eq!(error.kind(), expected, "remove={remove}: {error}");
+                assert!(error.to_string().contains("Catalogs/New.xml"), "{error}");
+                preview
+            }).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(
+                    fixture
+                        .binding
+                        .source_root()
+                        .join("ExchangePlans/Nodes/Ext/Content.xml")
+                )
+                .unwrap(),
+                content
+            );
+            std::fs::write(&dependency, descriptor("Catalog", "New")).unwrap();
+        }
     }
 
     fn plan_all(

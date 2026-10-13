@@ -482,6 +482,7 @@ impl<'a> OperationSite<'a> {
 /// разбор цели планировщиком, а не только вид последнего сегмента.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OperationApplicability {
+    ExchangePlan,
     /// Корень набора исходников.
     Configuration,
     /// Корень расширения: заимствование.
@@ -560,6 +561,7 @@ enum OperationApplicability {
 impl OperationApplicability {
     const fn shape(self) -> &'static str {
         match self {
+            Self::ExchangePlan => "`ExchangePlan.Name`",
             Self::Configuration => "`Configuration`",
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata | Self::SupportRule => "`Kind.Name`",
@@ -611,6 +613,9 @@ impl OperationApplicability {
         let segments = site.segments();
         let terminal = site.terminal();
         match self {
+            Self::ExchangePlan => {
+                matches!(segments, [only] if only.kind() == NodeKind::ExchangePlan && only.name().is_some())
+            }
             Self::Configuration => site.route == RouteClass::Configuration,
             Self::ExtensionRoot => {
                 site.route == RouteClass::Configuration
@@ -986,6 +991,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "predefinedItem.add",
     "predefinedItem.set",
     "predefinedItem.remove",
+    "content.set",
     "relation.add",
     "relation.replace",
     "relation.remove",
@@ -1208,6 +1214,7 @@ operation_descriptors!(
     ("object.create", Metadata, Configuration, Values),
     ("object.remove", Metadata, Metadata, Target),
     ("props.set", Properties, MetadataOrRoleOrSubsystem, Values),
+    ("content.set", Metadata, ExchangePlan, Items),
     ("relation.add", Metadata, Metadata, Values),
     ("relation.remove", Metadata, Metadata, Values),
     ("relation.replace", Metadata, Metadata, Values),
@@ -2045,6 +2052,7 @@ mod tests {
             "object.create",
             "object.remove",
             "props.set",
+            "content.set",
             "relation.add",
             "relation.remove",
             "relation.replace",
@@ -2163,7 +2171,7 @@ mod tests {
             "event.implement",
         ];
         let registry = OperationRegistry::closed();
-        assert_eq!(expected.len(), 120);
+        assert_eq!(expected.len(), 121);
         assert_eq!(registry.names(), expected);
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();

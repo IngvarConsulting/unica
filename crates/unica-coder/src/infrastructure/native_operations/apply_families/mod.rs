@@ -913,7 +913,18 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    let exchange_content = metadata::final_exchange_content(
+        &mut staged,
+        binding,
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => {
+                operation.operation().exchange_content_owner().cloned()
+            }
+            _ => None,
+        }),
+    )?;
     let mut effects = reconcile_effects(&staged, provisional);
+    effects.set_exchange_content(exchange_content);
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }
