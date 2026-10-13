@@ -10804,7 +10804,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "stale_revision: retained apply preimage changed: Reports/F05Report/Templates/F05Schema/Ext/Template.xml; request a fresh plan with apply(at, ops)",
+     "refusal": "stale_revision: retained apply preimage changed: Reports/F05Report/Templates/F05Schema/Ext/Template.xml; input `Reports/F05Report/Templates/F05Schema/Ext/Template.xml`: source ",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -10812,7 +10812,7 @@
         {
          "code": "stale_revision",
          "outcome": "fixCall",
-         "message": "retained apply preimage changed: Reports/F05Report/Templates/F05Schema/Ext/Template.xml; request a fresh plan with apply(at, ops)"
+         "message": "retained apply preimage changed: Reports/F05Report/Templates/F05Schema/Ext/Template.xml; input `Reports/F05Report/Templates/F05Schema/Ext/Template.xml`: source write target; the plan retains its original state to prevent overwriting changes; request a fresh plan with apply(at, ops)"
         }
        ]
       }
@@ -11630,7 +11630,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "stale_revision: retained apply preimage changed: Reports/F06Report/Templates/F06Template/Ext/Template.xml; request a fresh plan with apply(at, ops)",
+     "refusal": "stale_revision: retained apply preimage changed: Reports/F06Report/Templates/F06Template/Ext/Template.xml; input `Reports/F06Report/Templates/F06Template/Ext/Template.xml`: sou",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -37756,6 +37756,204 @@
   },
   {
    "id": "S421",
+   "name": "saved-plan-shared-cache-conflict-explains-input",
+   "issue": 1414,
+   "area": "Применение изменений",
+   "task": "Два плана для разных объектов: отказ старого плана объясняет общий кеш, сохраняет файлы и предлагает новый план; свежий план применяется",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты",
+      "ops": [
+       {
+        "op": "attribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПроверкаПланаА",
+           "type": {
+            "variants": [
+             {
+              "kind": "string",
+              "length": 40,
+              "allowedLength": "variable"
+             }
+            ]
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "tokenA": {
+       "pointer": "/data/executionToken"
+      },
+      "imageA": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты.xml"
+      },
+      "imageB": {
+       "kind": "sha256",
+       "file": "src/Enums/LanguageAware.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "enumValue.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПроверкаПланаБ"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "tokenB": {
+       "pointer": "/data/executionToken"
+      }
+     },
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты.xml",
+       "eq": "$capture.imageA"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Enums/LanguageAware.xml",
+       "eq": "$capture.imageB"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenA"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "publishedA": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты.xml"
+      }
+     },
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Enums/LanguageAware.xml",
+       "eq": "$capture.imageB"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Валюты.xml",
+       "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties/{*}Name",
+       "contains": "ПроверкаПланаА"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenB"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "stale_revision: retained apply absent parent chain is occupied: .build/unica/caches/metadata_graph.json; input `.build/unica/caches/metadata_graph.json`: shared cache input; th",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты.xml",
+       "eq": "$capture.publishedA"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Enums/LanguageAware.xml",
+       "eq": "$capture.imageB"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "stale_revision"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "eq": "retained apply absent parent chain is occupied: .build/unica/caches/metadata_graph.json; input `.build/unica/caches/metadata_graph.json`: shared cache input; the plan retains its original state for atomic publication of source and cache changes; request a fresh plan with apply(at, ops)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Enum.LanguageAware",
+      "ops": [
+       {
+        "op": "enumValue.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПроверкаПланаБ"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "freshB": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.freshB"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты.xml",
+       "eq": "$capture.publishedA"
+      },
+      {
+       "kind": "xml",
+       "path": "src/Enums/LanguageAware.xml",
+       "select": "./{*}Enum/{*}ChildObjects/{*}EnumValue/{*}Properties/{*}Name",
+       "contains": "ПроверкаПланаБ"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S422",
    "name": "exchange-plan-content-preserves-entries-and-modes",
    "issue": 1411,
    "area": "Метаданные",
