@@ -2253,6 +2253,66 @@ fn role_right_projection_never_serializes_an_unbounded_rights_array_into_props()
 }
 
 #[test]
+fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
+    use serde_json::Value;
+    let fixture = RealReaderFixture::new();
+    let package = fixture
+        .source
+        .join("XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin");
+    let original = fs::read_to_string(&package).unwrap();
+    let xml = original.replace(
+        "</package>",
+        r#"<objectType name="NestedExample">
+        <property name="Rows" lowerBound="0" upperBound="-1">
+            <typeDef xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="ObjectType">
+                <property name="Basis" type="xs:string" lowerBound="0" upperBound="1"/>
+                <property name="Nested"><typeDef xsi:type="ObjectType">
+                    <property name="Recipient" type="xs:decimal" lowerBound="0"/>
+                    <property name="Dotted.Name" type="xs:string"/>
+                </typeDef></property>
+            </typeDef>
+        </property>
+    </objectType></package>"#,
+    );
+    fs::write(&package, &xml).unwrap();
+    let service = fixture.view_service();
+    let root = "main:XDTOPackage.EnterpriseData_1_17_3.Type.NestedExample.Property.Rows";
+    let read = |at: &str| {
+        let result = service.view(ViewRequest::new(at).unwrap());
+        assert!(
+            result.ok,
+            "{at}: {} {:?}",
+            result.summary, result.diagnostics
+        );
+        result.data.unwrap()
+    };
+    let rows = read(root);
+    assert_eq!(rows["props"]["anonymousType"], "ObjectType");
+    let bounds: Value = serde_json::from_str(rows["props"]["bounds"].as_str().unwrap()).unwrap();
+    assert_eq!(bounds["lower"], "0");
+    assert_eq!(bounds["upper"], "-1");
+    let children = read(rows["branches"][0]["at"].as_str().unwrap());
+    assert_eq!(children["items"].as_array().unwrap().len(), 2);
+    let nested = read(children["items"][1]["at"].as_str().unwrap());
+    assert_eq!(nested["props"]["anonymousType"], "ObjectType");
+    let grandchildren = read(nested["branches"][0]["at"].as_str().unwrap());
+    let recipient = read(grandchildren["items"][0]["at"].as_str().unwrap());
+    let type_info: Value =
+        serde_json::from_str(recipient["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(type_info["local"], "decimal");
+    let dotted_at = format!("{root}.Property.Nested.Property.Dotted\\.Name");
+    assert_eq!(grandchildren["items"][1]["at"], dotted_at);
+    let dotted = read(&dotted_at);
+    assert_eq!(dotted["props"], grandchildren["items"][1]["props"]);
+    let type_info: Value = serde_json::from_str(dotted["props"]["type"].as_str().unwrap()).unwrap();
+    assert_eq!(type_info["local"], "string");
+    assert!(dotted
+        .get("limits")
+        .is_none_or(|limits| limits.as_array().unwrap().is_empty()));
+    assert_eq!(fs::read_to_string(&package).unwrap(), xml);
+}
+
+#[test]
 fn xdto_property_view_preserves_type_identity_and_explicit_and_effective_bounds() {
     let fixture = RealReaderFixture::new();
     let package = fixture

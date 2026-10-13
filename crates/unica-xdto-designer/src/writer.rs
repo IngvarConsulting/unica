@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::ops::Range;
+use unica_xdto::operations::{XdtoPropertyDefinition, XdtoPropertySpec};
 use unica_xml_format::text::{resolve_line_ending, EolPolicy, LineEnding, SourceTextSnapshot};
 
 #[allow(dead_code)]
@@ -144,6 +145,11 @@ pub enum TypedWriterOperation<'a> {
         min_occurs: Option<u64>,
         property_path: Option<&'a str>,
     },
+    AddPropertyTree {
+        type_name: &'a str,
+        property: &'a XdtoPropertySpec,
+        property_path: Option<&'a str>,
+    },
     RemoveType {
         name: &'a str,
     },
@@ -250,6 +256,55 @@ pub fn plan_typed(
                     desired_qname.namespace_declaration(),
                     escape_attribute(name),
                     escape_attribute(&desired_qname.raw)
+                );
+                Some(insert_child(before, target, &fragment).map_err(writer_invalid_source)?)
+            }
+        }
+        TypedWriterOperation::AddPropertyTree {
+            type_name,
+            property,
+            property_path,
+        } => {
+            let target = property_target(root, type_name, property_path)?;
+            let existing = direct_named_properties(target, property.name.as_str());
+            if !existing.is_empty() {
+                let exact = existing.len() == 1
+                    && compatible_property_tree(existing[0], root, target, property);
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing[0],
+                    exact,
+                    "property",
+                ));
+                None
+            } else {
+                let indent = infer_child_indent(before, target).map_err(writer_invalid_source)?;
+                let parent_indent = exact_line_indent(before, target.range().start)
+                    .map_err(writer_invalid_source)?;
+                let unit = indent
+                    .strip_prefix(parent_indent)
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("\t");
+                let eol = observed_eol(
+                    before,
+                    local_eol_after(before, target.range().end).or_else(|| {
+                        local_eol_before(before, line_start(before, target.range().start))
+                    }),
+                )
+                .map_err(writer_invalid_source)?;
+                let property_name = lexical_xdto_child_name(before, target, "property")
+                    .map_err(writer_invalid_source)?;
+                let definition_name = lexical_xdto_child_name(before, target, "typeDef")
+                    .map_err(writer_invalid_source)?;
+                let fragment = render_property_tree(
+                    root,
+                    target,
+                    property,
+                    &property_name,
+                    &definition_name,
+                    &indent,
+                    unit,
+                    eol,
                 );
                 Some(insert_child(before, target, &fragment).map_err(writer_invalid_source)?)
             }
@@ -465,6 +520,172 @@ fn compatible_empty_object_type(node: Node<'_, '_>) -> bool {
     node.has_tag_name((XDTO_NS, "objectType"))
         && has_only_plain_attributes(node, &["name"])
         && has_exact_compatible_content(node)
+}
+
+fn compatible_property_tree(
+    node: Node<'_, '_>,
+    root: Node<'_, '_>,
+    context: Node<'_, '_>,
+    spec: &XdtoPropertySpec,
+) -> bool {
+    if !node.has_tag_name((XDTO_NS, "property"))
+        || node.attribute("name") != Some(spec.name.as_str())
+        || !has_only_plain_attributes(node, &["name", "type", "lowerBound", "upperBound"])
+        || node
+            .attribute("lowerBound")
+            .unwrap_or("1")
+            .parse::<u8>()
+            .ok()
+            != Some(spec.min_occurs.unwrap_or(1))
+        || node
+            .attribute("upperBound")
+            .unwrap_or("1")
+            .parse::<i64>()
+            .ok()
+            != Some(spec.max_occurs.unwrap_or(1))
+        || !whitespace_character_data(node)
+    {
+        return false;
+    }
+    match &spec.definition {
+        XdtoPropertyDefinition::Named(name) => {
+            let desired = desired_qname(root, context, name.as_str());
+            has_exact_compatible_content(node)
+                && node
+                    .attribute("type")
+                    .is_some_and(|raw| semantic_qname(node, raw) == desired.semantic)
+        }
+        XdtoPropertyDefinition::Object(properties) => {
+            if node.attribute("type").is_some() {
+                return false;
+            }
+            let definitions = node.children().filter(Node::is_element).collect::<Vec<_>>();
+            let [definition] = definitions.as_slice() else {
+                return false;
+            };
+            if !definition.has_tag_name((XDTO_NS, "typeDef"))
+                || definition.attribute((XSI_NS, "type")) != Some("ObjectType")
+                || !definition
+                    .attributes()
+                    .all(|a| a.namespace() == Some(XSI_NS) && a.name() == "type")
+                || !whitespace_character_data(*definition)
+            {
+                return false;
+            }
+            let children = definition
+                .children()
+                .filter(Node::is_element)
+                .collect::<Vec<_>>();
+            children.len() == properties.len()
+                && children
+                    .into_iter()
+                    .zip(properties)
+                    .all(|(child, spec)| compatible_property_tree(child, root, context, spec))
+        }
+    }
+}
+
+fn whitespace_character_data(node: Node<'_, '_>) -> bool {
+    node.children()
+        .filter(Node::is_text)
+        .all(|n| n.text().is_none_or(|s| s.chars().all(char::is_whitespace)))
+}
+
+fn property_requests_prefix(spec: &XdtoPropertySpec, prefix: &str) -> bool {
+    match &spec.definition {
+        XdtoPropertyDefinition::Named(name) => name
+            .as_str()
+            .split_once(':')
+            .is_some_and(|(used, _)| used == prefix),
+        XdtoPropertyDefinition::Object(children) => children
+            .iter()
+            .any(|child| property_requests_prefix(child, prefix)),
+    }
+}
+
+// A fresh prefix does not shadow any QName supplied for a child property.
+fn xsi_binding(
+    root: Node<'_, '_>,
+    context: Node<'_, '_>,
+    spec: &XdtoPropertySpec,
+) -> (String, String) {
+    if let Some(prefix) = context.lookup_prefix(XSI_NS).filter(|p| !p.is_empty()) {
+        return (prefix.to_string(), String::new());
+    }
+    let mut prefix = "xsi".to_string();
+    let mut index = 0;
+    while root
+        .descendants()
+        .filter(Node::is_element)
+        .any(|n| n.namespaces().any(|ns| ns.name() == Some(prefix.as_str())))
+        || property_requests_prefix(spec, &prefix)
+    {
+        index += 1;
+        prefix = format!("xdtoXsi{index}");
+    }
+    let declaration = format!(" xmlns:{prefix}=\"{XSI_NS}\"");
+    (prefix, declaration)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_property_tree(
+    root: Node<'_, '_>,
+    context: Node<'_, '_>,
+    spec: &XdtoPropertySpec,
+    property_name: &str,
+    definition_name: &str,
+    indent: &str,
+    unit: &str,
+    eol: &str,
+) -> String {
+    let bounds = format!(
+        "{}{}",
+        spec.min_occurs
+            .map(|v| format!(" lowerBound=\"{v}\""))
+            .unwrap_or_default(),
+        spec.max_occurs
+            .map(|v| format!(" upperBound=\"{v}\""))
+            .unwrap_or_default()
+    );
+    match &spec.definition {
+        XdtoPropertyDefinition::Named(name) => {
+            let desired = desired_qname(root, context, name.as_str());
+            format!(
+                "<{property_name}{} name=\"{}\" type=\"{}\"{bounds}/>",
+                desired.namespace_declaration(),
+                escape_attribute(spec.name.as_str()),
+                escape_attribute(&desired.raw)
+            )
+        }
+        XdtoPropertyDefinition::Object(properties) => {
+            let (prefix, declaration) = xsi_binding(root, context, spec);
+            let default_namespace = if context.lookup_namespace_uri(None) == Some(XDTO_NS) {
+                String::new()
+            } else {
+                format!(" xmlns=\"{XDTO_NS}\"")
+            };
+            let child_indent = format!("{indent}{unit}{unit}");
+            let mut fragment = format!("<{property_name} name=\"{}\"{bounds}>{eol}{indent}{unit}<{definition_name}{declaration}{default_namespace} {prefix}:type=\"ObjectType\">", escape_attribute(spec.name.as_str()));
+            for child in properties {
+                fragment.push_str(eol);
+                fragment.push_str(&child_indent);
+                fragment.push_str(&render_property_tree(
+                    root,
+                    context,
+                    child,
+                    property_name,
+                    definition_name,
+                    &child_indent,
+                    unit,
+                    eol,
+                ));
+            }
+            fragment.push_str(&format!(
+                "{eol}{indent}{unit}</{definition_name}>{eol}{indent}</{property_name}>"
+            ));
+            fragment
+        }
+    }
 }
 
 fn compatible_property(node: Node<'_, '_>, type_ref: &SemanticQName, desired_lower: &str) -> bool {

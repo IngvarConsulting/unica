@@ -434,13 +434,11 @@ pub fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWr
         XdtoPlanOperation::AddObjectType(args) => writer::TypedWriterOperation::AddObjectType {
             name: args.name.as_str(),
         },
-        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddProperty {
+        XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddPropertyTree {
             type_name: args.at.segments()[1]
                 .name()
                 .expect("closed XDTO type target has a name"),
-            name: args.property.name.as_str(),
-            type_ref: args.property.type_ref.as_str(),
-            min_occurs: args.property.min_occurs.map(u64::from),
+            property: &args.property,
             property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
         },
         XdtoPlanOperation::RemoveType(args) => writer::TypedWriterOperation::RemoveType {

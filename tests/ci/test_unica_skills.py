@@ -2339,7 +2339,13 @@ Use `.claude/commands/xdto.md` as the execution route.
         path = self.skill_root() / "xdto" / "SKILL.md"
         text = path.read_text(encoding="utf-8")
         blocks = list(re.finditer(r"```json\s*(.*?)```", text, re.DOTALL))
-        calls = [json.loads(block.group(1)) for block in blocks]
+        examples = [json.loads(block.group(1)) for block in blocks]
+        calls = [example for example in examples if "method" in example]
+        arguments = [example for example in examples if "method" not in example]
+        self.assertEqual(len(arguments), 1)
+        self.assertEqual(arguments[0]["ops"][0]["op"], "property.add")
+        children = arguments[0]["ops"][0]["args"]["values"]["property"]["objectType"]["properties"]
+        self.assertEqual([child["name"] for child in children], ["Основание", "Получатель"])
 
         self.assertEqual(len(calls), 4)
         self.assertEqual(
