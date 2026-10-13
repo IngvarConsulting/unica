@@ -1197,6 +1197,11 @@ mod tests {
                 ApplyPlanErrorKind::BadValue,
                 "ops[1].args.items[0].name",
             ),
+            (
+                serde_json::json!([area("1Header")]),
+                ApplyPlanErrorKind::BadValue,
+                "ops[1].args.items[0].name",
+            ),
         ] {
             let Err(error) = plan_hidden_v13_apply(&request(ops), &fixture.binding, &admission)
             else {

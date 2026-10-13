@@ -644,6 +644,27 @@ fn parse_role_operation(
                         ))
                     }
                 }
+                // Созданную запись `right.set` правит по адресу
+                // `Right.<Вид>_<Имя>`; адрес, который грамматика не разбирает,
+                // оставил бы запись без адреса.
+                let entry_name = object.replacen('.', "_", 1);
+                if QualifiedAddress::parse(&format!("{target}.Right.{entry_name}"))
+                    .ok()
+                    .and_then(|address| {
+                        address
+                            .segments()
+                            .last()
+                            .and_then(|s| s.name().map(str::to_string))
+                    })
+                    .as_deref()
+                    != Some(entry_name.as_str())
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("{location}.object"),
+                        "the object has no addressable `Right.<Kind>_<Name>` entry",
+                    ));
+                }
                 if entries
                     .iter()
                     .any(|entry: &RightEntry| entry.object == object)
@@ -3613,6 +3634,12 @@ mod tests {
                 "right.add",
                 "main:Role.Reader",
                 json!({"items": [{"object": "Third", "rights": {"Read": true}}]}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "Document.A:B", "rights": {"Read": true}}]}),
                 "ops[0].args.items[0].object",
             ),
             (

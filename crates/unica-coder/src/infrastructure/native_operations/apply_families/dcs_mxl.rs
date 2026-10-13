@@ -577,6 +577,25 @@ fn parse_mxl_operation(
                     )
                     .at_path(format!("{location}.name")));
                 }
+                // Созданную область `mxl.set` правит по адресу; имя, которое
+                // грамматика адреса не разбирает, оставило бы её без адреса.
+                if QualifiedAddress::parse(&format!("{template_address}.Area.{name}"))
+                    .ok()
+                    .and_then(|address| {
+                        address
+                            .segments()
+                            .last()
+                            .and_then(|s| s.name().map(str::to_string))
+                    })
+                    .as_deref()
+                    != Some(name.as_str())
+                {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        "the area name is not addressable as `Area.<name>`",
+                    )
+                    .at_path(format!("{location}.name")));
+                }
                 if edits.iter().any(|edit| edit.area == name) {
                     return Err(ApplyPlanError::new(
                         ApplyPlanErrorKind::BadValue,
