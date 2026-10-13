@@ -19,6 +19,7 @@ use std::time::Duration;
 
 const TEMPLATE: &str = "main:Report.Versions.Template.Schema";
 const DATASET: &str = "main:Report.Versions.Template.Schema.DataSet.Data";
+const QUERY: &str = "main:Report.Versions.Template.Schema.DataSet.Data.Query";
 const SETTING: &str = "main:Report.Versions.Template.Schema.Setting.Main";
 const RELATIVE: &str = "Reports/Versions/Templates/Schema/Ext/Template.xml";
 const XML: &str = "<DataCompositionSchema xmlns=\"http://v8.1c.ru/8.1/data-composition-system/schema\" xmlns:t=\"http://v8.1c.ru/8.1/data-composition-system/settings\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\r\n<dataSource><name>Local</name><dataSourceType>Local</dataSourceType></dataSource>\n<dataSet xsi:type=\"DataSetQuery\"><name>Data</name><field><dataPath>Amount</dataPath><field>Amount</field></field><dataSource>Local</dataSource><query>ВЫБРАТЬ 1 КАК Amount<!-- query note -->, <?keep original?>2 КАК Added</query></dataSet>\r\n<settingsVariant><t:name>Main</t:name><t:settings><t:selection/><t:filter/></t:settings></settingsVariant>\n<!-- untouched --><?outside exact?></DataCompositionSchema>";
@@ -125,14 +126,14 @@ fn canonical_dcs_preview_and_publication_preserve_bom_mixed_newlines_and_unowned
     let source_before = snapshot(&fixture.source_dir());
     let cache_before = snapshot(&cache_root(&fixture));
     let identity = file_identity_for_test(&path).unwrap();
-    let preview = prepare_preview(&fixture, &query_request(DATASET));
+    let preview = prepare_preview(&fixture, &query_request(QUERY));
     let projected = fixture.actor().publish_prepared_apply(preview).unwrap();
     assert_eq!(projected.commit_count_for_test(), 0);
     assert_eq!(snapshot(&fixture.source_dir()), source_before);
     assert_eq!(snapshot(&cache_root(&fixture)), cache_before);
     assert_eq!(file_identity_for_test(&path).unwrap(), identity);
 
-    let prepared = prepare_publication(&fixture, &query_request(DATASET));
+    let prepared = prepare_publication(&fixture, &query_request(QUERY));
     let published = fixture.actor().publish_prepared_apply(prepared).unwrap();
     assert_eq!(
         published.commit_count_for_test(),
@@ -205,7 +206,7 @@ fn canonical_dcs_refuses_wrong_root_namespace_and_version_attribute_before_stagi
         let source_before = snapshot(&fixture.source_dir());
         let identity = file_identity_for_test(&path).unwrap();
         let admission = fixture.admission();
-        let result = plan_hidden_v13_apply(&query_request(DATASET), &fixture.binding, &admission);
+        let result = plan_hidden_v13_apply(&query_request(QUERY), &fixture.binding, &admission);
         assert!(result.is_err(), "wrong declared DCS document was planned");
         assert_eq!(snapshot(&fixture.source_dir()), source_before);
         assert_eq!(file_identity_for_test(&path).unwrap(), identity);
@@ -224,7 +225,7 @@ fn canonical_dcs_captured_body_and_each_owner_descriptor_reject_stale_publicatio
         let original = exact_bytes();
         let fixture = fixture(&original);
         let target = fixture.source_dir().join(RELATIVE);
-        let prepared = prepare_publication(&fixture, &query_request(DATASET));
+        let prepared = prepare_publication(&fixture, &query_request(QUERY));
         let changed = fixture.source_dir().join(relative);
         let mut concurrent = std::fs::read(&changed).unwrap();
         concurrent.extend_from_slice(b"<!-- concurrent owner -->");
@@ -272,9 +273,8 @@ fn canonical_dcs_supported_source_still_requires_each_exact_owner_version() {
             let target = fixture.source_dir().join(RELATIVE);
             let identity = file_identity_for_test(&target).unwrap();
             let admission = fixture.admission();
-            let error =
-                plan_hidden_v13_apply(&query_request(DATASET), &fixture.binding, &admission)
-                    .expect_err("an owner version was silently migrated");
+            let error = plan_hidden_v13_apply(&query_request(QUERY), &fixture.binding, &admission)
+                .expect_err("an owner version was silently migrated");
             assert_eq!(
                 error.kind(),
                 ApplyPlanErrorKind::InvalidSource,
@@ -298,7 +298,7 @@ fn canonical_dcs_late_planning_failure_discards_prior_successful_operations() {
         TEMPLATE,
         json!([
             {"op":"field.add","args":{"at":DATASET,"items":[{"dataPath":"Added","title":"Added"}]}},
-            {"op":"query.patch","args":{"at":DATASET,"values":{"find":"Missing query text","replace":"cannot publish","once":true}}}
+            {"op":"query.patch","args":{"at":QUERY,"values":{"find":"Missing query text","replace":"cannot publish","once":true}}}
         ]),
     );
     let admission = fixture.admission();
@@ -340,8 +340,8 @@ fn canonical_dcs_late_publication_failure_rolls_back_both_schemas_and_cache() {
         let batch = preview_request(
             "main:Report.Versions",
             json!([
-                {"op":"query.patch","args":{"at":DATASET,"values":{"find":"1 КАК Amount","replace":"3 КАК Amount","once":true}}},
-                {"op":"query.patch","args":{"at":"main:Report.Versions.Template.Second.DataSet.Data","values":{"find":"1 КАК Amount","replace":"4 КАК Amount","once":true}}}
+                {"op":"query.patch","args":{"at":QUERY,"values":{"find":"1 КАК Amount","replace":"3 КАК Amount","once":true}}},
+                {"op":"query.patch","args":{"at":"main:Report.Versions.Template.Second.DataSet.Data.Query","values":{"find":"1 КАК Amount","replace":"4 КАК Amount","once":true}}}
             ]),
         );
         let prepared = prepare_publication(&fixture, &batch);

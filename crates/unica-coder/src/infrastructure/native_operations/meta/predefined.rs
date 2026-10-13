@@ -239,7 +239,7 @@ pub(super) fn plan_predefined_resource_after_descriptor_edit(
             effects: Vec::new(),
         });
     }
-    let code_type = predefined_code_type(kind, descriptor_post_image).map_err(|message| {
+    let code_type_failure = |message: String| {
         failure(
             owner,
             MetaDiagnosticCode::ValidationFailed,
@@ -247,17 +247,16 @@ pub(super) fn plan_predefined_resource_after_descriptor_edit(
             None,
             Some("properties.CodeType".to_string()),
         )
-    })?;
+    };
+    // Читатель не выдумывает `CodeType`, которого описание не несёт
+    // (заимствованный справочник платформа выгружает без него): писатель
+    // тоже не проверяет коды по придуманному виду и отказывает тем же текстом.
+    let code_type = predefined_code_type(kind, descriptor_post_image)
+        .map_err(code_type_failure)?
+        .ok_or_else(|| code_type_failure(MISSING_PREDEFINED_CODE_TYPE.to_string()))?;
     let code_type_changed = if code_type_is_touched {
-        predefined_code_type(kind, descriptor_pre_image).map_err(|message| {
-            failure(
-                owner,
-                MetaDiagnosticCode::ValidationFailed,
-                message,
-                None,
-                Some("properties.CodeType".to_string()),
-            )
-        })? != code_type
+        predefined_code_type(kind, descriptor_pre_image).map_err(code_type_failure)?
+            != Some(code_type)
     } else {
         false
     };
@@ -596,15 +595,17 @@ fn predefined_post_image_inner(
             None,
         )
     };
-    let code_type = predefined_code_type(kind, descriptor_text).map_err(|message| {
-        failure(
-            owner,
-            MetaDiagnosticCode::ValidationFailed,
-            message,
-            None,
-            Some("properties.CodeType".to_string()),
-        )
-    })?;
+    let code_type = predefined_code_type(kind, descriptor_text)
+        .and_then(|code_type| code_type.ok_or_else(|| MISSING_PREDEFINED_CODE_TYPE.to_string()))
+        .map_err(|message| {
+            failure(
+                owner,
+                MetaDiagnosticCode::ValidationFailed,
+                message,
+                None,
+                Some("properties.CodeType".to_string()),
+            )
+        })?;
     let (mut text, has_bom) = match original {
         Some(bytes) => {
             let text = std::str::from_utf8(bytes).map_err(|_| {
@@ -664,15 +665,32 @@ fn document_has_items(text: &str) -> Result<bool, String> {
         .any(|node| is_predefined_element(node, "Item")))
 }
 
+/// Отказ проверки предопределённых при неизвестном `CodeType` владельца —
+/// один текст у чтения и записи.
+pub(crate) const MISSING_PREDEFINED_CODE_TYPE: &str =
+    "predefined code validation is unavailable because the owner CodeType is absent or invalid";
+
+/// Запись предопределённых данных требует известного вида кодов владельца.
+/// Описание без `CodeType` отказывает тем же текстом, что и чтение.
+pub(crate) fn require_predefined_code_type(
+    kind: MetadataKind,
+    descriptor: &str,
+) -> Result<(), String> {
+    predefined_code_type(kind, descriptor)?
+        .map(|_| ())
+        .ok_or_else(|| MISSING_PREDEFINED_CODE_TYPE.to_string())
+}
+
+/// `None` — описание не несёт `CodeType`: вид кодов неизвестен.
 fn predefined_code_type(
     kind: MetadataKind,
     descriptor_post_image: &str,
-) -> Result<PredefinedCodeType, String> {
+) -> Result<Option<PredefinedCodeType>, String> {
     if !matches!(
         kind,
         MetadataKind::Catalog | MetadataKind::ChartOfCalculationTypes
     ) {
-        return Ok(PredefinedCodeType::String);
+        return Ok(Some(PredefinedCodeType::String));
     }
     let document = Document::parse(descriptor_post_image)
         .map_err(|error| format!("metadata descriptor: {error}"))?;
@@ -710,8 +728,10 @@ fn predefined_code_type(
             && node.tag_name().namespace() == Some(MD_CLASSES_NS)
             && node.tag_name().name() == "CodeType"
     });
-    let code_type_text = code_types.next().map(direct_text_content);
-    let code_type = code_type_text.as_deref().map(str::trim).unwrap_or("String");
+    let Some(code_type_text) = code_types.next().map(direct_text_content) else {
+        return Ok(None);
+    };
+    let code_type = code_type_text.trim();
     if code_types.next().is_some() {
         return Err(format!(
             "{} descriptor has duplicate direct CodeType",
@@ -719,8 +739,8 @@ fn predefined_code_type(
         ));
     }
     match code_type {
-        "String" => Ok(PredefinedCodeType::String),
-        "Number" => Ok(PredefinedCodeType::Number),
+        "String" => Ok(Some(PredefinedCodeType::String)),
+        "Number" => Ok(Some(PredefinedCodeType::Number)),
         other => Err(format!(
             "{} descriptor CodeType `{other}` is unsupported",
             kind.as_str()
@@ -3302,6 +3322,66 @@ mod tests {
                 )],
             )
             .unwrap(),
+        }
+    }
+
+    /// #1381: описание без `CodeType` (так платформа выгружает заимствованный
+    /// справочник) не даёт писателю проверять коды по придуманному виду:
+    /// запись предопределённых отказывает тем же текстом, что и чтение.
+    #[test]
+    fn predefined_writer_refuses_an_owner_without_code_type_like_the_reader() {
+        let root = temp_root("code-type-absent");
+        let descriptor = root.join("Catalogs/Items.xml");
+        let path = descriptor.with_extension("").join("Ext/Predefined.xml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let image = format!(
+            r#"<PredefinedData xmlns="{PREDEFINED_NS}" xmlns:xsi="{XSI_NS}" xmlns:xs="{XS_NS}" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code>643</Code></Item></PredefinedData>"#
+        );
+        fs::write(&path, &image).unwrap();
+        let without = descriptor_image(MetadataKind::Catalog, "String")
+            .replace("<CodeType>String</CodeType>", "");
+        let update = MetaEditOperation::update_predefined_items(vec![MetaPredefinedItemUpdate {
+            id: "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e".to_string(),
+            name: None,
+            fields: MetaPredefinedFields {
+                code: Some("644".to_string()),
+                ..MetaPredefinedFields::default()
+            },
+        }])
+        .unwrap();
+        let rejected = plan_predefined_resource_after_descriptor_edit(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &without,
+            &without,
+            std::slice::from_ref(&update),
+        )
+        .err()
+        .expect("an unknown CodeType must not be defaulted");
+        assert_eq!(
+            rejected.diagnostics[0].message,
+            MISSING_PREDEFINED_CODE_TYPE
+        );
+        assert_eq!(
+            rejected.diagnostics[0].field.as_deref(),
+            Some("operations[0].properties.CodeType")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), image);
+
+        // Writing CodeType onto such an owner is not refused for the absence.
+        let planned = plan_predefined_resource_after_descriptor_edit(
+            &root,
+            &descriptor,
+            &owner("Catalog"),
+            MetadataKind::Catalog,
+            &without,
+            &descriptor_image(MetadataKind::Catalog, "String"),
+            &[set_catalog_code_type("String")],
+        );
+        if let Err(failure) = planned {
+            assert_ne!(failure.diagnostics[0].message, MISSING_PREDEFINED_CODE_TYPE);
         }
     }
 

@@ -589,16 +589,9 @@ pub(crate) struct Target {
     pub(crate) variant: String,
     pub(crate) terminal: Option<String>,
 }
-fn dataset<'a, 'i>(
-    root: Node<'a, 'i>,
-    target: &Target,
-    values: &Map<String, Value>,
-) -> Result<Node<'a, 'i>, String> {
-    let path = if let Some(Value::String(name)) = values.get("dataSet") {
-        vec![name.clone()]
-    } else {
-        target.datasets.clone()
-    };
+/// Набор данных, который называет адрес: `DataSet.D[.DataSet.M]`.
+fn dataset<'a, 'i>(root: Node<'a, 'i>, target: &Target) -> Result<Node<'a, 'i>, String> {
+    let path = &target.datasets;
     let mut parent = root;
     if path.is_empty() {
         return Err("address an existing DataSet".to_string());
@@ -619,11 +612,7 @@ fn settings<'a, 'i>(
     target: &Target,
     values: &Map<String, Value>,
 ) -> Result<Node<'a, 'i>, String> {
-    let name = values
-        .get("variant")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&target.variant);
+    let name = target.variant.as_str();
     if name.is_empty() {
         return Err("address an existing Setting".to_string());
     }
@@ -1456,7 +1445,7 @@ fn apply_item(
             let parent = if target.datasets.is_empty() {
                 root
             } else {
-                dataset(root, target, &Map::new())?
+                dataset(root, target)?
             };
             let tag = if target.datasets.is_empty() {
                 "dataSet"
@@ -1530,12 +1519,12 @@ fn apply_item(
             )
         }
         "dataSet.set" => {
-            dataset(root, target, values)?;
+            dataset(root, target)?;
             for key in ["dataSource", "objectName", "autoFillFields"] {
                 if let Some(value) = values.get(key) {
                     let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
                     let root = document.root_element();
-                    let ds = dataset(root, target, values)?;
+                    let ds = dataset(root, target)?;
                     let query = qtype(ds, S, "DataSetQuery");
                     let object = qtype(ds, S, "DataSetObject");
                     if key == "dataSource" {
@@ -1560,12 +1549,12 @@ fn apply_item(
             Ok(())
         }
         "dataSet.remove" => {
-            let range = dataset(root, target, values)?.range();
+            let range = dataset(root, target)?.range();
             xml_text.replace_range(range, "");
             Ok(())
         }
         "field.add" => {
-            let ds = dataset(root, target, values)?;
+            let ds = dataset(root, target)?;
             let name = string(values, "dataPath");
             if ds
                 .children()
@@ -1581,7 +1570,7 @@ fn apply_item(
                 super::dcs_xml::parse_value_type(string(values, "type"))?;
             }
             let name = string(values, "field");
-            named(dataset(root, target, values)?, S, "field", "dataPath", name)?;
+            named(dataset(root, target)?, S, "field", "dataPath", name)?;
             for key in [
                 "sourceField",
                 "title",
@@ -1594,7 +1583,7 @@ fn apply_item(
                     continue;
                 };
                 let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let ds = dataset(document.root_element(), target, values)?;
+                let ds = dataset(document.root_element(), target)?;
                 let field = named(ds, S, "field", "dataPath", name)?;
                 let tag = match key {
                     "type" => "valueType",
@@ -1621,7 +1610,7 @@ fn apply_item(
                 }
             }
             let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-            let ds = dataset(document.root_element(), target, values)?;
+            let ds = dataset(document.root_element(), target)?;
             if qtype(ds, S, "DataSetQuery") {
                 let field = named(ds, S, "field", "dataPath", name)?;
                 let ranges = field
@@ -1634,14 +1623,14 @@ fn apply_item(
             Ok(())
         }
         "field.remove" => {
-            let ds = dataset(root, target, values)?;
+            let ds = dataset(root, target)?;
             let name = target.terminal.as_deref().ok_or("address a named Field")?;
             let range = named(ds, S, "field", "dataPath", name)?.range();
             xml_text.replace_range(range, "");
             Ok(())
         }
         "fieldRole.set" => {
-            let ds = dataset(root, target, values)?;
+            let ds = dataset(root, target)?;
             let field = named(ds, S, "field", "dataPath", string(values, "field"))?;
             let role = values
                 .get("role")
@@ -1679,7 +1668,7 @@ fn apply_item(
             )
         }
         "query.set" | "query.patch" => {
-            let ds = dataset(root, target, values)?;
+            let ds = dataset(root, target)?;
             if !qtype(ds, S, "DataSetQuery") {
                 return Err("only a Query dataset has query text".to_string());
             }

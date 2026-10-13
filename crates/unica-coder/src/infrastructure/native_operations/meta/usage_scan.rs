@@ -305,7 +305,14 @@ fn read_predefined_items(
                 .with_field("predefinedItems"))
             }
         };
-    let code_type = match code_type.unwrap_or("String") {
+    let code_type = match code_type.ok_or_else(|| {
+        MetaDiagnostic::error(
+            MetaDiagnosticCode::ProviderUnavailable,
+            super::predefined::MISSING_PREDEFINED_CODE_TYPE,
+        )
+        .with_metadata_path(metadata_path.clone())
+        .with_field("predefinedItems")
+    })? {
         "String" => super::predefined::PredefinedCodeType::String,
         "Number" => super::predefined::PredefinedCodeType::Number,
         other => {

@@ -2668,6 +2668,16 @@ fn stage_predefined(
     let at_path = format!("ops[{op_index}].args.at");
     let (owner_relative, _, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    // Коды предопределённых проверяются по `CodeType` владельца; описание
+    // без него (заимствованный справочник платформа выгружает так) не даёт
+    // вида кодов, и запись отказывает тем же текстом, что и чтение.
+    crate::infrastructure::native_operations::meta::require_predefined_code_type(
+        kind,
+        &owner_source,
+    )
+    .map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    })?;
     let relative = owner_relative.with_extension("").join("Ext/Predefined.xml");
     let original = staged
         .read(&relative)

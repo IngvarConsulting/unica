@@ -284,7 +284,9 @@ pub(crate) struct CodeInsertArgs {
 pub(crate) struct CodeReplaceArgs {
     pub(crate) at: crate::domain::address::QualifiedAddress,
     pub(crate) text: String,
-    pub(crate) selector: Option<CodeSelector>,
+    /// Текстовый якорь внутри модуля. Метод целиком задаётся адресом
+    /// `…Method.M`, а не селектором (#1353).
+    pub(crate) anchor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -380,17 +382,27 @@ pub(crate) fn parse_code_plan_operation(
         }
         "code.replace" => {
             let selector_path = format!("{base}.selector");
-            let selector = object
+            let anchor = match object
                 .get("selector")
                 .map(|value| parse_code_selector(value, &selector_path))
-                .transpose()?;
-            if selector.is_none() && addressed.is_none() {
-                return Err(bad_code_arg(&selector_path, "selector is required for a module address; address its Body or a Method instead"));
+                .transpose()?
+            {
+                Some(CodeSelector::Method(name)) => {
+                    return Err(bad_code_arg(
+                        format!("{selector_path}.method"),
+                        format!("code.replace addresses a whole method: `{at}.Method.{name}`"),
+                    ))
+                }
+                Some(CodeSelector::Anchor(anchor)) => Some(anchor),
+                None => None,
+            };
+            if anchor.is_none() && addressed.is_none() {
+                return Err(bad_code_arg(&selector_path, "selector.anchor is required for a module address; address its Body or a Method instead"));
             }
             Ok(CodePlanOperation::Replace(CodeReplaceArgs {
                 at,
                 text,
-                selector,
+                anchor,
             }))
         }
         _ => unreachable!("closed operation checked above"),
@@ -867,7 +879,7 @@ fn plan_code_postimage(
             if args.text.is_empty() {
                 return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
             }
-            let selector = args.selector.as_ref().map(legacy_selector);
+            let selector = args.anchor.clone().map(Selector::Anchor);
             let site = match &selector {
                 Some(selector) => {
                     locate_replacement_typed(&snapshot, selector, &indexed.methods)
@@ -880,7 +892,7 @@ fn plan_code_postimage(
             let replacement = site.replacement(&args.text);
             let no_op =
                 replacement_is_present(snapshot.raw(), site, &replacement, |found, methods| {
-                    relocate_replaced_method(found, methods, selector.as_ref(), &args.at)
+                    relocate_replaced_method(found, methods, &args.at)
                 });
             let mut after = snapshot.raw().to_vec();
             if !no_op {
@@ -917,7 +929,7 @@ fn plan_code_postimage(
         .at_path(&text_path));
     }
     if let CodePlanOperation::Replace(args) = operation {
-        if replaces_whole_method(selector.as_ref(), &args.at) {
+        if replaces_whole_method(&args.at) {
             reject_redeclared_methods(&args.text, &indexed.methods, &post.methods).map_err(
                 |message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&text_path)
@@ -926,7 +938,7 @@ fn plan_code_postimage(
         }
     }
     let repeat = match operation {
-        CodePlanOperation::Replace(args) if args.selector.is_none() => {
+        CodePlanOperation::Replace(args) if args.anchor.is_none() => {
             let repeat_snapshot = SourceTextSnapshot::from_bytes(&after)
                 .map_err(|_| bad_code_arg(&text_path, "invalid patched snapshot"))?;
             match locate_addressed_replacement(&repeat_snapshot, &args.at, &post.methods, &at_path)
@@ -939,7 +951,7 @@ fn plan_code_postimage(
                         repeat_snapshot.raw(),
                         repeated,
                         &bytes,
-                        |found, methods| relocate_replaced_method(found, methods, None, &args.at),
+                        |found, methods| relocate_replaced_method(found, methods, &args.at),
                     ) {
                         Ok(())
                     } else {
@@ -1939,17 +1951,13 @@ fn replacement_lead(
     (starts_line && ends_line).then_some(site.start)
 }
 
-/// Finds the whole method a staged replacement addresses, by a method
-/// selector or by a `…Method.<Имя>` address, in any module text.
+/// Finds the whole method a staged replacement addresses by its
+/// `…Method.<Имя>` address, in any module text.
 fn relocate_replaced_method(
     snapshot: &SourceTextSnapshot,
     methods: &[Method],
-    selector: Option<&Selector>,
     at: &QualifiedAddress,
 ) -> Option<ReplacementSite> {
-    if let Some(selector) = selector {
-        return relocate_selected_method(snapshot, methods, selector);
-    }
     match code_projection(at) {
         Some((_, CodeProjection::Method(_))) => {
             locate_addressed_replacement(snapshot, at, methods, "").ok()
@@ -1960,11 +1968,8 @@ fn relocate_replaced_method(
 
 /// Whether a staged replacement targets a whole method, the only target that
 /// can carry methods besides itself.
-fn replaces_whole_method(selector: Option<&Selector>, at: &QualifiedAddress) -> bool {
-    match selector {
-        Some(selector) => matches!(selector, Selector::Method(_)),
-        None => matches!(code_projection(at), Some((_, CodeProjection::Method(_)))),
-    }
+fn replaces_whole_method(at: &QualifiedAddress) -> bool {
+    matches!(code_projection(at), Some((_, CodeProjection::Method(_))))
 }
 
 fn relocate_selected_method(
@@ -4043,9 +4048,9 @@ pub(super) mod tests {
                 Some(CodePosition::After),
             ),
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Added",
                 "Procedure Final()\nEndProcedure",
-                CodeSelector::Method("Added".to_string()),
+                None,
             ),
         ];
         let admitted = staged_code_admission(&fixture, true);
@@ -4110,9 +4115,9 @@ pub(super) mod tests {
                     None,
                 ),
                 staged_replace(
-                    "main:CommonModule.Sample",
+                    "main:CommonModule.Sample.Method.Missing",
                     "Procedure Never()\nEndProcedure",
-                    CodeSelector::Method("Missing".to_string()),
+                    None,
                 ),
             ];
 
@@ -4453,6 +4458,45 @@ pub(super) mod tests {
         duplicate.cleanup();
     }
 
+    /// Метод целиком задаёт адрес `…Method.M`: селектор метода у замены снят
+    /// и отказывает в своём поле, называя адрес (#1353). Якорь остаётся.
+    #[test]
+    fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
+        let fixture = staged_code_fixture(
+            "retired-method-selector",
+            b"Procedure Base()\nEndProcedure\n",
+        );
+        let error = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample", "selector":{"method":"Base"}, "text":"Procedure Base()\nEndProcedure"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[0].args.selector.method"));
+        let message = error.to_string();
+        assert!(
+            message.contains("`main:CommonModule.Sample.Method.Base`"),
+            "{message}"
+        );
+        let anchored = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample", "selector":{"anchor":"EndProcedure"}, "text":"EndProcedure"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        assert!(matches!(
+            anchored,
+            CodePlanOperation::Replace(CodeReplaceArgs {
+                anchor: Some(_),
+                ..
+            })
+        ));
+        fixture.cleanup();
+    }
+
     #[test]
     fn whole_method_replacement_extracts_helpers_and_repeats_as_noop() {
         // #895: the "extract method" refactor replaces a method with itself
@@ -4473,14 +4517,6 @@ pub(super) mod tests {
             ),
             (
                 json!({"at":"main:CommonModule.Sample.Method.Target", "text":commented}),
-                commented.clone(),
-            ),
-            (
-                json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":extracted}),
-                extracted.to_owned(),
-            ),
-            (
-                json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":commented}),
                 commented.clone(),
             ),
         ] {
@@ -4522,24 +4558,20 @@ pub(super) mod tests {
     fn whole_method_replacement_refuses_a_helper_the_module_already_defines() {
         let before = "Function Target()\n    Return 1;\nEndFunction\n\nFunction One()\n    Return 1;\nEndFunction\n";
         let text = "Function Target()\n    Return One();\nEndFunction\n\nFunction one()\n    Return 1;\nEndFunction";
-        for args in [
-            json!({"at":"main:CommonModule.Sample.Method.Target", "text":text}),
-            json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":text}),
-        ] {
-            let fixture = staged_code_fixture("extract-duplicate", before.as_bytes());
-            let operation =
-                parse_code_plan_operation("code.replace", &args, 0, &fixture.binding).unwrap();
-            let admission = staged_code_admission(&fixture, false);
-            let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
-                .expect_err("a second `One` must not be written");
-            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{args}");
-            assert_eq!(error.path(), Some("ops[0].args.text"), "{args}");
-            assert_eq!(
-                fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
-                before.as_bytes()
-            );
-            fixture.cleanup();
-        }
+        let args = json!({"at":"main:CommonModule.Sample.Method.Target", "text":text});
+        let fixture = staged_code_fixture("extract-duplicate", before.as_bytes());
+        let operation =
+            parse_code_plan_operation("code.replace", &args, 0, &fixture.binding).unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+            .expect_err("a second `One` must not be written");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[0].args.text"));
+        assert_eq!(
+            fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+            before.as_bytes()
+        );
+        fixture.cleanup();
     }
 
     #[test]
@@ -4691,7 +4723,7 @@ pub(super) mod tests {
                 )
                 .unwrap(),
                 text: "    Value = 2;".to_owned(),
-                selector: None,
+                anchor: None,
             });
             let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
             assert_eq!(
@@ -5172,11 +5204,19 @@ pub(super) mod tests {
                         Some(selector.clone()),
                         Some(CodePosition::After),
                     ),
-                    "replace" => staged_replace(
-                        "main:CommonModule.Sample",
-                        "Procedure Added()\nEndProcedure",
-                        selector.clone(),
-                    ),
+                    // Метод целиком заменяется по адресу, якорь — селектором.
+                    "replace" => match &selector {
+                        CodeSelector::Method(name) => staged_replace(
+                            &format!("main:CommonModule.Sample.Method.{name}"),
+                            "Procedure Added()\nEndProcedure",
+                            None,
+                        ),
+                        CodeSelector::Anchor(anchor) => staged_replace(
+                            "main:CommonModule.Sample",
+                            "Procedure Added()\nEndProcedure",
+                            Some(anchor),
+                        ),
+                    },
                     _ => unreachable!(),
                 }];
                 let failure = format!("{operation_kind} {name}");
@@ -5600,9 +5640,9 @@ pub(super) mod tests {
                 "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
             ),
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Base",
                 "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
-                CodeSelector::Method("Base".to_string()),
+                None,
             ),
             true,
         );
@@ -5617,7 +5657,7 @@ pub(super) mod tests {
             staged_replace(
                 "main:CommonModule.Sample",
                 "Значение = 2;",
-                CodeSelector::Anchor("Значение = 1;".to_string()),
+                Some("Значение = 1;"),
             ),
             false,
         );
@@ -5772,9 +5812,9 @@ pub(super) mod tests {
         let poisoned_ops = [
             operations[0].clone(),
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Missing",
                 "Procedure Never()\nEndProcedure",
-                CodeSelector::Method("Missing".to_string()),
+                None,
             ),
         ];
         assert!(plan_admitted_code(&poisoned, &fixture.binding, &poisoned_ops).is_err());
@@ -5790,14 +5830,14 @@ pub(super) mod tests {
         let admission = staged_code_admission(&fixture, true);
         let operations = [
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Base",
                 "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
-                CodeSelector::Method("Base".to_string()),
+                None,
             ),
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Base",
                 "Procedure Base()\nEndProcedure",
-                CodeSelector::Method("Base".to_string()),
+                None,
             ),
         ];
 
@@ -5823,16 +5863,16 @@ pub(super) mod tests {
         );
 
         let missing = [staged_replace(
-            "main:CommonModule.Sample",
+            "main:CommonModule.Sample.Method.Missing",
             "Procedure Added()\nEndProcedure",
-            CodeSelector::Method("Missing".to_string()),
+            None,
         )];
         let admission = staged_code_admission(&fixture, true);
         let not_found = plan_admitted_code(&admission, &fixture.binding, &missing).unwrap_err();
         assert_closed_code_error(
             &not_found,
             ApplyPlanErrorKind::NotFound,
-            Some("ops[0].args.selector.method"),
+            Some("ops[0].args.at"),
             &fixture.root,
         );
 
@@ -6253,11 +6293,11 @@ pub(super) mod tests {
         })
     }
 
-    fn staged_replace(at: &str, text: &str, selector: CodeSelector) -> CodePlanOperation {
+    fn staged_replace(at: &str, text: &str, anchor: Option<&str>) -> CodePlanOperation {
         CodePlanOperation::Replace(CodeReplaceArgs {
             at: crate::domain::address::QualifiedAddress::parse(at).unwrap(),
             text: text.to_string(),
-            selector: Some(selector),
+            anchor: anchor.map(str::to_string),
         })
     }
 

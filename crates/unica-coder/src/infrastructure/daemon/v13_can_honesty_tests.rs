@@ -426,7 +426,6 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
     }
     match op {
         "object.borrow" => json!({"from": "parent:Catalog.Parent"}),
-        "childSubsystem.remove" => json!({"items": [{"name": "Sample"}]}),
         "content.remove" => json!({"items": [{"object": "Catalog.Sample"}]}),
         "code.insert" | "code.replace" => json!({"at": "", "text": "// sample\n"}),
         "supportRule.set" => json!({"values": {"rule": "editable"}}),
@@ -435,7 +434,11 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
         "help.create" => json!({"values": {"lang": "ru"}}),
         "role.create" | "subsystem.create" => json!({"values": {"name": "Sample"}}),
         "object.create" => json!({"values": {"kind": "Catalog", "name": "Sample"}}),
-        "object.remove" | "form.remove" | "type.remove" | "event.implement" => json!({"at": ""}),
+        "object.remove"
+        | "form.remove"
+        | "type.remove"
+        | "event.implement"
+        | "childSubsystem.remove" => json!({"at": ""}),
         "form.add" | "formAttribute.add" | "formCommand.add" | "element.add"
         | "childSubsystem.add" => json!({"items": [{"name": "Sample"}]}),
         "form.set" => json!({"values": {"defaultObjectForm": "Sample"}}),
@@ -561,10 +564,19 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
         for at in representatives.values() {
             let address = QualifiedAddress::parse(at).unwrap();
             let terminal = address.segments().last().unwrap();
+            // Вложенный узел того же вида (`Subsystem.A.Subsystem.B`) — своё
+            // место: только у него исполнимо исключение из родителя.
+            let nested = address
+                .segments()
+                .iter()
+                .rev()
+                .nth(1)
+                .is_some_and(|parent| parent.kind() == terminal.kind());
             let pair = (
                 classify_route(&address, PlatformProfile::v8_3_27()),
                 terminal.kind().as_str(),
                 terminal.name().is_some(),
+                nested,
             );
             // Планы дороги: файлы плана проверяются на одном узле пары
             // «маршрут, вид», словарь — на каждом представителе. Ветвь
@@ -1302,6 +1314,169 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
             "{owner}: {}",
             serde_json::to_value(&preview).unwrap()
         );
+    }
+}
+
+/// Аргументы, дублировавшие `at` (П2, #1353): вызов получает `bad_value` до
+/// планирования, первый `next` ведёт к узлу, который называло значение (к его
+/// контракту, где он вычисляется), второй — к ветви узлов этого вида. Когда
+/// значение повторяло сам адрес вызова, отказ говорит снять аргумент.
+#[test]
+fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
+    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    // Прежний псевдоним запроса ведёт к запросу набора, а операция набора —
+    // к самому набору.
+    for (op, args, target) in [
+        (
+            "query.set",
+            json!({"values": {"query": "ВЫБРАТЬ 1"}}),
+            "cf:Report.Sales.Template.Schema.DataSet.Main.Query.Can.query.set",
+        ),
+        (
+            "field.add",
+            json!({"items": [{"dataPath": "Amount"}]}),
+            "cf:Report.Sales.Template.Schema.DataSet.Main.Can.field.add",
+        ),
+    ] {
+        let request = apply_request("cf:Report.Sales.Template.Schema.Query.Main", op, args);
+        let refusal = preflight_apply_operations(&request, traits, &|_| None)
+            .expect_err("the retired query alias refuses");
+        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{op}");
+        assert_eq!(refusal.at.as_deref(), Some("ops[0].at"), "{op}");
+        assert_eq!(refusal.next.len(), 1, "{op}");
+        assert_eq!(refusal.next[0]["args"], json!({"at": target}), "{op}");
+    }
+    let schema = "cf:Report.Sales.Template.Schema";
+    // Операция запроса на самом наборе — обычный отказ «не тот узел» с `next`
+    // к запросу набора.
+    let request = apply_request(
+        &format!("{schema}.DataSet.Main"),
+        "query.set",
+        json!({"values": {"query": "ВЫБРАТЬ 1"}}),
+    );
+    let refusal = preflight_apply_operations(&request, traits, &|_| None)
+        .expect_err("query.set is not executable at the dataset itself");
+    assert_eq!(refusal.at.as_deref(), Some("ops[0].at"));
+    assert_eq!(
+        refusal.next[0]["args"],
+        json!({"at": format!("{schema}.DataSet.Main.Query.Can.query.set")})
+    );
+    // Набор, не названный адресом вызова, ищется в схеме: член объединения
+    // получает свой вложенный адрес.
+    let request = apply_request(
+        &format!("{schema}.DataSet.Main.Query"),
+        "query.set",
+        json!({"values": {"dataSet": "Member", "query": "ВЫБРАТЬ 1"}}),
+    );
+    let refusal = super::v13_service::preflight_apply_operations_with(
+        &request,
+        traits,
+        &|_| None,
+        &|template, name| {
+            (template.to_string() == schema && name == "Member")
+                .then(|| vec!["Union".to_string(), "Member".to_string()])
+        },
+    )
+    .expect_err("the dataSet argument is retired");
+    let actual = refusal
+        .next
+        .iter()
+        .map(|next| next["args"]["at"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        vec![
+            json!(format!(
+                "{schema}.DataSet.Union.DataSet.Member.Query.Can.query.set"
+            )),
+            json!(format!("{schema}.DataSet.Union.DataSet")),
+        ]
+    );
+    for (at, op, args, location, next_at, branch, duplicate) in [
+        (
+            format!("{schema}.DataSet.Main.Query"),
+            "query.set",
+            json!({"values": {"dataSet": "Main", "query": "ВЫБРАТЬ 1"}}),
+            "ops[0].args.values.dataSet",
+            format!("{schema}.DataSet.Main.Query.Can.query.set"),
+            format!("{schema}.DataSet"),
+            true,
+        ),
+        (
+            format!("{schema}.DataSet.Main.Query"),
+            "query.patch",
+            json!({"values": {"dataSet": "Other", "find": "1"}}),
+            "ops[0].args.values.dataSet",
+            format!("{schema}.DataSet.Other.Query.Can.query.patch"),
+            format!("{schema}.DataSet"),
+            false,
+        ),
+        (
+            format!("{schema}.Setting.Main"),
+            "structure.set",
+            json!({"values": {"variant": "Extra", "groupBy": []}}),
+            "ops[0].args.values.variant",
+            format!("{schema}.Setting.Extra.Can.structure.set"),
+            format!("{schema}.Setting"),
+            false,
+        ),
+        (
+            "cf:Catalog.Items.Form.Choice".to_string(),
+            "form.create",
+            json!({"values": {"name": "Choice", "type": "ChoiceForm"}}),
+            "ops[0].args.values.name",
+            // Форму создаёт сама операция: к несуществующему узлу `next`
+            // не ведёт, только к ветви форм.
+            String::new(),
+            "cf:Catalog.Items.Form".to_string(),
+            true,
+        ),
+        (
+            "cf:Subsystem.Sales".to_string(),
+            "childSubsystem.remove",
+            json!({"items": [{"name": "Orders"}]}),
+            "ops[0].args.items[0].name",
+            "cf:Subsystem.Sales.Subsystem.Orders".to_string(),
+            "cf:Subsystem.Sales.Subsystem".to_string(),
+            false,
+        ),
+        (
+            "cf:CommonModule.Shared".to_string(),
+            "code.replace",
+            json!({"selector": {"method": "Run"}, "text": "Procedure Run()\nEndProcedure"}),
+            "ops[0].args.selector.method",
+            "cf:CommonModule.Shared.Method.Run".to_string(),
+            "cf:CommonModule.Shared.Method".to_string(),
+            false,
+        ),
+    ] {
+        let request = apply_request(&at, op, args);
+        let refusal = preflight_apply_operations(&request, traits, &|_| None)
+            .expect_err("a retired argument refuses before planning");
+        let case = format!("{op} at {at}");
+        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{case}");
+        assert_eq!(refusal.diagnostics[0]["outcome"], "fixCall", "{case}");
+        assert_eq!(refusal.at.as_deref(), Some(location), "{case}");
+        let message = refusal.diagnostics[0]["message"].as_str().unwrap();
+        assert_eq!(
+            message.contains("takes its subject from `at`"),
+            duplicate,
+            "{case}: {message}"
+        );
+        let expected = [next_at, branch]
+            .into_iter()
+            .filter(|at| !at.is_empty())
+            .map(|at| json!({"at": at}))
+            .collect::<Vec<_>>();
+        let actual = refusal
+            .next
+            .iter()
+            .map(|next| {
+                assert_eq!(next["tool"], "unica.view", "{case}");
+                next["args"].clone()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{case}");
     }
 }
 

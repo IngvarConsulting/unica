@@ -79,3 +79,45 @@ any of the eight CommonModule properties may be absent from an adopted
 descriptor, and that absence is not the parent's value copied or a default:
 the parent's `DuringRequest` was not written. The complete trees are the
 `workspace-borrowed` acceptance fixture.
+
+## Adopted objects without their own content files (#1381)
+
+A third run with the same binary and the same six commands extended the
+#1304 parent with `Role.SalesReader` (with `Ext/Rights.xml`),
+`CommonForm.ОбщаяФорма` (with `Ext/Form.xml`), `XDTOPackage.ПакетОбмена`
+(with `Ext/Package.bin`), `CommonTemplate.ОбщийМакет` and
+`DataProcessor.Обработка` with the form `Форма` and the templates `Макет`
+(spreadsheet) and `СхемаКомпоновки` (data composition schema), each with its
+`Ext/Form.xml` or `Ext/Template.xml`. The extension adopted every one of them
+with a descriptor of `ObjectBelonging`, `Name`, `Comment` and
+`ExtendedConfigurationObject` only, and with none of the companion files.
+Import, `check` and `apply` succeeded. The export contains no `Rights.xml`,
+`Form.xml`, `Template.xml` or `Package.bin` for these objects. The platform
+added only `PropertyState Rights/Extended` to the role and `Form/Extended` to
+both forms; the XDTO package keeps no `Namespace`.
+
+A template descriptor imported without `TemplateType` is exported with
+`TemplateType` `SpreadsheetDocument` even when the parent template is a data
+composition schema: the platform writes its default, not the parent's value.
+The schema template was therefore imported once more with `TemplateType`
+`DataCompositionSchema`; that value survived. The files here come from that
+round. A second cycle through an independently created infobase reproduced
+every extension file byte for byte.
+
+A further probe added `Ext/Form/Module.bsl` to the adopted `CommonForm`
+without `Form.xml`. Import succeeded, but the export dropped the module: the
+platform keeps no form module without the form's own content.
+
+As in the #1304 run, the extension descriptors on input were written by hand,
+not produced by the Configurator's "add to extension" command. The parent
+objects were written by hand too; the data composition schema and the
+spreadsheet body are minimal own documents. The experiment proves that the
+platform accepts and preserves these shapes, not what the Configurator writes
+when it adopts an object.
+
+`extension-role-inherited.xml`, `extension-common-form-inherited.xml`,
+`extension-object-form-inherited.xml`, `extension-template-spreadsheet-inherited.xml`,
+`extension-template-schema-inherited.xml`, `extension-common-template-inherited.xml`,
+`extension-xdto-package-inherited.xml` and their owner
+`extension-data-processor.xml` are those exports. The complete trees are part
+of the `workspace-borrowed` acceptance fixture.

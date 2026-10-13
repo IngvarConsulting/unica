@@ -1466,8 +1466,8 @@ pub(crate) mod actor_capacity_tests {
             assert_eq!(transparency, transparent);
 
             let removal = serde_json::json!({
-                "at": "main:Subsystem.Sales",
-                "ops": [{"op": "childSubsystem.remove", "args": {"items": [{"name": "Orders"}]}}]
+                "at": "main:Subsystem.Sales.Subsystem.Orders",
+                "ops": [{"op": "childSubsystem.remove", "args": {}}]
             });
             let before = crate::test_support::tree_snapshot(workspace.path());
             let preview = call(removal.clone());
@@ -9889,7 +9889,7 @@ struct ActorLogicalReadLease {"#,
         apply_pair(
             at,
             serde_json::json!([{"op": "form.create", "args": {
-                "values": {"name": "Main", "type": "ObjectForm"}
+                "values": {"type": "ObjectForm"}
             }}]),
         );
         apply_pair(

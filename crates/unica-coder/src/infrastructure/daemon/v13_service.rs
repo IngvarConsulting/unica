@@ -261,7 +261,14 @@ impl CanonicalV13ReadService {
                 &admission, &binding, template,
             )
         };
-        if let Err(refusal) = preflight_apply_operations(&request, traits, &template_format) {
+        let data_set_path = |template: &QualifiedAddress, name: &str| {
+            crate::infrastructure::native_operations::apply_families::staged_data_set_path(
+                &admission, &binding, template, name,
+            )
+        };
+        if let Err(refusal) =
+            preflight_apply_operations_with(&request, traits, &template_format, &data_set_path)
+        {
             return *refusal;
         }
         admission.bind_request(&request);
@@ -3187,7 +3194,9 @@ fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
         }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
     };
-    error_result(at, code, error.to_string())
+    let mut result = error_result(at, code, error.to_string());
+    result.next.extend(error.next().cloned());
+    result
 }
 
 /// Отказ подготовки staged-исходников называет нарушенное предусловие.
@@ -3956,6 +3965,17 @@ pub(super) fn preflight_apply_operations(
     source: SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
 ) -> Result<(), Box<DomainResult>> {
+    preflight_apply_operations_with(request, source, template_format, &|_, _| None)
+}
+
+/// То же, что `preflight_apply_operations`, с поиском набора схемы по имени:
+/// снятый `dataSet` ведёт к настоящему, в том числе вложенному, набору.
+pub(super) fn preflight_apply_operations_with(
+    request: &crate::domain::apply::ApplyRequest,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    data_sets: crate::domain::apply::DataSetLookup<'_>,
+) -> Result<(), Box<DomainResult>> {
     let registry = OperationRegistry::closed();
     for (index, operation) in request.ops().iter().enumerate() {
         let Some(descriptor) = registry.lookup(operation.name()) else {
@@ -3996,9 +4016,12 @@ pub(super) fn preflight_apply_operations(
                 ),
             )));
         };
-        if let Some(redirect) =
-            registry.retired_argument_redirect(operation.name(), &site, operation.args())
-        {
+        if let Some(redirect) = registry.retired_argument_redirect_with(
+            operation.name(),
+            &site,
+            operation.args(),
+            data_sets,
+        ) {
             let location = Some(format!("ops[{index}].args.{}", redirect.location));
             if redirect.listing {
                 // Значение называло подузел не именем: адрес из него не
@@ -4026,9 +4049,17 @@ pub(super) fn preflight_apply_operations(
             }
             // Адрес построен из значения аргумента, и узла с таким именем
             // может не быть: вторым шагом — коллекция, где видны имена.
-            let (member, owner) = redirect
+            // Безымянный узел (`DataSet.D.Query`) — часть своего именованного
+            // родителя: ветвь строится по родителю.
+            let named = redirect
                 .at
                 .segments()
+                .iter()
+                .rposition(|segment| segment.name().is_some())
+                .map_or(redirect.at.segments(), |last| {
+                    &redirect.at.segments()[..=last]
+                });
+            let (member, owner) = named
                 .split_last()
                 .expect("a member address has a terminal segment");
             let branch = QualifiedAddress {
@@ -4036,20 +4067,30 @@ pub(super) fn preflight_apply_operations(
                 segments: owner.to_vec(),
             };
             let branch = format!("{branch}.{}", member.kind().as_str());
-            let mut refusal = with_operation_dictionary(
-                error_result(
-                    location,
-                    RefusalCode::BadValue,
-                    format!(
-                        "`{}` names its subject by address, not by `{}`; call it at `{}`",
-                        operation.name(),
-                        redirect.location,
-                        redirect.at
-                    ),
-                ),
-                &redirect.at.to_string(),
-                descriptor,
-            );
+            // Аргумент, повторявший сам адрес вызова, просто лишний.
+            let message = if redirect.at == *operation.at() {
+                format!(
+                    "`{}` takes its subject from `at`; remove `{}` and call it at `{}`",
+                    operation.name(),
+                    redirect.location,
+                    redirect.at
+                )
+            } else {
+                format!(
+                    "`{}` names its subject by address, not by `{}`; call it at `{}`",
+                    operation.name(),
+                    redirect.location,
+                    redirect.at
+                )
+            };
+            let refusal = error_result(location, RefusalCode::BadValue, message);
+            // Узел, который операция создаёт, ещё не существует: к нему
+            // `next` не ведёт, остаётся ветвь с существующими именами.
+            let mut refusal = if descriptor.creates_its_subject() {
+                refusal
+            } else {
+                with_operation_dictionary(refusal, &redirect.at.to_string(), descriptor)
+            };
             refusal.next.push(json!({
                 "tool": "unica.view",
                 "args": {"at": branch},
@@ -4059,6 +4100,22 @@ pub(super) fn preflight_apply_operations(
         }
         if descriptor.applies_at(&site) {
             continue;
+        }
+        // Прежний псевдоним запроса `Template.T.Query.D` снят (#1353): отказ
+        // называет адрес набора, где операция исполнима.
+        if let Some(target) = descriptor.retired_query_alias_target(&site, data_sets) {
+            return Err(Box::new(with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    format!(
+                        "a query is addressed through its dataset: `{}` applies at `{target}`",
+                        operation.name()
+                    ),
+                ),
+                &target.to_string(),
+                descriptor,
+            )));
         }
         let refused = format!(
             "apply operation `{}` does not apply to {} `{}`",

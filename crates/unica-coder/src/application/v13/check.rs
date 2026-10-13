@@ -279,6 +279,10 @@ pub(crate) struct NodeFacts {
     pub(crate) extension: bool,
     /// A template node's flavour, when the projection states it.
     pub(crate) template: Option<TemplateFlavour>,
+    /// The borrowed node carries no companion file of its own (`Rights.xml`,
+    /// `Form.xml`, `Template.xml`): its content is the parent's, and there is
+    /// nothing in this source set for the companion validator to read.
+    pub(crate) inherited: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,6 +316,10 @@ impl CheckStep {
 /// means the node has no validator and `check` reports readability only.
 pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
     match kind {
+        // Заимствованный узел без своего файла читается по дескриптору;
+        // валидатор файла прав, формы или макета проверял бы содержимое
+        // родителя, которого в этом наборе нет.
+        "Role" | "Form" | "Template" if facts.inherited => Vec::new(),
         "Configuration" if facts.extension => vec![CheckStep::Native(CheckValidator::Cfe)],
         "Configuration" => vec![CheckStep::Native(CheckValidator::Cf)],
         "Form" => vec![CheckStep::Native(CheckValidator::Form)],
@@ -766,6 +774,29 @@ mod tests {
             [CheckStep::Native(CheckValidator::Interface)]
         );
         assert_eq!(plan_for_node("Catalog", plain), [CheckStep::Meta]);
+        // #1381: заимствованный узел без своего файла не отдаёт валидатору
+        // файла содержимое родителя; остальные виды плана не меняют.
+        let inherited = NodeFacts {
+            extension: true,
+            inherited: true,
+            ..plain
+        };
+        for kind in ["Role", "Form", "Template"] {
+            assert!(plan_for_node(kind, inherited).is_empty(), "{kind}");
+        }
+        assert!(plan_for_node(
+            "Template",
+            NodeFacts {
+                template: Some(TemplateFlavour::DataCompositionSchema),
+                ..inherited
+            }
+        )
+        .is_empty());
+        assert_eq!(plan_for_node("DataProcessor", inherited), [CheckStep::Meta]);
+        assert_eq!(
+            plan_for_node("Configuration", inherited),
+            [CheckStep::Native(CheckValidator::Cfe)]
+        );
         // Узел с кодом owns анализатор BSL. Прежде план у него был пуст, и
         // `check` отвечал «читается», молча пропуская находки, ради которых
         // его и зовут.

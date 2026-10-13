@@ -1791,8 +1791,18 @@ pub(super) fn observe_typed_child_resources(
             } else {
                 (Vec::new(), Vec::new())
             };
+            // Заимствованного ребёнка платформа выгружает без своего
+            // содержимого (`Form.xml`, `Template.xml`), если расширение его не
+            // меняет. Наблюдение не требует у него файлов; доказать
+            // заимствование владельца и ребёнка обязан валидатор.
+            let inherited = payload.is_empty()
+                && directories.is_empty()
+                && super::descriptor_extends_parent(&descriptor);
             let footprint_profile = (|| {
                 let mut profile = typed_child_footprint_profile(collection, template_type, &child)?;
+                if inherited {
+                    profile.required_files.clear();
+                }
                 if collection == MetaCollection::Forms {
                     let parsed = super::validation::parse_child_profile_from_bytes(
                         &descriptor,

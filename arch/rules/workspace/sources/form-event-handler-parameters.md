@@ -2,6 +2,7 @@
 id: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
 check:
   - crates/unica-coder/src/infrastructure/native_operations/form_event_registry.rs::item_parameter_follows_the_help_and_the_dump_evidence
+  - crates/unica-coder/src/infrastructure/native_operations/form_event_registry.rs::handler_signature_puts_the_item_first_only_where_the_platform_passes_it
   - crates/unica-coder/src/infrastructure/native_operations/form_event_registry.rs::form_kind_selects_one_variant_of_each_event
   - crates/unica-coder/src/infrastructure/native_operations/form_event_registry.rs::foreign_signature_needs_a_strictly_better_unambiguous_match_and_another_count
   - crates/unica-coder/src/infrastructure/native_operations/form_event_registry.rs::a_tie_is_broken_by_the_only_leader_with_the_handler_parameter_count
@@ -30,6 +31,8 @@ check:
 Исключения подтверждены выгрузкой типовой конфигурации на `8.3.27`:
 `ПриПолученииДанныхНаСервере` и `ОбработкаЗаписиНового` таблицы `Элемент` не
 получают, а `Нажатие` декорации-надписи получает ещё и `СтандартнаяОбработка`.
+Тот же список параметров с `Элемент` использует [состояние события](module-event-state.md)
+в `unica.view` и [реализация события](event-implementation-pair.md).
 
 Обработчик с меньшим числом параметров законен. Платформа вызывает обработчики
 прежних сигнатур и сопоставляет параметры по смыслу. В той же выгрузке

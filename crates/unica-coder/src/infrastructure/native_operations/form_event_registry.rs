@@ -739,9 +739,8 @@ const UNDOCUMENTED_FORMS: &[(&str, &str, &[&str])] = &[(
 )];
 
 /// Known parameter lists of one form or item event under one owner, from the
-/// checked 8.3.27 catalog. The help omits `Элемент`, which the platform passes
-/// first to item and table handlers; it is added here except where the help
-/// already names it or [`TABLE_EVENTS_WITHOUT_ITEM`] says otherwise.
+/// checked 8.3.27 catalog. The first list follows
+/// [`form_event_handler_parameters_8_3_27`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FormEventParameterForms {
     pub(crate) event_id: String,
@@ -760,8 +759,6 @@ pub(crate) fn form_owner_event_parameters_8_3_27(
     owner: FormEventOwnerKind,
     data_path: Option<&str>,
 ) -> Vec<FormEventParameterForms> {
-    let item_owner = owner != FormEventOwnerKind::Form;
-    let table = owner == FormEventOwnerKind::Table;
     let key = owner.catalog_key();
     let undocumented_key = match owner {
         FormEventOwnerKind::Column(kind) => format!("Element.{}", kind.catalog_key()),
@@ -770,15 +767,7 @@ pub(crate) fn form_owner_event_parameters_8_3_27(
     form_event_catalog_8_3_27(context, owner, data_path)
         .into_iter()
         .filter_map(|spec| {
-            let mut parameters = signature_parameters(&spec.signature_ru)?;
-            let explicit_item = parameters
-                .first()
-                .is_some_and(|first| first.to_lowercase() == "элемент");
-            let without_item = table && TABLE_EVENTS_WITHOUT_ITEM.contains(&spec.event_id.as_str());
-            if item_owner && !explicit_item && !without_item {
-                parameters.insert(0, "Элемент".to_string());
-            }
-            let mut forms = vec![parameters];
+            let mut forms = vec![form_event_handler_parameters_8_3_27(owner, spec)?];
             forms.extend(
                 UNDOCUMENTED_FORMS
                     .iter()
@@ -798,12 +787,54 @@ pub(crate) fn form_owner_event_parameters_8_3_27(
         .collect()
 }
 
-/// One declared handler parameter: its name and whether it has a default.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HandlerParameter {
-    pub(crate) name: String,
-    pub(crate) optional: bool,
+/// Parameters of the current handler signature of a form, item, table or
+/// column event: the help list, with `Элемент` first for an item, table or
+/// column event. The help omits `Элемент`, which the platform passes first to
+/// those handlers; it is not added where the help already names it or
+/// [`TABLE_EVENTS_WITHOUT_ITEM`] says otherwise. A command action keeps its
+/// own `(Команда)`. `None` means the catalog signature has no parameter list.
+pub(crate) fn form_event_handler_parameters_8_3_27(
+    owner: FormEventOwnerKind,
+    spec: &PlatformEventSpec,
+) -> Option<Vec<String>> {
+    let mut parameters = signature_parameters(&spec.signature_ru)?;
+    let item_owner = matches!(
+        owner,
+        FormEventOwnerKind::Element(_) | FormEventOwnerKind::Table | FormEventOwnerKind::Column(_)
+    );
+    let explicit_item = parameters
+        .first()
+        .is_some_and(|first| first.to_lowercase() == "элемент");
+    let without_item = owner == FormEventOwnerKind::Table
+        && TABLE_EVENTS_WITHOUT_ITEM.contains(&spec.event_id.as_str());
+    if item_owner && !explicit_item && !without_item {
+        parameters.insert(0, "Элемент".to_string());
+    }
+    Some(parameters)
 }
+
+/// The Russian catalog signature of the event with the parameters of
+/// [`form_event_handler_parameters_8_3_27`]. A signature without a parameter
+/// list is returned as the catalog has it.
+pub(crate) fn form_event_handler_signature_8_3_27(
+    owner: FormEventOwnerKind,
+    spec: &PlatformEventSpec,
+) -> String {
+    let Some(parameters) = form_event_handler_parameters_8_3_27(owner, spec) else {
+        return spec.signature_ru.clone();
+    };
+    let Some((head, _)) = spec.signature_ru.split_once('(') else {
+        return spec.signature_ru.clone();
+    };
+    let tail = spec
+        .signature_ru
+        .rsplit_once(')')
+        .map_or("", |(_, tail)| tail);
+    format!("{head}({}){tail}", parameters.join(", "))
+}
+
+/// One declared handler parameter: its name and whether it has a default.
+pub(crate) use crate::domain::module_projection::MethodParameter as HandlerParameter;
 
 /// A handler signature that cannot belong to the bound event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2937,6 +2968,73 @@ pub(crate) mod tests {
             FormElementKind::ExtendedTooltip
         ))
         .is_empty());
+    }
+
+    #[test]
+    fn handler_signature_puts_the_item_first_only_where_the_platform_passes_it() {
+        let signature = |context: &FormEventContext,
+                         owner: FormEventOwnerKind,
+                         data_path: Option<&str>,
+                         event: &str| {
+            super::form_event_catalog_8_3_27(context, owner, data_path)
+                .into_iter()
+                .find(|spec| spec.event_id == event)
+                .map(|spec| form_event_handler_signature_8_3_27(owner, spec))
+                .unwrap_or_default()
+        };
+        let item = |owner, event| signature(&item_form(), owner, Some("Объект.Строки"), event);
+        assert_eq!(item(INPUT, "OnChange"), "Процедура ПриИзменении(Элемент)");
+        assert_eq!(
+            item(
+                FormEventOwnerKind::Column(FormElementKind::InputField),
+                "EditTextChange"
+            ),
+            "Процедура ИзменениеТекстаРедактирования(Элемент, Текст, СтандартнаяОбработка)"
+        );
+        assert_eq!(
+            item(FormEventOwnerKind::Table, "BeforeAddRow"),
+            "Процедура ПередНачаломДобавления(Элемент, Отказ, Копирование, Родитель, ЭтоГруппа, Параметр)"
+        );
+        assert_eq!(
+            item(FormEventOwnerKind::Table, "NewWriteProcessing"),
+            "Процедура ОбработкаЗаписиНового(НовыйОбъект, Источник, СтандартнаяОбработка)"
+        );
+        assert_eq!(
+            item(FormEventOwnerKind::Form, "OnOpen"),
+            "Процедура ПриОткрытии(Отказ)"
+        );
+        assert_eq!(
+            item(FormEventOwnerKind::Command, "Execute"),
+            "Процедура ОбработкаКоманды(Команда)"
+        );
+        let list = |event| {
+            signature(
+                &list_form(),
+                FormEventOwnerKind::Table,
+                Some("Список"),
+                event,
+            )
+        };
+        assert_eq!(
+            list("OnUpdateUserSettingSetAtServer"),
+            "Процедура ПриОбновленииСоставаПользовательскихНастроекНаСервере(Элемент, СтандартнаяОбработка)"
+        );
+        assert_eq!(
+            list("OnGetDataAtServer"),
+            "Процедура ПриПолученииДанныхНаСервере(ИмяЭлемента, Настройки, Строки)"
+        );
+        // The check compares a handler with the same list.
+        assert_eq!(
+            forms_of(INPUT, "OnChange")[0],
+            form_event_handler_parameters_8_3_27(
+                INPUT,
+                super::form_event_catalog_8_3_27(&item_form(), INPUT, None)
+                    .into_iter()
+                    .find(|spec| spec.event_id == "OnChange")
+                    .unwrap()
+            )
+            .unwrap()
+        );
     }
 
     #[test]

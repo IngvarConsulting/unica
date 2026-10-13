@@ -8,8 +8,8 @@ use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{
     metadata_identifier_is_valid, MetaCollectionsData, MetaDiagnostic, MetaDiagnosticCode,
     MetaDiagnosticSeverity, MetaElementData, MetaEventSource, MetaInfoPropertyData,
-    MetaInfoPropertyValue, MetaInfoPropertyValueKind, MetaRelationTargetData, MetaRelationsData,
-    MetaSupportStatus, MetadataKind, META_INFO_PROPERTY_PROFILE,
+    MetaInfoPropertyValueKind, MetaRelationTargetData, MetaRelationsData, MetaSupportStatus,
+    MetadataKind, META_INFO_PROPERTY_PROFILE,
 };
 use crate::domain::source_target::{
     MetadataAddress, ResolvedTarget, SourceTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -167,8 +167,8 @@ fn emit_subsystem_evidence_processing_phase(phase: SubsystemEvidenceProcessingPh
 
 use super::edit::ResolvedMetadataObject;
 use super::xml_model::{
-    meta_event_subscription_source_node, meta_info_child_text, meta_info_inner_text,
-    meta_info_ml_text, meta_info_normalize_cfg_prefix, parse_defined_type_event_sources,
+    meta_event_subscription_source_node, meta_info_inner_text, meta_info_ml_text,
+    meta_info_normalize_cfg_prefix, parse_defined_type_event_sources,
     parse_meta_event_subscription_source,
 };
 
@@ -519,8 +519,14 @@ pub(crate) fn read_typed_meta_info(
     );
     validation_resources.extend(event_source_resources);
     local.diagnostics.extend(event_source_diagnostics);
-    let (registrar_resources, registrar_evidence) =
-        typed_registrar_document_images(resolved, kind, properties, target, deadline, cancellation);
+    let (registrar_resources, registrar_evidence) = typed_registrar_document_images(
+        &resolved.source_root,
+        kind,
+        properties,
+        target,
+        deadline,
+        cancellation,
+    );
     validation_resources.extend(registrar_resources);
     let subsystem_evidence = Some(typed_subsystem_evidence(
         resolved,
@@ -644,28 +650,18 @@ pub(super) fn predefined_code_type_for_info(
 ) -> Option<String> {
     match kind {
         MetadataKind::Catalog | MetadataKind::ChartOfCalculationTypes => {
-            let code_type = properties.and_then(|properties| {
-                let nodes = super::info_projection::direct_children_with_namespace(
-                    properties,
-                    super::info_projection::MD_CLASSES_NAMESPACE,
-                    "CodeType",
-                );
-                let [node] = nodes.as_slice() else {
-                    return None;
-                };
-                (node.attributes().len() == 0 && !node.children().any(|child| child.is_element()))
-                    .then(|| {
-                        node.children()
-                            .filter(roxmltree::Node::is_text)
-                            .filter_map(|child| child.text())
-                            .collect::<String>()
-                            .trim()
-                            .to_string()
-                    })
-                    .filter(|value| !value.is_empty())
-            });
-            Some(code_type.unwrap_or_else(|| "String".to_string()))
+            match properties.and_then(|properties| {
+                super::info_projection::observe_meta_info_property(properties, kind, "CodeType")
+                    .ok()
+                    .flatten()
+            }) {
+                Some(crate::domain::metadata::MetaInfoPropertyValue::String(value)) => {
+                    Some(value.trim().to_string())
+                }
+                _ => None,
+            }
         }
+
         MetadataKind::ChartOfAccounts | MetadataKind::ChartOfCharacteristicTypes => {
             Some("String".to_string())
         }
@@ -673,30 +669,46 @@ pub(super) fn predefined_code_type_for_info(
     }
 }
 
-fn typed_registrar_document_images(
-    resolved: &ResolvedMetadataObject,
+pub(super) fn typed_registrar_document_images(
+    source_root: &Path,
     kind: MetadataKind,
     properties: Option<roxmltree::Node<'_, '_>>,
     target: &MetadataAddress,
     deadline: ProviderDeadline,
     cancellation: &CancellationToken,
 ) -> (Vec<MetadataResourceImage>, MetadataEvidenceAvailability) {
-    let reads_registrars = matches!(
-        kind,
-        MetadataKind::AccumulationRegister
-            | MetadataKind::AccountingRegister
-            | MetadataKind::CalculationRegister
-    ) || (kind == MetadataKind::InformationRegister
-        && properties
-            .and_then(|node| meta_info_child_text(node, "WriteMode"))
-            .as_deref()
-            == Some("RecorderSubordinate"));
+    let reads_registrars = if kind == MetadataKind::InformationRegister {
+        match properties
+            .map(|properties| {
+                super::info_projection::observe_meta_info_property(properties, kind, "WriteMode")
+            })
+            .transpose()
+        {
+            Ok(Some(Some(crate::domain::metadata::MetaInfoPropertyValue::String(mode)))) => {
+                mode.trim() == "RecorderSubordinate"
+            }
+            Err(error) => return registrar_evidence_unavailable(target, &error.message),
+            _ => {
+                return registrar_evidence_unavailable(
+                    target,
+                    "registrar applicability is unknown because WriteMode is absent",
+                )
+            }
+        }
+    } else {
+        matches!(
+            kind,
+            MetadataKind::AccumulationRegister
+                | MetadataKind::AccountingRegister
+                | MetadataKind::CalculationRegister
+        )
+    };
     if !reads_registrars {
         return (Vec::new(), MetadataEvidenceAvailability::Complete);
     }
     let checkpoint = || registrar_scan_checkpoint(deadline, cancellation);
     let entries = match capture_root_relative_regular_files(
-        &resolved.source_root,
+        source_root,
         Path::new("Documents"),
         SecureTreeCaptureLimits {
             maximum_depth: 0,
@@ -994,56 +1006,18 @@ pub(super) fn typed_properties(
     let Some(properties) = properties else {
         return Vec::new();
     };
-    let mut counts = std::collections::HashMap::new();
-    for node in properties.children().filter(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some(super::info_projection::MD_CLASSES_NAMESPACE)
-    }) {
-        *counts.entry(node.tag_name().name()).or_insert(0usize) += 1;
-    }
+    let mut seen = std::collections::HashSet::new();
     properties
         .children()
         .filter(roxmltree::Node::is_element)
-        .filter(|node| {
-            node.tag_name().namespace() == Some(super::info_projection::MD_CLASSES_NAMESPACE)
-        })
         .filter_map(|node| {
-            if counts.get(node.tag_name().name()) != Some(&1) {
+            let name = node.tag_name().name();
+            if !seen.insert(name) {
                 return None;
             }
-            let spec = META_INFO_PROPERTY_PROFILE.resolve(kind, node.tag_name().name())?;
-            if !super::info_projection::meta_info_property_value_is_valid(node, spec.value_kind) {
-                return None;
-            }
-            let value = match spec.value_kind {
-                MetaInfoPropertyValueKind::String => {
-                    let value = super::info_projection::direct_text_content(node);
-                    MetaInfoPropertyValue::String(value)
-                }
-                MetaInfoPropertyValueKind::LegacyLocalizedString => {
-                    MetaInfoPropertyValue::String(meta_info_ml_text(node))
-                }
-                MetaInfoPropertyValueKind::LocalizedString => MetaInfoPropertyValue::Structured(
-                    super::info_projection::parsed_localized_meta_info_property_value(node),
-                ),
-                MetaInfoPropertyValueKind::Boolean => {
-                    match super::info_projection::direct_text_content(node).as_str() {
-                        "true" => MetaInfoPropertyValue::Boolean(true),
-                        "false" => MetaInfoPropertyValue::Boolean(false),
-                        _ => return None,
-                    }
-                }
-                MetaInfoPropertyValueKind::UnsignedInteger => {
-                    MetaInfoPropertyValue::UnsignedInteger(
-                        super::info_projection::direct_text_content(node)
-                            .parse()
-                            .ok()?,
-                    )
-                }
-                MetaInfoPropertyValueKind::TypedValue => MetaInfoPropertyValue::Structured(
-                    super::info_projection::parsed_typed_meta_info_property_value(node)?,
-                ),
-            };
+            let spec = META_INFO_PROPERTY_PROFILE.resolve(kind, name)?;
+            let value = super::info_projection::observe_meta_info_property(properties, kind, name)
+                .ok()??;
             Some(MetaInfoPropertyData {
                 key: spec.key,
                 value,
@@ -1067,11 +1041,23 @@ pub(super) fn typed_relations(
             let Some(properties) = properties else {
                 return Some(None);
             };
-            let containers = super::info_projection::direct_children_with_namespace(
-                properties,
-                super::info_projection::MD_CLASSES_NAMESPACE,
-                tag,
-            );
+            let containers = properties
+                .children()
+                .filter(|node| node.is_element() && node.tag_name().name() == tag)
+                .collect::<Vec<_>>();
+            if containers.iter().any(|node| {
+                node.tag_name().namespace() != Some(super::info_projection::MD_CLASSES_NAMESPACE)
+            }) {
+                diagnostics.push(
+                    MetaDiagnostic::error(
+                        MetaDiagnosticCode::ValidationFailed,
+                        "metadata relation container has a foreign namespace",
+                    )
+                    .with_metadata_path(target.clone())
+                    .with_field(format!("relations.{public_name}")),
+                );
+                return Some(None);
+            }
             let [container] = containers.as_slice() else {
                 if containers.len() > 1 {
                     diagnostics.push(
@@ -1194,18 +1180,10 @@ pub(super) fn typed_relations(
             }
             Some(complete.then_some(values))
         };
-        let owners = read("Owners", "owners", "object")
-            .flatten()
-            .unwrap_or_default();
-        let register_records = read("RegisterRecords", "registerRecords", "object")
-            .flatten()
-            .unwrap_or_default();
-        let based_on = read("BasedOn", "basedOn", "object")
-            .flatten()
-            .unwrap_or_default();
-        let input_by_string = read("InputByString", "inputByString", "field")
-            .flatten()
-            .unwrap_or_default();
+        let owners = read("Owners", "owners", "object");
+        let register_records = read("RegisterRecords", "registerRecords", "object");
+        let based_on = read("BasedOn", "basedOn", "object");
+        let input_by_string = read("InputByString", "inputByString", "field");
         let data_lock_fields = read("DataLockFields", "dataLockFields", "field");
         (
             owners,
@@ -1644,7 +1622,14 @@ mod predefined_code_type_tests {
         assert_eq!(
             predefined_code_type_for_info(Some(suffixed.root_element()), MetadataKind::Catalog)
                 .as_deref(),
-            Some("NumberSuffix")
+            None
         );
+        assert!(super::super::info_projection::meta_info_profile_errors(
+            MetadataKind::Catalog,
+            Some(suffixed.root_element()),
+            None
+        )
+        .iter()
+        .any(|error| error.field == "properties.CodeType"));
     }
 }

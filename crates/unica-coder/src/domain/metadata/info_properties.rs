@@ -181,7 +181,68 @@ pub(crate) const META_INFO_PROPERTY_NAMES: &[&str] = &[
     "WriteMode",
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MetaInfoPropertyAbsence {
+    Unobserved,
+    Required,
+    Unknown,
+}
+
 impl MetaInfoPropertyProfile {
+    pub(crate) fn text_values(
+        self,
+        kind: MetadataKind,
+        name: &str,
+    ) -> Option<&'static [&'static str]> {
+        match (kind, name) {
+            (MetadataKind::CommonModule, "ReturnValuesReuse") => {
+                Some(&["DontUse", "DuringRequest", "DuringSession"])
+            }
+            (MetadataKind::Catalog | MetadataKind::ChartOfCalculationTypes, "CodeType") => {
+                Some(&["String", "Number"])
+            }
+            (MetadataKind::InformationRegister, "WriteMode") => {
+                Some(&["Independent", "RecorderSubordinate"])
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn absence(
+        self,
+        kind: MetadataKind,
+        name: &str,
+        borrowed: bool,
+    ) -> MetaInfoPropertyAbsence {
+        use MetaInfoPropertyAbsence::*;
+        match (kind, name, borrowed) {
+            (
+                MetadataKind::CommonModule,
+                "Global"
+                | "ClientManagedApplication"
+                | "Server"
+                | "ExternalConnection"
+                | "ClientOrdinaryApplication"
+                | "ServerCall"
+                | "Privileged"
+                | "ReturnValuesReuse",
+                true,
+            ) => Unknown,
+            (
+                MetadataKind::CommonModule,
+                "Global"
+                | "ClientManagedApplication"
+                | "Server"
+                | "ExternalConnection"
+                | "ClientOrdinaryApplication"
+                | "ServerCall"
+                | "Privileged"
+                | "ReturnValuesReuse",
+                _,
+            ) => Required,
+            _ => Unobserved,
+        }
+    }
     pub(crate) fn resolve(
         self,
         kind: MetadataKind,

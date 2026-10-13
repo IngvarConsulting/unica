@@ -668,7 +668,12 @@ fn typed_relations_resolve_object_xsi_type_by_namespace_uri() {
             &mut diagnostics,
         );
 
-        assert_eq!(relations.owners.len(), expected_len, "{xsi_type}");
+        let owners = relations.owners.expect("owners apply to Catalog");
+        assert_eq!(
+            owners.as_ref().map(Vec::len),
+            (expected_len == 1).then_some(1),
+            "{xsi_type}"
+        );
         assert_eq!(diagnostics.is_empty(), expected_len == 1, "{xsi_type}");
     }
 }
@@ -707,4 +712,124 @@ fn registrar_scan_checkpoint_distinguishes_deadline_and_cancellation() {
     )
     .unwrap_err();
     assert_eq!(cancellation.kind(), std::io::ErrorKind::Interrupted);
+}
+
+#[test]
+fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
+    use crate::domain::metadata::MetaInfoPropertyValue;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/platform_8_3_27/incomplete_borrowed");
+    for (kind, file, name) in [
+        (MetadataKind::Catalog, "catalog", "CorpusCatalog"),
+        (MetadataKind::Document, "document", "CorpusDocument"),
+        (
+            MetadataKind::InformationRegister,
+            "information-register",
+            "CorpusRegister",
+        ),
+        (MetadataKind::CommonModule, "common-module", "CorpusModule"),
+        (
+            MetadataKind::ChartOfCalculationTypes,
+            "chart-of-calculation-types",
+            "CorpusCalculationTypes",
+        ),
+    ] {
+        let bytes = std::fs::read(root.join(format!("extension-{file}.xml"))).unwrap();
+        let target = crate::domain::source_target::MetadataAddress::parse(
+            crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("{}.{name}", kind.as_str()),
+        )
+        .unwrap();
+        let info =
+            parse_typed_meta_local_info(&bytes, &target, MetaSupportStatus::Supported).unwrap();
+        assert_eq!(info.name, name);
+        assert!(
+            info.diagnostics.is_empty(),
+            "{file}: the platform export must read without diagnostics"
+        );
+        assert_eq!(
+            info.predefined_code_type, None,
+            "{file}: missing CodeType must not become String"
+        );
+        assert!(info.properties.iter().any(|prop| prop.key == "Comment"
+            && prop.value == MetaInfoPropertyValue::String(String::new())));
+        if kind == MetadataKind::Document {
+            assert_eq!(info.relations.register_records, Some(Some(Vec::new())));
+            assert_eq!(info.relations.based_on, Some(None));
+        }
+        if kind == MetadataKind::Catalog {
+            assert_eq!(info.relations.owners, Some(None));
+            assert!(info.properties.iter().any(|prop| prop.key == "Hierarchical"
+                && prop.value == MetaInfoPropertyValue::Boolean(false)));
+        }
+        for missing in ["CodeType", "WriteMode", "Posting", "Server"] {
+            assert!(
+                !info.properties.iter().any(|prop| prop.key == missing),
+                "{file}: {missing}"
+            );
+        }
+    }
+}
+
+#[test]
+fn missing_write_mode_does_not_claim_complete_registrar_evidence() {
+    use crate::application::ports::MetadataEvidenceAvailability;
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/platform_8_3_27/incomplete_borrowed/extension-information-register.xml");
+    let raw = std::fs::read_to_string(fixture).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    // The scan refuses a root reached through a link (macOS `/var`).
+    let source_root = std::fs::canonicalize(root.path()).unwrap();
+    let target = crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        "InformationRegister.CorpusRegister",
+    )
+    .unwrap();
+    for value in [
+        None,
+        Some("Independent"),
+        Some("RecorderSubordinate"),
+        Some("broken"),
+        Some(""),
+    ] {
+        // Explicit variants are synthetic. The unchanged omission is platform XML.
+        let xml = value.map_or_else(
+            || raw.clone(),
+            |value| {
+                raw.replace(
+                    "</Properties>",
+                    &format!("<WriteMode>{value}</WriteMode></Properties>"),
+                )
+            },
+        );
+        let doc = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+        let props = doc
+            .descendants()
+            .find(|node| node.has_tag_name("Properties"));
+        let (images, evidence) = super::info::typed_registrar_document_images(
+            &source_root,
+            MetadataKind::InformationRegister,
+            props,
+            &target,
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(10)),
+            &CancellationToken::new(),
+        );
+        assert!(images.is_empty());
+        match evidence {
+            MetadataEvidenceAvailability::Complete => {
+                assert!(matches!(value, Some("Independent" | "RecorderSubordinate")))
+            }
+            MetadataEvidenceAvailability::Unavailable(diagnostics) => {
+                assert!(!matches!(
+                    value,
+                    Some("Independent" | "RecorderSubordinate")
+                ));
+                assert_eq!(diagnostics.len(), 1);
+                assert_eq!(diagnostics[0].field.as_deref(), Some("registrarEvidence"));
+                assert_eq!(
+                    diagnostics[0].message.contains("is absent"),
+                    value.is_none()
+                );
+            }
+        }
+    }
 }

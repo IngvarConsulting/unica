@@ -59,9 +59,9 @@ the call never reached the daemon and will not run; repeat it as is.
 `provider_limit_exceeded` whose message names the daemon request limit means
 the call is larger than the daemon accepts: it was not sent and will not run,
 and the message names both sizes. Reduce the call; several smaller calls each
-apply separately. A
-refused connection (`task_backend_failed` with `needsHuman`) will not pass on
-a repeat. An identical read repeated shortly after the first one joins that
+apply separately.
+A refused connection (`task_backend_failed` with `needsHuman`) will not pass
+on a repeat. An identical read repeated shortly after the first one joins that
 work under its own `taskId` only while no source changed since it began;
 `apply` and `run` never do, so never repeat them blindly.
 
