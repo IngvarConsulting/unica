@@ -1,12 +1,12 @@
 # Malformed borrowing identity
 
-S406 is a synthetic negative reader fixture derived from
+S409 is a synthetic negative reader fixture derived from
 `../workspace-incomplete-borrowed/`. Configuration registrations are reduced to
 the language and common module. The module descriptor has a second
 `ExtendedConfigurationObject` containing `broken` after the valid parent UUID.
-The BSL and source-set declaration are synthetic inputs from S405.
+The BSL and source-set declaration are synthetic inputs from S408.
 
 This deliberately damaged workspace is not evidence of valid platform XML.
 Module and method reads must report `source_unreadable`; a valid first UUID
 must not hide the duplicate. SHA-256 assertions verify that reads leave all
-source files unchanged. S405 covers successful reads of the undamaged input.
+source files unchanged. S408 covers successful reads of the undamaged input.

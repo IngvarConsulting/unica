@@ -9164,7 +9164,7 @@
    "name": "acceptance-profile-content-and-gap-controls",
    "issue": 1245,
    "area": "Формы",
-   "task": "Показать известный дефект #791: проверка формы принимает трёхпараметровый обработчик выбора вместо пяти параметров",
+   "task": "Проверка формы принимает прежнюю трёхпараметровую сигнатуру обработчика выбора и предупреждает об обработчике с сигнатурой другого события (#791)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -9228,22 +9228,115 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
      },
      "expect": [
-      "gap"
+      "ok"
      ],
-     "gap": "#791: связанный ChoiceProcessing имеет три параметра вместо пяти; check ошибочно отвечает passed. Исправление должно дать failed и требует снять gap.",
-     "knownGap": {
-      "name": "form-handler-signature-unchecked",
-      "observedClass": "ok",
-      "issue": 791
-     },
      "status": "passed",
      "validators": [
       "form"
      ],
      "assertions": [
       {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
        "pointer": "/data/diagnostics",
        "eq": []
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "АвтоПодбор",
+          "handler": "ПолеНаименованиеПолноеНачалоВыбора",
+          "element": "ПолеНаименованиеПолное"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ПолеНаименованиеПолноеНачалоВыбора(Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "form"
+     ],
+     "diagnostic": "native_validation_warning",
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 1
+      },
+      {
+       "pointer": "/data/diagnostics",
+       "eq": [
+        {
+         "severity": "warning",
+         "code": "native_validation_warning",
+         "message": "Event 'АвтоПодбор' of InputField element 'ПолеНаименованиеПолное': handler 'ПолеНаименованиеПолноеНачалоВыбора' (Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка) matches the signature of event 'НачалоВыбора' (Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка), not the bound event (Элемент, Текст, ДанныеВыбора, ПараметрыПолученияДанных, Ожидание, СтандартнаяОбработка)",
+         "validator": "form"
+        }
+       ]
       }
      ]
     }
@@ -34612,6 +34705,382 @@
   },
   {
    "id": "S404",
+   "name": "form-handler-full-signature-passes",
+   "issue": 791,
+   "area": "Формы",
+   "task": "Проверка формы принимает обработчик выбора таблицы с полной сигнатурой события, `Знач` и необязательным лишним параметром",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "Выбор",
+          "handler": "ListВыбор",
+          "element": "List"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ListВыбор(Знач Элемент, ВыбраннаяСтрока, Поле, СтандартнаяОбработка, Режим = Неопределено)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаСписка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "form"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": true
+      },
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 0
+      },
+      {
+       "pointer": "/data/diagnostics",
+       "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S405",
+   "name": "item-event-handler-receives-the-item",
+   "issue": 1390,
+   "area": "Формы",
+   "task": "Реализовать обработчик события элемента формы: `event.implement` пишет `Элемент` первым параметром, `view` показывает событие реализованным; обработчик с полной сигнатурой, написанный вручную, тоже реализован, а с сигнатурой другого события элемента — нет",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.implement",
+        "args": {
+         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ПолеНаименованиеПриИзменении"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура ПолеНаименованиеПриИзменении(Элемент)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/state",
+       "eq": "implemented"
+      },
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура ПриИзменении(Элемент)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "НачалоВыбора",
+          "handler": "ПолеНаименованиеПолноеНачалоВыбора",
+          "element": "ПолеНаименованиеПолное"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ПолеНаименованиеПолноеНачалоВыбора(Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)\n    СтандартнаяОбработка = Ложь;\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное.Event.StartChoice"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/state",
+       "eq": "implemented"
+      },
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура НачалоВыбора(Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.bind",
+        "args": {
+         "values": {
+          "event": "ПриИзменении",
+          "handler": "ПолеНаименованиеПолноеПриИзменении",
+          "element": "ПолеНаименованиеПолное"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "&НаКлиенте\nПроцедура ПолеНаименованиеПолноеПриИзменении(Элемент, Текст, СтандартнаяОбработка)\nКонецПроцедуры\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное.Event.OnChange"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/state",
+       "eq": "invalid"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S406",
+   "name": "form-event-handler-has-no-item-parameter",
+   "issue": 1390,
+   "area": "Формы",
+   "task": "Реализовать обработчик события самой формы: `event.implement` пишет сигнатуру без `Элемент`, `view` показывает событие реализованным",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "event.implement",
+        "args": {
+         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Module.Form.Method.ПриОткрытии"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура ПриОткрытии(Отказ)"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/state",
+       "eq": "implemented"
+      },
+      {
+       "pointer": "/data/props/signature",
+       "eq": "Процедура ПриОткрытии(Отказ)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S407",
    "name": "borrowed-objects-without-own-content",
    "issue": 1381,
    "area": "Расширения конфигурации",
@@ -34910,7 +35379,7 @@
    ]
   },
   {
-   "id": "S405",
+   "id": "S408",
    "name": "incomplete-borrowed-metadata-without-parent",
    "issue": 1304,
    "area": "Навигация и чтение",
@@ -35285,7 +35754,7 @@
    ]
   },
   {
-   "id": "S406",
+   "id": "S409",
    "name": "common-module-rejects-duplicate-borrowing-identity",
    "issue": 1304,
    "area": "Навигация и чтение",

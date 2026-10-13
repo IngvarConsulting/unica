@@ -13,6 +13,12 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::bound_handoff_completion_waits_for_the_key_lock
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_racing_the_handoff_completion_cancels_the_task
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_during_the_begun_promotion_cancels_the_unstarted_task
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_during_the_handoff_continuation_cancels_the_unstarted_task
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_during_the_inline_cutoff_cancels_the_running_task
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_marking_the_inline_handoff_cancels_the_running_task
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_during_the_promised_continuation_cancels_the_unstarted_task
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::exact_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled
 ---
 
 # Повтор одного вызова не запускает работу заново
@@ -28,7 +34,9 @@ check:
 задания, возвращает это же задание и не резервирует ключ заново. Вызов
 с другим ключом и тем же `taskId` получает отказ несовпадения идентичности.
 Отмена точного ключа, пришедшая во время передачи, достаётся этому же
-заданию и не оставляет отдельной записи отмены. Если задание уже удаляется
+заданию и не оставляет отдельной записи отмены. Если попытка ещё не начала
+исполнение, такая отмена завершает задание как отменённое без запуска
+предметной операции. Если задание уже удаляется
 по истечении срока хранения, повтор получает отказ «квитанция не найдена»
 и тоже ничего не резервирует.
 
