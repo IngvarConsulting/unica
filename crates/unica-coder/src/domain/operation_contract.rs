@@ -115,6 +115,55 @@ fn field_head(names: &[&str], required: &[&str]) -> Value {
 }
 
 impl OperationContract {
+    pub(crate) fn xdto(op: &str) -> Option<Self> {
+        if op != "property.add" {
+            return None;
+        }
+        let mut property = object(
+            &[
+                ("name", text(true)),
+                (
+                    "type",
+                    json!({"type":"string", "pattern":r"^[^:\s]+:[^:\s]+$"}),
+                ),
+                ("minOccurs", json!({"type":"integer", "enum":[0,1]})),
+                (
+                    "maxOccurs",
+                    json!({"anyOf":[{"type":"integer","enum":[-1]},{"type":"integer","minimum":1}]}),
+                ),
+                (
+                    "objectType",
+                    object(
+                        &[("properties", items(json!({"$ref":"#/$defs/xdtoProperty"})))],
+                        &["properties"],
+                    ),
+                ),
+            ],
+            &["name"],
+        );
+        property["anyOf"] = json!([{"required":["type"]},{"required":["objectType"]}]);
+        property["not"] = json!({"required":["type","objectType"]});
+        let fields = [
+            ("property", json!({"$ref":"#/$defs/xdtoProperty"})),
+            ("propertyPath", text(true)),
+        ];
+        let values = object(&fields, &["property"]);
+        let envelope = object(&[("at", text(true)), ("values", values)], &["values"]);
+        let mut flat_fields = fields.to_vec();
+        flat_fields.push(("at", text(true)));
+        let flat = object(&flat_fields, &["property"]);
+        Some(Self {
+            schema: json!({"$defs":{"xdtoProperty":property}, "anyOf":[envelope,flat]}),
+            target: "A named XDTO Type. Optional propertyPath selects an existing nested anonymous ObjectType.",
+            effect: "Add a property with either a QName type or an anonymous ObjectType and its ordered child properties in one atomic plan.",
+            notes: "Every property requires name and exactly one of type or objectType. objectType.properties is an ordered recursive array. minOccurs is 0 or 1; maxOccurs is -1 or a positive integer; omitted bounds mean 1. QName prefixes must resolve. Exact repeats do not write; conflicting definitions are refused. Earlier operations are visible through propertyPath. Legacy flat arguments remain accepted. Public addresses currently cannot represent names containing a dot (#1356); propertyPath retains its existing escape grammar.",
+            example_args: json!({"values":{"property":{"name":"Rows","minOccurs":0,"maxOccurs":-1,"objectType":{"properties":[{"name":"Code","type":"xs:string","minOccurs":0}]}}}}),
+            help: "skills/xdto/SKILL.md",
+        })
+    }
+}
+
+impl OperationContract {
     pub(crate) fn dcs(op: &str) -> Option<Self> {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
@@ -786,9 +835,25 @@ fn error(path: &str, message: impl Into<String>) -> ContractError {
 }
 
 fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractError> {
+    validate_at(schema, value, path, schema)
+}
+
+fn validate_at(
+    schema: &Value,
+    value: &Value,
+    path: &str,
+    root: &Value,
+) -> Result<(), ContractError> {
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        let target = reference
+            .strip_prefix('#')
+            .and_then(|pointer| root.pointer(pointer))
+            .expect("owned contract reference must resolve locally");
+        return validate_at(target, value, path, root);
+    }
     if schema
         .get("not")
-        .is_some_and(|excluded| validate(excluded, value, path).is_ok())
+        .is_some_and(|excluded| validate_at(excluded, value, path, root).is_ok())
     {
         return Err(error(path, "argument selects an excluded alternative"));
     }
@@ -844,7 +909,7 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
     if let Some(alternatives) = schema["anyOf"].as_array() {
         if !alternatives
             .iter()
-            .any(|choice| validate(choice, value, path).is_ok())
+            .any(|choice| validate_at(choice, value, path, root).is_ok())
         {
             return Err(error(
                 path,
@@ -861,16 +926,22 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
         }
         if let Some(names) = schema.get("propertyNames") {
             for key in object.keys() {
-                validate(names, &Value::String(key.clone()), &format!("{path}.{key}"))?;
+                validate_at(
+                    names,
+                    &Value::String(key.clone()),
+                    &format!("{path}.{key}"),
+                    root,
+                )?;
             }
         }
         if schema["additionalProperties"].is_object() {
             for (key, value) in object {
                 if schema["properties"].get(key).is_none() {
-                    validate(
+                    validate_at(
                         &schema["additionalProperties"],
                         value,
                         &format!("{path}.{key}"),
+                        root,
                     )?;
                 }
             }
@@ -888,7 +959,7 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
         if let Some(properties) = schema["properties"].as_object() {
             for (key, value) in object {
                 match properties.get(key) {
-                    Some(child) => validate(child, value, &format!("{path}.{key}"))?,
+                    Some(child) => validate_at(child, value, &format!("{path}.{key}"), root)?,
                     None if schema["additionalProperties"] == false => {
                         return Err(error(&format!("{path}.{key}"), "unknown argument"))
                     }
@@ -907,7 +978,7 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
     }
     if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
         for (index, value) in values.iter().enumerate() {
-            validate(items, value, &format!("{path}[{index}]"))?;
+            validate_at(items, value, &format!("{path}[{index}]"), root)?;
         }
     }
     Ok(())
@@ -966,6 +1037,39 @@ fn normalize_aliases(schema: &Value, value: &mut Value) {
 mod tests {
     use super::*;
     use crate::domain::apply::{OperationFamily, OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+
+    #[test]
+    fn xdto_property_contract_validates_nested_definitions_and_legacy_calls() {
+        let contract = OperationContract::xdto("property.add").unwrap();
+        let validator = jsonschema::validator_for(&contract.schema).unwrap();
+        let valid = json!({"values":{"property":{"name":"Rows","minOccurs":0,"maxOccurs":-1,
+            "objectType":{"properties":[{"name":"Recipient","type":"tns:Recipient","maxOccurs":1}]}}}});
+        for value in [
+            valid.clone(),
+            json!({"property":{"name":"Legacy","type":"xs:string","minOccurs":0}}),
+        ] {
+            assert!(validator.is_valid(&value));
+            assert_eq!(contract.normalize(&value, "args").unwrap(), value);
+        }
+        let child = "/values/property/objectType/properties/0";
+        for (field, value) in [
+            ("maxOccurs", json!(0)),
+            ("maxOccurs", json!(-2)),
+            ("unknown", json!(true)),
+            ("objectType", json!({"properties":[]})),
+            ("type", json!("unprefixed")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid
+                .pointer_mut(child)
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_string(), value);
+            assert!(!validator.is_valid(&invalid), "{invalid}");
+            assert!(contract.normalize(&invalid, "args").is_err(), "{invalid}");
+        }
+    }
 
     #[test]
     fn mxl_and_template_contracts_cover_examples_and_keep_legacy_value_grammar() {
