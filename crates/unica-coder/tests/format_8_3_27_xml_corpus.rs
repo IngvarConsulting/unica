@@ -3938,6 +3938,13 @@ fn require_dcs_fixture_xml(case_id: &str, xml: &str) -> Result<(), String> {
                     == Some("Main")
         })
         .ok_or("missing Main variant")?;
+    check(
+        !root.children().any(|node| {
+            node.has_tag_name((S, "settingsVariant"))
+                && dcs_child(node, T, "name").ok().and_then(|name| name.text()) == Some("Основной")
+        }),
+        "removed Основной variant is still present",
+    )?;
     let settings = dcs_child(variant, T, "settings")?;
     for tag in [
         "selection",
