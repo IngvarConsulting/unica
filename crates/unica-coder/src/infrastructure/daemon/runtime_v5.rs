@@ -1,10 +1,10 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory, ReceiptAuthorityLock};
 use super::protocol_v5::{
-    decode_v5_request_frame, read_bounded_v5_request_frame_before, DecodedV5Request,
-    V5AcknowledgedReceipt, V5ClientRequest, V5ClientRequestKind, V5DaemonErrorCode,
-    V5EndpointRecord, V5HandshakeServerResponse, V5InvocationPhase, V5InvocationRequest,
-    V5InvocationResponse, V5ProbeServerResponse, V5RequestFrameError, V5ServerResponse,
-    DAEMON_PROTOCOL_VERSION, MAX_V5_RESPONSE_LINE_BYTES,
+    decode_v5_request_frame, read_bounded_v5_handshake_frame_before,
+    read_bounded_v5_request_frame_before, DecodedV5Request, V5AcknowledgedReceipt, V5ClientRequest,
+    V5ClientRequestKind, V5DaemonErrorCode, V5EndpointRecord, V5HandshakeServerResponse,
+    V5InvocationPhase, V5InvocationRequest, V5InvocationResponse, V5ProbeServerResponse,
+    V5RequestFrameError, V5ServerResponse, DAEMON_PROTOCOL_VERSION, MAX_V5_RESPONSE_LINE_BYTES,
 };
 use super::server::{
     CanonicalInvocationService, DaemonServerConfig, V5ActorBoundCanonicalInvocation,
@@ -80,6 +80,10 @@ const AUTHORITY_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 const STARTUP_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(30);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// A session frame must arrive whole within this long of its first byte. No
+/// frontend waits longer: its whole call budget is at most 7 s.
+const SESSION_FRAME_READ_TIMEOUT: Duration =
+    Duration::from_millis(crate::application::receipt_ledger::MAX_ORIGINAL_RESPONSE_BUDGET_MS);
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const TASK_TERMINAL_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// The session handler owning an inline invocation re-reads its cutoff at
@@ -7341,7 +7345,7 @@ fn handle_probe_connection(
         .try_clone()
         .map_err(|error| daemon_io_error("clone protocol-v5 client stream", error))?;
     let mut reader = BufReader::new(reader_stream);
-    let decoded = match read_v5_request_before(&mut reader, handshake_deadline) {
+    let decoded = match read_v5_handshake_before(&mut reader, handshake_deadline) {
         Ok((decoded, _)) => decoded,
         Err(V5RequestFrameError::InvalidRequest(_)) => {
             write_runtime_probe_error_before(
@@ -7425,14 +7429,14 @@ fn handle_probe_connection(
     while !shutting_down.load(Ordering::Acquire) {
         let session_read_deadline = Instant::now() + SESSION_READ_TIMEOUT;
         let (decoded, request_received_at) =
-            match read_v5_request_before(&mut reader, session_read_deadline) {
+            match read_v5_session_request(&mut reader, session_read_deadline) {
                 Ok(observation) => observation,
                 Err(V5RequestFrameError::InvalidRequest(_)) => {
                     write_runtime_probe_error_before(
                         &mut stream,
                         runtime,
                         V5DaemonErrorCode::InvalidRequest,
-                        session_read_deadline,
+                        Instant::now() + SESSION_READ_TIMEOUT,
                     )?;
                     break;
                 }
@@ -7443,7 +7447,7 @@ fn handle_probe_connection(
                         &mut stream,
                         runtime,
                         V5DaemonErrorCode::InvalidRequest,
-                        session_read_deadline,
+                        Instant::now() + SESSION_READ_TIMEOUT,
                     )?;
                     break;
                 }
@@ -7756,11 +7760,85 @@ fn v5_request_deadlines(
     })
 }
 
+type V5FrameRead = fn(
+    &mut BufReader<TcpStream>,
+    &mut dyn FnMut(&mut BufReader<TcpStream>) -> io::Result<()>,
+) -> io::Result<Vec<u8>>;
+
+/// The first frame of a connection comes before its token is checked and is
+/// held to the small handshake bound.
+fn read_v5_handshake_before(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+) -> Result<(DecodedV5Request, Instant), V5RequestFrameError> {
+    read_v5_frame_before(reader, deadline, |reader, before_fill| {
+        read_bounded_v5_handshake_frame_before(reader, before_fill)
+    })
+}
+
 fn read_v5_request_before(
     reader: &mut BufReader<TcpStream>,
     deadline: Instant,
 ) -> Result<(DecodedV5Request, Instant), V5RequestFrameError> {
-    let raw_frame = read_bounded_v5_request_frame_before(reader, |reader| {
+    read_v5_frame_before(reader, deadline, |reader, before_fill| {
+        read_bounded_v5_request_frame_before(reader, before_fill)
+    })
+}
+
+/// An idle session waits for the first byte of a frame until `idle_deadline`
+/// and is then polled again. Once that byte arrived, the frame gets its own
+/// absolute deadline, which later bytes do not extend. A frame that began just
+/// before the idle poll ended would otherwise lose its consumed prefix and
+/// have its tail read as a new request; a large frame made that likely (#1309).
+/// A frame that misses its own deadline ends the session: its tail is never
+/// parsed as another request.
+fn read_v5_session_request(
+    reader: &mut BufReader<TcpStream>,
+    idle_deadline: Instant,
+) -> Result<(DecodedV5Request, Instant), V5RequestFrameError> {
+    while reader.buffer().is_empty() {
+        let remaining = idle_deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| V5RequestFrameError::Read(io::Error::from(io::ErrorKind::TimedOut)))?;
+        reader
+            .get_ref()
+            .set_read_timeout(Some(remaining))
+            .map_err(V5RequestFrameError::Read)?;
+        match std::io::BufRead::fill_buf(reader) {
+            Ok([]) => {
+                return Err(V5RequestFrameError::Read(io::Error::from(
+                    io::ErrorKind::UnexpectedEof,
+                )))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(V5RequestFrameError::Read(error)),
+        }
+    }
+    read_v5_request_before(reader, Instant::now() + SESSION_FRAME_READ_TIMEOUT).map_err(|error| {
+        match error {
+            V5RequestFrameError::Read(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                V5RequestFrameError::Read(io::Error::other(
+                    "protocol-v5 session frame missed its read deadline",
+                ))
+            }
+            other => other,
+        }
+    })
+}
+
+fn read_v5_frame_before(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+    read_frame: V5FrameRead,
+) -> Result<(DecodedV5Request, Instant), V5RequestFrameError> {
+    let raw_frame = read_frame(reader, &mut |reader| {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())

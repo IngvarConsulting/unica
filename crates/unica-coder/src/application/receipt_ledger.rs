@@ -21,8 +21,8 @@ const TERMINAL_OUTCOME_DOMAIN: &[u8] = b"unica.terminal-outcome.v1\0";
 
 /// An application ceiling for the exact request-scope component.
 ///
-/// The outer daemon request has the same 16 KiB ceiling, so a valid envelope
-/// can never rely on a larger scope being truncated before hashing.
+/// The daemon envelope validation refuses a longer workspace hint, so a valid
+/// envelope can never rely on a larger scope being truncated before hashing.
 pub(crate) const MAX_REQUEST_SCOPE_BYTES: usize = 16 * 1024;
 pub(crate) const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: u64 = 1_024;
 

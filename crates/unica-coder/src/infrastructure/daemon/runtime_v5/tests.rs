@@ -4918,6 +4918,180 @@ fn exact_v5_runtime_opens_receipt_ledger_and_serves_real_handshake_and_ping() {
     );
 }
 
+/// The first frame is read before the token is checked and keeps the small
+/// handshake bound; an authenticated session reads far larger frames (#1309).
+#[test]
+fn handshake_keeps_its_small_bound_while_an_authenticated_frame_may_be_far_larger() {
+    use crate::infrastructure::daemon::protocol_v5::{
+        MAX_V5_HANDSHAKE_LINE_BYTES, MAX_V5_REQUEST_LINE_BYTES,
+    };
+    // JSON whitespace pads a frame without changing its meaning.
+    fn padded_line(value: &serde_json::Value, line_bytes: usize) -> Vec<u8> {
+        let mut bytes = serde_json::to_vec(value).expect("serialize v5 frame");
+        bytes.resize(line_bytes - 1, b' ');
+        bytes.push(b'\n');
+        bytes
+    }
+    let root = tempfile::tempdir().expect("temporary state root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(80),
+    );
+    let server = thread::spawn(move || run_daemon(config));
+    let record = wait_for_v5_record(&state_root, &identity);
+    let hello = json!({
+        "kind": "hello",
+        "protocolVersion": 5,
+        "token": record.token(),
+        "coreIdentity": identity.as_str(),
+        "ownerLease": "44444444-4444-4444-8444-444444444444"
+    });
+    let connect = || {
+        let stream = TcpStream::connect(record.loopback_addr().expect("v5 loopback address"))
+            .expect("connect v5 daemon");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("bound v5 response read");
+        let reader = BufReader::new(stream.try_clone().expect("clone v5 stream"));
+        (stream, reader)
+    };
+
+    // One byte above the handshake bound: every byte is consumed before the
+    // refusal, so the answer is not lost to a reset.
+    let (mut stream, mut reader) = connect();
+    stream
+        .write_all(&padded_line(&hello, MAX_V5_HANDSHAKE_LINE_BYTES + 1))
+        .expect("write oversized handshake");
+    let refused = read_bounded_v5_probe_response_frame(&mut reader).expect("read refusal");
+    assert_eq!(
+        decode_v5_server_response(&refused),
+        Ok(V5ServerResponse::Error {
+            code: V5DaemonErrorCode::InvalidRequest
+        })
+    );
+    drop((stream, reader));
+
+    let (mut stream, mut reader) = connect();
+    write_json_line(&mut stream, &hello);
+    read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 ready");
+    let large = MAX_V5_HANDSHAKE_LINE_BYTES * 64;
+    assert!(large < MAX_V5_REQUEST_LINE_BYTES);
+    stream
+        .write_all(&padded_line(&json!({"kind": "ping"}), large))
+        .expect("write large authenticated frame");
+    let pong = read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 pong");
+    let pong: V5ProbeServerResponse = serde_json::from_slice(&pong).expect("decode strict v5 pong");
+    assert_eq!(pong.kind(), V5ProbeResponseKind::Pong);
+    write_json_line(&mut stream, &json!({"kind": "release"}));
+    read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 release response");
+    drop((stream, reader));
+    server.join().expect("join v5 runtime").expect("v5 runtime");
+}
+
+/// A large frame that begins just before an idle session poll expires keeps
+/// its consumed prefix: the frame has its own deadline from its first byte,
+/// and its tail is never read as a new request (#1309).
+#[test]
+fn a_frame_straddling_the_idle_session_poll_is_read_whole() {
+    let root = tempfile::tempdir().expect("temporary state root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(80),
+    );
+    let server = thread::spawn(move || run_daemon(config));
+    let record = wait_for_v5_record(&state_root, &identity);
+    let mut stream = TcpStream::connect(record.loopback_addr().expect("v5 loopback address"))
+        .expect("connect v5 daemon");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("bound v5 response read");
+    let mut reader = BufReader::new(stream.try_clone().expect("clone v5 stream"));
+    write_json_line(
+        &mut stream,
+        &json!({
+            "kind": "hello",
+            "protocolVersion": 5,
+            "token": record.token(),
+            "coreIdentity": identity.as_str(),
+            "ownerLease": "55555555-5555-4555-8555-555555555555"
+        }),
+    );
+    read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 ready");
+    let ready_at = Instant::now();
+
+    let mut frame = serde_json::to_vec(&json!({"kind": "ping"})).expect("serialize ping");
+    frame.resize(1024 * 1024, b' ');
+    frame.push(b'\n');
+    let parts: Vec<&[u8]> = frame.chunks(frame.len() / 4 + 1).collect();
+    // The first part lands shortly before the idle poll ends, the rest after.
+    thread::sleep(SESSION_READ_TIMEOUT.saturating_sub(Duration::from_millis(500)));
+    for part in parts {
+        stream.write_all(part).expect("write frame part");
+        thread::sleep(Duration::from_millis(250));
+    }
+    assert!(ready_at.elapsed() > SESSION_READ_TIMEOUT);
+    let answer = read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 answer");
+    let answer: V5ProbeServerResponse =
+        serde_json::from_slice(&answer).expect("decode strict v5 answer");
+    assert_eq!(answer.kind(), V5ProbeResponseKind::Pong);
+    write_json_line(&mut stream, &json!({"kind": "release"}));
+    read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 release response");
+    drop((stream, reader));
+    server.join().expect("join v5 runtime").expect("v5 runtime");
+}
+
+/// A session frame that misses its own deadline ends the session: its tail
+/// is never answered as another request.
+#[test]
+fn a_session_frame_missing_its_deadline_closes_the_session() {
+    let root = tempfile::tempdir().expect("temporary state root");
+    let state_root = std::fs::canonicalize(root.path()).expect("physical state root");
+    let identity = CoreIdentity::production_v5();
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(80),
+    );
+    let server = thread::spawn(move || run_daemon(config));
+    let record = wait_for_v5_record(&state_root, &identity);
+    let mut stream = TcpStream::connect(record.loopback_addr().expect("v5 loopback address"))
+        .expect("connect v5 daemon");
+    stream
+        .set_read_timeout(Some(SESSION_FRAME_READ_TIMEOUT + Duration::from_secs(3)))
+        .expect("bound v5 response read");
+    let mut reader = BufReader::new(stream.try_clone().expect("clone v5 stream"));
+    write_json_line(
+        &mut stream,
+        &json!({
+            "kind": "hello",
+            "protocolVersion": 5,
+            "token": record.token(),
+            "coreIdentity": identity.as_str(),
+            "ownerLease": "66666666-6666-4666-8666-666666666666"
+        }),
+    );
+    read_bounded_v5_probe_response_frame(&mut reader).expect("read v5 ready");
+    // `{"kind":"ping"}` split so that its tail alone is a valid frame.
+    stream.write_all(b"{\"a\":").expect("write frame head");
+    thread::sleep(SESSION_FRAME_READ_TIMEOUT + Duration::from_millis(300));
+    let _ = stream.write_all(b"1}\n{\"kind\":\"ping\"}\n");
+    let mut rest = Vec::new();
+    let _ = reader.read_to_end(&mut rest);
+    assert!(
+        rest.is_empty(),
+        "an expired frame must close the session without an answer ({} bytes)",
+        rest.len()
+    );
+    drop((stream, reader));
+    server.join().expect("join v5 runtime").expect("v5 runtime");
+}
+
 #[test]
 fn direct_runtime_entry_rejects_every_non_v5_identity_before_state_creation() {
     use std::str::FromStr;
