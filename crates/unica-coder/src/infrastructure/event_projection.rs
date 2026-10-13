@@ -19,7 +19,7 @@ use crate::infrastructure::native_operations::form::{
     parse_form_event_evidence_xml, FormEventEvidence, FormInfoElement, FormInfoEvent,
 };
 use crate::infrastructure::native_operations::form_event_registry::{
-    FormElementKind, PlatformEventSpec,
+    form_event_handler_signature_8_3_27, FormElementKind, PlatformEventSpec,
 };
 use std::fmt;
 
@@ -235,7 +235,7 @@ fn form_method_facts(module: &ModuleProjectionSet) -> Vec<FormMethodFact<'_>> {
             FormMethodFact::new(
                 &method.name,
                 method.method_kind,
-                &method.signature,
+                &method.parameters,
                 // Формы и владельцы событий всегда знают контексты; `None`
                 // бывает только у заимствованного общего модуля без событий.
                 method
@@ -270,7 +270,15 @@ fn shape_from_spec(
     };
     let handler = handler.unwrap_or_else(|| spec.handler_ru.clone());
     let implementation_at = format!("{module_at}.Method.{handler}");
-    let signature = substitute_catalog_handler(&spec.signature_ru, &spec.handler_ru, &handler)?;
+    // A form event handler gets the current signature, with `Элемент` first
+    // for an item, table or column event (#1390); the help omits it.
+    let catalog_signature = match directive_owner {
+        EventDirectiveOwner::Platform(_) => spec.signature_ru.clone(),
+        EventDirectiveOwner::Property(owner) => {
+            form_event_handler_signature_8_3_27(owner.catalog_owner(), spec)
+        }
+    };
+    let signature = substitute_catalog_handler(&catalog_signature, &spec.handler_ru, &handler)?;
     let directive = required_event_directive(directive_owner, spec)
         .map_err(|error| EventProjectionError::unavailable(error.to_string()))?;
     let region = match owner {
@@ -645,34 +653,39 @@ mod tests {
                 "main:Catalog.Products.Form.Main.Event.OnOpen",
                 EventImplementationOwner::Form,
                 "ПриОткрытии",
+                "Процедура ПриОткрытии(Отказ)",
                 "ОбработчикиСобытийФормы",
             ),
             (
                 "main:Catalog.Products.Form.Main.Item.Field.Event.OnChange",
                 EventImplementationOwner::Element,
                 "FieldПриИзменении",
+                "Процедура FieldПриИзменении(Элемент)",
                 "ОбработчикиСобытийЭлементовФормы",
             ),
             (
                 "main:Catalog.Products.Form.Main.Item.Goods.Event.BeforeAddRow",
                 EventImplementationOwner::Table,
                 "GoodsПередНачаломДобавления",
+                "Процедура GoodsПередНачаломДобавления(Элемент, Отказ, Копирование, Родитель, ЭтоГруппа, Параметр)",
                 "ОбработчикиСобытийЭлементовФормы",
             ),
             (
                 "main:Catalog.Products.Form.Main.Item.Goods.Item.Quantity.Event.OnChange",
                 EventImplementationOwner::Column,
                 "QuantityПриИзменении",
+                "Процедура QuantityПриИзменении(Элемент)",
                 "ОбработчикиСобытийЭлементовФормы",
             ),
             (
                 "main:Catalog.Products.Form.Main.Command.Заполнить.Event.Execute",
                 EventImplementationOwner::Command,
                 "ЗаполнитьОбработкаКоманды",
+                "Процедура ЗаполнитьОбработкаКоманды(Команда)",
                 "ОбработчикиКомандФормы",
             ),
         ];
-        for (at, owner, handler, region) in cases {
+        for (at, owner, handler, signature, region) in cases {
             let at = QualifiedAddress::parse(at).unwrap();
             let source = resolve_property_event_source(
                 "main",
@@ -690,11 +703,7 @@ mod tests {
                 format!("{}.Method.{handler}", source.module_at),
                 "{at}"
             );
-            assert!(
-                shape.signature.contains(handler),
-                "{at}: {}",
-                shape.signature
-            );
+            assert_eq!(shape.signature, signature, "{at}");
             assert_eq!(shape.region, region, "{at}");
             assert_eq!(shape.method_kind, MethodKind::Procedure, "{at}");
         }

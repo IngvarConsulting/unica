@@ -3,19 +3,22 @@ use crate::domain::apply::OperationRegistry;
 use crate::domain::module_projection::{
     BindingFact, BodyLine, CommonModuleProperties, CompilationFacts, CompilationProjection,
     EventProjection, EventState, ExtensionKind, ExtensionProjection, HandleProjection,
-    InterfaceKind, InterfaceProjection, MethodKind, MethodProjection, ModuleIdentity,
-    ModuleProjectionSet, ModuleProperties, RegionProjection,
+    InterfaceKind, InterfaceProjection, MethodKind, MethodParameter, MethodProjection,
+    ModuleIdentity, ModuleProjectionSet, ModuleProperties, RegionProjection,
 };
 use crate::domain::platform_profile::{ModuleCapability, ModuleRole, PlatformProfile};
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::bsl_outline::parse_bsl_syntax;
 use crate::infrastructure::native_operations::form_event_registry::{
-    form_event_catalog_8_3_27, module_event_catalog_8_3_27, validate_property_event_binding,
-    FormElementKind, FormEventBinding, FormEventContext, FormEventOwnerKind, FormEventTarget,
-    PlatformEventSpec,
+    foreign_handler_signature_8_3_27, form_event_catalog_8_3_27,
+    form_event_handler_signature_8_3_27, form_owner_event_parameters_8_3_27,
+    module_event_catalog_8_3_27, validate_property_event_binding, FormElementKind,
+    FormEventBinding, FormEventContext, FormEventOwnerKind, FormEventParameterForms,
+    FormEventTarget, PlatformEventSpec,
 };
 use bsl_syntax::ast::{Annotation, AstNode, FunctionDef, PreIfDir, PreRegionDir, ProcedureDef};
 use bsl_syntax::{SyntaxKind, SyntaxNode};
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 const PLATFORM_CONTEXTS: &[&str] = &[
@@ -128,7 +131,7 @@ impl FormEventOwnerInput {
 pub(crate) struct FormMethodFact<'a> {
     pub(crate) name: &'a str,
     pub(crate) method_kind: MethodKind,
-    pub(crate) signature: &'a str,
+    pub(crate) parameters: &'a [MethodParameter],
     pub(crate) directive: Option<&'a str>,
     pub(crate) contexts: Vec<&'a str>,
 }
@@ -137,13 +140,13 @@ impl<'a> FormMethodFact<'a> {
     pub(crate) fn new(
         name: &'a str,
         method_kind: MethodKind,
-        signature: &'a str,
+        parameters: &'a [MethodParameter],
         contexts: Vec<&'a str>,
     ) -> Self {
         Self {
             name,
             method_kind,
-            signature,
+            parameters,
             directive: None,
             contexts,
         }
@@ -540,6 +543,13 @@ fn method_projections(
             .children()
             .find(|child| child.kind() == SyntaxKind::PARAM_LIST)
             .ok_or_else(|| format!("BSL method `{name}` has no parser-proven parameter list"))?;
+        let parameters = crate::infrastructure::bsl_outline::parameters(&node)?
+            .into_iter()
+            .map(|parameter| MethodParameter {
+                name: parameter.name,
+                optional: parameter.default_value.is_some(),
+            })
+            .collect();
         let declaration_end = node
             .descendants_with_tokens()
             .filter_map(|element| element.into_token())
@@ -636,6 +646,7 @@ fn method_projections(
                 at: method_at,
                 name,
                 signature,
+                parameters,
                 doc: documentation_block(lines, header_line),
                 method_kind,
                 export,
@@ -1286,32 +1297,30 @@ fn method_matches_event(
             .is_ok_and(|required| event_directive_matches(directive, required))
 }
 
-fn parameter_shape(signature: &str) -> String {
-    signature
-        .split_once('(')
-        .map(|(_, tail)| format!("({tail}"))
-        .map(|shape| normalized_declaration(&shape))
-        .unwrap_or_default()
-}
-
+/// A form handler is compatible with its event when the method kind, the
+/// contexts and the directive fit, and the parameters give no finding of the
+/// form check (#791): a shorter earlier signature and renamed parameters are
+/// compatible, a signature of another event of the owner or more required
+/// parameters than the platform passes are not. The parameters are compared
+/// with the current signature, `Элемент` included (#1390).
 fn form_method_matches_event(
     method: &FormMethodFact<'_>,
     spec: &PlatformEventSpec,
-    owner: FormBindingOwner,
+    owner: &FormEventOwnerInput,
+    owner_events: &[FormEventParameterForms],
 ) -> bool {
     let kind = match method.method_kind {
         MethodKind::Procedure => "procedure",
         MethodKind::Function => "function",
     };
-    let actual = parameter_shape(method.signature);
     kind == spec.method_kind
-        && (actual == parameter_shape(&spec.signature_ru)
-            || actual == parameter_shape(&spec.signature_en))
+        && foreign_handler_signature_8_3_27(owner_events, &spec.event_id, method.parameters)
+            .is_none()
         && spec
             .contexts
             .iter()
             .all(|expected| method.contexts.contains(&expected.as_str()))
-        && required_event_directive(EventDirectiveOwner::Property(owner), spec)
+        && required_event_directive(EventDirectiveOwner::Property(owner.owner), spec)
             .is_ok_and(|required| event_directive_matches(method.directive, required))
 }
 
@@ -1423,7 +1432,14 @@ pub(crate) fn project_form_owner_event_record(
     catalog.into_iter().find_map(|spec| {
         let at = format!("{}.Event.{}", owner.at, spec.event_id);
         (at == event_at).then(|| FormEventProjectionRecord {
-            projection: project_known_form_event(context, owner, bindings, methods, spec),
+            projection: project_known_form_event(
+                context,
+                owner,
+                bindings,
+                methods,
+                spec,
+                &OnceCell::new(),
+            ),
             spec,
             owner: owner.owner,
         })
@@ -1448,9 +1464,17 @@ pub(crate) fn project_form_owner_events(
             owner.owner.catalog_owner(),
             owner.data_path.as_deref(),
         );
+        // Parameter lists of the owner are built once, and only when a bound
+        // handler has to be compared with them.
+        let owner_events = OnceCell::new();
         for spec in &catalog {
             events.push(project_known_form_event(
-                context, owner, bindings, methods, spec,
+                context,
+                owner,
+                bindings,
+                methods,
+                spec,
+                &owner_events,
             ));
         }
         let known = catalog
@@ -1504,6 +1528,7 @@ fn project_known_form_event(
     bindings: &[FormEventBindingInput],
     methods: &[FormMethodFact<'_>],
     spec: &PlatformEventSpec,
+    owner_events: &OnceCell<Vec<FormEventParameterForms>>,
 ) -> EventProjection {
     let owner_prefix = owner.at.as_str();
     let at = format!("{owner_prefix}.Event.{}", spec.event_id);
@@ -1555,7 +1580,18 @@ fn project_known_form_event(
         (false, Some(_), _, false) => EventState::Invalid,
         (false, Some(_), None, true) => EventState::Missing,
         (false, Some(_), Some(method), true)
-            if form_method_matches_event(method, spec, owner.owner) =>
+            if form_method_matches_event(
+                method,
+                spec,
+                owner,
+                owner_events.get_or_init(|| {
+                    form_owner_event_parameters_8_3_27(
+                        context,
+                        owner.owner.catalog_owner(),
+                        owner.data_path.as_deref(),
+                    )
+                }),
+            ) =>
         {
             EventState::Implemented
         }
@@ -1567,7 +1603,7 @@ fn project_known_form_event(
             |binding| format!("Процедура {}(Команда)", binding.handler),
         )
     } else {
-        spec.signature_ru.clone()
+        form_event_handler_signature_8_3_27(owner.owner.catalog_owner(), spec)
     };
     let can = match state {
         EventState::Available if context.direct_part_writable => {
@@ -1696,6 +1732,19 @@ mod tests {
     use bsl_syntax::ast::{AstNode, PreIfDir};
     use serde::Deserialize;
     use serde_json::json;
+
+    /// Declared parameters of a test handler, all required. The slice lives
+    /// for the test process, like the handler facts that borrow it.
+    fn params(names: &[&str]) -> &'static [crate::domain::module_projection::MethodParameter] {
+        names
+            .iter()
+            .map(|name| crate::domain::module_projection::MethodParameter {
+                name: (*name).to_string(),
+                optional: false,
+            })
+            .collect::<Vec<_>>()
+            .leak()
+    }
 
     const COMPLEX: &str = include_str!("../../../../tests/fixtures/v013/modules/complex.bsl");
     const EXTENSION: &str = include_str!("../../../../tests/fixtures/v013/modules/extension.bsl");
@@ -2106,7 +2155,7 @@ mod tests {
             FormMethodFact::new(
                 "ПолеПриИзменении",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Процедура ПолеПриИзменении()",
+                params(&[]),
                 vec![
                     "thinClient",
                     "webClient",
@@ -2119,7 +2168,7 @@ mod tests {
             FormMethodFact::new(
                 "ПолеНачалоВыбора",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Процедура ПолеНачалоВыбора(ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)",
+                params(&["ДанныеВыбора", "ВыборДобавлением", "СтандартнаяОбработка"]),
                 vec![
                     "thinClient",
                     "webClient",
@@ -2148,7 +2197,7 @@ mod tests {
     }
 
     #[test]
-    fn form_event_state_requires_exact_method_kind_and_parameter_shape() {
+    fn form_event_state_requires_the_method_kind_and_accepts_an_earlier_shorter_signature() {
         let binding = FormEventBindingInput::property(
             FormBindingOwner::Element(FormElementKind::InputField),
             "main:CommonForm.Тест.Item.Поле.Event.OnChange",
@@ -2166,7 +2215,7 @@ mod tests {
         let procedure = [FormMethodFact::new(
             "ПолеПриИзменении",
             crate::domain::module_projection::MethodKind::Procedure,
-            "Процедура ПолеПриИзменении()",
+            params(&[]),
             contexts.clone(),
         )
         .with_directive(Some("&НаКлиенте"))];
@@ -2181,7 +2230,7 @@ mod tests {
         let function = [FormMethodFact::new(
             "ПолеПриИзменении",
             crate::domain::module_projection::MethodKind::Function,
-            "Функция ПолеПриИзменении()",
+            params(&[]),
             contexts,
         )];
         assert_eq!(
@@ -2192,6 +2241,140 @@ mod tests {
                 .state,
             EventState::Invalid
         );
+    }
+
+    #[test]
+    fn method_parameters_keep_names_without_by_value_and_mark_defaults() {
+        let module = project(
+            "main:Catalog.Products.Form.Main.Module.Form",
+            Some(
+                "&НаКлиенте\nПроцедура Поле(Знач Элемент, Режим = Неопределено)\nКонецПроцедуры\n",
+            ),
+        );
+        let parameters = &module.methods()[0].parameters;
+        assert_eq!(
+            parameters
+                .iter()
+                .map(|parameter| (parameter.name.as_str(), parameter.optional))
+                .collect::<Vec<_>>(),
+            [("Элемент", false), ("Режим", true)]
+        );
+    }
+
+    #[test]
+    fn form_handler_parameters_are_compared_with_the_item_and_the_form_check_rule() {
+        let client = vec![
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient",
+        ];
+        let input = FormBindingOwner::Element(FormElementKind::InputField);
+        let item_event = |event: &str, handler: &str, parameters: &[&str]| {
+            let at = format!("main:CommonForm.Тест.Item.Поле.Event.{event}");
+            let binding = FormEventBindingInput::property(input, &at, event, handler, None);
+            let methods = [FormMethodFact::new(
+                handler,
+                crate::domain::module_projection::MethodKind::Procedure,
+                params(parameters),
+                client.clone(),
+            )
+            .with_directive(Some("&НаКлиенте"))];
+            project_form_events(&[binding], &methods)
+                .into_iter()
+                .find(|projected| projected.at == at)
+                .unwrap()
+        };
+        // The current signature with the item, a renamed item and an
+        // earlier shorter signature are all handlers the platform calls.
+        for parameters in [&["Элемент"][..], &["Поле"][..], &[][..]] {
+            assert_eq!(
+                item_event("OnChange", "ПолеПриИзменении", parameters).state,
+                EventState::Implemented,
+                "{parameters:?}"
+            );
+        }
+        let on_change = item_event("OnChange", "ПолеПриИзменении", &["Элемент"]);
+        assert_eq!(on_change.signature, "Процедура ПриИзменении(Элемент)");
+        assert_eq!(
+            item_event(
+                "StartChoice",
+                "ПолеНачалоВыбора",
+                &[
+                    "Элемент",
+                    "ДанныеВыбора",
+                    "ВыборДобавлением",
+                    "СтандартнаяОбработка"
+                ]
+            )
+            .state,
+            EventState::Implemented
+        );
+        // The signature of another event of the item and more required
+        // parameters than the platform passes are not this event's handler.
+        for parameters in [
+            &["Элемент", "Текст", "СтандартнаяОбработка"][..],
+            &["Элемент", "Лишний"][..],
+        ] {
+            assert_eq!(
+                item_event("OnChange", "ПолеПриИзменении", parameters).state,
+                EventState::Invalid,
+                "{parameters:?}"
+            );
+        }
+        // A form event handler does not receive the item.
+        let open_at = "main:CommonForm.Тест.Event.OnOpen";
+        let open = FormEventBindingInput::property(
+            FormBindingOwner::Form,
+            open_at,
+            "OnOpen",
+            "ПриОткрытии",
+            None,
+        );
+        let open_event = |parameters: &[&str]| {
+            let methods = [FormMethodFact::new(
+                "ПриОткрытии",
+                crate::domain::module_projection::MethodKind::Procedure,
+                params(parameters),
+                client.clone(),
+            )
+            .with_directive(Some("&НаКлиенте"))];
+            project_form_events(std::slice::from_ref(&open), &methods)
+                .into_iter()
+                .find(|projected| projected.at == open_at)
+                .unwrap()
+        };
+        let implemented = open_event(&["Отказ"]);
+        assert_eq!(implemented.state, EventState::Implemented);
+        assert_eq!(implemented.signature, "Процедура ПриОткрытии(Отказ)");
+        assert_eq!(open_event(&["Элемент", "Отказ"]).state, EventState::Invalid);
+        // A command action follows the same rule with its own `(Команда)`.
+        let action_at = "main:CommonForm.Тест.Command.Обновить.Event.Execute";
+        let action = FormEventBindingInput::property(
+            FormBindingOwner::Command,
+            action_at,
+            "Execute",
+            "Обновить",
+            None,
+        );
+        let action_state = |parameters: &[&str]| {
+            let methods = [FormMethodFact::new(
+                "Обновить",
+                crate::domain::module_projection::MethodKind::Procedure,
+                params(parameters),
+                client.clone(),
+            )
+            .with_directive(Some("&НаКлиенте"))];
+            project_form_events(std::slice::from_ref(&action), &methods)
+                .into_iter()
+                .find(|projected| projected.at == action_at)
+                .unwrap()
+                .state
+        };
+        assert_eq!(action_state(&["Команда"]), EventState::Implemented);
+        assert_eq!(action_state(&[]), EventState::Implemented);
+        assert_eq!(action_state(&["Команда", "Лишний"]), EventState::Invalid);
     }
 
     #[test]
@@ -2234,14 +2417,14 @@ mod tests {
             FormMethodFact::new(
                 "FieldOnChange",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Procedure FieldOnChange()",
+                params(&[]),
                 contexts.clone(),
             )
             .with_directive(Some("&AtClient")),
             FormMethodFact::new(
                 "fieldonchange",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Procedure fieldonchange()",
+                params(&[]),
                 contexts,
             )
             .with_directive(Some("&AtClient")),
@@ -2491,7 +2674,7 @@ mod tests {
         let method = [FormMethodFact::new(
             "RefreshAction",
             crate::domain::module_projection::MethodKind::Procedure,
-            "Процедура RefreshAction(Команда)",
+            params(&["Команда"]),
             vec![
                 "thinClient",
                 "webClient",
@@ -2534,7 +2717,7 @@ mod tests {
             let methods = [FormMethodFact::new(
                 "FormOnOpen",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Procedure FormOnOpen(Cancel)",
+                params(&["Cancel"]),
                 client_contexts.clone(),
             )
             .with_directive(directive)];
@@ -2554,7 +2737,7 @@ mod tests {
             let methods = [FormMethodFact::new(
                 "FormOnOpen",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Procedure FormOnOpen(Cancel)",
+                params(&["Cancel"]),
                 client_contexts.clone(),
             )
             .with_directive(Some(directive))];
@@ -2579,7 +2762,7 @@ mod tests {
         let server = [FormMethodFact::new(
             "OnCreateAtServer",
             crate::domain::module_projection::MethodKind::Procedure,
-            "Procedure OnCreateAtServer(Cancel, StandardProcessing)",
+            params(&["Cancel", "StandardProcessing"]),
             vec!["server"],
         )
         .with_directive(Some(" &AtServer "))];
@@ -2797,7 +2980,7 @@ mod tests {
         let methods = [FormMethodFact::new(
             "FormOnOpen",
             crate::domain::module_projection::MethodKind::Procedure,
-            "Procedure FormOnOpen(Cancel)",
+            params(&["Cancel"]),
             vec![
                 "thinClient",
                 "webClient",
@@ -3276,7 +3459,7 @@ mod tests {
             FormMethodFact::new(
                 "ОбщийОбработчик",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Процедура ОбщийОбработчик()",
+                params(&[]),
                 vec![
                     "thinClient",
                     "webClient",
@@ -3290,7 +3473,7 @@ mod tests {
             FormMethodFact::new(
                 "Неверный",
                 crate::domain::module_projection::MethodKind::Function,
-                "Функция Неверный(Элемент)",
+                params(&["Элемент"]),
                 vec!["server"],
             ),
         ];

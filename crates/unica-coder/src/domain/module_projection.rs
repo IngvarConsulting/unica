@@ -187,11 +187,22 @@ pub(crate) struct ExtensionProjection {
     pub(crate) target_at: Option<String>,
 }
 
+/// One declared method parameter: its name without `Знач` and whether it has
+/// a default value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MethodParameter {
+    pub(crate) name: String,
+    pub(crate) optional: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MethodProjection {
     pub(crate) at: String,
     pub(crate) name: String,
     pub(crate) signature: String,
+    /// Declared parameters from the parser, in order. Not serialized: the
+    /// signature already shows them.
+    pub(crate) parameters: Vec<MethodParameter>,
     pub(crate) doc: Option<String>,
     pub(crate) method_kind: MethodKind,
     pub(crate) export: bool,
@@ -606,8 +617,8 @@ mod tests {
     use super::{
         BindingFact, BodyLine, BranchKind, CommonModuleProperties, CompilationFacts,
         CompilationProjection, EventProjection, EventState, ExtensionKind, ExtensionProjection,
-        HandleProjection, InterfaceKind, InterfaceProjection, MethodKind, MethodProjection,
-        ModuleIdentity, ModuleProjectionSet, ModuleProperties, RegionProjection,
+        HandleProjection, InterfaceKind, InterfaceProjection, MethodKind, MethodParameter,
+        MethodProjection, ModuleIdentity, ModuleProjectionSet, ModuleProperties, RegionProjection,
     };
     use crate::domain::address::{NodeKind, QualifiedAddress};
     use crate::domain::apply::OperationRegistry;
@@ -772,6 +783,10 @@ mod tests {
             at: method_at.clone(),
             name: "Проверить".to_string(),
             signature: "Процедура Проверить(Отказ) Экспорт".to_string(),
+            parameters: vec![MethodParameter {
+                name: "Отказ".to_string(),
+                optional: false,
+            }],
             doc: Some("Проверяет заказ.".to_string()),
             method_kind: MethodKind::Procedure,
             export: true,
@@ -1044,6 +1059,7 @@ mod tests {
             at: "main:HTTPService.API.Module.HTTPService.Method.get".to_string(),
             name: "get".to_string(),
             signature: "Процедура get()".to_string(),
+            parameters: Vec::new(),
             doc: None,
             method_kind: MethodKind::Procedure,
             export: false,
