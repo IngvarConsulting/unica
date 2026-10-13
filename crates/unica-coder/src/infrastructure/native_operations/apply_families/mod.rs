@@ -1045,7 +1045,25 @@ pub(crate) fn plan_hidden_v13_apply(
             }),
         )?;
     }
+    let xdto_operations = parsed
+        .iter()
+        .filter_map(|operation| match operation {
+            ParsedApplyOperation::Xdto(operation) => Some(operation.operation().clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let xdto_objects = unica_xdto_designer::planner::final_object_addition_details(
+        &mut staged.proposal(),
+        binding.source_set_name(),
+        binding.source_kind(),
+        &xdto_operations,
+    )?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    effects
+        .set_details(unica_xdto::results::XDTO_OBJECTS, &xdto_objects)
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, error.to_string()).at_path("ops")
+        })?;
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }

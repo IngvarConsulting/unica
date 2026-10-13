@@ -3655,7 +3655,8 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
 }
 
 /// Every family section of plan details that an apply answer may carry.
-const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[];
+const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] =
+    &[unica_xdto::results::XDTO_OBJECTS];
 
 /// Fields the apply answer writes itself; a family section cannot take them.
 const APPLY_DATA_FIELDS: &[&str] = &[

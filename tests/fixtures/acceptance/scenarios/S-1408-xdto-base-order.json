@@ -1,0 +1,482 @@
+{
+  "id": "S-1408-xdto-base-order",
+  "issue": 1408,
+  "area": "XDTO и обмены",
+  "task": "Добавить объектный тип с основой между соседями, прочитать наследование и сохранить прежние байты при повторе и отказах",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-inheritance",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Can.objectType.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implemented",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/anyOf/0/properties/values/properties/base/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "ПримерБ",
+                "base": "tns:Основа",
+                "before": "ПримерВ"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/xdtoObjects/0/name",
+          "eq": "ПримерБ"
+        },
+        {
+          "pointer": "/data/xdtoObjects/0/base/namespace",
+          "eq": "urn:unica:example"
+        },
+        {
+          "pointer": "/data/xdtoObjects/0/base/local",
+          "eq": "Основа"
+        },
+        {
+          "pointer": "/data/xdtoObjects/0/previous",
+          "eq": "ПримерА"
+        },
+        {
+          "pointer": "/data/xdtoObjects/0/next",
+          "eq": "ПримерВ"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/xdtoObjects/0/name",
+          "eq": "ПримерБ"
+        }
+      ],
+      "captures": {
+        "after": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Пример.Type.Основа"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:XDTOPackage.Пример.Type.ПримерА"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:XDTOPackage.Пример.Type.ПримерБ"
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:XDTOPackage.Пример.Type.ПримерВ"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.ПримерБ"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/baseAt",
+          "eq": "main:XDTOPackage.Пример.Type.Основа"
+        }
+      ],
+      "captures": {
+        "baseAt": {
+          "pointer": "/data/props/baseAt"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.baseAt"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Основа"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Пример.Type.Основа.Property.Код"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "{\"raw\":\"xs:string\",\"prefix\":\"xs\",\"local\":\"string\",\"namespace\":\"http://www.w3.org/2001/XMLSchema\"}"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "ПримерБ",
+                "base": "tns:Основа",
+                "before": "ПримерВ"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/xdtoObjects/0/present",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "НеДобавлять",
+                "base": "tns:НетОсновы"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: XDTO writer rejected the typed operation",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "НеДобавлять",
+                "before": "НетСоседа"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: XDTO writer rejected the typed operation",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "Временный"
+              }
+            }
+          },
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "НеДобавлять",
+                "base": "tns:НетОсновы"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: XDTO writer rejected the typed operation",
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "Первый",
+                "base": "tns:ПримерБ",
+                "after": "ПримерБ"
+              }
+            }
+          },
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "Второй",
+                "base": "tns:ПримерБ",
+                "after": "ПримерБ"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/xdtoObjects/0/previous",
+          "eq": "Второй"
+        },
+        {
+          "pointer": "/data/xdtoObjects/0/next",
+          "eq": "ПримерВ"
+        },
+        {
+          "pointer": "/data/xdtoObjects/1/previous",
+          "eq": "ПримерБ"
+        },
+        {
+          "pointer": "/data/xdtoObjects/1/next",
+          "eq": "Первый"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "afterBatch": {
+          "file": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Пример",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "Временный"
+              }
+            }
+          },
+          {
+            "op": "type.remove",
+            "args": {
+              "at": "main:XDTOPackage.Пример.Type.Временный"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/xdtoObjects/0/present",
+          "eq": false
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.afterBatch"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/xdtoObjects/0/present",
+          "eq": false
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Пример/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.afterBatch"
+        }
+      ]
+    }
+  ]
+}
