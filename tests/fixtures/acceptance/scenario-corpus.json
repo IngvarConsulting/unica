@@ -38494,6 +38494,40 @@
   },
   {
    "id": "S426",
+   "name": "docs-standards-failure-names-its-cause",
+   "issue": 1419,
+   "area": "Документация и стандарты",
+   "task": "Найти правило диагностики по стандартам, когда сервер стандартов не отвечает: отказ называет поставщика v8std и причину его сбоя, а не только то, что результата нет",
+   "workspace": "tests/fixtures/acceptance/workspace-docs-standards-unreachable",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "GetFormMethod",
+      "source": "development-standard"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "contains": "v8std/public-standards — failed: сервер стандартов недоступен"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S427",
    "name": "form-command-button-representation-fails-check",
    "issue": 1436,
    "area": "Формы",
