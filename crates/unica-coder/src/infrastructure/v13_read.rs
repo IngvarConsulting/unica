@@ -55,7 +55,6 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
-    configuration_registrations: Arc<RegistrationCache>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -153,12 +152,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Self {
         Self {
             cancellation,
-            read,
+            read: read.with_artifacts(registration_cache),
             profile,
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
-            configuration_registrations: registration_cache,
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
@@ -738,10 +736,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(Arc::clone(payload));
         }
         let mut checkpoint = || self.read_checkpoint();
-        let payload = Arc::new(
-            self.read
-                .configuration_payload_with_checkpoint(&mut checkpoint)?,
-        );
+        let payload = self
+            .read
+            .configuration_payload_with_checkpoint(&mut checkpoint)?;
         cache.insert(key, Arc::clone(&payload));
         Ok(payload)
     }
@@ -988,17 +985,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     fn streamed_configuration_registration_index(
         &self,
-        admitted: &ViewSourceSnapshot,
+        _admitted: &ViewSourceSnapshot,
     ) -> Result<Arc<RegistrationIndex>, ViewError> {
-        self.configuration_registrations.get_or_build(
-            &admitted.source_set_identity,
-            &admitted.revision,
-            &|| self.read_checkpoint(),
-            || {
-                self.read
-                    .streamed_configuration_registration_index(&|| self.read_checkpoint())
-            },
-        )
+        self.read
+            .streamed_configuration_registration_index(&|| self.read_checkpoint())
     }
 
     fn module_view(

@@ -417,6 +417,27 @@ pub(crate) struct PortablePermissions {
     key: u32,
 }
 
+/// Identity of one regular file's current content as the filesystem reports
+/// it: physical identity, length and modification time. Any write through
+/// the file or a replacement of its name changes the stamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    identity: FileIdentity,
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    pub(crate) fn of(file: &fs::File) -> io::Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            identity: file_identity(file)?,
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FileIdentity {
     volume: u64,
@@ -1266,6 +1287,16 @@ impl RetainedDirectoryCapability {
         file.take(u64::try_from(max_bytes).unwrap_or(u64::MAX))
             .read_to_end(&mut bytes)?;
         Ok(bytes)
+    }
+
+    /// The stamp of a relative regular file, or `None` when it is absent.
+    /// Opening it is the only work: no content is read.
+    pub(crate) fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
+        match self.open_relative_regular_nofollow(relative) {
+            Ok(file) => FileStamp::of(&file).map(Some),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {

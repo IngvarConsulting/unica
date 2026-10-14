@@ -191,6 +191,11 @@ pub(crate) struct ViewService<A> {
 }
 
 impl<A: ViewReadAuthority> ViewService<A> {
+    #[cfg(test)]
+    pub(crate) fn authority_for_test(&self) -> &A {
+        &self.authority
+    }
+
     pub(crate) fn new(authority: A, cursors: ViewCursorStore) -> Self {
         Self {
             authority,

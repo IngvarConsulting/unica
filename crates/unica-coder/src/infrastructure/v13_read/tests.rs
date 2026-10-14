@@ -450,7 +450,9 @@ fn common_module_present_damage_is_not_missing() {
 fn configuration_payload(
     reader: &ProviderReadAuthority,
 ) -> Result<serde_json::Value, crate::application::v13::view::ViewError> {
-    reader.configuration_payload_with_checkpoint(&mut || Ok(()))
+    reader
+        .configuration_payload_with_checkpoint(&mut || Ok(()))
+        .map(|payload| payload.as_ref().clone())
 }
 
 #[test]
@@ -3828,7 +3830,7 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
         PlatformProfile::v8_3_27(),
     )
     .unwrap();
-    let legacy = project_typed_payload(&route, legacy_payload).unwrap();
+    let legacy = project_typed_payload(&route, legacy_payload.as_ref().clone()).unwrap();
     let module_branch = super::module_branch_for_parent(route.at(), PlatformProfile::v8_3_27())
         .expect("Configuration has a profile module branch");
     let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
@@ -4950,8 +4952,8 @@ fn support_marker_stream_preserves_terminal_errors_and_never_memoizes_interrupti
             .unwrap();
         assert_eq!(
             authority.support_state_read_count(),
-            2,
-            "absence is memoized only after a successful checkpoint"
+            0,
+            "an absent marker has nothing to parse"
         );
     }
 }
