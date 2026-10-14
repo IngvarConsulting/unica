@@ -447,7 +447,12 @@ fn validate_form_inner(
         if !report.stopped {
             let signature_check = (signatures == HandlerSignatures::Check)
                 .then(|| HandlerSignatureCheck::new(&form_path));
-            form_validate_events(root, signature_check, &mut report);
+            form_validate_events(
+                root,
+                signature_check,
+                form_metadata_owner(&form_path),
+                &mut report,
+            );
         }
         if !report.stopped {
             form_validate_command_actions(&cmd_nodes, &mut report);
@@ -990,6 +995,7 @@ fn form_metadata_owner(form_path: &Path) -> Option<crate::domain::address::NodeK
 pub(crate) fn form_validate_events(
     root: roxmltree::Node<'_, '_>,
     signatures: Option<HandlerSignatureCheck>,
+    metadata_owner: Option<crate::domain::address::NodeKind>,
     report: &mut FormValidationReporter,
 ) {
     struct EventValidationState<'report> {
@@ -1150,8 +1156,12 @@ pub(crate) fn form_validate_events(
     }
 
     let base_form = form_validation_child(root, "BaseForm");
+    // Вид владельца формы выбирает его каталог событий, как при планировании
+    // привязки: иначе итоговая проверка отвергла бы принятое событие.
+    let mut context = context_from_root(root);
+    context.metadata_owner = metadata_owner;
     let mut state = EventValidationState {
-        context: context_from_root(root),
+        context,
         signatures,
         report,
         errors: 0,
@@ -6222,6 +6232,9 @@ pub(crate) fn form_edit_validate_new_element_event_tree(
                 } else {
                     FormEventBinding::new(&name, &handler)
                 };
+                // Путь данных таблицы выбирает события источника динамического
+                // списка, как у существующего элемента.
+                let binding = binding.with_data_path(object.get("path").and_then(Value::as_str));
                 validate_event(context, FormEventTarget::Element(kind), &binding)
                     .map_err(|diagnostic| diagnostic.to_string())?;
             }

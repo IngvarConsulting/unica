@@ -243,19 +243,30 @@ fn check_form_edit_subject(
         }
     };
     if matches!(subject, FormEditSubject::Container(_)) {
+        // Элементы, добавленные раньше в том же `items`, к моменту
+        // следующего уже стоят в контейнере и тоже служат соседями.
+        let mut added: Vec<&str> = Vec::new();
         for (index, definition) in definitions.iter().enumerate() {
-            let Some(after) = definition.get("after").and_then(Value::as_str) else {
-                continue;
-            };
-            if !siblings.iter().any(|sibling| sibling.name == after) {
-                return Err(bad(
-                    op_index,
-                    &format!("items[{index}].after"),
-                    format!(
-                        "`after` names a sibling inside the addressed container; `{after}` is not there"
-                    ),
-                ));
+            if let Some(after) = definition.get("after").and_then(Value::as_str) {
+                if !siblings.iter().any(|sibling| sibling.name == after) && !added.contains(&after)
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("items[{index}].after"),
+                        format!(
+                            "`after` names a sibling inside the addressed container; `{after}` is not there"
+                        ),
+                    ));
+                }
             }
+            added.extend(
+                definition
+                    .get("elements")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|element| element.get("name").and_then(Value::as_str)),
+            );
         }
     }
     Ok(())
@@ -3771,6 +3782,122 @@ mod tests {
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} {args}");
             assert_eq!(error.path(), Some(path), "{op} {args}: {error}");
         }
+    }
+
+    /// Сосед `after` может быть добавлен раньше в том же `items` (#1443).
+    #[test]
+    fn element_add_after_names_an_item_added_earlier_in_the_same_list() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let form = "main:Document.First.Form.Main";
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                    .unwrap_or_else(|error| panic!("{op}: {error:?}")),
+            )
+        };
+        let operations = [
+            parse(
+                "form.add",
+                json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]}),
+                0,
+            ),
+            parse(
+                "element.add",
+                json!({"at": form, "items": [{"name": "Header", "type": "Group"}]}),
+                1,
+            ),
+            parse(
+                "element.add",
+                json!({"at": format!("{form}.Item.Header"), "items": [
+                    {"name": "A", "path": "Объект.Total"},
+                    {"name": "B", "path": "Объект.Total", "after": "A"}
+                ]}),
+                2,
+            ),
+        ];
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let (staged, _) =
+            plan_form_resource_batch(admission.staged_state().unwrap(), authority, &operations)
+                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        let elements = super::form_items_of(&text).unwrap();
+        let header = super::form_item_at(&elements, &["Header".to_string()]).unwrap();
+        let names = header
+            .children
+            .iter()
+            .map(|element| element.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["A", "B"], "{text}");
+    }
+
+    /// События из каталога 8.3.27, зависящие от вида владельца формы и пути
+    /// данных таблицы, принимаются и при добавлении элемента, и итоговой
+    /// проверкой формы (#1443).
+    #[test]
+    fn owner_and_data_path_specific_events_pass_planning_and_final_validation() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                    .unwrap_or_else(|error| panic!("{op}: {error:?}")),
+            )
+        };
+        let operations = [
+            parse(
+                "form.add",
+                json!({"at": "main:Document.First", "items": [
+                    {"name": "Main", "type": "ObjectForm"},
+                    {"name": "List", "type": "ListForm"}
+                ]}),
+                0,
+            ),
+            // `ValueChoice` формы есть только в каталоге владельца-документа.
+            parse(
+                "event.bind",
+                json!({
+                    "at": "main:Document.First.Form.Main.Event.ValueChoice",
+                    "values": {"handler": "ОбработкаВыбораЗначения"}
+                }),
+                1,
+            ),
+            // `URLListGetProcessing` таблицы есть только у источника
+            // динамического списка, его выбирает путь данных таблицы.
+            parse(
+                "element.add",
+                json!({
+                    "at": "main:Document.First.Form.List",
+                    "items": [{
+                        "name": "ВтороеПредставление",
+                        "type": "Table",
+                        "path": "Список",
+                        "on": ["URLListGetProcessing"]
+                    }]
+                }),
+                2,
+            ),
+        ];
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let (staged, _) =
+            plan_form_resource_batch(admission.staged_state().unwrap(), authority, &operations)
+                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let main = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        assert!(
+            main.contains("<Event name=\"ValueChoice\">ОбработкаВыбораЗначения</Event>"),
+            "{main}"
+        );
+        let list = staged_text(&staged, "Documents/First/Forms/List/Ext/Form.xml");
+        assert!(
+            list.contains("<Event name=\"URLListGetProcessing\">"),
+            "{list}"
+        );
     }
 
     /// Главное обещание семейства: писатель правит только `Common`, а
