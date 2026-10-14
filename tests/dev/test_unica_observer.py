@@ -218,6 +218,140 @@ class UnicaObserverTests(unittest.TestCase):
         )
         self.assertEqual(tree_digest(self.workspace), self.before, "observer must not change workspace files")
 
+    def get(self, path: str) -> dict:
+        with urllib.request.urlopen(self.url + path, timeout=30) as response:
+            return json.load(response)
+
+    def test_every_tool_answers_a_schema_valid_call_and_execution_stops_before_unica(self) -> None:
+        catalog = self.get("/api/tools")
+        tools = {tool["name"].removeprefix("unica."): tool for tool in catalog["tools"]}
+        at = "main:Catalog.Валюты"
+        absent_task = "00000000-0000-4000-8000-000000000000"
+        # По вызову на каждый инструмент поверхности: новый инструмент без
+        # своего случая роняет тест, а не проходит молча.
+        cases = {
+            "view": {"at": at, "limit": 5},
+            "apply": {"at": at, "ops": [{"op": "attribute.add", "args": {"items": [{"name": "ObserverProbe"}]}}]},
+            "resolve": {"at": at},
+            "search": {"query": "Валюта", "corpus": "names", "limit": 5},
+            "check": {"at": at},
+            "diff": {"left": at, "right": at},
+            "run": {},
+            "docs": {"query": "Запрос", "limit": 1},
+            "task.get": {"taskId": absent_task},
+            "task.result": {"taskId": absent_task, "waitMs": 0},
+            "task.cancel": {"taskId": absent_task},
+        }
+        self.assertEqual(set(tools), set(cases), "every tool from tools/list needs a schema-valid case")
+        for verb, arguments in cases.items():
+            with self.subTest(tool=verb):
+                self.assertIsNotNone(tools[verb]["policy"], f"{verb} is classified by the observer policy")
+                status, answer = self.post("/api/tool", {"tool": tools[verb]["name"], "arguments": arguments})
+                self.assertEqual(status, 200, answer)
+                self.assertEqual(answer["arguments"], arguments)
+                self.assertIsInstance(answer["elapsedMs"], int)
+                self.assertIsInstance(answer["result"], dict)
+                self.assertIn("ok", answer["result"], answer)
+
+        # Нарушение схемы — 400, неизвестный инструмент — 404; оба до unica.
+        before = len(self.sent_tool_calls())
+        for body, expected in (
+            ({"tool": "search", "arguments": {}}, 400),
+            ({"tool": "view", "arguments": {"at": at, "limit": 0}}, 400),
+            ({"tool": "diff", "arguments": {"left": at, "right": at, "extra": 1}}, 400),
+            ({"tool": "unica.write", "arguments": {}}, 404),
+        ):
+            status, refusal = self.post("/api/tool", body)
+            self.assertEqual(status, expected, (body, refusal))
+
+        # Исполнение и запись — 403 до unica, в каком бы месте ни стояли.
+        token = "observer-test-token"
+        forbidden = (
+            ("apply", {"executionToken": token}),
+            ("apply", {"at": at, "ops": [{"op": "attribute.add", "args": {"executionToken": token}}]}),
+            ("search", {"query": "x", "executionToken": token}),
+            ("run", {"op": "push", "args": {}, "dryRun": False}),
+            ("run", {"op": "push", "args": {}}),
+            ("run", {"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": "true"}),
+            ("run", {"op": "launch", "args": {"clientMode": "thin"}, "dryRun": True}),
+            ("run", {"op": "unknown.op", "args": {}, "dryRun": True}),
+            ("run", {"dryRun": False}),
+        )
+        for verb, arguments in forbidden:
+            with self.subTest(forbidden=(verb, arguments)):
+                status, refusal = self.post("/api/tool", {"tool": verb, "arguments": arguments})
+                self.assertEqual(status, 403, refusal)
+        self.assertEqual(len(self.sent_tool_calls()), before, "refused calls never reach unica")
+
+        for call in self.sent_tool_calls():
+            arguments = call["arguments"]
+            self.assertNotIn("executionToken", json.dumps(arguments), call)
+            if call["name"].endswith("run") and "op" in arguments:
+                self.assertIs(arguments.get("dryRun"), True, call)
+                self.assertNotEqual(arguments["op"], "launch", call)
+        self.assertEqual(tree_digest(self.workspace), self.before, "observer must not change workspace files")
+
+    def test_contract_drafts_pass_preview_per_family_and_a_missing_contract_is_named(self) -> None:
+        # Семейства с контрактом, чей черновик на фикстуре предпросмотр не
+        # проходит, с причиной. Закрытый пробел роняет тест: запись удаляется.
+        known_gaps = {
+            # Пример контракта связывает наборы Left и Right, а в схеме
+            # фикстуры один набор данных: имена надо брать из узла.
+            "dataSetLink": "contract example names data sets absent from the node",
+        }
+        root = self.view()
+        pending = deque(f"{entry['name']}:Configuration" for entry in root["data"]["sourceSets"])
+        seen: set[str] = set()
+        passed: dict[str, str] = {}
+        failed: dict[str, list] = {}
+        unavailable_ops: set[str] = set()
+        while pending:
+            at = pending.popleft()
+            if at in seen or len(seen) >= 600:
+                continue
+            seen.add(at)
+            status, answer = self.post("/api/view", {"at": at, "extra": {"limit": 50}})
+            self.assertEqual(status, 200, answer)
+            result = answer["result"]
+            if not result["ok"]:
+                continue
+            data = result["data"]
+            for entry in data.get("can") or []:
+                op = entry["op"]
+                family = op.split(".", 1)[0]
+                if not entry["implemented"] or family in passed or op in unavailable_ops:
+                    continue
+                status, draft = self.post("/api/draft", {"at": data["at"], "op": op})
+                self.assertEqual(status, 200, draft)
+                self.assertEqual(draft["draft"]["at"], data["at"])
+                self.assertEqual(draft["draft"]["ops"][0]["op"], op)
+                if draft["contract"] == "unavailable":
+                    self.assertEqual(draft["note"], "контракт недоступен (#1468)", draft)
+                    unavailable_ops.add(op)
+                    continue
+                if draft["contract"] != "ok":
+                    continue
+                self.assertIsNone(draft["note"], draft)
+                self.assertEqual(draft["validation"], [], draft)
+                status, preview = self.post("/api/apply", draft["draft"])
+                self.assertEqual(status, 200, preview)
+                if preview["result"]["ok"]:
+                    self.assertIn("executionToken", preview["result"]["data"])
+                    passed[family] = op
+                    failed.pop(family, None)
+                else:
+                    failed.setdefault(family, []).append((data["at"], op, preview["result"]["summary"]))
+            for slot in ("branches", "items"):
+                pending.extend(
+                    child["at"]
+                    for child in data.get(slot) or []
+                    if isinstance(child, dict) and "at" in child and not child["at"].endswith((".Caller", ".Callee"))
+                )
+        self.assertGreaterEqual(len(passed), 10, passed)
+        self.assertEqual(set(failed), set(known_gaps), failed)
+        self.assertTrue(unavailable_ops, "the fixture has implemented operations without a contract")
+        self.assertEqual(tree_digest(self.workspace), self.before, "previews must not change workspace files")
+
     def test_foreign_origin_and_bad_length_are_refused(self) -> None:
         status, refusal = self.post("/api/view", {}, headers={"Origin": "http://evil.example"})
         self.assertEqual(status, 403, refusal)
