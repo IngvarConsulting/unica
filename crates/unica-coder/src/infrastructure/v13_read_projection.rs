@@ -1,5 +1,5 @@
 use crate::application::v13::view::ViewError;
-use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
+use crate::domain::address::{member_address, AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::module_projection::EventProjection;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
@@ -290,7 +290,7 @@ fn form_collection(
         .flatten()
         .filter_map(|item| {
             let name = item_identity(item)?;
-            let child = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
+            let child = address.member(name).ok()?;
             serde_json::to_value(form_node(&child, kind, item, semantic_events)).ok()
         })
         .collect();
@@ -679,7 +679,7 @@ fn project_mxl(
                 .filter_map(Value::as_str)
                 .map(|name| {
                     json!({
-                        "at": format!("{address}.{name}"),
+                        "at": member_address(address, name),
                         "kind": "Parameter",
                         "title": name,
                     })
@@ -841,7 +841,7 @@ fn project_registered_metadata_branch_names_inner<'a>(
     let items = names
         .map(|name| {
             serde_json::to_value(NodeView::new(
-                format!("{}.{name}", address),
+                member_address(address, name),
                 kind.as_str(),
                 name,
                 Map::new(),
@@ -1558,7 +1558,7 @@ fn metadata_items(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> 
         .flatten()
         .filter_map(|item| {
             let name = item.get("name")?.as_str()?;
-            let child = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
+            let child = address.member(name).ok()?;
             serde_json::to_value(metadata_item_node(&child, kind, item)).ok()
         })
         .collect()
@@ -1790,7 +1790,7 @@ fn subsystem_children(
         .flatten()
         .filter_map(Value::as_str)
         .filter_map(|name| {
-            let child = QualifiedAddress::parse(&format!("{branch}.{name}")).ok()?;
+            let child = QualifiedAddress::parse(&member_address(&branch, name)).ok()?;
             Some((child, name.to_string()))
         })
         .collect()
@@ -2024,7 +2024,7 @@ fn project_interface_groups(
                 .enumerate()
                 .map(|(index, group)| {
                     json!({
-                        "at": format!("{address}.{group}"),
+                        "at": member_address(address, group),
                         "kind": "Group",
                         "title": group,
                         "order": index + 1,
@@ -2190,7 +2190,10 @@ fn project_xdto(
     })?;
     if suffix.len() == 1 {
         if segment.kind() == NodeKind::Property {
-            return Ok(NodeViewData::Node(xdto_property_node(address, name, item)));
+            return Ok(NodeViewData::Node(
+                xdto_property_node(address, name, item)
+                    .with_branches(xdto_property_branch(address, item)?),
+            ));
         }
         let mut props = reader_node_props(LogicalReader::Xdto, segment.kind(), item);
         if let Some(base) = item.get("base") {
@@ -2199,45 +2202,90 @@ fn project_xdto(
                 Value::String(serde_json::to_string(base).unwrap_or_default()),
             );
         }
-        let branches = item
-            .get("properties")
-            .and_then(Value::as_array)
-            .filter(|items| !items.is_empty())
-            .map(|items| vec![BranchRef::new(format!("{}.Property", address), items.len())])
-            .unwrap_or_default();
+        let branches = xdto_property_branch(address, item)?;
         return Ok(NodeViewData::Node(
             NodeView::new(address.to_string(), segment.kind().as_str(), name, props)
                 .with_branches(branches),
         ));
     }
-    let property = &suffix[1];
-    if suffix.len() != 2 {
-        return Err(ViewError::new(
-            RefusalCode::NotFound,
-            "XDTO property projection did not consume the complete suffix",
-        ));
+    // Свойство любой вложенности: `Type.T.Property.A.Property.B` спускается
+    // через вложенный анонимный тип (`typeDef`) каждого свойства цепочки.
+    let mut current = item;
+    for (index, property) in suffix[1..].iter().enumerate() {
+        if property.kind() != NodeKind::Property {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "XDTO type has only Property child nodes",
+            ));
+        }
+        let properties = xdto_nested_properties(current)?.ok_or_else(|| {
+            ViewError::new(RefusalCode::NotFound, "XDTO node has no nested properties")
+        })?;
+        let last = index + 2 == suffix.len();
+        let Some(property_name) = property.name() else {
+            if !last {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "XDTO property collection cannot have children",
+                ));
+            }
+            return Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(address.to_string(), "Property", "Properties", Map::new()),
+                collection_items(LogicalReader::Xdto, address, NodeKind::Property, properties),
+            )));
+        };
+        current = select_named(properties, property_name).ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                format!("XDTO property `{property_name}` was not found"),
+            )
+        })?;
+        if last {
+            return Ok(NodeViewData::Node(
+                xdto_property_node(address, property_name, current)
+                    .with_branches(xdto_property_branch(address, current)?),
+            ));
+        }
     }
-    let properties = item
-        .get("properties")
-        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "XDTO type has no properties"))?;
-    if property.name().is_none() {
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "Property", "Properties", Map::new()),
-            collection_items(LogicalReader::Xdto, address, NodeKind::Property, properties),
-        )));
+    Err(ViewError::new(
+        RefusalCode::NotFound,
+        "XDTO property projection did not consume the complete suffix",
+    ))
+}
+
+/// Свойства узла XDTO: у типа — свои, у свойства — его вложенного
+/// анонимного типа. `None` — вложенных свойств нет. Два вложенных
+/// определения у одного свойства — конфликт источника, который не
+/// разрешается выбором одного из них.
+fn xdto_nested_properties(node: &Value) -> Result<Option<&Value>, ViewError> {
+    if let Some(properties) = node.get("properties").filter(|value| !value.is_null()) {
+        return Ok(Some(properties));
     }
-    let property_name = property.name().unwrap();
-    let property = select_named(properties, property_name).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("XDTO property `{property_name}` was not found"),
-        )
-    })?;
-    Ok(NodeViewData::Node(xdto_property_node(
-        address,
-        property_name,
-        property,
-    )))
+    match node
+        .get("typeDefs")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        None | Some([]) => Ok(None),
+        Some([definition]) => Ok(definition
+            .get("properties")
+            .filter(|value| !value.is_null())),
+        Some(_) => Err(ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "XDTO property has more than one nested type definition",
+        )),
+    }
+}
+
+fn xdto_property_branch(
+    address: &QualifiedAddress,
+    node: &Value,
+) -> Result<Vec<BranchRef>, ViewError> {
+    Ok(xdto_nested_properties(node)?
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .map(|items| vec![BranchRef::new(format!("{address}.Property"), items.len())])
+        .unwrap_or_default())
 }
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
@@ -2645,8 +2693,7 @@ fn collection_item(
             data_row(value)
         };
     };
-    let at = format!("{address}.{name}");
-    let Ok(at) = QualifiedAddress::parse(&at) else {
+    let Ok(at) = address.member(name) else {
         return Value::Object(reader_node_props(reader, kind, value));
     };
     serde_json::to_value(known_reader_node(reader, &at, kind, value))

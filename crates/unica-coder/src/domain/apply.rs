@@ -1,4 +1,4 @@
-use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
+use crate::domain::address::{escape_name, AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::logical_route::{classify_route, RouteClass};
 use crate::domain::metadata::{metadata_kind_collections, MetaCollection, MetadataKind};
 use crate::domain::node_view::OperationRef;
@@ -551,6 +551,14 @@ enum OperationApplicability {
     XdtoPackage,
     /// Тип пакета XDTO.
     XdtoType,
+    /// Свойство типа XDTO любой вложенности:
+    /// `Type.T.Property.A[.Property.B…]`.
+    XdtoProperty,
+    /// Место нового свойства XDTO: тип или свойство, во вложенный
+    /// анонимный тип которого оно добавляется.
+    XdtoPropertyContainer,
+    /// Группа командного интерфейса подсистемы.
+    InterfaceGroup,
     /// Объект верхнего уровня любого вида: правило поддержки.
     SupportRule,
     /// Модуль, его тело или метод: вставка текста. У метода место вставки —
@@ -608,6 +616,9 @@ impl OperationApplicability {
             Self::MxlArea => "`Kind.Name.Template.T.Area.A` of a spreadsheet",
             Self::XdtoPackage => "`XDTOPackage.Name`",
             Self::XdtoType => "`XDTOPackage.Name.Type.T`",
+            Self::XdtoProperty => "`XDTOPackage.Name.Type.T.Property.P[.Property.Q…]`",
+            Self::XdtoPropertyContainer => "`XDTOPackage.Name.Type.T[.Property.P…]`",
+            Self::InterfaceGroup => "`Subsystem.Name[.Subsystem.Child].Interface.Group.G`",
             Self::CodeInsert => "a module address, its `Body` or `Method.M`",
             Self::Code => "a module address, its `Body`, `Method.M` or `Method.M.Body`",
             Self::Event => "an `Event` of a module or a form",
@@ -770,6 +781,33 @@ impl OperationApplicability {
                         if package.name().is_some()
                             && ty.kind() == NodeKind::Type
                             && ty.name().is_some())
+            }
+            Self::XdtoProperty | Self::XdtoPropertyContainer => {
+                site.route == RouteClass::Xdto
+                    && match segments {
+                        [package, ty, properties @ ..] => {
+                            package.name().is_some()
+                                && ty.kind() == NodeKind::Type
+                                && ty.name().is_some()
+                                && (self == Self::XdtoPropertyContainer || !properties.is_empty())
+                                && properties.iter().all(|property| {
+                                    property.kind() == NodeKind::Property
+                                        && property.name().is_some()
+                                })
+                        }
+                        _ => false,
+                    }
+            }
+            Self::InterfaceGroup => {
+                site.route == RouteClass::Interface
+                    && matches!(segments, [owners @ .., interface, group]
+                    if interface.kind() == NodeKind::Interface
+                        && group.kind() == NodeKind::Group
+                        && group.name().is_some()
+                        && !owners.is_empty()
+                        && owners.iter().all(|segment| {
+                            segment.kind() == NodeKind::Subsystem && segment.name().is_some()
+                        }))
             }
             Self::SupportRule => matches!(segments, [owner]
                 if owner.name().is_some()
@@ -1101,7 +1139,12 @@ impl OperationDescriptor {
         let segments = site.segments();
         // Запрос — безымянный узел набора: операцию запроса, вызванную на
         // самом наборе, отказ ведёт к его `Query`.
-        let query = QualifiedAddress::parse(&format!("{}.Query", site.at)).ok();
+        // Только у набора: после вида с именем (`Group`, `Property`) `.Query`
+        // разобралось бы как имя несуществующего узла.
+        let query = (site.terminal().kind() == NodeKind::DataSet
+            && site.terminal().name().is_some())
+        .then(|| QualifiedAddress::parse(&format!("{}.Query", site.at)).ok())
+        .flatten();
         let mut candidates = query
             .into_iter()
             .chain((1..segments.len()).rev().map(|length| QualifiedAddress {
@@ -1367,9 +1410,9 @@ operation_descriptors!(
     ("area.add", Mxl, Mxl, Items),
     ("valueType.add", Xdto, XdtoPackage, Values),
     ("objectType.add", Xdto, XdtoPackage, Values),
-    ("property.add", Xdto, XdtoType, Values),
+    ("property.add", Xdto, XdtoPropertyContainer, Values),
     ("type.remove", Xdto, XdtoType, Target),
-    ("property.remove", Xdto, XdtoType, Values),
+    ("property.remove", Xdto, XdtoProperty, Target),
     ("subsystem.create", Subsystem, Configuration, Values),
     ("content.add", Subsystem, Subsystem, Items),
     ("content.remove", Subsystem, Subsystem, Target),
@@ -1379,7 +1422,7 @@ operation_descriptors!(
     ("supportRule.set", Support, SupportRule, Values),
     ("commandVisibility.set", Interface, Interface, Items),
     ("commandPlacement.set", Interface, Interface, Items),
-    ("commandOrder.set", Interface, Interface, Values),
+    ("commandOrder.set", Interface, InterfaceGroup, Values),
     ("groupOrder.set", Interface, Interface, Values),
     // Порядок подсистем верхнего уровня живёт в корневом документе, а
     // маршрута `main:Interface` намеренно нет: корень описывается свойством,
@@ -1560,6 +1603,46 @@ retired_arguments!(
         "{at^Module}.Method.{value}",
         true
     ),
+    // Адресация (П5, #1356). Свойство XDTO любой вложенности задаётся
+    // адресом `Type.T.Property.A[.Property.B…]`: прежний `propertyPath`
+    // и имя удаляемого свойства переходят в `at`. Путь с удаляемым именем
+    // ведёт к коллекции свойств, где видно это имя.
+    (
+        "property.add",
+        "values.propertyPath",
+        "{at}.Property.{path}",
+        true
+    ),
+    (
+        "property.remove",
+        "values.propertyPath",
+        "{at}.Property.{path}.Property.{name}",
+        true
+    ),
+    (
+        "property.remove",
+        "values.name",
+        "{at}.Property.{value}",
+        true
+    ),
+    // Плоская форма XDTO без `values` ещё разбирается: её ключи снимаются
+    // так же.
+    ("property.add", "propertyPath", "{at}.Property.{path}", true),
+    (
+        "property.remove",
+        "propertyPath",
+        "{at}.Property.{path}.Property.{name}",
+        true
+    ),
+    ("property.remove", "name", "{at}.Property.{value}", true),
+    // Порядок команд принадлежит группе: она задаётся адресом
+    // `Interface.Group.<g>`, имя с точкой (`CommandGroup.X`) экранируется.
+    (
+        "commandOrder.set",
+        "values.group",
+        "{at}.Group.{value}",
+        true
+    ),
     // Операции подузлов (П3, #1354): подузел, прежде названный аргументом
     // на владельце, задаётся адресом. Узел создаёт операция родителя
     // (`right.add`, `area.add`), а `*.set` пишет только в существующий.
@@ -1589,8 +1672,8 @@ retired_arguments!(
         "{at^Template}.Parameter.{value}",
         true
     ),
-    // Поле с составным `dataPath` адресуется после П5 (#1356): из точки в
-    // значении адрес поля не строится, и запись не срабатывает.
+    // Составной `dataPath` (`Owner.Code`) становится одним экранированным
+    // именем поля: `Field.Owner\.Code`.
     (
         "field.set",
         "values.field",
@@ -1650,6 +1733,40 @@ pub(crate) struct ArgumentRedirect {
     pub(crate) listing: bool,
 }
 
+/// Подстановка цепочки имён: значение — путь, где неэкранированная точка
+/// разделяет имена, а `\.` — буквальная точка имени (прежний
+/// `propertyPath` XDTO). Каждая точка-разделитель становится переходом к
+/// члену того же вида, что стоит перед подстановкой: `{at}.Property.{path}`
+/// со значением `A\.B.C` — `{at}.Property.A\.B.Property.C`.
+const PATH_PLACEHOLDER: &str = "{path}";
+
+/// Путь из значения в записи адреса; `None` — путь пуст, содержит пустое имя
+/// или экранирование, которого грамматика адреса не знает.
+fn escaped_path(value: &str, kind: &str) -> Option<String> {
+    let mut names = vec![String::new()];
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        match character {
+            '\\' => {
+                characters.next().filter(|next| *next == '.')?;
+                names.last_mut()?.push('.');
+            }
+            '.' => names.push(String::new()),
+            other => names.last_mut()?.push(other),
+        }
+    }
+    if names.iter().any(String::is_empty) {
+        return None;
+    }
+    Some(
+        names
+            .iter()
+            .map(|name| escape_name(name).into_owned())
+            .collect::<Vec<_>>()
+            .join(&format!(".{kind}.")),
+    )
+}
+
 /// Подстановка в шаблон адреса для записи, чей ключ называл подузел не
 /// именем: проверяет, что операция исполнима на члене коллекции.
 const LISTED_MEMBER: &str = "Member";
@@ -1673,14 +1790,20 @@ impl RetiredArgument {
         data_sets: DataSetLookup<'_>,
     ) -> Option<ArgumentRedirect> {
         let (location, value) = find_key(&Value::Object(args.clone()), self.key, String::new())?;
-        // Адрес собирается подстановкой в строку и разбирается заново: единого
-        // построителя адреса пока нет, он появится в П5 (#1356) вместе с
-        // экранированием точки в именах; тогда подстановку заменит он.
+        // Шаблон подставляется строкой и разбирается заново; имя из значения
+        // проходит `escape_name`, поэтому точка в нём остаётся внутри имени.
         let raw = if self.address.contains("{dataSet}") {
             let data_set = named_data_set(at, &value, data_sets)?;
             self.address.replace("{dataSet}", &data_set.to_string())
         } else {
             expand_anchor(self.address, at)?.replace("{at}", &at.to_string())
+        };
+        let raw = match raw.find(PATH_PLACEHOLDER) {
+            Some(index) => {
+                let separator = raw[..index].rsplit('.').nth(1)?;
+                raw.replace(PATH_PLACEHOLDER, &escaped_path(&value, separator)?)
+            }
+            None => raw,
         };
         if let Some(collection) = raw.strip_suffix(".{name}") {
             return Some(ArgumentRedirect {
@@ -1689,9 +1812,11 @@ impl RetiredArgument {
                 listing: true,
             });
         }
+        // Запись прав роли называется `<Вид>_<Имя>[.Вложенный…]`: первая
+        // точка ссылки на объект становится `_`, остальные экранируются.
         let target = QualifiedAddress::parse(
-            &raw.replace("{value}", &value)
-                .replace("{right}", &value.replacen('.', "_", 1)),
+            &raw.replace("{value}", &escape_name(&value))
+                .replace("{right}", &escape_name(&value.replacen('.', "_", 1))),
         )
         .ok()?;
         Some(ArgumentRedirect {
@@ -1746,7 +1871,7 @@ fn named_data_set(
     QualifiedAddress::parse(&format!(
         "{template}{}",
         path.iter()
-            .map(|name| format!(".DataSet.{name}"))
+            .map(|name| format!(".DataSet.{}", escape_name(name)))
             .collect::<String>()
     ))
     .ok()
@@ -2561,12 +2686,44 @@ mod tests {
                 "main:WebService.Exchange.Operation.Send.Parameter.Body",
                 false,
             ),
-            // XDTO: пакет и тип, но не пространство имён и не свойство.
+            // XDTO: свойство любой вложенности задаётся адресом; новое
+            // свойство добавляется в тип или во вложенный тип свойства.
             ("objectType.add", "main:XDTOPackage.Exchange", true),
             ("property.add", "main:XDTOPackage.Exchange.Type.Order", true),
             (
+                "property.add",
+                r"main:XDTOPackage.Exchange.Type.Order.Property.Lines.Property.A\.B",
+                true,
+            ),
+            (
+                "property.remove",
+                "main:XDTOPackage.Exchange.Type.Order",
+                false,
+            ),
+            (
                 "property.remove",
                 "main:XDTOPackage.Exchange.Type.Order.Property.Id",
+                true,
+            ),
+            (
+                "property.remove",
+                "main:XDTOPackage.Exchange.Type.Order.Property.Lines.Property.Item",
+                true,
+            ),
+            (
+                "type.remove",
+                "main:XDTOPackage.Exchange.Type.Order.Property.Id",
+                false,
+            ),
+            // Глобальное свойство пакета — не член типа.
+            (
+                "property.remove",
+                "main:XDTOPackage.Exchange.Property.Id",
+                false,
+            ),
+            (
+                "property.add",
+                "main:XDTOPackage.Exchange.Property.Id",
                 false,
             ),
             // Узел создаёт операция родителя.
@@ -2621,7 +2778,23 @@ mod tests {
             ),
             ("childSubsystem.add", "main:Subsystem.Sales", true),
             // Командный интерфейс — у подсистемы, порядок верхнего уровня — у корня.
-            ("commandOrder.set", "main:Subsystem.Sales.Interface", true),
+            // Порядок команд — у группы интерфейса.
+            ("commandOrder.set", "main:Subsystem.Sales.Interface", false),
+            (
+                "commandOrder.set",
+                r"main:Subsystem.Sales.Interface.Group.CommandGroup\.Print",
+                true,
+            ),
+            (
+                "commandOrder.set",
+                "main:Subsystem.Sales.Subsystem.Orders.Interface.Group.NavigationPanelImportant",
+                true,
+            ),
+            (
+                "groupOrder.set",
+                "main:Subsystem.Sales.Interface.Group.NavigationPanelImportant",
+                false,
+            ),
             ("subsystemOrder.set", "main:Configuration", true),
             (
                 "subsystemOrder.set",
@@ -2771,6 +2944,8 @@ mod tests {
             "main:Report.Sales",
             "main:Catalog.Items",
             "main:Document.Order.Form.Main",
+            "main:XDTOPackage.Exchange.Type.Order",
+            "main:Subsystem.Sales.Interface",
         ];
         for entry in RETIRED_ARGUMENTS
             .iter()
@@ -2779,8 +2954,10 @@ mod tests {
             let descriptor = registry
                 .lookup(entry.op)
                 .unwrap_or_else(|| panic!("{} is registered", entry.op));
-            let (container, key) = entry.key.split_once('.').expect("nested key");
-            let args = json!({container: {key: "Member"}});
+            let args = match entry.key.split_once('.') {
+                Some((container, key)) => json!({container: {key: "Member"}}),
+                None => json!({entry.key: "Member"}),
+            };
             let args = args.as_object().unwrap();
             let mut proved = false;
             for owner in owners {
@@ -2800,20 +2977,29 @@ mod tests {
                 if !descriptor.applies_at(&target) {
                     continue;
                 }
-                // Адрес подузла остаётся в дереве владельца.
+                // Адрес подузла остаётся в дереве владельца. Путь с удаляемым
+                // именем (`{path}.Property.{name}`) спускается на два уровня:
+                // по пути и к члену, имя которого видно в коллекции.
                 assert_eq!(target.route(), site.route(), "{member}");
+                let depth = 1 + usize::from(redirect.listing && entry.address.contains("{path}"));
                 assert_eq!(
                     member.segments().len(),
-                    at.segments().len() + 1,
+                    at.segments().len() + depth,
                     "{member} names one member below the owner"
                 );
                 assert_eq!(member.segments().last().unwrap().name(), Some("Member"));
                 let refused = registry.retired_argument_redirect(entry.op, &site, args);
+                // Свойство XDTO — само место вложенных свойств: прежний ключ,
+                // оставшийся в вызове на свойстве, называет член глубже и
+                // отказывает и там.
+                let recursive = entry.op.starts_with("property.");
                 if entry.retired {
                     assert_eq!(refused, Some(redirect), "{} at {owner}", entry.op);
                     assert_eq!(
-                        registry.retired_argument_redirect(entry.op, &target, args),
-                        None,
+                        registry
+                            .retired_argument_redirect(entry.op, &target, args)
+                            .is_some(),
+                        recursive,
                         "{} at its own address is not redirected",
                         entry.op
                     );
@@ -2845,7 +3031,8 @@ mod tests {
             assert_eq!(entry.retired, member_package, "{}", entry.op);
             assert_eq!(
                 entry.address.ends_with(".{name}"),
-                entry.op.starts_with("predefinedItem."),
+                entry.op.starts_with("predefinedItem.")
+                    || (entry.op == "property.remove" && entry.key.ends_with("propertyPath")),
                 "{}",
                 entry.op
             );
@@ -3002,19 +3189,41 @@ mod tests {
                 "{op} at {expected} without {location}"
             );
         }
-        // Составной `dataPath` адреса поля не строит (#1356): запись не
-        // срабатывает, и вызов получает отказ «не тот узел».
+        // Составной `dataPath` становится одним экранированным именем поля,
+        // а вложенный объект роли — одной записью прав.
         let data_set = address(&format!("{schema}.DataSet.Main"));
         let site = OperationSite::new(&data_set, traits).unwrap();
-        assert_eq!(
-            registry.retired_argument_redirect(
+        let redirect = registry
+            .retired_argument_redirect(
                 "field.set",
                 &site,
                 json!({"values": {"field": "Owner.Code", "title": "x"}})
                     .as_object()
-                    .unwrap()
-            ),
-            None
+                    .unwrap(),
+            )
+            .expect("a composite dataPath is addressable");
+        assert_eq!(
+            redirect.at.to_string(),
+            format!("{schema}.DataSet.Main.Field.Owner\\.Code")
+        );
+        assert_eq!(
+            redirect.at.segments().last().and_then(|s| s.name()),
+            Some("Owner.Code")
+        );
+        let role = address("main:Role.Reader");
+        let site = OperationSite::new(&role, traits).unwrap();
+        let redirect = registry
+            .retired_argument_redirect(
+                "right.set",
+                &site,
+                json!({"values": {"object": "Catalog.Items.Command.Open", "right": "View", "value": true}})
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("a nested role object is addressable");
+        assert_eq!(
+            redirect.at.to_string(),
+            "main:Role.Reader.Right.Catalog_Items\\.Command\\.Open"
         );
         for op in SUBNODE_OPERATIONS {
             assert!(
@@ -3263,6 +3472,111 @@ mod tests {
                     .iter()
                     .any(|entry| entry.op == *op && entry.retired),
                 "{op} has a retired entry"
+            );
+        }
+    }
+
+    /// Имя из снятого аргумента попадает в адрес с экранированной точкой:
+    /// группа `CommandGroup.X` и свойство XDTO `A.B` — один сегмент. Прежний
+    /// `propertyPath` становится цепочкой `Property`, где `\.` остаётся
+    /// точкой имени, а путь с удаляемым именем ведёт к коллекции свойств.
+    #[test]
+    fn retired_names_with_a_dot_route_to_escaped_addresses() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let redirect = |op: &str, raw: &str, args: Value| {
+            let at = address(raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            registry
+                .retired_argument_redirect(op, &site, args.as_object().unwrap())
+                .unwrap_or_else(|| panic!("{op} at {raw} is redirected"))
+        };
+        let group = redirect(
+            "commandOrder.set",
+            "main:Subsystem.Sales.Interface",
+            json!({"values": {"group": "CommandGroup.Печать", "commands": []}}),
+        );
+        assert_eq!(group.location, "values.group");
+        assert_eq!(
+            group.at.to_string(),
+            r"main:Subsystem.Sales.Interface.Group.CommandGroup\.Печать"
+        );
+        assert_eq!(
+            group.at.segments().last().unwrap().name(),
+            Some("CommandGroup.Печать")
+        );
+
+        let type_at = "main:XDTOPackage.Exchange.Type.Order";
+        let added = redirect(
+            "property.add",
+            type_at,
+            json!({"values": {"propertyPath": r"Lines.A\.B", "property": {"name": "X", "type": "xs:string"}}}),
+        );
+        assert_eq!(added.location, "values.propertyPath");
+        assert!(!added.listing);
+        assert_eq!(
+            added.at.to_string(),
+            format!(r"{type_at}.Property.Lines.Property.A\.B")
+        );
+        let removed = redirect(
+            "property.remove",
+            type_at,
+            json!({"values": {"name": "Item", "propertyPath": "Lines"}}),
+        );
+        assert_eq!(removed.location, "values.propertyPath");
+        assert!(removed.listing);
+        assert_eq!(
+            removed.at.to_string(),
+            format!("{type_at}.Property.Lines.Property")
+        );
+        let named = redirect(
+            "property.remove",
+            type_at,
+            json!({"values": {"name": "A.B"}}),
+        );
+        assert_eq!(named.at.to_string(), format!(r"{type_at}.Property.A\.B"));
+        // Путь с пустым именем или чужим экранированием адреса не строит.
+        for path in ["Lines..A", r"Lines\x", ""] {
+            let at = address(type_at);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let args = json!({"values": {"propertyPath": path, "property": {}}});
+            assert_eq!(
+                registry
+                    .retired_argument_redirect("property.add", &site, args.as_object().unwrap())
+                    .map(|redirect| redirect.at.to_string()),
+                None,
+                "{path}"
+            );
+        }
+    }
+
+    /// Ветвь коллекции (`Interface.Group`, `Type.T.Property`) — не узел
+    /// операции, и подсказка не выдумывает узел `…Group.Query` из вида
+    /// запроса набора: ближайший исполнимый предок ищется только по цепочке
+    /// адреса.
+    #[test]
+    fn the_nearest_ancestor_never_invents_a_query_name_under_a_named_kind() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        for (op, raw) in [
+            ("commandOrder.set", "main:Subsystem.Sales.Interface.Group"),
+            (
+                "property.remove",
+                "main:XDTOPackage.Exchange.Type.Order.Property",
+            ),
+        ] {
+            let at = address(raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let nearest = registry
+                .lookup(op)
+                .unwrap()
+                .nearest_applicable_ancestor(&site, &|_| None)
+                .map(|at| at.to_string());
+            assert!(
+                nearest.as_deref().is_none_or(|at| !at.ends_with(".Query")),
+                "{op} at {raw}: {nearest:?}"
             );
         }
     }

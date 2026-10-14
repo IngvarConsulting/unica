@@ -66,8 +66,8 @@ its presentation, selection, filters and structure, and for its removal.
 Creation stays at the parent: `field.add`, `parameter.add` and `variant.add`
 name the new node in `items`. A name argument that duplicated the address
 (`values.name`, `values.field`) is refused, and `next` names the node's
-address. A field with a composite `dataPath` (with a dot) has no address yet,
-so its properties and role cannot be changed until #1356.
+address. A field with a composite `dataPath` escapes the dot in its address:
+`DataSet.<name>.Field.Owner\.Code`.
 Use names returned by the reader. A variant need not be named `Основной`.
 
 To create a schema, use the owner's `template.add` contract with
@@ -87,6 +87,11 @@ Choose the dataset kind for the data actually supplied to the schema:
 - Union combines datasets. Create the Union, then add each member at that
   Union's address. Nested members are addressed by repeating
   `DataSet.<name>` in the logical path.
+
+A field is addressed by its `dataPath`: `DataSet.<name>.Field.<dataPath>`.
+A dot inside a composite `dataPath` is escaped in the address as `\.`, for
+example `Field.Контрагент\.ИНН` (`"Контрагент\\.ИНН"` in JSON). Take the
+address from the `items[].at` of the dataset's `Field` branch.
 
 Links between datasets, calculated expressions and totals are separate
 schema components. A calculated expression derives a field; a total

@@ -1,6 +1,6 @@
 use super::metadata::qualified_target;
 use super::validate_platform_xml_binding;
-use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::attached_resource_relative;
@@ -569,25 +569,21 @@ fn parse_mxl_operation(
                 let location = format!("ops[{op_index}].args.items[{index}]");
                 let item = item_object(item, &location)?;
                 let name = required_text(item, &["name"], &location)?.to_string();
-                // Имя с точкой адресом области не выражается (#1356).
-                if name.contains('.') {
-                    return Err(ApplyPlanError::new(
-                        ApplyPlanErrorKind::BadValue,
-                        "an area name with a dot has no `Area.<name>` address",
-                    )
-                    .at_path(format!("{location}.name")));
-                }
-                // Созданную область `mxl.set` правит по адресу; имя, которое
-                // грамматика адреса не разбирает, оставило бы её без адреса.
-                if QualifiedAddress::parse(&format!("{template_address}.Area.{name}"))
-                    .ok()
-                    .and_then(|address| {
-                        address
-                            .segments()
-                            .last()
-                            .and_then(|s| s.name().map(str::to_string))
-                    })
-                    .as_deref()
+                // Созданную область `mxl.set` правит по адресу; точка в имени
+                // экранируется, а имя, которое грамматика адреса не разбирает,
+                // оставило бы область без адреса.
+                if QualifiedAddress::parse(&member_address(
+                    &format!("{template_address}.Area"),
+                    &name,
+                ))
+                .ok()
+                .and_then(|address| {
+                    address
+                        .segments()
+                        .last()
+                        .and_then(|s| s.name().map(str::to_string))
+                })
+                .as_deref()
                     != Some(name.as_str())
                 {
                     return Err(ApplyPlanError::new(
@@ -1050,8 +1046,9 @@ fn stage_mxl_edit(
         MxlEditError::AreaExists => ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
             format!(
-                "the template already has area `{}`; change its cells with mxl.set at `{}.Area.{}`",
-                edit.area, edit.template_at, edit.area
+                "the template already has area `{}`; change its cells with mxl.set at `{}`",
+                edit.area,
+                member_address(&format!("{}.Area", edit.template_at), &edit.area)
             ),
         )
         .at_path(format!("{values_path}.name")),
@@ -1593,6 +1590,94 @@ mod tests {
             .any(|node| node.tag_name().namespace() == Some(namespace)
                 && node.tag_name().name() == "dimension"
                 && node.text() == Some("true")));
+    }
+
+    /// Поле с составным `dataPath` адресуется `Field.A\.B` (#1356):
+    /// `field.set` и `fieldRole.set` по этому адресу меняют именно его,
+    /// а не поле `A` и не несуществующую ветвь `B`.
+    #[test]
+    fn typed_dcs_field_set_changes_the_composite_field_by_its_escaped_address() {
+        let fixture = ApplySeamFixture::new();
+        let template_dir = fixture
+            .source_dir()
+            .join("Reports/Versions/Templates/Schema/Ext");
+        std::fs::create_dir_all(&template_dir).unwrap();
+        let composite = "<field xsi:type=\"DataSetFieldField\">\n\t\t\t<dataPath>ТипОбъекта.Представление</dataPath>\n\t\t\t<field>ТипОбъекта.Представление</field>\n\t\t</field>\n\t\t<field xsi:type=\"DataSetFieldField\">";
+        std::fs::write(
+            template_dir.join("Template.xml"),
+            SCHEMA
+                .replacen("<field xsi:type=\"DataSetFieldField\">", composite, 1)
+                .as_bytes(),
+        )
+        .unwrap();
+        let admission = fixture.admission();
+        let staged = admission.staged_state().unwrap();
+        let authority = admission
+            .dcs_mxl_planning_authority(&fixture.binding)
+            .unwrap();
+        let at = r"main:Report.Versions.Template.Schema.DataSet.НаборДанных1.Field.ТипОбъекта\.Представление";
+        let operations = [
+            IndexedPlanOperation::new(
+                0,
+                parse_dcs_mxl_plan_operation(
+                    "field.set",
+                    &json!({"at": at, "values": {"title": "Тип (представление)"}}),
+                    0,
+                    &fixture.binding,
+                )
+                .unwrap(),
+            ),
+            IndexedPlanOperation::new(
+                1,
+                parse_dcs_mxl_plan_operation(
+                    "fieldRole.set",
+                    &json!({"at": at, "values": {"role": {"dimension": true}}}),
+                    1,
+                    &fixture.binding,
+                )
+                .unwrap(),
+            ),
+        ];
+        let (staged, effects) = plan_dcs_mxl_batch(staged, authority, &operations)
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        assert!(!effects.is_empty());
+        let changes = staged.planned_changes();
+        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
+            &changes[0].current
+        else {
+            panic!("expected XML bytes");
+        };
+        let xml = std::str::from_utf8(bytes)
+            .unwrap()
+            .trim_start_matches('\u{feff}');
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let field_by_path = |path: &str| {
+            document
+                .descendants()
+                .find(|node| {
+                    node.tag_name().name() == "field"
+                        && node.children().any(|child| {
+                            child.tag_name().name() == "dataPath" && child.text() == Some(path)
+                        })
+                })
+                .unwrap_or_else(|| panic!("field {path}"))
+        };
+        let changed = field_by_path("ТипОбъекта.Представление");
+        assert!(changed
+            .descendants()
+            .any(|node| node.text() == Some("Тип (представление)")));
+        let namespace = crate::infrastructure::native_operations::dcs::DCS_COMMON_NS;
+        assert!(changed
+            .descendants()
+            .any(|node| node.tag_name().namespace() == Some(namespace)
+                && node.tag_name().name() == "dimension"
+                && node.text() == Some("true")));
+        // Соседнее поле `ТипОбъекта` не тронуто.
+        let neighbour = field_by_path("ТипОбъекта");
+        assert!(!neighbour
+            .descendants()
+            .any(|node| node.text() == Some("Тип (представление)")
+                || node.tag_name().name() == "dimension"));
     }
 
     #[test]

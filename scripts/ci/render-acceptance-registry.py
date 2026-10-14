@@ -280,9 +280,21 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     out("")
     out("## Покрытие реестра `apply`")
     out("")
+    def operations(count: int) -> str:
+        """Число с винительным падежом слова «операция»: 1 операцию, 2 операции, 5 операций."""
+        if count % 10 == 1 and count % 100 != 11:
+            word = "операцию"
+        elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+            word = "операции"
+        else:
+            word = "операций"
+        return f"**{count}** {word}"
+
+    covered_count = len(registry) - len(uncovered)
+    implemented_count = len(registry) - len(not_implemented)
     out(
-        f"Закрытый реестр держит **{len(registry)} операций**; сценарии покрывают "
-        f"**{len(registry) - len(uncovered)}**, помечены реализованными **{len(registry) - len(not_implemented)}**. "
+        f"Закрытый реестр содержит {operations(len(registry))}; сценарии покрывают "
+        f"{operations(covered_count)}, реализованными помечены {operations(implemented_count)}. "
         "Операция без сценария — первая кандидатура для новой задачи."
     )
     out("")
