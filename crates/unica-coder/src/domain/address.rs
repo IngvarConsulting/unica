@@ -463,7 +463,13 @@ impl QualifiedAddress {
         raw: &str,
         available_source_sets: &[&str],
     ) -> Result<Self, AddressError> {
-        if raw.contains(':') {
+        // Двоеточие отделяет набор исходников, только если префикс до него —
+        // имя набора: без точки или один из доступных. Имя элемента структуры
+        // СКД — свободный текст и может содержать двоеточие (#1357).
+        let qualified = raw.split_once(':').is_some_and(|(prefix, _)| {
+            !prefix.contains('.') || available_source_sets.contains(&prefix)
+        });
+        if qualified {
             return Self::parse(raw);
         }
         match available_source_sets {
@@ -1282,6 +1288,46 @@ mod tests {
                 Err(error) => assert_eq!(Some(error.code()), case.error, "{}", case.case),
             }
         }
+    }
+
+    /// Имя элемента структуры СКД — свободный текст: двоеточие в нём не
+    /// делает неполный адрес квалифицированным, а в полном адресе набор
+    /// отделяет только первое двоеточие.
+    #[test]
+    fn a_colon_in_a_free_text_item_name_is_not_a_source_set_separator() {
+        let unqualified = "Report.R.Template.S.Setting.V.Item.Итоги: по периодам";
+        let qualified = "main:Report.R.Template.S.Setting.V.Item.Итоги: по периодам";
+        assert_eq!(
+            QualifiedAddress::resolve_input(unqualified, &["main"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(qualified, &["main"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(qualified, &["main", "ext"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(unqualified, &["main", "ext"])
+                .unwrap_err()
+                .code(),
+            AddressErrorCode::AmbiguousAddress
+        );
+        // Набор с точкой в имени по-прежнему квалифицирует адрес.
+        assert_eq!(
+            QualifiedAddress::resolve_input("ext.v2:Catalog.Items", &["main", "ext.v2"])
+                .unwrap()
+                .to_string(),
+            "ext.v2:Catalog.Items"
+        );
     }
 
     #[test]
