@@ -723,7 +723,7 @@ ChildItems
 
 ```xml
 <ButtonGroup name="..." id="...">
-  <Representation>Auto | Compact | Separate</Representation>
+  <Representation>Auto | Usual | Compact</Representation>
   <CommandSource>Form | FormCommandPanelGlobalCommands | CommandPanel</CommandSource>
 
   <ChildItems>
@@ -1097,23 +1097,28 @@ ChildItems
   <Command name="ИмяКоманды" id="N">
     <Title>...</Title>                    <!-- multilang -->
     <ToolTip>...</ToolTip>                <!-- multilang -->
+    <Use>...</Use>                        <!-- xr:AdjustableBoolean -->
+    <Shortcut>Ctrl+S</Shortcut>           <!-- клавиатурное сочетание -->
     <Picture>
       <xr:Ref>StdPicture.Refresh</xr:Ref>
       <xr:LoadTransparent>true</xr:LoadTransparent>
     </Picture>
     <Action>ИмяОбработчика</Action>       <!-- имя процедуры обработки -->
-    <Shortcut>Ctrl+S</Shortcut>           <!-- клавиатурное сочетание -->
-    <Representation>Auto | Picture | Text | PictureAndText | TextPicture | None | Compact</Representation>
-    <CurrentRowUse>DontUse | Use | Auto</CurrentRowUse>
-    <ModifiesData>true | false</ModifiesData>
+    <FunctionalOptions>...</FunctionalOptions>
+    <Representation>Auto | Text | Picture | TextPicture</Representation>
     <ModifiesSavedData>true | false</ModifiesSavedData>
-    <ChangedStateSavedData>true | false</ChangedStateSavedData>
-    <Use>Auto</Use>
-    <Mark>true | false</Mark>
-    <ParameterUse>...</ParameterUse>
+    <CurrentRowUse>DontUse | Use | Auto</CurrentRowUse>
+    <AssociatedTableElementId xsi:type="xs:string">ИмяТаблицы</AssociatedTableElementId>
   </Command>
 </Commands>
 ```
+
+Состав и порядок свойств — тип `FormCommand` XDTO платформы 8.3.27.
+`Representation` команды имеет тип `DefaultRepresentation`: `Auto`, `Text`,
+`Picture`, `TextPicture` (по умолчанию `Auto`, в выгрузке не пишется).
+Значения кнопки (`PictureAndText`) и других элементов (`None`, `Compact`)
+команда не принимает: загрузка такой `Form.xml` прерывается исключением XDTO
+«Несоответствие свойства и элемента данных XDTO: Свойство: 'Representation'».
 
 ---
 

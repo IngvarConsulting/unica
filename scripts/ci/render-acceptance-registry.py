@@ -187,6 +187,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         "СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; "
         "заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; "
         "неоднозначное имя командной панели формы — на `workspace-form-names/`; "
+        "отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; "
         "агентные сценарии выбираются большим набором `tests/agent_evaluation/`. "
         "Источник истины — JSON корпуса; этот документ — его "
         "рендер для людей, и проверка на расхождение входит в тот же тест."
