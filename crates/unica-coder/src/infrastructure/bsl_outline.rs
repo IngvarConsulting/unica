@@ -549,11 +549,8 @@ pub(crate) fn misplaced_variable_declarations(
                 | SyntaxKind::REMOVE_HANDLER_STMT
         )
     };
-    let owner = |node: &SyntaxNode| {
-        node.ancestors()
-            .skip(1)
-            .find(|ancestor| is_method(ancestor.kind()))
-    };
+    // Метод, которому принадлежит узел; `None` — уровень модуля.
+    let owner = |node: &SyntaxNode| node.ancestors().find(|ancestor| is_method(ancestor.kind()));
     let lines = LineIndex::new(text);
     let position = |offset: usize| {
         let line = lines.line_of(offset);
@@ -564,32 +561,40 @@ pub(crate) fn misplaced_variable_declarations(
             .count();
         (line - 1, column)
     };
-    // Первое место, после которого объявление уже не в начале: для модуля —
-    // первый метод или оператор вне методов, для метода — его первый оператор.
-    let mut module_closed: Option<usize> = None;
-    let mut method_closed = std::collections::HashMap::new();
+    // Раздел объявлений закрывает первый метод или оператор вне методов для
+    // модуля и первый оператор для метода. Ветви `#Если`/`#ИначеЕсли`/`#Иначе`
+    // взаимоисключающие: каждая начинает с состояния до `#Если`, а после
+    // `#КонецЕсли` раздел закрыт, если его закрыла хоть одна ветвь.
+    let mut sections: std::collections::HashMap<Option<SyntaxNode>, Section> =
+        std::collections::HashMap::new();
     let mut misplaced = Vec::new();
-    for node in root.descendants() {
-        let kind = node.kind();
-        let start = usize::from(node.text_range().start());
-        if is_method(kind) {
-            module_closed.get_or_insert(start);
-        } else if is_statement(kind) {
-            match owner(&node) {
-                Some(method) => {
-                    method_closed.entry(method).or_insert(start);
+    for element in root.descendants_with_tokens() {
+        let node = match element {
+            bsl_syntax::NodeOrToken::Node(node) => node,
+            bsl_syntax::NodeOrToken::Token(token) => {
+                let Some(parent) = token.parent() else {
+                    continue;
+                };
+                let section = sections.entry(owner(&parent)).or_default();
+                match token.kind() {
+                    SyntaxKind::PRE_IF => section.enter(),
+                    SyntaxKind::PRE_ELSIF | SyntaxKind::PRE_ELSE => section.alternative(),
+                    SyntaxKind::PRE_END_IF => section.leave(),
+                    _ => {}
                 }
-                None => {
-                    module_closed.get_or_insert(start);
-                }
+                continue;
             }
+        };
+        let kind = node.kind();
+        if is_method(kind) {
+            sections.entry(None).or_default().closed = true;
+        } else if is_statement(kind) {
+            let context = node.parent().and_then(|parent| owner(&parent));
+            sections.entry(context).or_default().closed = true;
         } else if kind == SyntaxKind::VAR_DEF {
-            let closed = match owner(&node) {
-                Some(method) => method_closed.get(&method).copied(),
-                None => module_closed,
-            };
-            if closed.is_some_and(|closed| closed < start) {
-                let (start_line, start_column) = position(start);
+            let context = node.parent().and_then(|parent| owner(&parent));
+            if sections.get(&context).is_some_and(|section| section.closed) {
+                let (start_line, start_column) = position(usize::from(node.text_range().start()));
                 let (end_line, end_column) = position(usize::from(node.text_range().end()));
                 misplaced.push(crate::domain::diagnostics::DiagnosticRange {
                     start_line,
@@ -601,6 +606,33 @@ pub(crate) fn misplaced_variable_declarations(
         }
     }
     misplaced
+}
+
+/// Закрыт ли раздел объявлений модуля или метода, с учётом ветвей
+/// препроцессора: стек хранит состояние до `#Если` и итог пройденных ветвей.
+#[derive(Default)]
+struct Section {
+    closed: bool,
+    branches: Vec<(bool, bool)>,
+}
+
+impl Section {
+    fn enter(&mut self) {
+        self.branches.push((self.closed, false));
+    }
+
+    fn alternative(&mut self) {
+        if let Some((before, merged)) = self.branches.last_mut() {
+            *merged |= self.closed;
+            self.closed = *before;
+        }
+    }
+
+    fn leave(&mut self) {
+        if let Some((_, merged)) = self.branches.pop() {
+            self.closed |= merged;
+        }
+    }
 }
 
 fn module_identity(path: &str) -> ModuleIdentity {
@@ -1513,5 +1545,38 @@ mod tests {
             misplaced_lines("Процедура А(\nПерем Х;\n"),
             Vec::<usize>::new()
         );
+    }
+
+    #[test]
+    fn exclusive_preprocessor_branches_each_start_their_own_declarations() {
+        // Ветви `#Если` взаимоисключающие: `Перем Б` в `#Иначе` стоит в начале
+        // своего варианта модуля, и платформа его компилирует.
+        let module = "#Если Сервер Тогда\nПерем А;\nПроцедура Х()\nКонецПроцедуры\n#ИначеЕсли Клиент Тогда\nПерем В;\n#Иначе\nПерем Б;\nПроцедура У()\nКонецПроцедуры\n#КонецЕсли\n";
+        assert_eq!(misplaced_lines(module), Vec::<usize>::new());
+        // После `#КонецЕсли` раздел закрыт, если его закрыла хоть одна ветвь,
+        // а метод до `#Если` закрывает раздел в каждой ветви.
+        assert_eq!(
+            misplaced_lines("#Если Сервер Тогда\nПроцедура Х()\nКонецПроцедуры\n#Иначе\nПерем Б;\n#КонецЕсли\nПерем Г;\n"),
+            [7]
+        );
+        assert_eq!(
+            misplaced_lines(
+                "Процедура Х()\nКонецПроцедуры\n#Если Сервер Тогда\n#Иначе\nПерем Б;\n#КонецЕсли\n"
+            ),
+            [5]
+        );
+        // Так же внутри метода.
+        let method = "Процедура Х()\n#Если Сервер Тогда\n\tПерем А;\n\tА = 1;\n#Иначе\n\tПерем Б;\n\tБ = 1;\n#КонецЕсли\n\tПерем В;\nКонецПроцедуры\n";
+        assert_eq!(misplaced_lines(method), [9]);
+    }
+
+    /// Справка платформы («Структура программного модуля»): раздел
+    /// определения переменных длится до первого оператора `Процедура` или
+    /// `Функция`; исключения для директив компиляции в ней нет. Клиентская
+    /// переменная после серверной процедуры формы стоит не на месте.
+    #[test]
+    fn a_compilation_directive_does_not_reopen_the_declaration_section() {
+        let form = "&НаСервере\nПроцедура Х()\nКонецПроцедуры\n\n&НаКлиенте\nПерем Б;\n";
+        assert_eq!(misplaced_lines(form).len(), 1);
     }
 }
