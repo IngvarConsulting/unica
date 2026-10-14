@@ -2768,7 +2768,9 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
             &["type", "isMain", "mainTable"]
         }
         (LogicalReader::Form, NodeKind::Parameter) => &["type", "isKey"],
-        (LogicalReader::Form, NodeKind::Command) => &["shortcut"],
+        (LogicalReader::Form, NodeKind::Command) => {
+            &["title", "tooltip", "shortcut", "picture", "representation"]
+        }
         (LogicalReader::Dcs, NodeKind::DataSet) => &["kind", "objectName", "dataSource"],
         (LogicalReader::Dcs, NodeKind::Field) => &["field", "title"],
         (LogicalReader::Dcs, NodeKind::Parameter) => {

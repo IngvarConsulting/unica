@@ -1272,7 +1272,7 @@ pub(crate) mod actor_capacity_tests {
     use super::super::protocol_v5::{
         V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
     };
-    use super::super::runner_014::VERSION as RUNNER_VERSION;
+    use super::super::runner_015::VERSION as RUNNER_VERSION;
     use super::*;
     use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
     use crate::application::invocation_store::ToolIdentity;
@@ -3534,7 +3534,7 @@ fn main() {
         assert!(args.iter().any(|argument| argument == "--dry-run"));
         assert!(args.iter().any(|argument| argument == "main"));
         std::fs::write(marker.join("push"), "v8-runner push preview invoked").unwrap();
-        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true}]}}"#);
+        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true,"applied":false}]}}"#);
         return;
     }
     if args.iter().any(|argument| argument == "extensions") {
@@ -12847,8 +12847,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
-    /// Раннер 0.12 не умеет загрузить CF/CFE без применения и не знает `apply` и
-    /// `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
+    /// Адаптер раннера 0.15 не загружает CF/CFE без применения и не исполняет `apply`
+    /// и `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
     /// типизированный отказ при bind — до рабочего пространства, PlatformXml и
     /// раннера.
     #[test]
