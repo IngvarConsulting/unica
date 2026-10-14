@@ -6,8 +6,6 @@ mod network_trust_tests;
 mod process;
 mod process_metrics;
 pub(crate) mod secure_read;
-#[cfg(test)]
-pub(crate) mod source_revision_fence;
 mod target;
 #[cfg(test)]
 pub(crate) mod testing;

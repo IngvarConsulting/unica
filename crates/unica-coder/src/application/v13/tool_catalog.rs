@@ -55,7 +55,7 @@ pub(crate) enum RunIntent {
 
 /// Why `upload`, `apply` and `reset` are unavailable with the pinned runner and
 /// what remains: the gap issue names the acceptance criteria.
-const RUNNER_LOAD_GAP: &str = "unavailable with v8-runner 0.14: the runner has no push --no-apply, apply or reset (v8-runner-rust#210, #235). Sources go through push, which applies the database configuration; loading a CF/CFE file through unica.run is unavailable until the runner gains them. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
+const RUNNER_LOAD_GAP: &str = "unavailable with the v8-runner 0.15 adapter: v8-runner 0.15 has push --no-apply, apply and reset, but the adapter does not run them yet, and the runner's upload of a CF/CFE file still applies the database configuration. Sources go through push, which applies the database configuration. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
 
 #[derive(Debug)]
 pub(crate) struct RunOperation {
@@ -96,7 +96,7 @@ impl RunOperation {
                 "Fully replace a source set from the infobase with explicit force. Local-work protection and merge are unavailable."
             }
             RunIntent::ArtifactBuild => {
-                "Build a CF or CFE artifact from attached sources. EPF and ERF are unavailable with the runner 0.14 adapter."
+                "Build a CF or CFE artifact from attached sources. EPF and ERF are unavailable with the runner 0.15 adapter."
             }
             RunIntent::CfExport => {
                 "Export the working configuration, the database configuration, or an extension out of the infobase to a CF or CFE file."
@@ -366,7 +366,7 @@ pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
                     input_schema: schema(
                         json!({
                             "op": {"type": "string", "description": "Runner 1.0 operation name; omit to list the target dictionary and adapter support."},
-                            "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The runner 0.14 adapter supports only origin."},
+                            "infobase": {"type":"string", "description":"Named infobase; defaults to origin. The runner 0.15 adapter supports only origin."},
                             "args": data_object("Typed arguments for the selected operation."),
                             "dryRun": {"type": "boolean", "description": "Required by previewApply operations: true returns a non-mutating preview; false executes with the current arguments without requiring a prior preview."},
                         }),
@@ -479,8 +479,9 @@ fn run_dictionary() -> Vec<RunOperation> {
         intent,
         terminal: intent == RunIntent::ClientRun,
         rejects_sessions: intent == RunIntent::ClientRun,
-        // Runner 0.13, like 0.12, cannot load a CF/CFE without applying it and has no
-        // apply or reset (#1246): these stay in the dictionary as unavailable.
+        // Runner 0.15 has push --no-apply, apply and reset, but its upload still applies
+        // the database configuration and the adapter does not run apply or reset yet
+        // (#1246): these stay in the dictionary as unavailable.
         implemented: !matches!(
             intent,
             RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset
@@ -581,12 +582,12 @@ mod tests {
                 .unwrap();
             assert!(
                 op.support_reason().is_some(),
-                "{name} must not claim full 1.0 semantics with runner 0.14"
+                "{name} must not claim full 1.0 semantics with runner 0.15"
             );
             assert_eq!(
                 op.implemented,
                 !["upload", "apply", "reset"].contains(&name),
-                "{name}: only the proven runner 0.14 subset is executable"
+                "{name}: only the proven runner 0.15 subset is executable"
             );
         }
     }
@@ -1004,7 +1005,7 @@ mod tests {
                 "extensions.list",
                 "extensions.set",
             ],
-            "only operations whose target semantics are proven on runner 0.14 are executable"
+            "only operations whose target semantics are proven on runner 0.15 are executable"
         );
 
         let output = &catalog.result_envelope_schema;
@@ -1160,7 +1161,7 @@ mod tests {
                 "extensions.list",
                 "extensions.set",
             ],
-            "only operations whose target semantics are proven on runner 0.14 are executable"
+            "only operations whose target semantics are proven on runner 0.15 are executable"
         );
     }
 
@@ -1258,7 +1259,7 @@ mod tests {
             .expect("upload belongs to the v0.13 dictionary");
         assert!(
             !import.implemented,
-            "runner 0.14 cannot upload without applying (#1246)"
+            "the runner 0.15 adapter cannot upload without applying (#1246)"
         );
         assert_eq!(import.execution(), "previewApply");
         assert_eq!(import.effects(), &["infobase"]);

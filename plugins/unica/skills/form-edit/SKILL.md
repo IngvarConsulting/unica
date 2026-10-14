@@ -56,6 +56,11 @@ allowed-tools:
 у `event.bind`. Вызов с ними получает
 `bad_value`, а `next` ведёт к адресу узла, который называло значение.
 
+`formCommand.add` добавляет команды формы. Элемент `items[]` принимает
+`name`, `title`, `tooltip`, `action`, `shortcut`, `picture`,
+`representation`; другой ключ отклоняется до записи. Контракт —
+`<форма>.Can.formCommand.add`.
+
 ## MCP вызов
 
 Поле в группу шапки — `element.add` на адресе группы. Сосед `after`
@@ -344,10 +349,10 @@ Editor до записи проверяет событие по единой п�
 У формы расширения `event.bind` принимает `callType` (`Before`, `After`,
 `Override`) на адресе события формы или элемента. У обычной формы
 `callType` не задаётся. Событие нового элемента задаётся в его `on`:
-`"on": [{"event": "OnChange", "callType": "After"}]`. Команда, которую
-добавляет `formCommand.add` на форме расширения, несёт `callType` действия
-(`{"name": "Подбор", "action": "Расш1_ПодборПосле", "callType": "After"}`)
-или список `actions: [{"callType": "Before", "handler": "…"}]`.
+`"on": [{"event": "OnChange", "callType": "After"}]`. `formCommand.add`
+`callType` и `actions` не принимает: перехват действия команды формы
+расширения — `event.implement` с `callType` на адресе
+`….Form.<Форма>.Command.<Команда>.Event.Execute`.
 
 Повтор идентичного binding является явным idempotent no-op. Конфликт обработчика/`callType`, duplicate, отсутствующий элемент и любой недопустимый event отклоняют весь batch до мутации; планирование использует тот же planner.
 

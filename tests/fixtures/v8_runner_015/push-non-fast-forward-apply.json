@@ -1,0 +1,40 @@
+{
+  "ok": false,
+  "command": "push",
+  "duration_ms": 4783,
+  "data": {
+    "provider": {
+      "selected": "ibcmd",
+      "origin": {
+        "kind": "override",
+        "file": "v8project.yaml"
+      }
+    },
+    "ok": false,
+    "provider_dispatched": true,
+    "steps": [
+      {
+        "source_set": "main",
+        "mode": "full",
+        "ok": false,
+        "applied": false,
+        "message": "cannot push source-set 'main': file infobase '/workspace/E/ib' with no configured infobase user moved ahead since the last exchange of this working copy — its configuration generation is 59b683d1a9fe984f8fe7fa810e5702a000000000, the one recorded after the last build (2026-10-14T15:49:05.074718+00:00) is 32fdb66afb9dda48acedb7152cf0cb3500000000; take its changes first with `v8-runner --config /workspace/E/v8project.yaml pull main`, or overwrite them with `v8-runner --config /workspace/E/v8project.yaml push main --force`.",
+        "duration_ms": 0
+      }
+    ],
+    "duration_ms": 4783
+  },
+  "warnings": [],
+  "steps": [],
+  "error": {
+    "code": "non_fast_forward",
+    "kind": "non_fast_forward",
+    "message": "cannot push source-set 'main': file infobase '/workspace/E/ib' with no configured infobase user moved ahead since the last exchange of this working copy — its configuration generation is 59b683d1a9fe984f8fe7fa810e5702a000000000, the one recorded after the last build (2026-10-14T15:49:05.074718+00:00) is 32fdb66afb9dda48acedb7152cf0cb3500000000; take its changes first with `v8-runner --config /workspace/E/v8project.yaml pull main`, or overwrite them with `v8-runner --config /workspace/E/v8project.yaml push main --force`.",
+    "next": {
+      "command": "pull",
+      "source_set": "main"
+    },
+    "base_generation": "59b683d1a9fe984f8fe7fa810e5702a000000000",
+    "local_generation": "32fdb66afb9dda48acedb7152cf0cb3500000000"
+  }
+}
