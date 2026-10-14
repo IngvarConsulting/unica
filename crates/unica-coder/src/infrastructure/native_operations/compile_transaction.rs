@@ -198,10 +198,52 @@ pub(crate) enum RetainedApplyValidationErrorKind {
     Invariant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplyInputRole {
+    SourceWrite,
+    ReadOnly,
+    SharedCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApplyInputContext {
+    relative_path: PathBuf,
+    role: ApplyInputRole,
+}
+
+impl ApplyInputContext {
+    fn for_entry(entry: &PlannedRetainedApplyChange, source_participant: bool) -> Self {
+        Self {
+            relative_path: entry.relative_path.clone(),
+            role: if !source_participant {
+                ApplyInputRole::SharedCache
+            } else if entry.original == entry.current {
+                ApplyInputRole::ReadOnly
+            } else {
+                ApplyInputRole::SourceWrite
+            },
+        }
+    }
+
+    fn explain(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self.role {
+            ApplyInputRole::SourceWrite => "source write target; the plan retains its original state to prevent overwriting changes",
+            ApplyInputRole::ReadOnly => "read-only input; the plan was prepared using this input",
+            ApplyInputRole::SharedCache => "shared cache input; the plan retains its original state for atomic publication of source and cache changes",
+        };
+        write!(
+            formatter,
+            "; input `{}`: {reason}",
+            self.relative_path.display()
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedApplyValidationError {
     kind: RetainedApplyValidationErrorKind,
     message: String,
+    input: Option<ApplyInputContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +260,7 @@ pub(crate) enum RetainedApplyPublishErrorKind {
 pub(crate) struct RetainedApplyPublishError {
     kind: RetainedApplyPublishErrorKind,
     message: String,
+    input: Option<ApplyInputContext>,
 }
 
 impl RetainedApplyPublishError {
@@ -225,7 +268,13 @@ impl RetainedApplyPublishError {
         Self {
             kind,
             message: message.into(),
+            input: None,
         }
+    }
+
+    fn with_input(mut self, input: ApplyInputContext) -> Self {
+        self.input = Some(input);
+        self
     }
 
     pub(crate) fn kind(&self) -> RetainedApplyPublishErrorKind {
@@ -258,13 +307,21 @@ impl From<RetainedApplyValidationError> for RetainedApplyPublishError {
             }
             RetainedApplyValidationErrorKind::Invariant => RetainedApplyPublishErrorKind::Invariant,
         };
-        Self::new(kind, error.to_string())
+        Self {
+            kind,
+            message: error.message,
+            input: error.input,
+        }
     }
 }
 
 impl std::fmt::Display for RetainedApplyPublishError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.message.fmt(formatter)
+        self.message.fmt(formatter)?;
+        if let Some(input) = &self.input {
+            input.explain(formatter)?;
+        }
+        Ok(())
     }
 }
 
@@ -295,7 +352,13 @@ impl RetainedApplyValidationError {
         Self {
             kind,
             message: message.into(),
+            input: None,
         }
+    }
+
+    fn with_input(mut self, input: ApplyInputContext) -> Self {
+        self.input = Some(input);
+        self
     }
 
     pub(crate) fn kind(&self) -> RetainedApplyValidationErrorKind {
@@ -305,7 +368,11 @@ impl RetainedApplyValidationError {
 
 impl std::fmt::Display for RetainedApplyValidationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.message.fmt(formatter)
+        self.message.fmt(formatter)?;
+        if let Some(input) = &self.input {
+            input.explain(formatter)?;
+        }
+        Ok(())
     }
 }
 
@@ -828,14 +895,20 @@ impl CompileTransaction {
                 "retained apply entries cannot mix with ambient transaction entries",
             ));
         }
-        for entry in &self.retained_apply {
+        for (index, entry) in self.retained_apply.iter().enumerate() {
             entry.root.validate_named_identity().map_err(|error| {
                 RetainedApplyValidationError::new(
                     RetainedApplyValidationErrorKind::ContainmentIdentity,
                     format!("retained apply source-root physical identity changed: {error}"),
                 )
             })?;
-            validate_retained_apply_preimage_typed(entry)?;
+            validate_retained_apply_preimage_typed(entry).map_err(|error| {
+                error.with_input(ApplyInputContext::for_entry(
+                    entry,
+                    self.retained_apply_cache_start
+                        .is_none_or(|start| index < start),
+                ))
+            })?;
             if let Some(bytes) = &entry.current {
                 validate_xml_when_applicable(&entry.root.path().join(&entry.relative_path), bytes)
                     .map_err(|error| {
@@ -851,7 +924,12 @@ impl CompileTransaction {
 
     fn validate_retained_apply_read_guards(&self) -> Result<(), RetainedApplyValidationError> {
         for guard in &self.retained_apply_read_guards {
-            validate_retained_apply_read_guard(guard)?;
+            validate_retained_apply_read_guard(guard).map_err(|error| {
+                error.with_input(ApplyInputContext {
+                    relative_path: guard.relative_path.clone(),
+                    role: ApplyInputRole::ReadOnly,
+                })
+            })?;
         }
         Ok(())
     }
@@ -1024,9 +1102,12 @@ impl CompileTransaction {
             }
             #[cfg(test)]
             run_retained_apply_before_postimages_hook();
-            for entry in &self.retained_apply {
+            for (index, entry) in self.retained_apply.iter().enumerate() {
                 final_gate.checkpoint("prepared apply postimage validation")?;
                 validate_retained_apply_postimage(entry, &entry.current, &created_directories)
+                    .map_err(|error| {
+                        error.with_input(ApplyInputContext::for_entry(entry, index < cache_start))
+                    })
                     .map_err(retained_apply_publish_publication_error)?;
             }
             #[cfg(test)]
@@ -3038,6 +3119,16 @@ fn retained_apply_displacement_error_kind(error: &std::io::Error) -> RetainedApp
 }
 
 fn publish_retained_apply_change(
+    entry: &PlannedRetainedApplyChange,
+    journal: &mut Vec<PublishedRetainedApplyChange>,
+    created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
+    source_participant: bool,
+) -> Result<(), RetainedApplyPublishError> {
+    publish_retained_apply_change_inner(entry, journal, created_directories, source_participant)
+        .map_err(|error| error.with_input(ApplyInputContext::for_entry(entry, source_participant)))
+}
+
+fn publish_retained_apply_change_inner(
     entry: &PlannedRetainedApplyChange,
     journal: &mut Vec<PublishedRetainedApplyChange>,
     created_directories: &mut Vec<CreatedRetainedApplyDirectory>,

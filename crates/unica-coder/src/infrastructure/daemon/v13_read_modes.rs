@@ -277,8 +277,8 @@ mod operation_dictionary_tests {
     #[test]
     fn dcs_and_mxl_template_can_follow_the_actual_body_format() {
         for (format, accepted, rejected) in [
-            ("DataCompositionSchema", "dataSet.add", "mxl.set"),
-            ("SpreadsheetDocument", "mxl.set", "dataSet.add"),
+            ("DataCompositionSchema", "dataSet.add", "area.add"),
+            ("SpreadsheetDocument", "area.add", "dataSet.add"),
         ] {
             let data = json!({"at":"cf:Report.F05Report.Template.Layout","kind":"Template","title":"Layout","props":{"format":format}});
             let listed = can_of(data.clone());
@@ -498,9 +498,9 @@ mod inherited_can_tests {
         let own = json!({"at":"ext:Role.R","kind":"Role","title":"R","props":{}});
         let inherited =
             json!({"at":"ext:Role.R","kind":"Role","title":"R","props":{"content":"inherited"}});
-        assert!(ops(&own).iter().any(|op| op == "right.set"));
+        assert!(ops(&own).iter().any(|op| op == "right.add"));
         let inherited_ops = ops(&inherited);
-        assert!(!inherited_ops.iter().any(|op| op == "right.set"));
+        assert!(!inherited_ops.iter().any(|op| op == "right.add"));
         assert!(inherited_ops.iter().any(|op| op == "props.set"));
 
         let form = json!({"at":"ext:DataProcessor.D.Form.F","kind":"Form","title":"F","props":{"content":"inherited"}});
@@ -510,11 +510,11 @@ mod inherited_can_tests {
             .any(|op| op == "element.add" || op == "event.bind"));
         assert!(form_ops.iter().any(|op| op == "form.remove"));
 
-        let at = "ext:Role.R.Can.right.set";
-        let refused = operation_node(&inherited, "right.set", at, extension())
+        let at = "ext:Role.R.Can.right.add";
+        let refused = operation_node(&inherited, "right.add", at, extension())
             .expect_err("a content writer is not readable through Can");
         assert!(refused.to_string().contains("inherits from the parent"));
-        if let Err(error) = operation_node(&own, "right.set", at, extension()) {
+        if let Err(error) = operation_node(&own, "right.add", at, extension()) {
             assert!(!error.to_string().contains("inherits from the parent"));
         }
         if let Err(error) = operation_node(

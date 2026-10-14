@@ -33,7 +33,7 @@
           "disposition": "mapped",
           "successor": {
             "entry": "apply",
-            "operation": "form.create"
+            "operation": "form.add"
           },
           "caseIds": [
             "batch1-apply-form-create"
@@ -97,13 +97,13 @@
     {
       "caseId": "batch1-apply-form-create",
       "entry": "apply",
-      "mode": "form.create",
+      "mode": "form.add;type=ChoiceForm",
       "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
       "expected": {
         "scenario": "S129",
         "class": "ok"
       },
-      "operation": "form.create"
+      "operation": "form.add"
     },
     {
       "caseId": "batch1-apply-form-add-newer-export-refuses",
