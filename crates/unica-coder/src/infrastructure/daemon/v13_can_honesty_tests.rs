@@ -489,6 +489,22 @@ fn shape_key(address: &QualifiedAddress) -> String {
 /// Правдоподобные аргументы операции: разбор семейства проходит целиком,
 /// и отказ по цели не прячется за отказом по аргументам.
 fn sample_args(descriptor: OperationDescriptor) -> Value {
+    // Аргументы зависят только от операции, а контракт строится заново на
+    // каждый вызов: обход спрашивает их на каждом узле.
+    thread_local! {
+        static SAMPLES: std::cell::RefCell<BTreeMap<&'static str, Value>> =
+            const { std::cell::RefCell::new(BTreeMap::new()) };
+    }
+    SAMPLES.with(|samples| {
+        samples
+            .borrow_mut()
+            .entry(descriptor.name())
+            .or_insert_with(|| build_sample_args(descriptor))
+            .clone()
+    })
+}
+
+fn build_sample_args(descriptor: OperationDescriptor) -> Value {
     let op = descriptor.name();
     if let Some(contract) = descriptor.argument_contract() {
         return contract.example_args;
