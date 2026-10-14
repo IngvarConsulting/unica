@@ -38369,6 +38369,113 @@
   },
   {
    "id": "S425",
+   "name": "kind-scoped-text-hit-names-its-module",
+   "issue": 1416,
+   "area": "Код BSL",
+   "task": "Найти объявление функции по виду метаданных: совпадение называет адрес своего модуля, а не область запроса, совпадает с поиском по самому модулю и открывается через view",
+   "workspace": "tests/fixtures/acceptance/workspace",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция НастройкиАвторизации(",
+      "corpus": "text",
+      "scope": "main:CommonModule",
+      "limit": 5
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/scope",
+       "eq": "main:CommonModule"
+      },
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "main:CommonModule.GoogleПереводчик"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/data/fileCoverage/complete",
+       "eq": true
+      },
+      {
+       "pointer": "/page/stoppedBy",
+       "eq": "complete"
+      }
+     ],
+     "captures": {
+      "moduleAt": {
+       "pointer": "/data/matches/0/at"
+      },
+      "hitLine": {
+       "pointer": "/data/matches/0/line"
+      },
+      "hitColumn": {
+       "pointer": "/data/matches/0/column"
+      },
+      "hitSnippet": {
+       "pointer": "/data/matches/0/snippet"
+      }
+     }
+    },
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция НастройкиАвторизации(",
+      "corpus": "text",
+      "scope": "main:CommonModule.GoogleПереводчик",
+      "limit": 5
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "$capture.moduleAt"
+      },
+      {
+       "pointer": "/data/matches/0/line",
+       "eq": "$capture.hitLine"
+      },
+      {
+       "pointer": "/data/matches/0/column",
+       "eq": "$capture.hitColumn"
+      },
+      {
+       "pointer": "/data/matches/0/snippet",
+       "eq": "$capture.hitSnippet"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "$capture.moduleAt"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.GoogleПереводчик"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S426",
    "name": "form-element-add-into-routes-to-the-container-address",
    "issue": 1355,
    "area": "Формы",
@@ -38486,7 +38593,7 @@
    ]
   },
   {
-   "id": "S426",
+   "id": "S427",
    "name": "form-event-bind-element-argument-routes-to-the-event-address",
    "issue": 1355,
    "area": "Формы",
@@ -38616,7 +38723,7 @@
    ]
   },
   {
-   "id": "S427",
+   "id": "S428",
    "name": "form-element-remove-by-name-routes-to-the-item-address",
    "issue": 1355,
    "area": "Формы",

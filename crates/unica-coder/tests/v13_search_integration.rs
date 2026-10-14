@@ -1910,3 +1910,92 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
     );
     mcp.finish();
 }
+
+/// #1416: however broad the request scope — a metadata kind, an object with
+/// several modules, the whole source set or no scope at all — every text hit
+/// names the module it was found in. The broad answer gives the same `at`,
+/// line, column and snippet as the search scoped to that very module, keeps
+/// full coverage, and `scope` still echoes the request.
+#[test]
+fn broad_text_search_scopes_name_the_module_of_every_hit() {
+    let root = tempfile::tempdir().expect("search integration root");
+    let workspace = root.path();
+    copy_tree(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace"),
+        workspace,
+    );
+    for args in [["init", "-q"].as_slice(), ["add", "."].as_slice()] {
+        assert!(Command::new("git")
+            .args(args)
+            .current_dir(workspace)
+            .status()
+            .expect("prepare fixture repository")
+            .success());
+    }
+    let mut mcp = McpProcess::start(workspace);
+    initialize_body_mcp(&mut mcp);
+    let mut id = 2;
+    let mut search = |mcp: &mut McpProcess, args: Value| {
+        let found = mcp.completed_tool_call(call_tool(id, "unica.search", args));
+        id += 1;
+        assert_eq!(found["ok"], true, "{found:#}");
+        assert_eq!(found["page"]["stoppedBy"], "complete", "{found:#}");
+        assert_eq!(found["data"]["fileCoverage"]["complete"], true, "{found:#}");
+        found["data"]["matches"]
+            .as_array()
+            .expect("text matches")
+            .clone()
+    };
+
+    let declaration = "Функция НастройкиАвторизации(";
+    let module = "main:CommonModule.GoogleПереводчик";
+    let narrow = search(
+        &mut mcp,
+        json!({"query": declaration, "corpus": "text", "scope": module, "limit": 5}),
+    );
+    assert_eq!(narrow.len(), 1, "{narrow:#?}");
+    assert_eq!(narrow[0]["at"], module, "{narrow:#?}");
+    for scope in [Some("main:CommonModule"), Some("main:Configuration"), None] {
+        let mut args = json!({"query": declaration, "corpus": "text", "limit": 5});
+        if let Some(scope) = scope {
+            args["scope"] = json!(scope);
+        }
+        let broad = search(&mut mcp, args);
+        assert_eq!(broad.len(), 1, "{scope:?}: {broad:#?}");
+        let hit = &broad[0];
+        assert_eq!(
+            hit["scope"],
+            scope.unwrap_or("main:Configuration"),
+            "{hit:#}"
+        );
+        for field in ["at", "line", "column", "snippet"] {
+            assert_eq!(hit[field], narrow[0][field], "{scope:?} {field}: {hit:#}");
+        }
+        assert!(hit.get("unaddressed").is_none() && hit.get("fileId").is_none());
+    }
+
+    // An object scope spans several modules; each hit names its own.
+    let object = search(
+        &mut mcp,
+        json!({"query": "Возврат", "scope": "main:Catalog.Валюты", "limit": 50}),
+    );
+    let modules = object
+        .iter()
+        .map(|hit| {
+            assert_eq!(hit["scope"], "main:Catalog.Валюты", "{hit:#}");
+            hit["at"]
+                .as_str()
+                .unwrap_or_else(|| panic!("hit has no module: {hit:#}"))
+                .to_owned()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        modules.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "main:Catalog.Валюты.Module.Manager",
+            "main:Catalog.Валюты.Module.Object",
+        ]
+    );
+    mcp.finish();
+}
