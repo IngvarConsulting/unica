@@ -54,8 +54,6 @@ impl NetworkKbTransport {
 
 static LAST_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 const REQUEST_SPACING: Duration = Duration::from_millis(500);
-const USER_AGENT: &str =
-    "unica-coder documentation provider (+https://github.com/IngvarConsulting/unica)";
 
 impl KbTransport for NetworkKbTransport {
     fn get(&self, url: &str) -> Result<String, String> {
@@ -85,7 +83,7 @@ impl KbTransport for NetworkKbTransport {
         client
             .get(
                 url,
-                &[("User-Agent", USER_AGENT)],
+                &[("User-Agent", unica_bootstrap::network::DOCS_USER_AGENT)],
                 Some(Duration::from_secs(30)),
             )
             .map_err(|error| error.to_string())?
@@ -2352,6 +2350,24 @@ mod provider_tests {
             other => panic!("ожидался отказ площадки, получено {other:?}"),
         }
         assert!(stand.requests().is_empty(), "до HTTP дело не дошло");
+    }
+
+    /// Площадка видит, что пишет ей Unica: `unica/<версия> (docs; …)`.
+    #[test]
+    fn kb_requests_name_unica_in_the_user_agent() {
+        let _serial = kb_test_lock();
+        let stand = unica_bootstrap::network::test_support::HttpStand::start("[]", "text/plain");
+        let transport = NetworkKbTransport::with_client(
+            unica_bootstrap::network::test_support::client_with(&[]),
+        );
+
+        let body = transport.get(&stand.url("toc")).expect("ответ стенда");
+
+        assert_eq!(body, "[]");
+        assert_eq!(
+            stand.header("User-Agent"),
+            vec![vec![unica_bootstrap::network::DOCS_USER_AGENT.to_owned()]]
+        );
     }
 
     #[test]

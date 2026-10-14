@@ -1,5 +1,6 @@
-//! Стенды для тестов сетевых потребителей: HTTPS-сервер на собственном корне
-//! и HTTP-прокси с методом CONNECT.
+//! Стенды для тестов сетевых потребителей: HTTPS-сервер на собственном корне,
+//! открытый HTTP-сервер, запоминающий заголовки, и HTTP-прокси с методом
+//! CONNECT.
 //!
 //! Продуктовая сборка этого модуля не содержит: он есть только в тестах
 //! крейта и под фичей `network-test-support`, которую включают
@@ -197,6 +198,101 @@ fn read_head(reader: &mut impl BufRead) -> std::io::Result<String> {
     let mut body = vec![0_u8; content_length];
     reader.read_exact(&mut body)?;
     Ok(request_line.trim().to_owned())
+}
+
+/// Открытый HTTP-сервер на `127.0.0.1`: на любой запрос отвечает одним и тем
+/// же телом и запоминает заголовки. Доверия ОС не требует, поэтому годится
+/// для проверки того, что клиент кладёт в запрос, на любой платформе.
+pub struct HttpStand {
+    port: u16,
+    heads: Arc<Mutex<Vec<Head>>>,
+}
+
+/// Заголовки одного запроса: имя и значение в порядке прихода.
+type Head = Vec<(String, String)>;
+
+impl HttpStand {
+    pub fn start(body: impl Into<Vec<u8>>, content_type: &str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP stand");
+        let port = listener.local_addr().expect("stand address").port();
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::clone(&heads);
+        let body: Arc<Vec<u8>> = Arc::new(body.into());
+        let content_type = content_type.to_owned();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let heads = Arc::clone(&shared);
+                let body = Arc::clone(&body);
+                let content_type = content_type.clone();
+                thread::spawn(move || {
+                    let _ = serve_plain(stream, &heads, &body, &content_type);
+                });
+            }
+        });
+        Self { port, heads }
+    }
+
+    pub fn url(&self, path: &str) -> String {
+        format!(
+            "http://127.0.0.1:{}/{}",
+            self.port,
+            path.trim_start_matches('/')
+        )
+    }
+
+    /// Все значения заголовка `name` (без учёта регистра) в каждом запросе,
+    /// запросы в порядке прихода. Пустой список — запрос пришёл без него.
+    pub fn header(&self, name: &str) -> Vec<Vec<String>> {
+        self.heads
+            .lock()
+            .expect("stand log")
+            .iter()
+            .map(|head| {
+                head.iter()
+                    .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value.clone())
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+fn serve_plain(
+    stream: TcpStream,
+    heads: &Mutex<Vec<Head>>,
+    body: &[u8],
+    content_type: &str,
+) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line)?;
+    let mut head = Vec::new();
+    let mut content_length = 0;
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            let (name, value) = (name.trim().to_owned(), value.trim().to_owned());
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.parse().unwrap_or(0);
+            }
+            head.push((name, value));
+        }
+    }
+    let mut request_body = vec![0_u8; content_length];
+    std::io::Read::read_exact(&mut reader, &mut request_body)?;
+    heads.lock().expect("stand log").push(head);
+    let mut stream = stream;
+    let answer = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(answer.as_bytes())?;
+    stream.write_all(body)?;
+    stream.flush()
 }
 
 /// HTTP-прокси, который туннелирует CONNECT и запоминает цели. Запрос
