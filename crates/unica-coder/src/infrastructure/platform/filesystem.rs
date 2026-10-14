@@ -3760,6 +3760,7 @@ pub(crate) fn delete_open_child_unlinking_name(file: &fs::File) -> io::Result<()
     const STATUS_INVALID_INFO_CLASS: i32 = 0xC000_0003_u32 as i32;
     const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
     const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BB_u32 as i32;
+    const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010_u32 as i32;
 
     let mut flags = FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS;
     let mut status = NtIoStatusBlock {
@@ -3787,6 +3788,7 @@ pub(crate) fn delete_open_child_unlinking_name(file: &fs::File) -> io::Result<()
             | STATUS_INVALID_INFO_CLASS
             | STATUS_INVALID_PARAMETER
             | STATUS_NOT_SUPPORTED
+            | STATUS_INVALID_DEVICE_REQUEST
     ) {
         return set_delete_disposition(file);
     }
