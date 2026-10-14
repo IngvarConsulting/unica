@@ -526,8 +526,8 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
         scenarios = self.corpus["scenarios"]
         self.assertEqual(len(scenarios), 433)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1164,
-            "a wire step went missing: the corpus freezes 1164 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1165,
+            "a wire step went missing: the corpus freezes 1165 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
         self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 434)])

@@ -407,6 +407,17 @@ fn walk(workspace: &Path, root: &str) -> Walk {
         let Some(data) = result.data else {
             continue;
         };
+        // Узел, который `view` прочитал, `check` тоже принимает: выбор
+        // валидатора по виду не должен отвечать `bad_value`/`fixCall` на
+        // адрес, который сервер сам выдал (#1467). Отказ поставщика или
+        // отсутствие движка — другой исход.
+        let checked = invoke(workspace, ToolIdentity::Check, json!({"at": at}));
+        if !checked.ok
+            && (refusal_field(&checked, "code") == Some("bad_value")
+                || refusal_field(&checked, "outcome") == Some("fixCall"))
+        {
+            unroutable.push(format!("{at}: check: {}", checked.summary));
+        }
         *count += 1;
         nodes.push(at);
         for slot in ["branches", "items"] {
@@ -420,39 +431,41 @@ fn walk(workspace: &Path, root: &str) -> Walk {
     Walk { nodes, unroutable }
 }
 
+/// Код отказа ответа: первый диагноз несёт `code` и `outcome`.
+fn refusal_field<'a>(result: &'a DomainResult, field: &str) -> Option<&'a str> {
+    result
+        .diagnostics
+        .first()
+        .and_then(|diagnostic| diagnostic.get(field))
+        .and_then(Value::as_str)
+}
+
 /// Ссылка на объект, которого нет в исходниках: подсистема или командный
 /// интерфейс урезанной фикстуры называют объект, не вошедший в неё. Такой
 /// адрес разобран и маршрутизирован, а `not_found` отвечает отсутствием
-/// корневого объекта, что видно и по его собственному адресу.
+/// корневого объекта. Отсутствие доказывает файловая система фикстуры —
+/// нет файла описания корневого объекта, — а не проверяемый `view`.
 fn dangling_reference(
     workspace: &Path,
     address: &QualifiedAddress,
     refusal: &DomainResult,
 ) -> bool {
-    let code = |result: &DomainResult| {
-        result
-            .diagnostics
-            .first()
-            .and_then(|diagnostic| diagnostic.get("code"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    };
+    if refusal_field(refusal, "code") != Some("not_found") {
+        return false;
+    }
     let Some(root) = address.segments().first() else {
         return false;
     };
-    let Some(name) = root.name() else {
+    let (Some(name), Some(layout)) = (
+        root.name(),
+        crate::infrastructure::metadata_kinds::metadata_kind(root.kind().as_str()),
+    ) else {
         return false;
     };
-    if code(refusal).as_deref() != Some("not_found") {
-        return false;
-    }
-    let owner = format!(
-        "{}:{}",
-        address.source_set(),
-        crate::domain::address::member_address(&root.kind().as_str(), name)
-    );
-    let owner_result = invoke(workspace, ToolIdentity::View, json!({ "at": owner }));
-    !owner_result.ok && code(&owner_result).as_deref() == Some("not_found")
+    let descriptor = source_root(workspace, address.source_set())
+        .join(layout.directory)
+        .join(format!("{name}.xml"));
+    !descriptor.exists()
 }
 
 /// Форма адреса: маршрут и виды сегментов с признаком имени.
@@ -2098,6 +2111,13 @@ fn interface_slices_publish_only_addresses_view_opens() {
         let view = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": at}));
         assert!(view.ok, "{at}: {}", view.summary);
     }
+    // `check` ветви не путает её с командным интерфейсом подсистемы: срезы
+    // читаются, код модуля проверяет шаг `bsl` на самом модуле.
+    let checked = invoke(&fixture.workspace, ToolIdentity::Check, json!({"at": at}));
+    assert!(checked.ok, "{}", checked.summary);
+    let data = checked.data.expect("check verdict");
+    assert_eq!(data["status"], "readable", "{data}");
+    assert_eq!(data["validators"], json!([]), "{data}");
     assert_eq!(
         walk(&fixture.workspace, at).unroutable,
         Vec::<String>::new()
