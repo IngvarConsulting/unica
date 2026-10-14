@@ -27,6 +27,7 @@ import argparse
 import collections
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,7 @@ HOST_PROJECT_VARIABLES = ("CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR")
 REQUEST_TIMEOUT_SECONDS = 300.0
 LOG_CAPACITY = 2000
 TOKEN_FIELD = "executionToken"
+MAX_BODY_BYTES = 4 * 1024 * 1024
 
 
 def default_binary() -> Path:
@@ -142,8 +144,12 @@ class McpClient:
         with self.write_lock:
             if self.process.stdin is None or self.process.poll() is not None:
                 raise McpError("unica завершился; " + self.stderr_tail())
-            self.process.stdin.write(line)
-            self.process.stdin.flush()
+            try:
+                self.process.stdin.write(line)
+                self.process.stdin.flush()
+            except (OSError, ValueError) as error:
+                # Труба закрыта (BrokenPipe) или поток уже закрыт: отказ, а не обрыв.
+                raise McpError(f"unica не принимает запросы: {error}; " + self.stderr_tail()) from error
         self._record("out", payload)
 
     def _read(self) -> None:
@@ -207,6 +213,11 @@ class McpClient:
             self.next_id += 1
             request_id = self.next_id
             self.pending[request_id] = waiter
+        if self.closed.is_set():
+            # Поток чтения уже вышел: ответа не будет, ждать срок незачем.
+            with self.pending_lock:
+                self.pending.pop(request_id, None)
+            raise McpError(f"{method}: unica закрыл поток; " + self.stderr_tail())
         if method == "tools/call":
             # Токен прогресса: долгий вызов виден в журнале уведомлениями.
             params = {**params, "_meta": {"progressToken": f"observer-{request_id}"}}
@@ -215,14 +226,20 @@ class McpClient:
         if not waiter.event.wait(timeout):
             with self.pending_lock:
                 self.pending.pop(request_id, None)
-            self.notify("notifications/cancelled", {"requestId": request_id, "reason": "observer timeout"})
+            try:
+                self.notify("notifications/cancelled", {"requestId": request_id, "reason": "observer timeout"})
+            except McpError:
+                pass
             raise McpError(f"{method}: нет ответа за {timeout:.0f} с")
         response = waiter.response
         if response is None:
             raise McpError(f"{method}: unica закрыл поток; " + self.stderr_tail())
         if "error" in response:
             raise McpError(f"{method}: {json.dumps(response['error'], ensure_ascii=False)}")
-        return response.get("result") or {}
+        result = response.get("result") or {}
+        if not isinstance(result, dict):
+            raise McpError(f"{method}: неожиданная форма ответа: {json.dumps(result, ensure_ascii=False)[:300]}")
+        return result
 
     def stderr_tail(self, limit: int = 2000) -> str:
         try:
@@ -262,11 +279,20 @@ class McpClient:
         structured = result.get("structuredContent")
         if structured is None:
             # Без structuredContent ответ доступен только текстом.
-            texts = [part.get("text", "") for part in result.get("content") or [] if part.get("type") == "text"]
+            parts = result.get("content") or []
+            if not isinstance(parts, list):
+                raise McpError(f"{name}: content не список: {json.dumps(parts, ensure_ascii=False)[:300]}")
+            texts = [
+                part["text"]
+                for part in parts
+                if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str)
+            ]
             try:
                 structured = json.loads("".join(texts))
             except json.JSONDecodeError:
                 structured = {"ok": False, "summary": "".join(texts)}
+        if not isinstance(structured, dict):
+            raise McpError(f"{name}: structuredContent не объект: {json.dumps(structured, ensure_ascii=False)[:300]}")
         return bool(result.get("isError")), structured
 
     def call_tool(self, verb: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -285,16 +311,26 @@ class McpClient:
         handoff_ms = None
         polls = 0
         while True:
-            task = (structured.get("data") or {}).get("task") if isinstance(structured, dict) else None
-            if not isinstance(task, dict) or task.get("status") not in ("working", "input_required"):
+            data = structured.get("data")
+            task = data.get("task") if isinstance(data, dict) else None
+            # Незавершённые состояния задачи v0.13 — `queued` и `working`
+            # (`task_tools.rs`); остальные терминальны.
+            if not isinstance(task, dict) or task.get("status") not in ("queued", "working"):
                 break
+            task_id = task.get("taskId")
+            if not isinstance(task_id, str) or not task_id:
+                raise McpError(f"{name}: задача без taskId: {json.dumps(task, ensure_ascii=False)[:300]}")
             if handoff_ms is None:
                 handoff_ms = round((time.monotonic() - started) * 1000)
             if time.monotonic() - started > self.timeout:
-                raise McpError(f"{name}: задача {task.get('taskId')} не завершилась за {self.timeout:.0f} с")
+                try:
+                    self._call_once(self.tool_name("task.cancel"), {"taskId": task_id})
+                except McpError:
+                    pass
+                raise McpError(f"{name}: задача {task_id} не завершилась за {self.timeout:.0f} с и отменена")
             polls += 1
             is_error, structured = self._call_once(
-                self.tool_name("task.result"), {"taskId": task["taskId"], "waitMs": 5000}
+                self.tool_name("task.result"), {"taskId": task_id, "waitMs": 5000}
             )
         answer = {
             "isError": is_error,
@@ -322,6 +358,12 @@ class ApiError(Exception):
 
 
 def view_arguments(body: dict[str, Any]) -> dict[str, Any]:
+    """Аргументы `view`: `at`, `cursor` и прочие поля из `extra` (например, `limit`).
+
+    `extra` не переопределяет `at` и `cursor` и не несёт `executionToken`.
+    """
+    if contains_token(body):
+        raise ApiError(HTTPStatus.FORBIDDEN, "observer never sends executionToken")
     arguments: dict[str, Any] = {}
     at = body.get("at")
     if at not in (None, ""):
@@ -330,10 +372,18 @@ def view_arguments(body: dict[str, Any]) -> dict[str, Any]:
         arguments["at"] = at
     cursor = body.get("cursor")
     if cursor:
+        if not isinstance(cursor, str):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "cursor must be a string")
         arguments["cursor"] = cursor
     extra = body.get("extra") or {}
     if not isinstance(extra, dict):
         raise ApiError(HTTPStatus.BAD_REQUEST, "extra must be an object")
+    reserved = {"at", "cursor"} & set(extra)
+    if reserved:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"extra must not set {sorted(reserved)}; pass them at the top level")
+    unknown = set(body) - {"at", "cursor", "extra"}
+    if unknown:
+        raise ApiError(HTTPStatus.BAD_REQUEST, f"view accepts only at, cursor and extra, got {sorted(unknown)}")
     arguments.update(extra)
     return arguments
 
@@ -392,9 +442,14 @@ def make_handler(observer: Observer, page: bytes):
             pass
 
         def _host_allowed(self) -> bool:
-            # Защита от DNS rebinding: страница отвечает только своему адресу.
+            # Защита от DNS rebinding: страница отвечает только своему адресу,
+            # а запрос с чужой страницы (заголовок Origin) отвергается.
             port = self.server.server_address[1]
-            return self.headers.get("Host") in {f"127.0.0.1:{port}", f"localhost:{port}"}
+            own = {f"127.0.0.1:{port}", f"localhost:{port}"}
+            if self.headers.get("Host") not in own:
+                return False
+            origin = self.headers.get("Origin")
+            return origin is None or origin in {f"http://{host}" for host in own}
 
         def _reply(self, status: HTTPStatus, payload: Any, content_type: str = "application/json") -> None:
             data = payload if isinstance(payload, bytes) else json.dumps(payload, ensure_ascii=False).encode()
@@ -407,7 +462,7 @@ def make_handler(observer: Observer, page: bytes):
 
         def _dispatch(self, method: str) -> None:
             if not self._host_allowed():
-                self._reply(HTTPStatus.FORBIDDEN, {"error": "unexpected Host header"})
+                self._reply(HTTPStatus.FORBIDDEN, {"error": "unexpected Host or Origin header"})
                 return
             if method == "GET" and self.path in ("/", "/index.html"):
                 self._reply(HTTPStatus.OK, page, "text/html")
@@ -418,10 +473,13 @@ def make_handler(observer: Observer, page: bytes):
                 if not (self.headers.get("Content-Type") or "").startswith("application/json"):
                     self._reply(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "application/json required"})
                     return
-                length = int(self.headers.get("Content-Length") or 0)
+                raw_length = self.headers.get("Content-Length") or "0"
+                if not raw_length.isdigit() or int(raw_length) > MAX_BODY_BYTES:
+                    self._reply(HTTPStatus.BAD_REQUEST, {"error": f"bad Content-Length: {raw_length!r}"})
+                    return
                 try:
-                    body = json.loads(self.rfile.read(length) or b"{}")
-                except json.JSONDecodeError as error:
+                    body = json.loads(self.rfile.read(int(raw_length)) or b"{}")
+                except (json.JSONDecodeError, UnicodeDecodeError) as error:
                     self._reply(HTTPStatus.BAD_REQUEST, {"error": f"invalid JSON: {error}"})
                     return
                 if not isinstance(body, dict):
@@ -433,6 +491,8 @@ def make_handler(observer: Observer, page: bytes):
                 self._reply(error.status, {"error": str(error)})
             except McpError as error:
                 self._reply(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
+            except Exception as error:  # noqa: BLE001 - ответ вместо оборванного соединения
+                self._reply(HTTPStatus.BAD_GATEWAY, {"error": f"{type(error).__name__}: {error}"})
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib name
             self._dispatch("GET")
@@ -897,6 +957,13 @@ def main(argv: list[str] | None = None) -> int:
     print(f"рабочая область {workspace}; Ctrl+C — остановить", file=sys.stderr, flush=True)
     if not args.no_open:
         webbrowser.open(url)
+
+    def stop(signum: int, frame: Any) -> None:
+        # SIGTERM завершает так же, как Ctrl+C: закрыть stdin unica и
+        # дождаться выхода фронтенда. Общий демон уходит сам по паузе простоя.
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

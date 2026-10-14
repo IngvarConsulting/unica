@@ -1,13 +1,15 @@
 """Наблюдатель адресов на приёмочной фикстуре: дерево, `can`, контракт, предпросмотр.
 
-Тест поднимает `scripts/dev/unica-observer.py` с собранным `unica` и ходит
-только через HTTP-API наблюдателя — тем же путём, что страница. Бинарь
-берётся из `UNICA_OBSERVER_BINARY`, `target/release/unica` или
-`target/debug/unica`; без него тест пропускается с названной причиной.
+Тест поднимает `scripts/dev/unica-observer.py` с `unica` и ходит только через
+HTTP-API наблюдателя — тем же путём, что страница. Бинарь собирается через
+`cargo build`, как в соседних тестах `medium`; готовый можно передать в
+`UNICA_OBSERVER_BINARY`. Без Cargo и без готового бинаря тест пропускается
+с названной причиной.
 """
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import queue
@@ -25,22 +27,32 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "dev" / "unica-observer.py"
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "acceptance" / "workspace"
+# Скелет аргументов по ключу словаря `can` — как его строит реестр операций.
+SKELETON = {"from": "", "items": [], "values": {}, "text": "", "at": ""}
 
 
-def unica_binary() -> Path:
+def build_unica() -> Path:
+    """Бинарь `unica`: из `UNICA_OBSERVER_BINARY` или собранный Cargo."""
     explicit = os.environ.get("UNICA_OBSERVER_BINARY")
     if explicit:
         return Path(explicit)
-    target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
-    if not target.is_absolute():
-        target = REPO_ROOT / target
-    name = "unica.exe" if os.name == "nt" else "unica"
-    # Release — умолчание наблюдателя; отладочная сборка тоже годится, её
-    # собирают приёмочные наборы.
-    for profile in ("release", "debug"):
-        if (target / profile / name).is_file():
-            return target / profile / name
-    return target / "release" / name
+    if shutil.which("cargo") is None:
+        raise unittest.SkipTest("нет cargo и не задан UNICA_OBSERVER_BINARY: unica собрать нечем")
+    build = subprocess.run(
+        ["cargo", "build", "--quiet", "--package", "unica-coder", "--bin", "unica",
+         "--message-format=json-render-diagnostics"],
+        cwd=REPO_ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    return next(
+        Path(message["executable"])
+        for line in build.stdout.splitlines()
+        if (message := json.loads(line)).get("reason") == "compiler-artifact"
+        and message["target"]["name"] == "unica"
+        and message.get("executable")
+    )
 
 
 def tree_digest(root: Path) -> dict[str, str]:
@@ -51,12 +63,14 @@ def tree_digest(root: Path) -> dict[str, str]:
     }
 
 
-BINARY = unica_binary()
-
-
-@unittest.skipUnless(BINARY.is_file(), f"нет собранного unica: {BINARY}; cargo build --release -p unica-coder --bin unica")
 class UnicaObserverTests(unittest.TestCase):
     maxDiff = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.binary = build_unica()
+        if not cls.binary.is_file():
+            raise unittest.SkipTest(f"UNICA_OBSERVER_BINARY не указывает на файл: {cls.binary}")
 
     def setUp(self) -> None:
         scratch = tempfile.TemporaryDirectory(prefix="unica-observer-")
@@ -71,7 +85,7 @@ class UnicaObserverTests(unittest.TestCase):
         env["UNICA_DAEMON_IDLE_GRACE_MS"] = "5000"
         self.before = tree_digest(self.workspace)
         self.process = subprocess.Popen(
-            [sys.executable, str(SCRIPT), "--workspace", str(self.workspace), "--unica", str(BINARY),
+            [sys.executable, str(SCRIPT), "--workspace", str(self.workspace), "--unica", str(self.binary),
              "--no-open", "--port", "0", "--timeout", "120"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -102,9 +116,11 @@ class UnicaObserverTests(unittest.TestCase):
             if stream and not stream.closed:
                 stream.close()
 
-    def post(self, path: str, body: dict) -> tuple[int, dict]:
+    def post(self, path: str, body: dict, headers: dict | None = None) -> tuple[int, dict]:
         request = urllib.request.Request(
-            self.url + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+            self.url + path,
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", **(headers or {})},
         )
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
@@ -119,6 +135,15 @@ class UnicaObserverTests(unittest.TestCase):
         self.assertIsInstance(answer["elapsedMs"], int)
         return answer["result"]
 
+    def sent_tool_calls(self) -> list[dict]:
+        with urllib.request.urlopen(self.url + "/api/log?since=0", timeout=30) as response:
+            entries = json.load(response)["entries"]
+        return [
+            entry["payload"]["params"]
+            for entry in entries
+            if entry["dir"] == "out" and entry["payload"].get("method") == "tools/call"
+        ]
+
     def test_tree_can_contract_and_preview_leave_the_workspace_unchanged(self) -> None:
         with urllib.request.urlopen(self.url + "/", timeout=30) as page:
             self.assertIn("Наблюдатель адресов", page.read().decode())
@@ -129,11 +154,11 @@ class UnicaObserverTests(unittest.TestCase):
         self.assertIn("main", source_sets)
 
         # Раскрываем дерево по ветвям и элементам, как страница, до первого
-        # узла объекта с непустым `can`, где есть исполнимая операция.
+        # объекта, у которого исполнимая операция из `can` отдаёт контракт.
         pending = deque(f"{name}:Configuration" for name in source_sets)
         found = None
         visited = 0
-        while pending and found is None and visited < 60:
+        while pending and found is None and visited < 80:
             at = pending.popleft()
             visited += 1
             result = self.view(at)
@@ -141,51 +166,74 @@ class UnicaObserverTests(unittest.TestCase):
                 continue
             data = result["data"]
             self.assertEqual(data["at"], at, "view answers the address it was asked")
-            implemented = [entry for entry in data.get("can") or [] if entry["implemented"]]
-            if implemented and "." in at.split(":", 1)[1]:
-                found = (at, data, implemented)
-                break
+            for entry in data.get("can") or []:
+                if not entry["implemented"]:
+                    continue
+                contract = self.view(f"{at}.Can.{entry['op']}")
+                if contract["ok"]:
+                    found = (at, entry, contract)
+                    break
             for slot in ("branches", "items"):
                 pending.extend(child["at"] for child in data.get(slot) or [] if "at" in child)
-        self.assertIsNotNone(found, f"за {visited} узлов не нашлось объекта с can")
-        at, data, implemented = found
-
-        # Контракт операции по адресу `<узел>.Can.<op>`: берём первую
-        # операцию, контракт которой опубликован.
-        contracts = []
-        for entry in implemented:
-            contract = self.view(f"{at}.Can.{entry['op']}")
-            if contract["ok"]:
-                contracts.append((entry, contract))
-                break
-        self.assertTrue(contracts, f"ни у одной операции {at} нет контракта")
-        entry, contract = contracts[0]
+        self.assertIsNotNone(found, f"за {visited} узлов не нашлось операции с контрактом")
+        at, entry, contract = found
         self.assertEqual(contract["data"]["kind"], "Can")
         self.assertEqual(contract["data"]["props"]["op"], entry["op"])
+        self.assertEqual(contract["data"]["props"]["args"], entry["args"], "contract and can name one argument key")
 
-        # Предпросмотр: план без токена строится и ничего не пишет.
-        status, preview = self.post(
-            "/api/apply",
-            {"at": "main:Catalog.Валюты", "ops": [{"op": "props.set", "args": {"values": {"Comment": "observer"}}}]},
-        )
+        # Предпросмотр найденной операции на найденном узле со скелетом из
+        # `can`. Пустой скелет может быть отвергнут значением, но не местом:
+        # операция, объявленная узлом, применима к нему.
+        args = {entry["args"]: SKELETON[entry["args"]]}
+        status, preview = self.post("/api/apply", {"at": at, "ops": [{"op": entry["op"], "args": args}]})
         self.assertEqual(status, 200, preview)
-        self.assertTrue(preview["result"]["ok"], preview)
-        self.assertIn("executionToken", preview["result"]["data"], "a preview returns a plan token, not a write")
+        result = preview["result"]
+        if result["ok"]:
+            self.assertIn("executionToken", result["data"], "a preview returns a plan token, not a write")
+        else:
+            outcomes = {diagnostic.get("outcome") for diagnostic in result["diagnostics"]}
+            self.assertEqual(outcomes, {"fixCall"}, result)
+            self.assertNotIn("does not apply", json.dumps(result), result)
 
-        # Исполнение токена API не пропускает ни отдельно, ни внутри плана.
-        token = preview["result"]["data"]["executionToken"]
-        for body in ({"executionToken": token},
-                     {"at": "main:Catalog.Валюты", "ops": [], "executionToken": token}):
-            status, refusal = self.post("/api/apply", body)
-            self.assertEqual(status, 403, refusal)
-        with urllib.request.urlopen(self.url + "/api/log?since=0", timeout=30) as response:
-            sent = [entry["payload"] for entry in json.load(response)["entries"] if entry["dir"] == "out"]
+        # Токен API не пропускает ни отдельно, ни внутри плана, ни в аргументах
+        # операции, ни через `extra` чтения.
+        token = "observer-test-token"
+        for path, body in (
+            ("/api/apply", {"executionToken": token}),
+            ("/api/apply", {"at": at, "ops": [], "executionToken": token}),
+            ("/api/apply", {"at": at, "ops": [{"op": entry["op"], "args": {**args, "executionToken": token}}]}),
+            ("/api/view", {"at": at, "extra": {"executionToken": token}}),
+        ):
+            status, refusal = self.post(path, body)
+            self.assertEqual(status, 403, (path, body, refusal))
+        # `extra` не подменяет адрес чтения.
+        status, refusal = self.post("/api/view", {"at": at, "extra": {"at": "main:Configuration"}})
+        self.assertEqual(status, 400, refusal)
+
+        calls = self.sent_tool_calls()
+        self.assertTrue(calls)
         self.assertFalse(
-            [payload for payload in sent if "executionToken" in json.dumps(payload)],
-            "a token must never reach unica",
+            [call for call in calls if "executionToken" in json.dumps(call["arguments"])],
+            "a token must never reach unica, whatever the tool",
         )
-
         self.assertEqual(tree_digest(self.workspace), self.before, "observer must not change workspace files")
+
+    def test_foreign_origin_and_bad_length_are_refused(self) -> None:
+        status, refusal = self.post("/api/view", {}, headers={"Origin": "http://evil.example"})
+        self.assertEqual(status, 403, refusal)
+        host, port = self.url.removeprefix("http://").split(":")
+        for length in ("-1", "abc"):
+            connection = http.client.HTTPConnection(host, int(port), timeout=30)
+            try:
+                connection.putrequest("POST", "/api/view")
+                connection.putheader("Content-Type", "application/json")
+                connection.putheader("Content-Length", length)
+                connection.endheaders()
+                response = connection.getresponse()
+                self.assertEqual(response.status, 400, length)
+                self.assertIn("Content-Length", json.load(response)["error"])
+            finally:
+                connection.close()
 
 
 if __name__ == "__main__":
