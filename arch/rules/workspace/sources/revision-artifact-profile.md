@@ -1,7 +1,7 @@
 ---
 id: CTR.SOURCE.REVISION-ARTIFACT-PROFILE
 check:
-  - crates/unica-coder/src/infrastructure/revision_artifact_policy.rs::platform_xml_revision_artifact_profile_is_closed_and_legacy_is_unchanged
+  - crates/unica-coder/src/infrastructure/revision_artifact_policy.rs::platform_xml_revision_artifact_profile_is_closed
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::actor_revision_unknown_staged_artifact_is_rejected_before_publication
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::actor_revision_lookalike_resource_is_rejected_before_publication
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::same_name_root_changed_format_or_platform_profile_rotates_actor

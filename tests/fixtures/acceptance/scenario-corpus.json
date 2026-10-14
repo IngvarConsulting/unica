@@ -39218,6 +39218,166 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S432",
+   "name": "form-command-add-writes-tooltip-shortcut-representation",
+   "issue": 1439,
+   "area": "Формы",
+   "task": "Добавить команду формы с подсказкой, сочетанием клавиш и отображением: ключ, который операция не пишет, отказывает до записи, а свойства исполненной команды видны в view",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "beforeCommand": {
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "sha256"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formCommand.add",
+        "args": {
+         "items": [
+          {
+           "name": "ОбновитьКурсы",
+           "use": false
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].use"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "sha256",
+       "eq": "$capture.beforeCommand"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formCommand.add",
+        "args": {
+         "items": [
+          {
+           "name": "ОбновитьКурсы",
+           "title": "Обновить курсы",
+           "tooltip": "Загрузить курсы валют",
+           "shortcut": "F5",
+           "representation": "TextPicture"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "sha256",
+       "eq": "$capture.beforeCommand"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{*}Commands/{*}Command[@name='ОбновитьКурсы']/{*}ToolTip/{*}item/{*}content",
+       "eq": [
+        "Загрузить курсы валют"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{*}Commands/{*}Command[@name='ОбновитьКурсы']/{*}Shortcut",
+       "eq": [
+        "F5"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{*}Commands/{*}Command[@name='ОбновитьКурсы']/{*}Representation",
+       "eq": [
+        "TextPicture"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Command.ОбновитьКурсы"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/title",
+       "eq": "Обновить курсы"
+      },
+      {
+       "pointer": "/data/props/tooltip",
+       "eq": "Загрузить курсы валют"
+      },
+      {
+       "pointer": "/data/props/shortcut",
+       "eq": "F5"
+      },
+      {
+       "pointer": "/data/props/representation",
+       "eq": "TextPicture"
+      }
+     ]
+    }
+   ]
   }
  ]
 }
