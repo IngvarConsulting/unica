@@ -4,6 +4,7 @@ use crate::application::invocation_store::{
 };
 use crate::application::invocation_store_v5::V5SafeFailureReason;
 use crate::application::receipt_ledger::ReceiptTerminalOutcome;
+use crate::application::v13::source_text::apply_response_budget;
 use crate::domain::invocation::{DomainResult, InvocationStatus};
 use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
 use chrono::{SecondsFormat, Utc};
@@ -13,6 +14,7 @@ use rmcp::model::{
 };
 use serde::Serialize;
 use std::io::{self, Write};
+use unica_bootstrap::ResponseBudget;
 
 const MAX_MCP_TASK_PROJECTION_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
@@ -105,7 +107,10 @@ fn task_status(status: InvocationStatus) -> TaskStatus {
 
 pub(super) fn call_tool_result(
     result: &DomainResult,
+    budget: ResponseBudget,
 ) -> Result<CallToolResult, TaskProjectionError> {
+    let result = apply_response_budget(result, budget.bytes());
+    let result = result.as_ref();
     match canonical_result_size(result) {
         Ok(_) => {}
         Err(CanonicalResultSizeError::TooLarge) => return Err(TaskProjectionError::ResultTooLarge),
@@ -153,8 +158,11 @@ fn source_text_result(
     Ok(projected)
 }
 
-fn call_result_object(result: &DomainResult) -> Result<JsonObject, TaskProjectionError> {
-    serde_json::to_value(call_tool_result(result)?)
+fn call_result_object(
+    result: &DomainResult,
+    budget: ResponseBudget,
+) -> Result<JsonObject, TaskProjectionError> {
+    serde_json::to_value(call_tool_result(result, budget)?)
         .map_err(|_| TaskProjectionError::Serialization)?
         .as_object()
         .cloned()
@@ -176,13 +184,14 @@ pub(super) fn create_task_result_v5(
 /// the wire; the only projection failures left are size, time and encoding.
 pub(super) fn detailed_task_v5(
     snapshot: &V5DaemonTaskSnapshot,
+    budget: ResponseBudget,
 ) -> Result<DetailedTask, TaskProjectionError> {
     let payload = match snapshot {
         V5DaemonTaskSnapshot::Queued { .. } | V5DaemonTaskSnapshot::Working { .. } => {
             TaskPayload::Working
         }
         V5DaemonTaskSnapshot::Completed { result, .. } => TaskPayload::Completed {
-            result: call_result_object(result)?,
+            result: call_result_object(result, budget)?,
         },
         V5DaemonTaskSnapshot::Failed { reason, .. } => TaskPayload::Failed {
             error: closed_failure_object(*reason)?,
@@ -245,10 +254,11 @@ pub(super) enum DirectProjection {
 
 pub(super) fn project_direct_terminal(
     terminal: &ReceiptTerminalOutcome,
+    budget: ResponseBudget,
 ) -> Result<DirectProjection, TaskProjectionError> {
     Ok(match terminal {
         ReceiptTerminalOutcome::Completed { result } => {
-            DirectProjection::Result(call_tool_result(result)?)
+            DirectProjection::Result(call_tool_result(result, budget)?)
         }
         ReceiptTerminalOutcome::Failed { reason } => {
             DirectProjection::Error(closed_failure_error(*reason))
@@ -278,6 +288,7 @@ mod tests {
     use crate::domain::invocation::{DomainResult, InvocationId, TaskId};
     use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
     use serde_json::{json, Value};
+    use unica_bootstrap::ResponseBudget;
 
     fn v5_common() -> (
         TaskId,
@@ -326,7 +337,8 @@ mod tests {
         };
 
         let seed = super::create_task_result_v5(&queued).expect("project queued seed");
-        let detailed = super::detailed_task_v5(&queued).expect("project queued task");
+        let detailed = super::detailed_task_v5(&queued, ResponseBudget::default())
+            .expect("project queued task");
 
         assert_eq!(seed.task.task_id, task_id.to_string());
         assert_eq!(seed.task.status, rmcp::model::TaskStatus::Working);
@@ -389,6 +401,7 @@ mod tests {
             &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
                 result: Box::new(result.clone()),
             },
+            ResponseBudget::default(),
         )
         .expect("project direct terminal")
         {
@@ -411,7 +424,8 @@ mod tests {
             result: Box::new(result),
         };
 
-        let detailed = super::detailed_task_v5(&completed).expect("completed task");
+        let detailed =
+            super::detailed_task_v5(&completed, ResponseBudget::default()).expect("completed task");
         assert_eq!(
             serde_json::to_value(&detailed).unwrap()["statusMessage"],
             "Cancellation was requested; check task status and result for the actual outcome"
@@ -451,8 +465,8 @@ mod tests {
                 serde_json::to_vec(&result).unwrap().len(),
                 MAX_CANONICAL_RESULT_BYTES
             );
-            let projected =
-                super::call_tool_result(&result).expect("exact-limit error is admitted");
+            let projected = super::call_tool_result(&result, ResponseBudget::default())
+                .expect("exact-limit error is admitted");
             let wire = serde_json::to_value(&projected).unwrap();
             let text = wire["content"][0]["text"].as_str().unwrap();
             assert!(text.len() <= super::MAX_ERROR_TEXT_BYTES);
@@ -478,8 +492,8 @@ mod tests {
                 terminal_digest: v5_terminal_digest(),
                 result: Box::new(result),
             };
-            let detailed =
-                super::detailed_task_v5(&snapshot).expect("exact-limit Task is admitted");
+            let detailed = super::detailed_task_v5(&snapshot, ResponseBudget::default())
+                .expect("exact-limit Task is admitted");
             let detailed_wire = serde_json::to_value(&detailed).unwrap();
             assert_eq!(detailed_wire["result"], wire);
             assert!(
@@ -493,7 +507,10 @@ mod tests {
     fn error_without_diagnostics_still_has_readable_summary() {
         let mut result = DomainResult::success("operation failed");
         result.ok = false;
-        let wire = serde_json::to_value(super::call_tool_result(&result).unwrap()).unwrap();
+        let wire = serde_json::to_value(
+            super::call_tool_result(&result, ResponseBudget::default()).unwrap(),
+        )
+        .unwrap();
         let text: Value =
             serde_json::from_str(wire["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(
@@ -501,7 +518,28 @@ mod tests {
             json!({"summary": "operation failed", "diagnostics": []})
         );
         result.ok = true;
-        assert!(super::call_tool_result(&result).unwrap().content.is_empty());
+        assert!(super::call_tool_result(&result, ResponseBudget::default())
+            .unwrap()
+            .content
+            .is_empty());
+    }
+
+    #[test]
+    fn terminal_digest_covers_the_source_text() {
+        use crate::application::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
+        let terminal = |text: &str| {
+            let mut result = DomainResult::success("logical node text resolved");
+            result.source_text = Some(text.to_string());
+            canonical_v5_terminal(&ReceiptTerminalOutcome::Completed {
+                result: Box::new(result),
+            })
+            .unwrap()
+        };
+        let first = terminal("Процедура А()\nКонецПроцедуры\n");
+        let same = terminal("Процедура А()\nКонецПроцедуры\n");
+        let edited = terminal("Процедура А()\r\nКонецПроцедуры\n");
+        assert_eq!(first.digest(), same.digest());
+        assert_ne!(first.digest(), edited.digest());
     }
 
     #[test]
@@ -516,6 +554,7 @@ mod tests {
             &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
                 result: Box::new(result.clone()),
             },
+            ResponseBudget::default(),
         )
         .expect("project direct terminal")
         {
@@ -552,7 +591,8 @@ mod tests {
             terminal_digest: v5_terminal_digest(),
             result: Box::new(result.clone()),
         };
-        let detailed = super::detailed_task_v5(&completed).expect("completed task");
+        let detailed =
+            super::detailed_task_v5(&completed, ResponseBudget::default()).expect("completed task");
         let rmcp::model::TaskPayload::Completed { result: embedded } = detailed.payload else {
             panic!("completed task must embed the original call result");
         };
@@ -560,7 +600,10 @@ mod tests {
 
         // Отказ текста не несёт и остаётся структурным.
         result.ok = false;
-        let refused = serde_json::to_value(super::call_tool_result(&result).unwrap()).unwrap();
+        let refused = serde_json::to_value(
+            super::call_tool_result(&result, ResponseBudget::default()).unwrap(),
+        )
+        .unwrap();
         assert!(refused["structuredContent"].is_object());
     }
 
@@ -587,7 +630,8 @@ mod tests {
                 terminal_digest: v5_terminal_digest(),
                 reason,
             };
-            let detailed = super::detailed_task_v5(&failed).expect("failed task");
+            let detailed =
+                super::detailed_task_v5(&failed, ResponseBudget::default()).expect("failed task");
             assert_eq!(
                 serde_json::to_value(&detailed).unwrap()["statusMessage"],
                 "Cancellation was requested; check task status and result for the actual outcome"
@@ -600,6 +644,7 @@ mod tests {
             assert_eq!(error["data"], json!({"code": code}));
             let direct = super::project_direct_terminal(
                 &crate::application::receipt_ledger::ReceiptTerminalOutcome::Failed { reason },
+                ResponseBudget::default(),
             )
             .expect("project failed direct terminal");
             let super::DirectProjection::Error(direct) = direct else {
@@ -611,6 +656,7 @@ mod tests {
 
         let cancelled = super::project_direct_terminal(
             &crate::application::receipt_ledger::ReceiptTerminalOutcome::Cancelled,
+            ResponseBudget::default(),
         )
         .expect("project cancelled direct terminal");
         let super::DirectProjection::Error(cancelled) = cancelled else {
@@ -636,7 +682,7 @@ mod tests {
             terminal_epoch_ms: 1_777_012_346_789,
             terminal_digest: v5_terminal_digest(),
         };
-        let detailed = super::detailed_task_v5(&cancelled_task).unwrap();
+        let detailed = super::detailed_task_v5(&cancelled_task, ResponseBudget::default()).unwrap();
         assert_eq!(
             serde_json::to_value(&detailed).unwrap()["statusMessage"],
             "Cancellation was requested; check task status and result for the actual outcome"
@@ -661,7 +707,7 @@ mod tests {
             *updated_at_epoch_ms = *created_at_epoch_ms - 1;
         }
         assert!(super::create_task_result_v5(&reversed).is_err());
-        assert!(super::detailed_task_v5(&reversed).is_err());
+        assert!(super::detailed_task_v5(&reversed, ResponseBudget::default()).is_err());
 
         let oversized = DomainResult::success("x".repeat(MAX_CANONICAL_RESULT_BYTES + 1));
         assert!(matches!(
@@ -669,6 +715,7 @@ mod tests {
                 &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
                     result: Box::new(oversized),
                 },
+                ResponseBudget::default(),
             ),
             Err(super::TaskProjectionError::ResultTooLarge)
         ));

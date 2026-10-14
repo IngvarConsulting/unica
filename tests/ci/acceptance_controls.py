@@ -25,12 +25,17 @@ def tool_result(response):
     if structured is not None:
         return structured
     blocks = result.get("content") or []
-    if len(blocks) == 2 and all(block.get("type") == "text" for block in blocks):
+    if result.get("isError") is not False or len(blocks) != 2 or not all(
+            block.get("type") == "text" and isinstance(block.get("text"), str) for block in blocks):
+        return None
+    try:
         envelope = json.loads(blocks[0]["text"])
-        if isinstance(envelope, dict) and "sourceText" not in envelope:
-            envelope["sourceText"] = blocks[1]["text"]
-            return envelope
-    return None
+    except ValueError:
+        return None
+    if not isinstance(envelope, dict) or envelope.get("ok") is not True or "sourceText" in envelope:
+        return None
+    envelope["sourceText"] = blocks[1]["text"]
+    return envelope
 
 
 def load_corpus(path):

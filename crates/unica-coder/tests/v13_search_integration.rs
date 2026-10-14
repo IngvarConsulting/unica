@@ -19,6 +19,10 @@ struct McpProcess {
 
 impl McpProcess {
     fn start(workspace: &std::path::Path) -> Self {
+        Self::start_with(workspace, &[])
+    }
+
+    fn start_with(workspace: &std::path::Path, environment: &[(&str, &str)]) -> Self {
         let state = workspace.join(".unica-test-state");
         std::fs::create_dir_all(&state).expect("create isolated search state");
         let state = std::fs::canonicalize(state).expect("canonical isolated search state");
@@ -30,6 +34,7 @@ impl McpProcess {
             // четверть часа, и к концу прогона их набирается столько же,
             // сколько было тестов.
             .env("UNICA_DAEMON_IDLE_GRACE_MS", "5000")
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -437,12 +442,12 @@ fn initialize_body_mcp(mcp: &mut McpProcess) {
 }
 
 #[test]
-fn public_view_refuses_bsl_text_over_sixteen_kib_whole_with_structural_next() {
+fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next() {
     let root = tempfile::tempdir().unwrap();
     let mut source = String::from(
         "// Документирует малый метод.\nProcedure Small() Export\n    Value = 1;\nEndProcedure\n\nProcedure Large()\n",
     );
-    // Метод сверх предела в 16 КиБ, а вместе с ним и модуль.
+    // Метод сверх бюджета клиента по умолчанию (16 КиБ), а с ним и модуль.
     while source.len() <= 17 * 1024 {
         source.push_str("    // заполнение строки кириллицей\n");
     }
@@ -519,7 +524,97 @@ fn public_view_refuses_bsl_text_over_sixteen_kib_whole_with_structural_next() {
             format!("{module}.Method")
         ]
     );
+
+    // Контракт операции того же узла текста не несёт и предела не касается.
+    for (id, at, op) in [
+        (5, format!("{module}.Body"), "code.insert"),
+        (6, format!("{module}.Method.Large.Body"), "code.replace"),
+    ] {
+        let contract = mcp.completed_tool_call(call_tool(
+            id,
+            "unica.view",
+            json!({"at": format!("{at}.Can.{op}")}),
+        ));
+        // Подробного контракта у операций кода пока нет: ответ — тот же
+        // отказ `unsupported_section`, что и у малого модуля, а не предел.
+        assert_eq!(contract["at"], format!("{at}.Can.{op}"), "{contract:#}");
+        assert_ne!(
+            contract["diagnostics"][0]["code"], "result_too_large",
+            "{contract:#}"
+        );
+        assert!(contract.get("sourceText").is_none(), "{contract:#}");
+    }
     mcp.finish();
+}
+
+/// Бюджет ответа — свойство клиента: тот же текст один клиент получает
+/// целиком, другой — отказом; сводка модуля называет размер `Body` и
+/// помечает ветвь, не помещающуюся в бюджет. Наибольший бюджет известных
+/// хостов ограничивает текст для всех.
+#[test]
+fn public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body() {
+    let root = tempfile::tempdir().unwrap();
+    let mut method = String::from("Procedure Large()\n");
+    while method.len() <= 30 * 1024 {
+        method.push_str("    // заполнение строки кириллицей\n");
+    }
+    method.push_str("EndProcedure\n");
+    let mut source = method.clone();
+    while source.len() <= 80 * 1024 {
+        source.push_str("// хвост модуля сверх наибольшего бюджета\n");
+    }
+    body_workspace(root.path(), source.as_bytes());
+    let module = "main:CommonModule.Main";
+    let read = |mcp: &mut McpProcess, id: u64, at: String| {
+        mcp.exchange(call_tool(id, "unica.view", json!({"at": at})))
+    };
+
+    let mut narrow = McpProcess::start(root.path());
+    initialize_body_mcp(&mut narrow);
+    let summary = narrow.completed_tool_call(call_tool(2, "unica.view", json!({"at": module})));
+    let body = summary["data"]["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|branch| branch["at"] == format!("{module}.Body"))
+        .unwrap_or_else(|| panic!("{summary:#}"))
+        .clone();
+    assert_eq!(body["bytes"], source.len(), "{summary:#}");
+    assert_eq!(body["overBudget"], true, "{summary:#}");
+    let refused = narrow.completed_tool_call(call_tool(
+        3,
+        "unica.view",
+        json!({"at": format!("{module}.Method.Large.Body")}),
+    ));
+    assert_eq!(
+        refused["diagnostics"][0]["code"], "result_too_large",
+        "{refused:#}"
+    );
+    assert_eq!(
+        refused["next"][0]["args"]["at"],
+        format!("{module}.Method.Large")
+    );
+    narrow.finish();
+
+    let mut wide = McpProcess::start_with(root.path(), &[("UNICA_RESPONSE_BUDGET", "47104")]);
+    initialize_body_mcp(&mut wide);
+    let answer = read(&mut wide, 2, format!("{module}.Method.Large.Body"));
+    assert!(
+        answer["result"].get("structuredContent").is_none(),
+        "{answer:#}"
+    );
+    assert_eq!(answer["result"]["content"][1]["text"], method);
+    // Модуль больше наибольшего бюджета известных хостов не отдаётся никому.
+    let whole = wide.completed_tool_call(call_tool(
+        3,
+        "unica.view",
+        json!({"at": format!("{module}.Body")}),
+    ));
+    assert_eq!(
+        whole["diagnostics"][0]["code"], "result_too_large",
+        "{whole:#}"
+    );
+    wide.finish();
 }
 
 #[path = "platform/v13_resolve_target_isolation.rs"]

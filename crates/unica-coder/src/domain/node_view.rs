@@ -71,6 +71,8 @@ impl NodeView {
 pub(crate) struct BranchRef {
     at: String,
     count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<u64>,
 }
 
 impl BranchRef {
@@ -78,7 +80,15 @@ impl BranchRef {
         Self {
             at: at.into(),
             count,
+            bytes: None,
         }
+    }
+
+    /// Размер текста ветви в байтах UTF-8, когда ветвь отдаёт текст.
+    #[must_use]
+    pub(crate) fn with_bytes(mut self, bytes: Option<u64>) -> Self {
+        self.bytes = bytes;
+        self
     }
 }
 
@@ -119,6 +129,15 @@ impl CollectionView {
     }
 }
 
+/// Исходный текст узла или признак, что он не помещается в предел ответа.
+/// Отказ строит тот, кто отдаёт сам текст: контракт операции `.Can.<op>`
+/// того же узла текста не несёт и предела не касается.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceText {
+    Whole(String),
+    Oversized { bytes: u64 },
+}
+
 /// Узел с исходным текстом (`Body` модуля или метода BSL). Текст в
 /// сериализацию узла не входит: ответ несёт его отдельным каналом.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -126,11 +145,11 @@ pub(crate) struct TextView {
     #[serde(flatten)]
     node: NodeView,
     #[serde(skip)]
-    text: String,
+    text: SourceText,
 }
 
 impl TextView {
-    pub(crate) fn new(node: NodeView, text: String) -> Self {
+    pub(crate) fn new(node: NodeView, text: SourceText) -> Self {
         Self { node, text }
     }
 }
@@ -171,9 +190,12 @@ impl NodeViewData {
     }
 
     /// Отделяет исходный текст: узел остаётся без него.
-    pub(crate) fn take_text(&mut self) -> Option<String> {
+    pub(crate) fn take_text(&mut self) -> Option<SourceText> {
         match self {
-            Self::Text(text) => Some(std::mem::take(&mut text.text)),
+            Self::Text(text) => Some(std::mem::replace(
+                &mut text.text,
+                SourceText::Whole(String::new()),
+            )),
             Self::Node(_) | Self::Collection(_) => None,
         }
     }

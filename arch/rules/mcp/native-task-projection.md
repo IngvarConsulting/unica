@@ -33,7 +33,7 @@ check:
 результат; клиент MCP сам решает, показывать ли его модели.
 
 Завершённое задание содержит тот же сериализованный `CallToolResult`, что
-и прямой ответ: канонический JSON находится в `structuredContent`,
+и прямой ответ тому же клиенту: канонический JSON находится в `structuredContent`,
 при успехе `content` пуст. Исключение — успешный ответ с исходным текстом
 [тела BSL](../workspace/sources/module-compilation-and-body.md): в нём нет
 `structuredContent`, а `content` несёт два текстовых блока — сначала

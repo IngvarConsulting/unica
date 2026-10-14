@@ -106,6 +106,10 @@ pub(crate) struct BranchSummary {
     pub(crate) kind: BranchKind,
     pub(crate) at: String,
     pub(crate) count: usize,
+    /// Размер текста ветви в байтах UTF-8; есть только у `Body` модуля
+    /// с исходным файлом.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -271,11 +275,13 @@ impl Serialize for MethodProjection {
                     kind: BranchKind::Compilation,
                     at: format!("{}.Compilation", self.at),
                     count: self.compilation_count,
+                    bytes: None,
                 },
                 BranchSummary {
                     kind: BranchKind::Body,
                     at: format!("{}.Body", self.at),
                     count: self.text_line_count(),
+                    bytes: None,
                 },
             ],
         )?;
@@ -449,6 +455,7 @@ impl ModuleProjectionSet {
                 kind: *kind,
                 at: format!("{base}.{}", kind.as_str()),
                 count,
+                bytes: None,
             })
             .collect();
         Self {
@@ -472,6 +479,14 @@ impl ModuleProjectionSet {
 
     /// Исходный текст модуля, из которого построена проекция.
     pub(crate) fn with_source(mut self, source: String) -> Self {
+        if let Some(body) = self
+            .summary
+            .branches
+            .iter_mut()
+            .find(|branch| branch.kind == BranchKind::Body)
+        {
+            body.bytes = Some(source.len() as u64);
+        }
         self.source = source;
         self
     }

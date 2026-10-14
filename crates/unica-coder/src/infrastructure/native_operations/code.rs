@@ -912,7 +912,7 @@ fn plan_code_postimage(
                 return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
             }
             let selector = args.anchor.clone().map(Selector::Anchor);
-            let target = replacement_target(&args.at, &args.text);
+            let target = replacement_target(&args.at, &args.text, &text_path)?;
             let site = match &selector {
                 Some(selector) => {
                     locate_replacement_typed(&snapshot, selector, &indexed.methods)
@@ -962,7 +962,7 @@ fn plan_code_postimage(
         .at_path(&text_path));
     }
     if let CodePlanOperation::Replace(args) = operation {
-        if replaces_whole_method(&replacement_target(&args.at, &args.text).at) {
+        if replaces_whole_method(&replacement_target(&args.at, &args.text, &text_path)?.at) {
             reject_redeclared_methods(&args.text, &indexed.methods, &post.methods).map_err(
                 |message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&text_path)
@@ -974,7 +974,7 @@ fn plan_code_postimage(
         CodePlanOperation::Replace(args) if args.anchor.is_none() => {
             let repeat_snapshot = SourceTextSnapshot::from_bytes(&after)
                 .map_err(|_| bad_code_arg(&text_path, "invalid patched snapshot"))?;
-            let target = replacement_target(&args.at, &args.text);
+            let target = replacement_target(&args.at, &args.text, &text_path)?;
             match locate_addressed_replacement(&repeat_snapshot, &target, &post.methods, &at_path) {
                 Err(error) if error.kind() == ApplyPlanErrorKind::NotFound => Ok(()),
                 Err(_) => Err("patched BSL address became ambiguous or invalid".to_string()),
@@ -1017,27 +1017,65 @@ struct ReplacementTarget {
 /// директива, объявление, тело и окончание. Он заменяет метод вместе с
 /// комментарием над ним. Текст без объявления по-прежнему заменяет только
 /// строки между объявлением и окончанием: тело метода в BSL не может
-/// объявить другой метод, поэтому формы не смешиваются.
-fn replacement_target(at: &QualifiedAddress, text: &str) -> ReplacementTarget {
-    let method_text = matches!(
+/// объявить другой метод, поэтому формы не смешиваются. Текст с объявлением,
+/// который не разбирается, отклоняется с указанием на сам текст: иначе он
+/// ушёл бы в тело метода и отказ назвал бы испорченный модуль.
+fn replacement_target(
+    at: &QualifiedAddress,
+    text: &str,
+    text_path: &str,
+) -> Result<ReplacementTarget, ApplyPlanError> {
+    let unchanged = || ReplacementTarget {
+        at: at.clone(),
+        with_doc_comment: false,
+    };
+    if !matches!(
         code_projection(at),
         Some((_, CodeProjection::MethodBody(_)))
-    ) && analyze_module(text)
-        .is_ok_and(|analysis| analysis.diagnostics.is_empty() && !analysis.methods.is_empty());
-    let method_at = method_text
-        .then(|| at.to_string())
-        .and_then(|body| body.strip_suffix(".Body").map(str::to_owned))
-        .and_then(|method| QualifiedAddress::parse(&method).ok());
-    match method_at {
-        Some(at) => ReplacementTarget {
-            at,
-            with_doc_comment: true,
-        },
-        None => ReplacementTarget {
-            at: at.clone(),
-            with_doc_comment: false,
-        },
+    ) || !declares_method(text)
+    {
+        return Ok(unchanged());
     }
+    let parsed = analyze_module(text)
+        .is_ok_and(|analysis| analysis.diagnostics.is_empty() && !analysis.methods.is_empty());
+    if !parsed {
+        return Err(bad_code_arg(
+            text_path,
+            "text declares a method but is not valid BSL; pass the method text as view returned it, with the edit applied",
+        ));
+    }
+    let method_at = at
+        .to_string()
+        .strip_suffix(".Body")
+        .and_then(|method| QualifiedAddress::parse(method).ok());
+    Ok(method_at.map_or_else(unchanged, |at| ReplacementTarget {
+        at,
+        with_doc_comment: true,
+    }))
+}
+
+/// Первая значащая строка текста (после комментариев, аннотаций и пустых
+/// строк) начинается объявлением метода.
+fn declares_method(text: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "процедура",
+        "функция",
+        "procedure",
+        "function",
+        "асинх",
+        "async",
+    ];
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with('&'))
+        .is_some_and(|line| {
+            let lower = line.to_lowercase();
+            KEYWORDS.iter().any(|keyword| {
+                lower
+                    .strip_prefix(keyword)
+                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace()))
+            })
+        })
 }
 
 /// Начало документирующего комментария: подряд идущие строки `//`
@@ -4477,6 +4515,32 @@ pub(super) mod tests {
             plan_admitted_code(&repeated, &fixture.binding, &[operation]).unwrap();
         assert!(state.planned_changes().is_empty());
         assert!(effects.events().is_empty());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
+        let before = "Procedure Base()\n    Value = 1;\nEndProcedure\n";
+        let fixture = staged_code_fixture("broken-method-text", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({
+                "at": "main:CommonModule.Sample.Method.Base.Body",
+                "text": "// Комментарий.\nProcedure Base(\n    Value = 2;\nEndProcedure\n"
+            }),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+            .expect_err("a broken method text must not reach the module");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert!(
+            error.to_string().contains("text declares a method"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("patched BSL module"), "{error}");
         fixture.cleanup();
     }
 

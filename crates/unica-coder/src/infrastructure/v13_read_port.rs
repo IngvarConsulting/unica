@@ -1,5 +1,5 @@
 use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
-use crate::application::v13::source_text::{ModuleText, MAX_SOURCE_TEXT_BYTES};
+use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
 use crate::domain::cancellation::CancellationToken;
@@ -1380,40 +1380,15 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         checkpoint: impl FnMut() -> Result<(), ViewError>,
     ) -> Result<ModuleText, ViewError> {
-        const BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
-        let mut bom_prefix = 0_usize;
-        let mut in_bom_prefix = true;
-        let mut text = Vec::new();
-        let mut bytes = 0_u64;
+        let mut text = ModuleTextAccumulator::default();
         let len = self.visit_module_utf8_chunks(target, checkpoint, |chunk| {
-            for byte in chunk {
-                if in_bom_prefix && *byte == BOM[bom_prefix % 3] {
-                    bom_prefix += 1;
-                    continue;
-                }
-                in_bom_prefix = false;
-                bytes += 1;
-                if text.len() <= MAX_SOURCE_TEXT_BYTES {
-                    text.push(*byte);
-                }
-            }
+            text.push(chunk);
             Ok(())
         })?;
-        // Неполная последовательность U+FEFF в начале — уже текст.
-        let partial_bom = bom_prefix % 3;
-        if partial_bom != 0 {
-            let mut restored = BOM[..partial_bom].to_vec();
-            restored.extend_from_slice(&text);
-            text = restored;
-            bytes += partial_bom as u64;
-        }
         if len.is_none() {
             return Ok(ModuleText::Text(String::new()));
         }
-        if bytes > MAX_SOURCE_TEXT_BYTES as u64 {
-            return Ok(ModuleText::TooLarge { bytes });
-        }
-        String::from_utf8(text).map(ModuleText::Text).map_err(|_| {
+        text.finish().map_err(|_| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, "BSL module is not UTF-8")
         })
     }

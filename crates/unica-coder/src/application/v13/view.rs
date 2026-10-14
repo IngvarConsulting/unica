@@ -1,8 +1,9 @@
 use crate::application::invocation_store::MAX_CANONICAL_RESULT_BYTES;
 use crate::application::result_store::{ViewCursorBinding, ViewCursorError, ViewCursorStore};
-use crate::application::v13::source_text::{text_too_large, ModuleText, OversizedText};
+use crate::application::v13::source_text::{oversized_body, ModuleText};
 use crate::domain::address::QualifiedAddress;
 use crate::domain::invocation::DomainResult;
+use crate::domain::node_view::SourceText;
 use crate::domain::node_view::{NodeView, NodeViewData, TextView};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use serde_json::{Map, Value};
@@ -337,6 +338,12 @@ impl<A: ViewReadAuthority> ViewService<A> {
                         "source changed while the source text was read; retry the question",
                     ));
                 }
+                let text = match text {
+                    SourceText::Whole(text) => text,
+                    SourceText::Oversized { bytes } => {
+                        return Err(oversized_body(&canonical_at.to_string(), bytes));
+                    }
+                };
                 return text_result(&canonical_at, object, text, snapshot.revision);
             }
         }
@@ -387,23 +394,20 @@ impl<A: ViewReadAuthority> ViewService<A> {
     }
 }
 
-/// `Body` модуля из его текста; текст сверх предела отказывает целиком
-/// с маршрутом к областям и методам модуля.
+/// `Body` модуля из его текста. Текст сверх предела отказывает лишь там,
+/// где отдаётся сам: контракт `.Can.<op>` того же узла его не касается.
 fn module_body_view(
     body_at: &QualifiedAddress,
     text: ModuleText,
 ) -> Result<NodeViewData, ViewError> {
-    let body_at = body_at.to_string();
-    let module_at = body_at.strip_suffix(".Body").unwrap_or(&body_at);
-    match text {
-        ModuleText::TooLarge { bytes } => {
-            Err(text_too_large(module_at, OversizedText::Module, bytes))
-        }
-        ModuleText::Text(text) => Ok(NodeViewData::Text(TextView::new(
-            NodeView::new(body_at.as_str(), "Body", "Body", Map::new()),
-            text,
-        ))),
-    }
+    let text = match text {
+        ModuleText::TooLarge { bytes } => SourceText::Oversized { bytes },
+        ModuleText::Text(text) => SourceText::Whole(text),
+    };
+    Ok(NodeViewData::Text(TextView::new(
+        NodeView::new(body_at.to_string(), "Body", "Body", Map::new()),
+        text,
+    )))
 }
 
 fn collection_result(
@@ -1112,6 +1116,26 @@ mod tests {
         );
         assert!(result.cursor.is_none());
         assert!(result.page.is_none());
+    }
+
+    #[test]
+    fn oversized_module_text_does_not_refuse_a_projection_that_returns_no_text() {
+        let at = "main:Document.Заказ.Module.Object.Body";
+        let mut authority = FixtureAuthority::new();
+        authority.module_text = Some(ModuleText::TooLarge {
+            bytes: MAX_SOURCE_TEXT_BYTES as u64 + 1,
+        });
+        let result = ViewService::new(authority, ViewCursorStore::default()).view_projected(
+            ViewRequest::new(at).unwrap(),
+            &|data| {
+                let mut contract = data.clone();
+                contract["kind"] = json!("Can");
+                Ok(contract)
+            },
+        );
+        assert!(result.ok, "{result:?}");
+        assert!(result.source_text.is_none());
+        assert_eq!(result.data.unwrap()["kind"], "Can");
     }
 
     #[test]

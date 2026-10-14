@@ -1,6 +1,6 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
 use crate::application::v13::resolve::ResolvedLines;
-use crate::application::v13::source_text::{admit_text, text_too_large, ModuleText, OversizedText};
+use crate::application::v13::source_text::{admit_text, ModuleText};
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewSourceSnapshot};
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
@@ -10,7 +10,9 @@ use crate::domain::module_projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
 };
-use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData, TextView};
+use crate::domain::node_view::{
+    BranchRef, CollectionView, NodeView, NodeViewData, SourceText, TextView,
+};
 use crate::domain::platform_profile::{
     ModuleCapability, ModuleRole, ModuleSourceLayout, PlatformProfile,
 };
@@ -358,7 +360,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// Resolve names the node's kind and its own source lines. In a BSL
     /// module `Method` spans the whole declaration through its closing line,
-    /// and `Body` only the text between them. The module `Body` counts the
+    /// and its `Body` the lines `view` returns as its text: the doc comment
+    /// above the method through the closing line. The module `Body` counts the
     /// file stream like the view fast path, without projecting the module.
     pub(crate) fn source_lines(
         &self,
@@ -440,7 +443,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             if method_body {
                 (
                     NodeKind::Body,
-                    line_range(method.body_from_line, method.body_to_line),
+                    line_range(method.text_from_line, method.to_line),
                 )
             } else {
                 (
@@ -2571,7 +2574,7 @@ fn module_projection_view_data(
         let branches = summary
             .branches
             .iter()
-            .map(|branch| BranchRef::new(&branch.at, branch.count))
+            .map(|branch| BranchRef::new(&branch.at, branch.count).with_bytes(branch.bytes))
             .collect();
         return Ok(NodeViewData::Node(
             NodeView::new(&summary.at, summary.kind, &summary.title, props).with_branches(branches),
@@ -2615,15 +2618,7 @@ fn module_projection_view_data(
             if detail.name().is_none() && detail.kind() == NodeKind::Body =>
         {
             let method = find_method(projections, name)?;
-            let text = projections.method_text(method);
-            admit_text(text).map_err(|bytes| {
-                text_too_large(
-                    &projections.summary().at,
-                    OversizedText::Method { at: &method.at },
-                    bytes,
-                )
-            })?;
-            Ok(module_text(requested, text))
+            Ok(module_text(requested, projections.method_text(method)))
         }
         (NodeKind::Method, Some(name), Some(detail))
             if detail.name().is_none() && detail.kind() == NodeKind::Compilation =>
@@ -2721,13 +2716,7 @@ fn module_projection_view_data(
                 .map(|range| serde_json::to_value(range).unwrap_or(Value::Null))
                 .collect(),
         ),
-        (NodeKind::Body, None, None) => {
-            let text = projections.source_text();
-            admit_text(text).map_err(|bytes| {
-                text_too_large(&projections.summary().at, OversizedText::Module, bytes)
-            })?;
-            Ok(module_text(requested, text))
-        }
+        (NodeKind::Body, None, None) => Ok(module_text(requested, projections.source_text())),
         _ => Err(ViewError::new(
             RefusalCode::NotFound,
             "module projection suffix is not available",
@@ -2735,7 +2724,15 @@ fn module_projection_view_data(
     }
 }
 
+/// Узел `Body` с текстом; предел проверяет тот, кто отдаёт сам текст.
 fn module_text(requested: &QualifiedAddress, text: &str) -> NodeViewData {
+    let text = if admit_text(text).is_ok() {
+        SourceText::Whole(text.to_string())
+    } else {
+        SourceText::Oversized {
+            bytes: text.len() as u64,
+        }
+    };
     NodeViewData::Text(TextView::new(
         NodeView::new(
             requested.to_string(),
@@ -2743,7 +2740,7 @@ fn module_text(requested: &QualifiedAddress, text: &str) -> NodeViewData {
             NodeKind::Body.as_str(),
             Map::new(),
         ),
-        text.to_string(),
+        text,
     ))
 }
 
@@ -2793,11 +2790,11 @@ fn method_node(method: &MethodProjection) -> NodeView {
         ("methodKind".to_string(), json!(method.method_kind)),
         ("export".to_string(), json!(method.export)),
         ("compile".to_string(), json!(method.compile)),
-        // Область уже называет свои строки; метод называет их теперь тоже.
-        // Это не физическая раскладка, а координата внутри модуля — той же
-        // природы, что пары `{line, text}` у тела.
-        ("line".to_string(), json!(method.body_from_line)),
-        ("endLine".to_string(), json!(method.body_to_line)),
+        // Область называет свои строки; метод называет строки своего текста
+        // `Body` — от документирующего комментария до строки окончания.
+        // Это координата внутри модуля, а не физическая раскладка.
+        ("line".to_string(), json!(method.text_from_line)),
+        ("endLine".to_string(), json!(method.to_line)),
     ]);
     if let Some(doc) = &method.doc {
         props.insert("doc".to_string(), json!(doc));

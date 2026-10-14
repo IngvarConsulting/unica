@@ -663,7 +663,23 @@ fn v13_tool_definition(name: &str, description: Option<&str>, schema: Value) -> 
     if description.is_none() {
         tool.description = None;
     }
+    if name == "view" {
+        // `view` отдаёт исходный текст в пределах бюджета клиента; хост,
+        // который понимает это объявление, передаёт такой ответ модели
+        // целиком, а не выносит в файл.
+        let (key, chars) = unica_bootstrap::source_text_tool_meta();
+        let mut meta = rmcp::model::MetaObject::new();
+        meta.insert(key.to_string(), Value::from(chars));
+        tool.meta = Some(meta);
+    }
     tool
+}
+
+/// Бюджет ответа клиента этого соединения: по имени из `initialize`
+/// и окружению запуска (фасад хостов).
+fn client_response_budget(context: &RequestContext<RoleServer>) -> unica_bootstrap::ResponseBudget {
+    let peer = context.peer.peer_info();
+    unica_bootstrap::host_response_budget(peer.as_ref().map(|peer| peer.client_info.name.as_str()))
 }
 
 /// SEP-2549 cache fields are required on list results from protocol revision
@@ -924,7 +940,12 @@ impl ServerHandler for UnicaServer {
         } else {
             unica_bootstrap::ClientRoots::NotDeclared
         };
-        let host = unica_bootstrap::HostRequest { metadata, roots };
+        let response_budget = client_response_budget(&context);
+        let host = unica_bootstrap::HostRequest {
+            metadata,
+            roots,
+            response_budget,
+        };
         let admission = self
             .in_flight
             .admit()
@@ -1032,7 +1053,7 @@ impl ServerHandler for UnicaServer {
                     .map(CallToolResponse::from)
             }
             Ok(Ok(SurfaceToolOutcome::Canonical(result))) => {
-                crate::interfaces::task_projection::call_tool_result(&result)
+                crate::interfaces::task_projection::call_tool_result(&result, response_budget)
                     .map(CallToolResponse::from)
                     .map_err(crate::interfaces::task_projection::projection_error)
             }
@@ -1067,9 +1088,12 @@ impl ServerHandler for UnicaServer {
             .map_err(|_| task_internal_error("task_worker_failed"))?
             .map_err(project_task_exchange_error)?;
         ensure_task_identity(task_id, &snapshot)?;
-        crate::interfaces::task_projection::detailed_task_v5(&snapshot)
-            .map(GetTaskResult::new)
-            .map_err(crate::interfaces::task_projection::projection_error)
+        crate::interfaces::task_projection::detailed_task_v5(
+            &snapshot,
+            client_response_budget(&context),
+        )
+        .map(GetTaskResult::new)
+        .map_err(crate::interfaces::task_projection::projection_error)
     }
 
     async fn update_task(
@@ -1583,6 +1607,25 @@ mod tests {
             ],
             "the compatibility profile must add only the three task projection tools"
         );
+    }
+
+    #[test]
+    fn only_view_declares_the_source_text_result_size_and_no_tool_declares_an_output_schema() {
+        let (key, chars) = unica_bootstrap::source_text_tool_meta();
+        for profile in [V13TaskProfile::Native, V13TaskProfile::Compatibility] {
+            for tool in v13_tool_definitions(profile) {
+                assert!(tool.output_schema.is_none(), "{}", tool.name);
+                let declared = tool.meta.as_ref().and_then(|meta| meta.get(key).cloned());
+                if tool.name == "unica.view" {
+                    assert_eq!(declared, Some(Value::from(chars)));
+                    // Бюджет любого хоста в байтах не длиннее объявленного
+                    // предела в символах: символ занимает хотя бы байт.
+                    assert!(unica_bootstrap::MAX_RESPONSE_BUDGET as u64 <= chars);
+                } else {
+                    assert!(tool.meta.is_none(), "{}", tool.name);
+                }
+            }
+        }
     }
 
     #[test]
@@ -2659,9 +2702,12 @@ mod tests {
     fn direct_outcome(
         result: crate::domain::invocation::DomainResult,
     ) -> Result<CanonicalCallOutcome, ErrorData> {
-        crate::interfaces::task_projection::call_tool_result(&result)
-            .map(CanonicalCallOutcome::Direct)
-            .map_err(crate::interfaces::task_projection::projection_error)
+        crate::interfaces::task_projection::call_tool_result(
+            &result,
+            unica_bootstrap::ResponseBudget::default(),
+        )
+        .map(CanonicalCallOutcome::Direct)
+        .map_err(crate::interfaces::task_projection::projection_error)
     }
 
     fn canonical_profile_server() -> UnicaServer {

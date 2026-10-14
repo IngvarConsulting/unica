@@ -3769,6 +3769,31 @@ fn module_body_returns_the_source_text_byte_for_byte() {
 }
 
 #[test]
+fn module_body_beyond_the_limit_is_still_checked_as_utf8_in_full() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    let mut source = vec![b'a'; crate::application::v13::source_text::MAX_SOURCE_TEXT_BYTES + 1];
+    let valid = fixture.view_service();
+    fs::write(&module, &source).unwrap();
+    let oversized = valid.view(ViewRequest::new(at).unwrap());
+    assert_eq!(oversized.diagnostics[0]["code"], "result_too_large");
+    // Неверный байт за пределом не теряется: отказ называет испорченный
+    // исходник, а не размер.
+    source.push(0xff);
+    fs::write(&module, &source).unwrap();
+    let broken = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert!(!broken.ok);
+    assert_ne!(
+        broken.diagnostics[0]["code"], "result_too_large",
+        "{broken:?}"
+    );
+    assert!(broken.source_text.is_none());
+}
+
+#[test]
 fn ordinary_xml_read_over_eight_mib_keeps_complete_configuration_facts() {
     let fixture = RealReaderFixture::new();
     let path = fixture.source.join("Configuration.xml");
