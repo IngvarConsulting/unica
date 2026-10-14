@@ -114,9 +114,15 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 # --jobs 1 without a source error. Nine cases remain accepted-normalized
 # (#1369), so the run is not a pass. Keep LAST_VERIFIED.
 # #1448 removed the three cases of the retired DSL compilers (mxl-compile,
-# role-compile, subsystem-compile); the 66-case inventory has no pinned
-# contract until a fresh corpus generation and platform run pin it.
-EXPECTED_CASE_CONTRACT_SHA256: str | None = None
+# role-compile, subsystem-compile). #1450 moved support-edit-bin-only to the
+# configuration root and xdto-add-nested-property to the property address.
+# Two independent generations agree on the 66-case contract below. The full
+# --jobs 1 run on 8.3.27.2074 processes all 66 cases without a source error:
+# 57 pass and the same nine of #1369 stay accepted-normalized, so the run is
+# not a pass. Keep LAST_VERIFIED.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = (
+    "bbd782e757485d65be77ebd9c2b0d7602b1ad2634c6ae7045397c88aa5598a4c"
+)
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
