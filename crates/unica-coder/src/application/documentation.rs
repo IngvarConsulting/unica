@@ -28,6 +28,18 @@ fn status_fields(status: &DocumentationSectionStatus) -> (&'static str, Value) {
     }
 }
 
+/// Причина непригодной секции одной строкой: кто не ответил и почему.
+fn unusable_cause(section: &DocumentationSection) -> Option<String> {
+    let cause = match &section.status {
+        DocumentationSectionStatus::Ok | DocumentationSectionStatus::Empty => return None,
+        DocumentationSectionStatus::Unavailable { reason, detail } => {
+            format!("unavailable ({}): {detail}", reason.as_str())
+        }
+        DocumentationSectionStatus::Failed { diagnostic } => format!("failed: {diagnostic}"),
+    };
+    Some(format!("{}/{} — {cause}", section.provider, section.corpus))
+}
+
 /// Poll every applicable provider and project their sections into the
 /// public `data` shape unchanged: no cross-section sorting, merging or
 /// deletion. A provider's own failure stays inside its
@@ -42,7 +54,9 @@ fn status_fields(status: &DocumentationSectionStatus) -> (&'static str, Value) {
 ///
 /// Search is successful if at least one applicable provider answered `ok` or
 /// `empty`; if every section is `unavailable`/`failed`, the call reports an
-/// error instead of an empty-looking success.
+/// error instead of an empty-looking success. The error names every
+/// unusable section with its provider's own diagnostic: a bare «no provider
+/// answered» hid a failing network provider behind `provider_absent` (#1419).
 ///
 /// A blank query is refused here, before any provider is polled: substring
 /// matching makes the empty needle match every page, so a blank query would
@@ -90,6 +104,7 @@ pub fn search(
     });
     let mut sections = Vec::new();
     let mut any_usable = false;
+    let mut causes = Vec::new();
     for (window_limit, provider_sections) in polled {
         for section in provider_sections {
             // Поставщик с корпусами разных смыслов отвечает всеми секциями;
@@ -105,6 +120,9 @@ pub fn search(
                 DocumentationSectionStatus::Ok | DocumentationSectionStatus::Empty
             ) {
                 any_usable = true;
+            }
+            if let Some(cause) = unusable_cause(&section) {
+                causes.push(cause);
             }
             let hits: Vec<Value> = section
                 .hits
@@ -153,7 +171,15 @@ pub fn search(
         }
     }
     if !any_usable {
-        return Err("ни один поставщик документации не дал результата".to_string());
+        let message = if causes.is_empty() {
+            "ни один поставщик документации не применим к запросу".to_string()
+        } else {
+            format!(
+                "ни один поставщик документации не дал результата: {}",
+                causes.join("; ")
+            )
+        };
+        return Err(message);
     }
     Ok(json!({ "sections": sections }))
 }
@@ -626,6 +652,45 @@ mod tests {
             as Arc<dyn DocumentationProvider>])
         .expect("реестр");
         assert!(search(&registry, &request(), &context()).is_err());
+    }
+
+    /// #1419: отказ без пригодной секции называл лишь «ни один поставщик
+    /// не дал результата», и сбой сервера стандартов становился неотличим
+    /// от отсутствия справки. Отказ обязан назвать каждую непригодную
+    /// секцию с диагностикой её поставщика.
+    #[test]
+    fn no_usable_section_names_every_provider_and_its_own_cause() {
+        let registry = DocumentationRegistry::new(vec![
+            Arc::new(Stub {
+                id: "unset",
+                section: unavailable_section("unset"),
+            }) as Arc<dyn DocumentationProvider>,
+            Arc::new(Stub {
+                id: "standards",
+                section: DocumentationSection {
+                    status: DocumentationSectionStatus::Failed {
+                        diagnostic: "сервер стандартов недоступен: connection refused".to_string(),
+                    },
+                    corpus: "public-standards".to_string(),
+                    hits: Vec::new(),
+                    ..ok_section("standards")
+                },
+            }),
+        ])
+        .expect("реестр");
+        let message = search(&registry, &request(), &context()).expect_err("отказ");
+        assert!(
+            message.contains(
+                "standards/public-standards — failed: сервер стандартов недоступен: connection refused"
+            ),
+            "причина сбоя поставщика обязана дойти, получено {message}"
+        );
+        assert!(
+            message.contains(
+                "unset/syntax-context — unavailable (not-configured): установка платформы не разрешена"
+            ),
+            "причина недоступного поставщика обязана дойти, получено {message}"
+        );
     }
 
     #[test]
