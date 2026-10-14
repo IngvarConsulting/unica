@@ -2,6 +2,8 @@
 id: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
 check:
   - crates/unica-coder/src/infrastructure/platform/process.rs::managed_process_tree_lifecycle_is_bounded
+  - crates/unica-bootstrap/src/platform/process.rs::job::closing_the_bootstrap_job_terminates_the_runtime
+  - crates/unica-bootstrap/src/platform/process.rs::job::a_failed_assignment_terminates_the_suspended_runtime
 ---
 
 # Остановка управляемого запуска охватывает его дочерние процессы
