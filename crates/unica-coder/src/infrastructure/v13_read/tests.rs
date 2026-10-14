@@ -6167,7 +6167,9 @@ fn registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_vi
     fs::write(configuration, owner).unwrap();
     let service = fixture.view_service();
 
-    for at in ["main:Configuration", "main:Role", "main:Role.Missing"] {
+    let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(root.ok, "the root proves only Configuration.xml: {root:?}");
+    for at in ["main:Role", "main:Role.Missing"] {
         let result = service.view(ViewRequest::new(at).unwrap());
         assert!(
             !result.ok,

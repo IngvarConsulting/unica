@@ -629,8 +629,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         admitted: &ViewSourceSnapshot,
     ) -> Result<Value, ViewError> {
         if route.reader() == LogicalReader::Configuration {
+            // Корень доказывает только `Configuration.xml`: описание
+            // объекта проверяют прямое чтение и ветка его вида.
             let payload = self.configuration_payload(admitted)?;
-            self.verify_top_level_inventory(payload.as_ref(), admitted)?;
             return Ok(payload.as_ref().clone());
         }
         if route.reader() == LogicalReader::Metadata {
@@ -943,83 +944,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
             ));
         };
         self.ensure_owner_registered_parts(owner_kind, owner_name, admitted)
-    }
-
-    fn verify_top_level_inventory(
-        &self,
-        payload: &Value,
-        admitted: &ViewSourceSnapshot,
-    ) -> Result<(), ViewError> {
-        for item in payload
-            .get("registeredObjects")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let kind = item.get("kind").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "registered owner has no kind",
-                )
-            })?;
-            let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "registered owner has no name",
-                )
-            })?;
-            if kind == NodeKind::WebSocketClient.as_str() {
-                continue;
-            }
-            let owner =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
-            self.verify_registered_owner(&owner, admitted)?;
-        }
-        Ok(())
-    }
-
-    /// The Configuration root already has registration evidence from the
-    /// streaming owner document. Verify each descriptor directly, without
-    /// rebuilding that full inventory or retaining one cache entry per owner.
-    fn verify_streamed_top_level_owner(&self, kind: &str, name: &str) -> Result<(), ViewError> {
-        if kind == NodeKind::WebSocketClient.as_str() {
-            return Ok(());
-        }
-        self.read_checkpoint()?;
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                .map_err(|error| {
-                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                })?;
-        let evidence = self
-            .read
-            .metadata_owner_evidence(&target, &mut || self.read_checkpoint())
-            .map_err(|error| {
-                if error.code() == RefusalCode::NotFound {
-                    ViewError::detailed(
-                        RefusalDetail::SourceUnreadable,
-                        format!(
-                            "registered metadata owner `{}` has no descriptor",
-                            target.as_str()
-                        ),
-                    )
-                } else {
-                    error
-                }
-            })?;
-        if evidence.artifact_kind() != kind || evidence.artifact_name() != Some(name) {
-            return Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                format!(
-                    "metadata descriptor identity does not match `{}`",
-                    target.as_str()
-                ),
-            ));
-        }
-        Ok(())
     }
 
     fn ensure_owner_registered_parts(
@@ -1747,9 +1671,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         {
             let streamed = self
                 .read
-                .streamed_configuration_root(&|| self.read_checkpoint(), |kind, name| {
-                    self.verify_streamed_top_level_owner(kind, name)
-                })?;
+                .streamed_configuration_root(&|| self.read_checkpoint())?;
             crate::infrastructure::v13_read_projection::project_configuration_with_counts(
                 route.at(),
                 &streamed.payload,

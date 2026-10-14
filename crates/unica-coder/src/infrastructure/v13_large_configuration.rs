@@ -517,7 +517,6 @@ pub(super) fn read_configuration_root(
     home_page: Value,
     interface: Value,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
-    mut verify_owner: impl FnMut(&str, &str) -> Result<(), ViewError>,
 ) -> Result<StreamedConfigurationRoot, ViewError> {
     let state = parse_configuration_owner(file, checkpoint)?;
     let RootState {
@@ -528,7 +527,7 @@ pub(super) fn read_configuration_root(
         ..
     } = state;
     let mut counts = BTreeMap::<String, usize>::new();
-    registrations.for_each_unique(checkpoint, |kind, name| {
+    registrations.for_each_unique(checkpoint, |kind, _name| {
         let Ok(kind_value) = NodeKind::parse(kind) else {
             return Ok(());
         };
@@ -536,7 +535,6 @@ pub(super) fn read_configuration_root(
             return Ok(());
         }
         checkpoint()?;
-        verify_owner(kind, name)?;
         let count = counts.entry(kind.to_string()).or_default();
         *count = count.checked_add(1).ok_or_else(|| {
             ViewError::detailed(
@@ -1089,7 +1087,6 @@ mod tests {
             Value::Null,
             Value::Null,
             checkpoint,
-            |_, _| Ok(()),
         )
     }
 

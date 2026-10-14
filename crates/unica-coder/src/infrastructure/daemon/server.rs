@@ -10720,6 +10720,39 @@ struct ActorLogicalReadLease {"#,
         assert_logical_read_files_do_not_grow_with_unrelated_objects(false);
     }
 
+    /// The configuration root proves only `Configuration.xml`: it opens no
+    /// object descriptor and lists no collection, however many are registered.
+    #[test]
+    fn configuration_root_view_opens_no_object_descriptor() {
+        let (workspace, source) = source_selection_read_fixture();
+        add_unrelated_catalogs(&source, 6);
+        let runtime = bootstrap_runtime();
+        let reads = RetainedReadProbe::watch(&source);
+
+        let root = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Configuration"}),
+        );
+
+        assert!(root.ok, "{root:?}");
+        let root_reads = reads.take();
+        assert!(
+            root_reads
+                .iter()
+                .any(|read| *read == RetainedRead::Opened("Configuration.xml".into())),
+            "the probe must observe the root read: {root_reads:?}"
+        );
+        assert!(
+            root_reads.iter().all(|read| match read {
+                RetainedRead::Opened(path) => !path.starts_with("Catalogs"),
+                RetainedRead::Listed(_) => false,
+            }),
+            "the configuration root read object descriptors: {root_reads:?}"
+        );
+    }
+
     #[test]
     fn borrowed_logical_read_admits_and_publishes_without_unrelated_objects() {
         assert_logical_read_files_do_not_grow_with_unrelated_objects(true);

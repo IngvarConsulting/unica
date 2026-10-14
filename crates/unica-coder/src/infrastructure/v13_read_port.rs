@@ -381,7 +381,6 @@ impl ProviderReadAuthority {
     pub(crate) fn streamed_configuration_root(
         &self,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
-        verify_owner: impl FnMut(&str, &str) -> Result<(), ViewError>,
     ) -> Result<StreamedConfigurationRoot, ViewError> {
         checkpoint()?;
         let file = match self
@@ -418,14 +417,7 @@ impl ProviderReadAuthority {
         let interface = serde_json::to_value(self.command_interface()?).map_err(|error| {
             ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
         })?;
-        read_configuration_root(
-            file,
-            support,
-            home_page,
-            interface,
-            checkpoint,
-            verify_owner,
-        )
+        read_configuration_root(file, support, home_page, interface, checkpoint)
     }
 
     /// Build root registration evidence from the complete retained XML once.
