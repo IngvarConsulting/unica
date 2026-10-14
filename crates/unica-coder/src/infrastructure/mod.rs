@@ -53,8 +53,6 @@ pub(crate) mod rlm_navigation;
 pub(crate) mod runtime_build_fallback;
 pub(crate) mod runtime_build_preflight;
 pub(crate) mod runtime_jobs;
-#[cfg(test)]
-pub(crate) mod source_revision;
 pub(crate) mod source_roots;
 mod source_selection_evidence;
 // The topology provider is introduced before both public consumers migrate to it.
@@ -69,19 +67,16 @@ pub(crate) mod task_store_v5;
 #[allow(dead_code)]
 pub(crate) mod task_lifecycle_link_store_v5;
 // Hidden v0.13 typed read adapter remains unreachable from the v0.12 tool ledger.
+pub(crate) mod support_state;
+pub(crate) mod tool_context;
 mod v13_large_configuration;
 #[allow(dead_code)]
 pub(crate) mod v13_read;
-#[allow(dead_code)]
 pub(crate) mod v13_read_port;
 mod v13_read_projection;
 // Production v0.12 routing stays unchanged until the atomic v0.13 cutover.
 #[allow(dead_code)]
 pub(crate) mod v13_find;
-// The provider is introduced before the seven subject readers migrate to it.
-#[allow(dead_code)]
-pub(crate) mod support_state;
-pub(crate) mod tool_context;
 pub(crate) mod workspace;
 // Publication and Invocation routing consume the remaining actor seams in Task 7.
 #[allow(dead_code)]

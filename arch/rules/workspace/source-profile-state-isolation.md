@@ -5,8 +5,8 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::same_name_root_changed_format_or_platform_profile_rotates_actor
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::two_frontends_reuse_the_actor_for_one_canonical_worktree
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::remapped_names_and_profiles_do_not_share_revision_index_or_coordination_state
-  - crates/unica-coder/src/infrastructure/workspace_actor.rs::active_platform_actor_cannot_select_the_legacy_revision_corpus
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::remapped_names_and_profiles_do_not_share_index_or_coordination_state
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::active_platform_actor_cannot_select_the_legacy_state_scope
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::actor_state_scope_digest_is_fallible_and_bounded
   - crates/unica-coder/src/infrastructure/workspace_index.rs::rlm_coordination_paths_separate_source_roots_under_the_pair_root
 ---

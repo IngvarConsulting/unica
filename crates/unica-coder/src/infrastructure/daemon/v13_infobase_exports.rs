@@ -3,7 +3,7 @@
 // that value intact avoids a second error model at this adapter boundary.
 
 use super::protocol::InvocationRequest;
-use super::runner_014::Runner014ProcessRunner;
+use super::runner_015::Runner015ProcessRunner;
 use crate::application::invocation_store::ToolIdentity;
 use crate::domain::cancellation::{CancellationToken, CANCELLED_PREFIX};
 use crate::domain::engine::MissingEngine;
@@ -225,7 +225,7 @@ impl PreparedInfobaseExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner015ProcessRunner, cancellation)
     }
 }
 
@@ -1106,7 +1106,7 @@ pub(super) fn resolve_bundled_runner(cwd: &Path) -> Result<BundledRunner, Runner
         })?;
     let version =
         bundled_tool_version(&plugin_root, RUNNER_TOOL).map_err(|error| redactor(&error))?;
-    super::runner_014::check_version(&version)?;
+    super::runner_015::check_version(&version)?;
     Ok(BundledRunner { tool, version })
 }
 
@@ -1149,7 +1149,7 @@ pub(super) fn runner_start_rejection(
             "cancelled before provider launch",
         );
     }
-    if let Some(reason) = super::runner_014::config_refusal(error) {
+    if let Some(reason) = super::runner_015::config_refusal(error) {
         return DomainResult::canonical_rejection(at, RefusalCode::InvalidSource, redactor(reason));
     }
     let cause = runner_failure_cause(error, program);
@@ -1698,7 +1698,7 @@ mod tests {
             plugin.join("third-party/tools.lock.json"),
             r#"{"schemaVersion":1,
   "targets":{"darwin-arm64":{"exe":""},"linux-x64":{"exe":""},"win-x64":{"exe":".exe"}},
-  "tools":[{"name":"v8-runner","version":"0.14.0","binaryName":"v8-runner"}]}"#,
+  "tools":[{"name":"v8-runner","version":"0.15.1","binaryName":"v8-runner"}]}"#,
         )
         .unwrap();
 
@@ -1714,7 +1714,7 @@ mod tests {
         assert_eq!(diagnostic["outcome"], "needsHuman");
         let data = rejection.data.as_ref().expect("поля движка в data");
         assert_eq!(data["tool"], "v8-runner");
-        assert_eq!(data["pinnedVersion"], "0.14.0");
+        assert_eq!(data["pinnedVersion"], "0.15.1");
         assert_eq!(data["stage"], "manifest");
         assert_eq!(data["retryable"], false);
         assert_eq!(
@@ -2037,7 +2037,7 @@ mod tests {
     }
 
     #[test]
-    fn runner_014_provider_receipt_replaces_selection_for_all_three_operations() {
+    fn runner_015_provider_receipt_replaces_selection_for_all_three_operations() {
         let root = tempfile::tempdir().unwrap();
         for operation in [
             ExportOperation::Configuration,
@@ -2679,7 +2679,7 @@ mod tests {
         let error = invoke_runner(
             &prepared,
             &tool,
-            &Runner014ProcessRunner,
+            &Runner015ProcessRunner,
             &CancellationToken::new(),
             true,
         )
