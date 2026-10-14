@@ -169,4 +169,3 @@
 | DSL | Описание | Спецификация |
 |-----|----------|--------------|
 | Form DSL | JSON-формат для компиляции форм | [form-dsl-spec.md](form-dsl-spec.md) |
-| Role DSL | JSON-формат для компиляции ролей | [role-dsl-spec.md](role-dsl-spec.md) |

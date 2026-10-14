@@ -6,7 +6,7 @@
 //! Аргументов нет: соединение задаёт проектный файл, и словарь его не
 //! принимает — как у выгрузок. Превью зовёт `infobase create --dry-run` и читает шаги
 //! раннера по их статусам: базу можно создать только если шаг `infobase`
-//! запланирован. Существующую файловую базу раннер 0.14 отвергает отказом
+//! запланирован. Существующую файловую базу раннер 0.15 отвергает отказом
 //! проверки с проваленным шагом `infobase` ещё в превью; это отказ до применения,
 //! а не тихий пропуск. Шаг EDT-пространства обязан быть пропущен: Unica работает
 //! с выгрузкой Designer и проект другого формата не заводит.
@@ -16,7 +16,7 @@
 //! называет его засвидетельствованным провайдером. Путь к базе, платформе и
 //! командная строка наружу не идут.
 //!
-//! Раннер 0.14 собирает файловую базу сразу с основной конфигурацией проекта —
+//! Раннер 0.15 собирает файловую базу сразу с основной конфигурацией проекта —
 //! набором `CONFIGURATION` (`ibcmd infobase create --import`, запасной путь —
 //! Конфигуратор) — и записывает память об этом наборе: первый `push` его не
 //! грузит, а остальные наборы досылает целиком. База в кластере создаётся
@@ -25,7 +25,7 @@
 //! Записи поколения после создания нет: первый `push` поколение не сверяет.
 
 use super::protocol::InvocationRequest;
-use super::runner_014::{origin_kind, OriginKind, Runner014ProcessRunner};
+use super::runner_015::{origin_kind, OriginKind, Runner015ProcessRunner};
 use super::v13_infobase_exports::{
     configuration_source_set, digest_optional_workspace_file, digest_required_workspace_file,
     missing_runner_rejection, resolve_bundled_runner, runner_rejection, runner_start_rejection,
@@ -119,7 +119,7 @@ impl PreparedInfobaseCreate {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner015ProcessRunner, cancellation)
     }
 }
 
@@ -330,7 +330,7 @@ fn execute_with_resolved_runner(
         }
         Err(result) => return result,
     }
-    // Базу в кластере раннер 0.14 до создания не видит: его превью планирует её
+    // Базу в кластере раннер 0.15 до создания не видит: его превью планирует её
     // всегда, и повторное превью квитанцией быть не может. Ответ это называет.
     if contents.kind == OriginKind::Cluster {
         let mut result = DomainResult::success(
@@ -369,7 +369,7 @@ fn execute_with_resolved_runner(
         Ok(envelope) => envelope,
         Err(result) => return result,
     };
-    // Раннер 0.14 на существующей файловой базе отказывает ещё в превью. Пропуск
+    // Раннер 0.15 на существующей файловой базе отказывает ещё в превью. Пропуск
     // шага — квитанция прежних раннеров.
     let confirmed = refuses_an_existing_file_infobase(&receipt, &contents)
         || (receipt["ok"] == true
@@ -460,7 +460,7 @@ fn existing_infobase_rejection() -> DomainResult {
 /// Код предупреждения о базе данных кластера.
 const CLUSTER_DATABASE_WARNING_CODE: &str = "cluster_database_unverified";
 
-/// Раннер 0.14 создаёт базу в кластере с `CrSQLDB=Y`: база данных СУБД с тем же
+/// Раннер 0.15 создаёт базу в кластере с `CrSQLDB=Y`: база данных СУБД с тем же
 /// именем, если она есть, берётся молча, а существование самой базы до
 /// создания не видно. Это называют и превью, и ответ.
 fn cluster_database_warning(preview: bool) -> Value {
@@ -482,7 +482,7 @@ struct CreationContents {
 }
 
 impl CreationContents {
-    /// Раннер 0.14 собирает с основной конфигурацией только файловую базу.
+    /// Раннер 0.15 собирает с основной конфигурацией только файловую базу.
     fn loaded_source_set(&self) -> Option<&str> {
         (self.kind == OriginKind::File)
             .then_some(self.main_configuration.as_deref())
@@ -506,7 +506,7 @@ fn creation_contents(prepared: &PreparedInfobaseCreate) -> Result<CreationConten
     })
 }
 
-/// Отказ раннера 0.14 на уже существующей файловой базе: отказ проверки до
+/// Отказ раннера 0.15 на уже существующей файловой базе: отказ проверки до
 /// запуска платформы с проваленным шагом `infobase`. Других отказов проверки
 /// у этого шага файловой цели нет; у кластера тот же род значит нехватку
 /// реквизитов СУБД, поэтому признак читается только у файловой цели.
@@ -957,12 +957,12 @@ mod tests {
 
     fn captured(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_014")
+            .join("../../tests/fixtures/v8_runner_015")
             .join(name);
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
-    /// Проект с основной конфигурацией, как у снятых конвертов раннера 0.14.0.
+    /// Проект с основной конфигурацией, как у снятых конвертов раннера 0.15.1.
     fn workspace_with_main(connection: &str) -> tempfile::TempDir {
         let root = tempfile::tempdir().unwrap();
         fs::write(
@@ -978,13 +978,13 @@ mod tests {
         root
     }
 
-    /// Конверты раннера 0.14.0, снятые вживую (`tests/fixtures/v8_runner_014`):
+    /// Конверты раннера 0.15.1, снятые вживую (`tests/fixtures/v8_runner_015`):
     /// превью планирует базу, применение собирает её с основной конфигурацией,
     /// повторное превью отказывает на существующей базе — это и есть квитанция.
     /// Ответ называет загруженный набор, не называет путь базы и платформы и
     /// не обещает защиту поколения: она — свойство `push`, а не создания.
     #[test]
-    fn captured_runner_014_create_is_confirmed_by_its_repeated_preview() {
+    fn captured_runner_015_create_is_confirmed_by_its_repeated_preview() {
         let root = workspace_with_main("File=build/ib");
         let runner = SequenceRunner::new(vec![process(
             captured("infobase-create-preview.json"),
@@ -1022,7 +1022,7 @@ mod tests {
         }
     }
 
-    /// Существующую файловую базу раннер 0.14.0 отвергает отказом проверки ещё
+    /// Существующую файловую базу раннер 0.15.1 отвергает отказом проверки ещё
     /// в превью. Для `infobase.create` это не правка вызова (аргументов нет), а
     /// состояние: превью отказывает `invalid_state`, применение, на котором база
     /// появилась после превью, — `concurrent_change`.
