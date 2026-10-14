@@ -459,7 +459,12 @@ fn validate_form_inner(
         if !report.stopped {
             let signature_check = (signatures == HandlerSignatures::Check)
                 .then(|| HandlerSignatureCheck::new(&form_path));
-            form_validate_events(root, signature_check, &mut report);
+            form_validate_events(
+                root,
+                signature_check,
+                form_metadata_owner(&form_path),
+                &mut report,
+            );
         }
         if !report.stopped {
             form_validate_command_actions(&cmd_nodes, &mut report);
@@ -1002,6 +1007,7 @@ fn form_metadata_owner(form_path: &Path) -> Option<crate::domain::address::NodeK
 pub(crate) fn form_validate_events(
     root: roxmltree::Node<'_, '_>,
     signatures: Option<HandlerSignatureCheck>,
+    metadata_owner: Option<crate::domain::address::NodeKind>,
     report: &mut FormValidationReporter,
 ) {
     struct EventValidationState<'report> {
@@ -1119,6 +1125,8 @@ pub(crate) fn form_validate_events(
                 } else {
                     FormEventBinding::new(name, handler)
                 };
+                let data_path = form_child_text(owner, "DataPath");
+                let binding = binding.with_data_path(data_path.as_deref());
                 let validation = target.map_or_else(
                     || {
                         Err(FormEventDiagnostic::new(
@@ -1160,8 +1168,12 @@ pub(crate) fn form_validate_events(
     }
 
     let base_form = form_validation_child(root, "BaseForm");
+    // Вид владельца формы выбирает его каталог событий, как при планировании
+    // привязки: иначе итоговая проверка отвергла бы принятое событие.
+    let mut context = context_from_root(root);
+    context.metadata_owner = metadata_owner;
     let mut state = EventValidationState {
-        context: context_from_root(root),
+        context,
         signatures,
         report,
         errors: 0,
@@ -1875,26 +1887,43 @@ fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> 
         .filter(|child| {
             child.is_element() && !form_skip_elements().contains(&child.tag_name().name())
         })
-        .map(|child| {
-            let name = child.attribute("name").unwrap_or("").to_string();
-            FormInfoElement {
-                tag: form_element_tag(child),
-                event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
-                title: form_title_differs(child, &name),
-                name,
-                binding: form_info_binding(child),
-                visible: form_child_text(child, "Visible").as_deref() != Some("false"),
-                enabled: form_child_text(child, "Enabled").as_deref() != Some("false"),
-                read_only: form_child_text(child, "ReadOnly").as_deref() == Some("true"),
-                events: form_child(child, "Events")
-                    .map(form_info_events_section)
-                    .unwrap_or_default(),
-                children: form_child(child, "ChildItems")
-                    .map(form_info_tree)
-                    .unwrap_or_default(),
-            }
-        })
+        .map(form_info_element)
         .collect()
+}
+
+/// Элементы владельца, как их адресует `view`: его автоматическая командная
+/// панель (у формы и таблицы), затем `ChildItems`. Панель — место кнопок,
+/// которые добавляет `element.add` по её адресу (#1355); остальные
+/// companions (`ContextMenu`, `ExtendedTooltip`, …) в дерево не входят.
+fn form_info_children(owner: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
+    form_child(owner, "AutoCommandBar")
+        .filter(|bar| bar.attribute("name").is_some_and(|name| !name.is_empty()))
+        .map(form_info_element)
+        .into_iter()
+        .chain(
+            form_child(owner, "ChildItems")
+                .map(form_info_tree)
+                .unwrap_or_default(),
+        )
+        .collect()
+}
+
+fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
+    let name = child.attribute("name").unwrap_or("").to_string();
+    FormInfoElement {
+        tag: form_element_tag(child),
+        event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
+        title: form_title_differs(child, &name),
+        name,
+        binding: form_info_binding(child),
+        visible: form_child_text(child, "Visible").as_deref() != Some("false"),
+        enabled: form_child_text(child, "Enabled").as_deref() != Some("false"),
+        read_only: form_child_text(child, "ReadOnly").as_deref() == Some("true"),
+        events: form_child(child, "Events")
+            .map(form_info_events_section)
+            .unwrap_or_default(),
+        children: form_info_children(child),
+    }
 }
 
 fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute> {
@@ -1973,9 +2002,7 @@ fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvid
         events: form_child(root, "Events")
             .map(form_info_events_section)
             .unwrap_or_default(),
-        elements: form_child(root, "ChildItems")
-            .map(form_info_tree)
-            .unwrap_or_default(),
+        elements: form_info_children(root),
         commands: form_child(root, "Commands")
             .map(form_info_commands)
             .unwrap_or_default(),
@@ -5099,7 +5126,7 @@ pub(crate) fn form_edit_apply_definition(
     }
     let planned_removals = form_edit_plan_removals(defn, xml_text)?;
     form_edit_validate_removal_definition_conflicts(defn, &planned_removals)?;
-    let planned_events = form_edit_plan_events(defn, xml_text)?;
+    let planned_events = form_edit_plan_events(defn, xml_text, form_metadata_owner(form_path))?;
     form_edit_apply_planned_removals(xml_text, &planned_removals);
     let form_name = form_edit_form_name(form_path);
     let mut elem_ids = FormIdAllocator {
@@ -5636,6 +5663,8 @@ impl FormEditEventPlanner {
         } else {
             FormEventBinding::new(&event.name, &event.handler)
         };
+        let data_path = form_child_text(owner_node, "DataPath");
+        let binding = binding.with_data_path(data_path.as_deref());
         validate_event_owner_node(owner_node, target, &binding)
             .and_then(|_| validate_event(&self.context, target, &binding))
             .map_err(|diagnostic| diagnostic.to_string())?;
@@ -5765,14 +5794,16 @@ fn form_edit_resolve_definition_guarded(
 pub(crate) fn form_edit_plan_events(
     definition: &Value,
     xml_text: &str,
+    metadata_owner: Option<crate::domain::address::NodeKind>,
 ) -> Result<Vec<FormEditPlannedEvent>, String> {
     let document = Document::parse(xml_text)
         .map_err(|err| format!("[ERROR] XML parse error while planning events: {err}"))?;
     let root = document.root_element();
     let direct_main_count = form_edit_direct_main_attribute_count(root);
     form_edit_validate_projected_main_attribute_count(direct_main_count, definition)?;
-    let context =
-        form_project_event_context(context_from_root(root), direct_main_count, definition);
+    let mut context = context_from_root(root);
+    context.metadata_owner = metadata_owner;
+    let context = form_project_event_context(context, direct_main_count, definition);
     let mut planner = FormEditEventPlanner::new(context.clone());
 
     if let Some(values) = definition.get("formEvents") {
@@ -6213,6 +6244,9 @@ pub(crate) fn form_edit_validate_new_element_event_tree(
                 } else {
                     FormEventBinding::new(&name, &handler)
                 };
+                // Путь данных таблицы выбирает события источника динамического
+                // списка, как у существующего элемента.
+                let binding = binding.with_data_path(object.get("path").and_then(Value::as_str));
                 validate_event(context, FormEventTarget::Element(kind), &binding)
                     .map_err(|diagnostic| diagnostic.to_string())?;
             }

@@ -65,12 +65,14 @@ impl DcsMxlPlanOperation {
 }
 
 /// The DCS parts of a logical address: the template owner, plus the dataset,
-/// settings variant, field or parameter the address descends into, and
-/// whether it ends at the dataset's unnamed `Query`.
+/// settings variant and its structure items, or the field, parameter, data
+/// source, calculated field or total the address descends into, and whether
+/// it ends at the dataset's unnamed `Query`.
 struct DcsTarget {
     template: MetadataAddress,
     datasets: Vec<String>,
     variant: String,
+    structure: Vec<String>,
     terminal: Option<(NodeKind, String)>,
     query: bool,
 }
@@ -84,7 +86,7 @@ fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, A
     let segments = target.segments();
     let [owner, template, rest @ ..] = segments else {
         return Err(bad(
-            "DCS operations address a schema template: `Owner.Name.Template.Name[.DataSet.Name[.Query]|.Setting.Name]`",
+            "DCS operations address a schema template: `Owner.Name.Template.Name[.DataSet.Name[.Query]|.Setting.Name[.Item.Name…]|.DataSource.Name|.CalculatedField.Name|.Total.Name]`",
         ));
     };
     if template.kind() != NodeKind::Template {
@@ -108,6 +110,7 @@ fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, A
     .map_err(|error| bad(&error.to_string()))?;
     let mut datasets = Vec::new();
     let mut variant = String::new();
+    let mut structure = Vec::new();
     let mut terminal = None;
     let mut query = false;
     for segment in rest {
@@ -138,18 +141,33 @@ fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarget, A
             .name()
             .ok_or_else(|| bad("DCS address segments below the template must be named"))?
             .to_string();
-        match segment.kind(){
-            NodeKind::DataSet if variant.is_empty()=>datasets.push(name),
-            NodeKind::Setting if datasets.is_empty()&&variant.is_empty()=>variant=name,
-            NodeKind::Field if !datasets.is_empty()&&variant.is_empty()=>terminal=Some((NodeKind::Field,name)),
-            NodeKind::Parameter if variant.is_empty()=>terminal=Some((NodeKind::Parameter,name)),
-            _=>return Err(bad("DCS address must select a Template, nested DataSet, Setting, or terminal Field/Parameter")),
+        let at_schema = datasets.is_empty() && variant.is_empty();
+        match segment.kind() {
+            NodeKind::DataSet if variant.is_empty() => datasets.push(name),
+            NodeKind::Setting if at_schema => variant = name,
+            // Элемент структуры варианта: цепочка `Item.<имя>` (#1357).
+            NodeKind::Item if !variant.is_empty() => structure.push(name),
+            NodeKind::Field if !datasets.is_empty() && variant.is_empty() => {
+                terminal = Some((NodeKind::Field, name))
+            }
+            NodeKind::Parameter if variant.is_empty() => {
+                terminal = Some((NodeKind::Parameter, name))
+            }
+            kind @ (NodeKind::DataSource | NodeKind::CalculatedField | NodeKind::Total)
+                if at_schema =>
+            {
+                terminal = Some((kind, name))
+            }
+            _ => return Err(bad(
+                "DCS address must select a Template, nested DataSet, Setting with its Item chain, or terminal Field/Parameter/DataSource/CalculatedField/Total",
+            )),
         }
     }
     Ok(DcsTarget {
         template,
         datasets,
         variant,
+        structure,
         terminal,
         query,
     })
@@ -282,7 +300,7 @@ fn parse_dcs_operation(
     // Операции подузла исполняются по его адресу (#1354): поле, параметр
     // или вариант называет адрес, а не аргумент.
     if matches!(operation, "variant.set" | "variant.remove")
-        && (target.variant.is_empty() || target.terminal.is_some())
+        && (target.variant.is_empty() || target.terminal.is_some() || !target.structure.is_empty())
     {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
@@ -290,20 +308,24 @@ fn parse_dcs_operation(
         )
         .at_path(format!("ops[{op_index}].args.at")));
     }
-    if matches!(
-        operation,
-        "field.remove"
-            | "field.set"
-            | "fieldRole.set"
-            | "parameter.remove"
-            | "parameter.set"
-            | "parameter.rename"
-    ) {
-        let expected = if operation.starts_with("field") {
-            NodeKind::Field
-        } else {
-            NodeKind::Parameter
-        };
+    // Элемент структуры правится и удаляется по своему адресу; новый
+    // элемент добавляется в контейнер, который называет адрес (#1357).
+    if matches!(operation, "structure.patch" | "structure.remove") && target.structure.is_empty() {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("{operation} addresses a named structure item: `Template.T.Setting.S.Item.I`"),
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
+    let terminal_kind = match operation {
+        "field.remove" | "field.set" | "fieldRole.set" => Some(NodeKind::Field),
+        "parameter.remove" | "parameter.set" | "parameter.rename" => Some(NodeKind::Parameter),
+        "dataSource.set" | "dataSource.remove" => Some(NodeKind::DataSource),
+        "calculatedField.set" | "calculatedField.remove" => Some(NodeKind::CalculatedField),
+        "total.set" | "total.remove" => Some(NodeKind::Total),
+        _ => None,
+    };
+    if let Some(expected) = terminal_kind {
         if !target
             .terminal
             .as_ref()
@@ -326,6 +348,7 @@ fn parse_dcs_operation(
         target: crate::infrastructure::native_operations::dcs_primitives::Target {
             datasets: target.datasets,
             variant: target.variant,
+            structure: target.structure,
             terminal: target.terminal.map(|(_, name)| name),
         },
     }))
@@ -891,8 +914,12 @@ fn require_template_format(
 }
 
 /// Путь набора с именем `name` в теле схемы: `["A", "B"]` для члена
-/// объединения `A`. `None` — такого набора нет или он не единственный.
-pub(super) fn data_set_path_in_schema(bytes: &[u8], name: &str) -> Option<Vec<String>> {
+/// объединения `A`; несколько наборов с этим именем — все их пути.
+pub(super) fn data_set_path_in_schema(
+    bytes: &[u8],
+    name: &str,
+) -> crate::domain::apply::NamedLookup {
+    use crate::domain::apply::NamedLookup;
     use crate::infrastructure::native_operations::dcs::DCS_SCHEMA_NS as S;
     fn walk(
         node: roxmltree::Node<'_, '_>,
@@ -921,8 +948,12 @@ pub(super) fn data_set_path_in_schema(bytes: &[u8], name: &str) -> Option<Vec<St
             path.pop();
         }
     }
-    let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
-    let document = roxmltree::Document::parse(text).ok()?;
+    let Some(document) = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
+        .ok()
+        .and_then(|text| roxmltree::Document::parse(text).ok())
+    else {
+        return NamedLookup::Missing;
+    };
     let mut found = Vec::new();
     walk(
         document.root_element(),
@@ -931,9 +962,53 @@ pub(super) fn data_set_path_in_schema(bytes: &[u8], name: &str) -> Option<Vec<St
         &mut Vec::new(),
         &mut found,
     );
-    match found.as_slice() {
-        [only] => Some(only.clone()),
-        _ => None,
+    match found.len() {
+        0 => NamedLookup::Missing,
+        1 => NamedLookup::Found(found.remove(0)),
+        _ => NamedLookup::Ambiguous(found),
+    }
+}
+
+/// Путь элемента структуры варианта `variant` с именем `name`: имена
+/// именованных предков и его собственное, как их адресует чтение
+/// (`Setting.V.Item.A.Item.B`). Несколько элементов с этим именем — пути
+/// тех, что адресуемы.
+pub(super) fn structure_item_path_in_schema(
+    bytes: &[u8],
+    variant: &str,
+    name: &str,
+) -> crate::domain::apply::NamedLookup {
+    use crate::domain::apply::NamedLookup;
+    let Some(data) = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))
+        .ok()
+        .and_then(|text| {
+            crate::infrastructure::native_operations::dcs::parse_dcs_info_xml(
+                text,
+                crate::domain::support_state::ObjectSupportData {
+                    state: crate::domain::support_state::ObjectSupportState::NotSupported,
+                    direct_edit_safe: None,
+                },
+            )
+            .ok()
+        })
+    else {
+        return NamedLookup::Missing;
+    };
+    let Some(rows) = data
+        .variants
+        .iter()
+        .find(|candidate| candidate.name == variant)
+        .and_then(|variant| serde_json::to_value(&variant.structure_items).ok())
+    else {
+        return NamedLookup::Missing;
+    };
+    let rows = rows.as_array().map(Vec::as_slice).unwrap_or_default();
+    let (mut paths, found) =
+        crate::infrastructure::v13_read_projection::dcs_structure_paths(rows, name);
+    match (found, paths.len()) {
+        (0, _) => NamedLookup::Missing,
+        (1, 1) => NamedLookup::Found(paths.remove(0)),
+        _ => NamedLookup::Ambiguous(paths),
     }
 }
 
@@ -1166,21 +1241,74 @@ mod tests {
         }
     }
 
-    /// Набор находится по имени на любой глубине объединения; неоднозначное
-    /// или отсутствующее имя пути не даёт.
+    /// Набор находится по имени на любой глубине объединения; повторённое
+    /// имя даёт все пути, отсутствующее — ни одного (#1357).
     #[test]
     fn a_data_set_is_found_by_name_inside_unions() {
         let schema = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema">
 <dataSet><name>Union</name><item><name>Member</name></item><item><name>Twin</name></item></dataSet>
 <dataSet><name>Top</name></dataSet><dataSet><name>Twin</name></dataSet></DataCompositionSchema>"#;
         let path = |name| super::data_set_path_in_schema(schema.as_bytes(), name);
+        use crate::domain::apply::NamedLookup;
         assert_eq!(
             path("Member"),
-            Some(vec!["Union".to_string(), "Member".to_string()])
+            NamedLookup::Found(vec!["Union".to_string(), "Member".to_string()])
         );
-        assert_eq!(path("Top"), Some(vec!["Top".to_string()]));
-        assert_eq!(path("Twin"), None);
-        assert_eq!(path("Missing"), None);
+        assert_eq!(path("Top"), NamedLookup::Found(vec!["Top".to_string()]));
+        assert_eq!(
+            path("Twin"),
+            NamedLookup::Ambiguous(vec![
+                vec!["Union".to_string(), "Twin".to_string()],
+                vec!["Twin".to_string()],
+            ])
+        );
+        assert_eq!(path("Missing"), NamedLookup::Missing);
+    }
+
+    /// Элемент структуры находится так, как его адресует чтение: путь —
+    /// именованные предки, безымянная группа прозрачна, повторённое имя
+    /// даёт пути всех адресуемых совпадений (#1357).
+    #[test]
+    fn a_structure_item_is_found_by_its_named_ancestors() {
+        let schema = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<settingsVariant><dcsset:name>Main</dcsset:name><dcsset:settings>
+<dcsset:item xsi:type="dcsset:StructureItemGroup">
+ <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Top</dcsset:name>
+  <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Details</dcsset:name></dcsset:item>
+  <dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Twin</dcsset:name></dcsset:item>
+ </dcsset:item>
+</dcsset:item>
+<dcsset:item xsi:type="dcsset:StructureItemTable"><dcsset:name>Table</dcsset:name>
+ <dcsset:row><dcsset:name>Twin</dcsset:name></dcsset:row>
+</dcsset:item>
+<dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Same</dcsset:name></dcsset:item>
+<dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Same</dcsset:name></dcsset:item>
+</dcsset:settings></settingsVariant></DataCompositionSchema>"#;
+        use crate::domain::apply::NamedLookup;
+        let path = |name| super::structure_item_path_in_schema(schema.as_bytes(), "Main", name);
+        let names = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(path("Top"), NamedLookup::Found(names(&["Top"])));
+        assert_eq!(
+            path("Details"),
+            NamedLookup::Found(names(&["Top", "Details"]))
+        );
+        assert_eq!(
+            path("Twin"),
+            NamedLookup::Ambiguous(vec![names(&["Top", "Twin"]), names(&["Table", "Twin"])])
+        );
+        // Два одноимённых элемента на одном уровне не адресуемы: ни один
+        // путь не выбирается.
+        assert_eq!(path("Same"), NamedLookup::Ambiguous(Vec::new()));
+        assert_eq!(path("Missing"), NamedLookup::Missing);
+        assert_eq!(
+            super::structure_item_path_in_schema(schema.as_bytes(), "Other", "Top"),
+            NamedLookup::Missing
+        );
     }
 
     /// Запрос — безымянный узел набора `DataSet.D.Query`: его правят только

@@ -1,6 +1,7 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{
-    OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, IMPLEMENTED_APPLY_OPERATIONS,
+    FormItemRole, OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat,
+    IMPLEMENTED_APPLY_OPERATIONS,
 };
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::metadata_kinds::metadata_kind;
@@ -87,22 +88,28 @@ pub(super) fn configuration_context() -> CanContext {
     )
 }
 
-/// The node's address and template format, read from the projected node
-/// data. `None` means the dictionary is not computed for this node: the kind
-/// or the address is unknown to the grammar.
+/// The node's address, template format and form item role, read from the
+/// projected node data. `None` means the dictionary is not computed for this
+/// node: the kind or the address is unknown to the grammar.
 fn node_site(
     data: &Map<String, Value>,
     context: CanContext,
-) -> Option<(QualifiedAddress, Option<TemplateFormat>)> {
+) -> Option<(
+    QualifiedAddress,
+    Option<TemplateFormat>,
+    Option<FormItemRole>,
+)> {
     NodeKind::parse(data.get("kind")?.as_str()?).ok()?;
     let at = QualifiedAddress::parse(data.get("at")?.as_str()?).ok()?;
     OperationSite::new(&at, context)?;
-    let format = data
-        .get("props")
-        .and_then(|props| props.get("format"))
-        .and_then(Value::as_str)
-        .map(TemplateFormat::parse);
-    Some((at, format))
+    let prop = |key: &str| {
+        data.get("props")
+            .and_then(|props| props.get(key))
+            .and_then(Value::as_str)
+    };
+    let format = prop("format").map(TemplateFormat::parse);
+    let item = prop("tag").map(FormItemRole::from_tag);
+    Some((at, format, item))
 }
 
 /// The borrowed node carries no companion file of its own: its content is the
@@ -121,7 +128,7 @@ fn inherited_node(data: &Map<String, Value>) -> bool {
 /// for this node: the answer then carries no `can`. A computed dictionary
 /// may be empty (`[]`): nothing applies at this node, which is an answer.
 fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Option<Vec<Value>> {
-    let (at, format) = node_site(data, context)?;
+    let (at, format, item) = node_site(data, context)?;
     let site = OperationSite::new(&at, context)?;
     // Содержимое заимствованного узла без своего файла принадлежит
     // родителю: операции, которые пишут это содержимое, `apply` отвергнет,
@@ -131,7 +138,7 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
         OperationRegistry::closed()
             .descriptors()
             .iter()
-            .filter(|descriptor| descriptor.applies_to_node(&site, format))
+            .filter(|descriptor| descriptor.applies_to_node(&site, format, item))
             .filter(|descriptor| !inherited || descriptor.content_resource().is_none())
             .map(|descriptor| {
                 json!({
@@ -167,7 +174,7 @@ pub(super) fn operation_node(
     let data = data
         .as_object()
         .ok_or_else(|| ReadModeError::bad_value("operation details require object node data"))?;
-    let (owner, format) = node_site(data, context).ok_or_else(|| {
+    let (owner, format, item) = node_site(data, context).ok_or_else(|| {
         let kind = data.get("kind").and_then(Value::as_str).unwrap_or_default();
         ReadModeError::unsupported_section(format!(
             "the operation dictionary is not computed for kind `{kind}` yet"
@@ -186,7 +193,7 @@ pub(super) fn operation_node(
             "operation `{operation}` writes content this borrowed node inherits from the parent; read the parent named by props.extends"
         )));
     }
-    if !descriptor.applies_to_node(&site, format) {
+    if !descriptor.applies_to_node(&site, format, item) {
         let kind = owner
             .segments()
             .last()
