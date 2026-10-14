@@ -612,7 +612,9 @@ pub(super) struct RetainedApplyChangeBinding {
 /// file body nor an open descriptor: a reference scan over a whole
 /// configuration must not hold one descriptor per inspected file. The check
 /// walks the route from the retained root again and proves the same physical
-/// objects and bytes.
+/// objects and bytes. Without a held descriptor a filesystem may reuse an
+/// identity for a recreated object; the bytes are still rehashed, so only a
+/// recreation with identical content passes, which changes no planned input.
 #[derive(Debug)]
 pub(super) struct RetainedApplyReadGuardBinding {
     pub(super) root: Arc<RetainedDirectoryCapability>,

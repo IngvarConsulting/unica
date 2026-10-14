@@ -1273,8 +1273,18 @@ impl ApplyStagedState {
         {
             if let Some(guard) = self.read_guards.get(identity) {
                 let observed = guard.retain_named_route().map_err(|error| {
+                    // A stop request keeps its own kind; any route change stales the plan.
+                    let kind = match error.kind() {
+                        RetainedApplyValidationErrorKind::Cancelled => {
+                            ApplyStagingErrorKind::Cancelled
+                        }
+                        RetainedApplyValidationErrorKind::Deadline => {
+                            ApplyStagingErrorKind::Deadline
+                        }
+                        _ => ApplyStagingErrorKind::ConcurrentRevision,
+                    };
                     ApplyStagingError::new(
-                        ApplyStagingErrorKind::ConcurrentRevision,
+                        kind,
                         format!("reference input changed before write staging: {error}"),
                     )
                 })?;
@@ -1931,10 +1941,12 @@ pub(crate) mod tests {
                     b"abcdef".as_slice()
                 }
             };
-            let result = transaction.commit_retained_apply_with(authority, || Ok(()), || Ok(()));
+            let error = transaction
+                .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+                .expect_err("substituted reference input must stale the plan");
             assert!(
-                result.is_err(),
-                "substituted reference input must stale the plan"
+                error.contains("reference input"),
+                "the refusal names the substituted reference input: {error}"
             );
             assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
             assert_eq!(
