@@ -46,9 +46,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
-/// Hidden v0.13 read adapter. Its revision service is supplied by the
-/// workspace actor that owns the source capability; the adapter never creates
-/// an ambient per-call revision authority.
+/// Logical read adapter over one actor-issued source capability. Its read
+/// identity is fixed at admission; the adapter never snapshots the tree.
 pub(crate) struct LogicalViewReadAuthority<'a> {
     cancellation: &'a CancellationToken,
     read: ProviderReadAuthority,

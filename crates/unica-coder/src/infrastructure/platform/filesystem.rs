@@ -17,8 +17,9 @@ pub(crate) fn is_file_sharing_violation(_error: &io::Error) -> bool {
 
 /// Тестовый наблюдатель файловой работы через удерживаемые каталоги.
 ///
-/// Записывает каждое открытие файла и каждое перечисление каталога,
-/// выполненные через `RetainedDirectoryCapability` под наблюдаемым корнем,
+/// Записывает каждое открытие файла (относительный путь, удержание дочернего
+/// файла) и каждое перечисление каталога, выполненные через
+/// `RetainedDirectoryCapability` под наблюдаемым корнем,
 /// в любом потоке процесса. Чтение исходников идёт через этот примитив,
 /// поэтому обход дерева виден по числу открытых описаний и перечислений.
 #[cfg(test)]
@@ -1370,6 +1371,10 @@ impl RetainedDirectoryCapability {
                 }))
             }
             OpenedChildKind::RegularFile => {
+                #[cfg(test)]
+                retained_read_probe::record(|| {
+                    retained_read_probe::RetainedRead::Opened(self.path.join(name))
+                });
                 let file = open_child_for_secure_tree_use(
                     &self.retained.directory,
                     name,
@@ -1395,6 +1400,10 @@ impl RetainedDirectoryCapability {
         &self,
         name: &std::ffi::OsStr,
     ) -> io::Result<RetainedRegularFileCapability> {
+        #[cfg(test)]
+        retained_read_probe::record(|| {
+            retained_read_probe::RetainedRead::Opened(self.path.join(name))
+        });
         let file = open_regular_child_nofollow(&self.retained.directory, name)?;
         let identity = file_identity(&file)?;
         Ok(RetainedRegularFileCapability {

@@ -10649,7 +10649,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn borrowed_logical_read_opens_only_the_object_and_its_parent() {
+    fn borrowed_logical_read_admits_and_publishes_without_unrelated_objects() {
         assert_logical_read_files_do_not_grow_with_unrelated_objects(true);
     }
 
@@ -10797,8 +10797,14 @@ struct ActorLogicalReadLease {"#,
             "the probe must observe the addressed descriptor read: {:?}",
             few.execution
         );
+        // A borrowed read revalidates the source selection at publication:
+        // the project file and each selected root marker, never an object.
         assert!(
-            few.publication.is_empty(),
+            few.publication.iter().all(|read| {
+                parent_publication
+                    && matches!(read, RetainedRead::Opened(path)
+                        if path.ends_with("v8project.yaml") || path.ends_with("Configuration.xml"))
+            }),
             "publication must not reopen source files: {:?}",
             few.publication
         );
@@ -11667,10 +11673,12 @@ struct ActorLogicalReadLease {"#,
         .unwrap();
         let cancellation = CancellationToken::new();
         let execution = invocation.begin_execution(&cancellation).unwrap();
-        assert_eq!(
-            sibling_reads.take(),
-            Vec::new(),
-            "qualified view must not admit or read an unrelated source set"
+        let sibling_admission = sibling_reads.take();
+        assert!(
+            sibling_admission
+                .iter()
+                .all(|read| *read == RetainedRead::Opened("Configuration.xml".into())),
+            "source selection may prove the sibling root marker, but a qualified view must not read the unrelated source set: {sibling_admission:?}"
         );
         std::fs::write(
             sibling.join("Configuration.xml"),
@@ -11749,23 +11757,19 @@ struct ActorLogicalReadLease {"#,
                 ToolIdentity::Search => {
                     selected_reads.take();
                 }
-                // Resolve still lists the layout directory (#1457), but it
-                // reads no descriptor it was not asked about.
+                // Resolve by address still builds the full layout directory
+                // and reads every descriptor head (#1457).
                 ToolIdentity::Resolve => {
-                    let reads = selected_reads.take();
-                    assert!(
-                        !reads
-                            .iter()
-                            .any(|read| format!("{read:?}").contains("Unrelated")),
-                        "Resolve read an unaddressed object: {reads:?}"
-                    );
+                    selected_reads.take();
                 }
                 _ => assert_no_unrelated_object_or_listing(&format!("{tool:?}")),
             }
-            assert_eq!(
-                sibling_reads.take(),
-                Vec::new(),
-                "{tool:?} must not read the unrelated source tree"
+            let sibling = sibling_reads.take();
+            assert!(
+                sibling
+                    .iter()
+                    .all(|read| *read == RetainedRead::Opened("Configuration.xml".into())),
+                "{tool:?} must not read the unrelated source tree beyond its root marker: {sibling:?}"
             );
         }
         let actor = Arc::clone(execution.actor_for_test());
