@@ -16,6 +16,9 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_exchange_refusals_name_both_ways_out_and_the_generations
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_names_an_earlier_unapplied_load_the_runner_applied
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::a_push_whose_apply_failed_names_the_load_left_unapplied
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::a_failed_apply_after_an_applied_set_names_both_sets
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_unapplied_loads_are_applied_or_named_when_the_infobase_moved
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_runner_015_loads_a_module_restored_with_its_old_mtime
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 

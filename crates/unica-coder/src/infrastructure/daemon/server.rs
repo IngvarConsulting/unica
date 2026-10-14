@@ -3531,7 +3531,7 @@ fn main() {
         assert!(args.iter().any(|argument| argument == "--dry-run"));
         assert!(args.iter().any(|argument| argument == "main"));
         std::fs::write(marker.join("push"), "v8-runner push preview invoked").unwrap();
-        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true}]}}"#);
+        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true,"applied":false}]}}"#);
         return;
     }
     if args.iter().any(|argument| argument == "extensions") {

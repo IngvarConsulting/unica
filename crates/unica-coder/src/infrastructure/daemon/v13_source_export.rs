@@ -526,16 +526,10 @@ fn validate_envelope(
             },
         ));
     }
-    // С 0.15 `requested_mode` — запрошенный режим, а `mode` — случившийся: по
-    // плану раннера и прогнозу платформы он бывает полным вместо инкрементного
-    // или неизвестным (`UNKNOWN`). Конверты 0.14 запрошенного не называют, и
-    // их `mode` был режимом запроса.
-    let requested = if data.get("requested_mode").is_some() {
-        &data["requested_mode"]
-    } else {
-        &data["mode"]
-    };
-    if requested != prepared.arguments.mode.runner_mode()
+    // С 0.15 обязательный `requested_mode` — запрошенный режим, а `mode` —
+    // случившийся: по плану раннера и прогнозу платформы он бывает полным вместо
+    // инкрементного или неизвестным (`UNKNOWN`) (CTR.WIRE.PULL-DATA v6).
+    if data["requested_mode"] != prepared.arguments.mode.runner_mode()
         || data["extension"].as_str() != prepared.arguments.extension.as_deref()
     {
         return Err(reject(
@@ -932,17 +926,33 @@ mod tests {
 
     /// Живые конверты раннера 0.14.0: `pull` копии в базу другой рабочей копии
     /// идёт с предупреждением раннера. Ответ называет его своим предупреждением
-    /// и выходом к своей базе, без прозы раннера.
+    /// и выходом к своей базе, без прозы раннера. Проверяется путь
+    /// предупреждения, а не форма данных: конверт 0.14 без обязательного
+    /// в 0.15 `requested_mode` отвергается, поэтому поле добавлено в тесте
+    /// (`tests/fixtures/v8_runner_014/README.md`).
     #[test]
     fn captured_pull_into_the_infobase_of_another_copy_names_it() {
         let root = workspace();
         fs::create_dir_all(root.path().join("main")).unwrap();
         fs::write(root.path().join("main/Configuration.xml"), "<x/>").unwrap();
         let target = normalize_path_identity(root.path()).unwrap().join("main");
+        let legacy = captured_014("other-copy-pull-preview.json");
+        let runner = SequenceRunner::new(vec![process(legacy, true)]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, Some("main"), None, true),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+
         let mut preview = captured_014("other-copy-pull-preview.json");
         let mut applied = captured_014("other-copy-pull-apply.json");
         for envelope in [&mut preview, &mut applied] {
             envelope["data"]["target_path"] = json!(target);
+            envelope["data"]["requested_mode"] = envelope["data"]["mode"].clone();
         }
         let runner = SequenceRunner::new(vec![process(preview.clone(), true)]);
         let result = run(

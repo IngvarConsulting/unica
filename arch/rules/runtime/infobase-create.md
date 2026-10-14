@@ -8,7 +8,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_without_prior_preview_creates_and_confirms_the_provider_receipt
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_an_infobase_created_elsewhere
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_a_receipt_that_still_plans_to_create
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::captured_runner_014_create_is_confirmed_by_its_repeated_preview
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::captured_runner_015_create_is_confirmed_by_its_repeated_preview
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::a_cluster_infobase_is_created_without_sources
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_first_pushes_after_create_skip_the_assembled_set_and_load_an_edit
   - crates/unica-coder/src/infrastructure/daemon/runner_015.rs::the_origin_kind_follows_the_merged_infobase_section
@@ -65,5 +65,5 @@ preview раннера в текущем вызове. Их изменение �
 пути базы и установки платформы наружу не передаются.
 
 Проверки используют управляемые ответы раннера, в том числе снятые
-с раннера 0.14.0 вживую. Они не проверяют состояние настоящей
+с раннера 0.15.1 вживую. Они не проверяют состояние настоящей
 информационной базы.

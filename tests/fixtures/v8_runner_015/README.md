@@ -33,3 +33,53 @@ runner (`infobase create`). Then:
 module without the temporary line. The same scenario with the published
 v0.14.0 archive answered `skipped` / `no changes` at step 4, and the exported
 infobase still held the temporary line.
+
+## Creating an infobase, pushes and another working copy
+
+Recaptured with the same runner, platform and configuration in place of the
+0.14.0 captures of `tests/fixtures/v8_runner_014`, with `providers: {push:
+ibcmd}`: on the capture machine the Designer had no licence and the managed
+agent refused the empty infobase user, so the default agent provider of the
+0.14.0 captures could not be repeated. Project `E` declared its own file
+infobase, project `F` declared `E`'s infobase by its absolute path. Machine
+prefixes were replaced: the capture directory by `/workspace`, the platform
+directory by `/platform`; everything else is captured bytes.
+
+- `infobase-create-preview.json`, `infobase-create-apply.json`,
+  `infobase-create-receipt-preview.json`: `infobase create --dry-run`,
+  `infobase create` (ibcmd assembles the infobase with the main configuration
+  of `main`), and `infobase create --dry-run` again — refused
+  `invalid_argument`: the file infobase exists.
+- `push-after-create-preview.json`, `push-after-create-apply.json`: `push
+  --dry-run` and `push` — `main` is `skipped`, the platform is not started.
+- `push-after-edit-preview.json`, `push-after-edit-apply.json`: after an edit
+  of one module, `main` is loaded `partial` with `applied: true`.
+- `push-no-memory-preview.json`: `push --dry-run` in `F` — `no_memory`, with
+  the warning about the infobase of another working copy.
+- `push-other-copy-force-preview.json`, `push-other-copy-force-apply.json`:
+  `push --force --dry-run` and `push --force` in `F` — a full load over `E`'s
+  configuration with the same warning.
+- `push-skipped-preview.json`, `push-skipped-apply.json`: `push --dry-run` and
+  `push` in `E` — `skipped` by `E`'s memory although the infobase holds `F`'s
+  load (issue #1240).
+- `push-full-preview.json`, `push-non-fast-forward-apply.json`: `push --full
+  --dry-run` and `push --full` in `E` — the apply refuses `non_fast_forward`
+  with both generations.
+
+## A load left unapplied
+
+After `push --force` in `E` and an edit:
+
+- `push-no-apply.json`: `push --no-apply` — `main` loaded `partial`,
+  `applied: false`.
+- `push-unapplied-preview.json`: `push --dry-run` — `skipped`; the step message
+  names the pending apply.
+- `push-unapplied-applied.json`: `push` — `skipped` with `applied: true`, the
+  platform dispatched: the runner applied the earlier load.
+
+After another edit, `push --no-apply` in `E` and `push --force` in `F`:
+
+- `push-unapplied-moved.json`: `push` in `E` — `skipped`, `applied: false`,
+  `provider_dispatched: true`: the runner read the generation, found that the
+  infobase moved away from the record of the unapplied load and did not apply
+  it; the step message says so.
