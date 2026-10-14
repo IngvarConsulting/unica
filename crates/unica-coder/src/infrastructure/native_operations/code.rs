@@ -848,6 +848,13 @@ fn plan_code_postimage(
         )
         .at_path(&at_path));
     }
+    // Адрес и охват замены разбирают текст замены; он один на весь план.
+    let replace_target = match operation {
+        CodePlanOperation::Replace(args) => {
+            Some(replacement_target(&args.at, &args.text, &text_path)?)
+        }
+        CodePlanOperation::Insert(_) => None,
+    };
     let (selector, content, site, no_op, after) = match operation {
         CodePlanOperation::Insert(args) => {
             if args.text.is_empty() {
@@ -912,20 +919,22 @@ fn plan_code_postimage(
                 return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
             }
             let selector = args.anchor.clone().map(Selector::Anchor);
-            let target = replacement_target(&args.at, &args.text, &text_path)?;
+            let target = replace_target
+                .as_ref()
+                .expect("a replacement resolves its target above");
             let site = match &selector {
                 Some(selector) => {
                     locate_replacement_typed(&snapshot, selector, &indexed.methods)
                         .map_err(|error| code_selector_error(error, op_index, selector))?
                 }
                 None => {
-                    locate_addressed_replacement(&snapshot, &target, &indexed.methods, &at_path)?
+                    locate_addressed_replacement(&snapshot, target, &indexed.methods, &at_path)?
                 }
             };
             let replacement = site.replacement(&args.text);
             let no_op =
                 replacement_is_present(snapshot.raw(), site, &replacement, |found, methods| {
-                    relocate_replaced_method(found, methods, &target)
+                    relocate_replaced_method(found, methods, target)
                 });
             let mut after = snapshot.raw().to_vec();
             if !no_op {
@@ -962,7 +971,10 @@ fn plan_code_postimage(
         .at_path(&text_path));
     }
     if let CodePlanOperation::Replace(args) = operation {
-        if replaces_whole_method(&replacement_target(&args.at, &args.text, &text_path)?.at) {
+        if replace_target
+            .as_ref()
+            .is_some_and(|target| replaces_whole_method(&target.at))
+        {
             reject_redeclared_methods(&args.text, &indexed.methods, &post.methods).map_err(
                 |message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&text_path)
@@ -974,8 +986,10 @@ fn plan_code_postimage(
         CodePlanOperation::Replace(args) if args.anchor.is_none() => {
             let repeat_snapshot = SourceTextSnapshot::from_bytes(&after)
                 .map_err(|_| bad_code_arg(&text_path, "invalid patched snapshot"))?;
-            let target = replacement_target(&args.at, &args.text, &text_path)?;
-            match locate_addressed_replacement(&repeat_snapshot, &target, &post.methods, &at_path) {
+            let target = replace_target
+                .as_ref()
+                .expect("a replacement resolves its target above");
+            match locate_addressed_replacement(&repeat_snapshot, target, &post.methods, &at_path) {
                 Err(error) if error.kind() == ApplyPlanErrorKind::NotFound => Ok(()),
                 Err(_) => Err("patched BSL address became ambiguous or invalid".to_string()),
                 Ok(repeated) => {
@@ -984,7 +998,7 @@ fn plan_code_postimage(
                         repeat_snapshot.raw(),
                         repeated,
                         &bytes,
-                        |found, methods| relocate_replaced_method(found, methods, &target),
+                        |found, methods| relocate_replaced_method(found, methods, target),
                     ) {
                         Ok(())
                     } else {
