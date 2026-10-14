@@ -6289,6 +6289,40 @@ fn load_p99_ms(load: &LoadObservation) -> u64 {
     latencies[rank]
 }
 
+/// Calls of one writer batch share their start and completion, so a high
+/// percentile over calls is decided by a few batches. The profile names the
+/// batches themselves: one slow outlier and a uniformly slow writer need
+/// different explanations.
+fn batch_latency_profile(load: &LoadObservation) -> String {
+    let mut batches: Vec<(u64, u64)> = load
+        .lifecycles
+        .iter()
+        .map(|lifecycle| {
+            (
+                lifecycle.started_monotonic_ms,
+                lifecycle.response_latency_ms,
+            )
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .collect();
+    let started = batches.first().map_or(0, |(start, _)| *start);
+    batches.sort_unstable_by_key(|(_, latency)| std::cmp::Reverse(*latency));
+    let mut latencies: Vec<u64> = batches.iter().map(|(_, latency)| *latency).collect();
+    latencies.sort_unstable();
+    let median = latencies.get(latencies.len() / 2).copied().unwrap_or(0);
+    let slowest: Vec<String> = batches
+        .iter()
+        .take(5)
+        .map(|(start, latency)| format!("{latency}ms@+{}ms", start - started))
+        .collect();
+    format!(
+        "batches={} median={median}ms slowest=[{}]",
+        latencies.len(),
+        slowest.join(", ")
+    )
+}
+
 fn max_concurrency_sample(
     load: &LoadObservation,
     select: impl Fn(&ConcurrencySample) -> u64,
@@ -13149,8 +13183,9 @@ fn wall_clock_writer_sustains_32_receipts_per_second_on_posix() {
     assert!(completed_at_window_end(load) >= 1_920);
     assert!(
         load_p99_ms(load) <= 250,
-        "p99={}ms budget=250ms",
-        load_p99_ms(load)
+        "p99={}ms budget=250ms; {}",
+        load_p99_ms(load),
+        batch_latency_profile(load)
     );
     assert!(load_writer_drain_ms(load) <= 2_000);
     assert!(
