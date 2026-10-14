@@ -418,6 +418,18 @@ fn validate_form_inner(
                     cmd_ids.insert(cmd_id.to_string(), cmd_name.to_string());
                 }
             }
+            // The platform loads a command `Representation` only from its own
+            // `DefaultRepresentation` set; the button values break the load.
+            // An empty element is not `Auto`: it is outside the set as well.
+            if let Some(element) = form_validation_child(*cmd, "Representation") {
+                let representation = form_ml_text(element);
+                let representation = representation.trim();
+                if form_8_3_27_enum_values("DefaultRepresentation")
+                    .is_some_and(|allowed| !allowed.contains(&representation))
+                {
+                    report.error(form_command_representation_error(cmd_name, representation));
+                }
+            }
         }
         if !report.stopped && !cmd_ids.is_empty() {
             report.ok(format!("Unique command IDs: {} entries", cmd_ids.len()));
@@ -7949,6 +7961,7 @@ pub(crate) fn form_compile_xml(
     }
     form_compile_validate_data_paths(defn)?;
     form_compile_validate_element_properties(defn)?;
+    form_compile_validate_commands(defn)?;
     let context = form_project_event_context(
         FormEventContext {
             definition: FormDefinitionKind::Regular,
@@ -8841,6 +8854,9 @@ fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
             "CommandBarHyperlink",
         ]),
         "ButtonRepresentation" => Some(&["Text", "Picture", "PictureAndText", "Auto"]),
+        // `logform:FormCommand.Representation` is `DefaultRepresentation`,
+        // not the button set: 8.3.27 refuses `PictureAndText` on a command.
+        "DefaultRepresentation" => Some(&["Text", "Picture", "TextPicture", "Auto"]),
         "ButtonLocationInCommandBar" => Some(&[
             "Auto",
             "InAdditionalSubmenu",
@@ -8873,6 +8889,34 @@ fn form_compile_validate_element_properties(defn: &Value) -> Result<(), String> 
         return Ok(());
     };
     form_compile_validate_element_property_tree(elements)
+}
+
+fn form_compile_validate_commands(defn: &Value) -> Result<(), String> {
+    let Some(commands) = defn.get("commands").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for command in commands {
+        let Some(value) = command.get("representation") else {
+            continue;
+        };
+        let name = command.get("name").and_then(Value::as_str).unwrap_or("");
+        let text = value
+            .as_str()
+            .ok_or_else(|| format!("form command {name} representation must be a string"))?;
+        if form_compile_command_representation(text).is_none() {
+            return Err(form_command_representation_error(name, text));
+        }
+    }
+    Ok(())
+}
+
+fn form_command_representation_error(name: &str, value: &str) -> String {
+    let allowed = form_8_3_27_enum_values("DefaultRepresentation")
+        .expect("form command representation has an 8.3.27 contract");
+    format!(
+        "Command '{name}': Representation '{value}' is not valid for 8.3.27; expected one of {}",
+        allowed.join(", ")
+    )
 }
 
 fn form_compile_validate_element_property_tree(elements: &[Value]) -> Result<(), String> {
@@ -9512,6 +9556,16 @@ fn form_compile_button_representation(value: &str) -> Option<&'static str> {
         "text" => Some("Text"),
         "picture" => Some("Picture"),
         "pictureandtext" => Some("PictureAndText"),
+        "auto" => Some("Auto"),
+        _ => None,
+    }
+}
+
+fn form_compile_command_representation(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "text" => Some("Text"),
+        "picture" => Some("Picture"),
+        "textpicture" => Some("TextPicture"),
         "auto" => Some("Auto"),
         _ => None,
     }
@@ -10808,14 +10862,11 @@ pub(crate) fn emit_form_commands(
         if let Some(title) = object.get("title").and_then(Value::as_str) {
             emit_form_mltext(lines, &inner, "Title", title, lang)?;
         }
-        for (key, tag) in [
-            ("action", "Action"),
-            ("shortcut", "Shortcut"),
-            ("representation", "Representation"),
-        ] {
-            if let Some(value) = object.get(key).and_then(Value::as_str) {
-                lines.push(format!("{inner}<{tag}>{}</{tag}>", escape_xml(value)));
-            }
+        // Properties follow the platform's FormCommand XDTO order: Title,
+        // ToolTip, Use, Shortcut, Picture, Action, FunctionalOptions,
+        // Representation, ...
+        if let Some(value) = object.get("shortcut").and_then(Value::as_str) {
+            lines.push(format!("{inner}<Shortcut>{}</Shortcut>", escape_xml(value)));
         }
         if let Some(picture) = object.get("picture").and_then(Value::as_str) {
             lines.push(format!("{inner}<Picture>"));
@@ -10824,6 +10875,16 @@ pub(crate) fn emit_form_commands(
                 "{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>"
             ));
             lines.push(format!("{inner}</Picture>"));
+        }
+        if let Some(value) = object.get("action").and_then(Value::as_str) {
+            lines.push(format!("{inner}<Action>{}</Action>", escape_xml(value)));
+        }
+        if let Some(value) = object.get("representation").and_then(Value::as_str) {
+            let representation = form_compile_command_representation(value)
+                .ok_or_else(|| form_command_representation_error(name, value))?;
+            lines.push(format!(
+                "{inner}<Representation>{representation}</Representation>"
+            ));
         }
         lines.push(format!("{indent}\t</Command>"));
     }
@@ -11505,6 +11566,43 @@ pub(crate) mod tests {
             .errors
             .iter()
             .any(|error| { error.contains("urn:not-logform") && error.contains(FORM_LOGFORM_NS) }));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// 8.3.27 loads `Representation` on a form command only from
+    /// `DefaultRepresentation`; `PictureAndText` breaks the load with an XDTO
+    /// property mismatch (#1436), while `TextPicture` is the platform's own.
+    #[test]
+    fn form_validate_rejects_button_representation_on_command() {
+        let form = |representation: &str| {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Form xmlns=\"{FORM_LOGFORM_NS}\" version=\"2.20\">\n\t<AutoCommandBar name=\"FormCommandBar\" id=\"-1\"/>\n\t<ChildItems/>\n\t<Attributes/>\n\t<Commands>\n\t\t<Command name=\"Find\" id=\"1\">\n\t\t\t<Action>Find</Action>\n\t\t\t<Representation>{representation}</Representation>\n\t\t</Command>\n\t</Commands>\n</Form>\n"
+            )
+        };
+        let context = temp_context("validate-command-representation");
+        let form_path = context.cwd.join("Form.xml");
+
+        // An empty or blank element is outside the set too, not a silent Auto.
+        for invalid in ["PictureAndText", "None", "Compact", "", " "] {
+            write_file(&form_path, &form(invalid));
+            let outcome = validate_form(&form_path_args(&form_path), &context);
+            assert!(!outcome.ok, "{invalid}: {outcome:?}");
+            assert!(
+                outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("Command 'Find'")
+                        && error.contains(invalid)
+                        && error.contains("TextPicture")),
+                "{invalid}: {:?}",
+                outcome.errors
+            );
+        }
+        for valid in ["Auto", "Text", "Picture", "TextPicture"] {
+            write_file(&form_path, &form(valid));
+            let outcome = validate_form(&form_path_args(&form_path), &context);
+            assert!(outcome.ok, "{valid}: {outcome:?}");
+        }
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -16059,6 +16157,85 @@ pub(crate) mod tests {
         assert!(xml.contains("<Table name=\"Rows\""), "{xml}");
         assert!(xml.contains("<Page name=\"Main\""), "{xml}");
         assert!(xml.contains("<Group>Horizontal</Group>"), "{xml}");
+    }
+
+    #[test]
+    fn form_compile_writes_command_representation_from_the_command_set() {
+        let definition = json!({
+            "commands": [{
+                "name": "Find",
+                "action": "Find",
+                "representation": "textPicture"
+            }]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let command = document
+            .descendants()
+            .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Command")))
+            .unwrap();
+        let representation = command
+            .children()
+            .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Representation")))
+            .and_then(|node| node.text());
+        assert_eq!(representation, Some("TextPicture"), "{xml}");
+    }
+
+    /// Command properties come out in the FormCommand XDTO order that
+    /// platform dumps use: Title, Shortcut, Picture, Action, Representation.
+    #[test]
+    fn form_compile_writes_command_properties_in_platform_order() {
+        let definition = json!({
+            "commands": [{
+                "name": "Find",
+                "title": "Find",
+                "representation": "Picture",
+                "action": "Find",
+                "picture": "StdPicture.Find",
+                "shortcut": "Ctrl+F"
+            }]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let command = document
+            .descendants()
+            .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Command")))
+            .unwrap();
+        let order = command
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            ["Title", "Shortcut", "Picture", "Action", "Representation"],
+            "{xml}"
+        );
+    }
+
+    /// The button value set is not the command one: 8.3.27 does not load
+    /// `PictureAndText` on a form command (#1436), so compile writes nothing.
+    #[test]
+    fn form_compile_refuses_button_representation_on_command() {
+        for invalid in ["PictureAndText", "None", "Compact"] {
+            let definition = json!({
+                "commands": [{
+                    "name": "Find",
+                    "action": "Find",
+                    "representation": invalid
+                }]
+            });
+
+            let error = form_compile_xml(&definition, "2.20").unwrap_err();
+            assert!(
+                error.contains("Command 'Find'")
+                    && error.contains(invalid)
+                    && error.contains("TextPicture"),
+                "{invalid}: {error}"
+            );
+        }
     }
 
     #[test]

@@ -38510,6 +38510,53 @@
   },
   {
    "id": "S427",
+   "name": "form-command-button-representation-fails-check",
+   "issue": 1436,
+   "area": "Формы",
+   "task": "Проверка формы называет команду с отображением из набора кнопки (PictureAndText): платформа такую форму не загружает; команда со своим значением TextPicture замечаний не получает",
+   "workspace": "tests/fixtures/acceptance/workspace-form-command-representation",
+   "wire": [
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Команды.Form.ФормаСписка"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "failed",
+     "validators": [
+      "form"
+     ],
+     "diagnostic": "native_validation_error",
+     "assertions": [
+      {
+       "pointer": "/data/diagnosticCount",
+       "eq": 1
+      },
+      {
+       "pointer": "/data/diagnostics",
+       "contains": {
+        "code": "native_validation_error",
+        "severity": "error",
+        "message": "[ERROR] Command 'НайтиДокументы': Representation 'PictureAndText' is not valid for 8.3.27; expected one of Text, Picture, TextPicture, Auto",
+        "validator": "form"
+       }
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "xml",
+       "path": "src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form.xml",
+       "select": "./{*}Commands/{*}Command/{*}Representation",
+       "contains": "PictureAndText"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S428",
    "name": "form-element-add-into-routes-to-the-container-address",
    "issue": 1355,
    "area": "Формы",
@@ -38627,7 +38674,7 @@
    ]
   },
   {
-   "id": "S428",
+   "id": "S429",
    "name": "form-event-bind-element-argument-routes-to-the-event-address",
    "issue": 1355,
    "area": "Формы",
@@ -38757,7 +38804,7 @@
    ]
   },
   {
-   "id": "S429",
+   "id": "S430",
    "name": "form-element-remove-by-name-routes-to-the-item-address",
    "issue": 1355,
    "area": "Формы",
