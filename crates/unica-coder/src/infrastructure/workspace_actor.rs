@@ -9452,17 +9452,20 @@ pub(crate) mod tests {
             .1;
         assert_ne!(*expected_state, Some(state_after_a.clone()));
         *expected_state = Some(state_after_a);
-        // B still owns A's former marker. Windows can expose its delete-pending
-        // recovery name until B releases the handle; it cannot be reopened.
-        // This effect writes only state.json, so check every existing entry now
-        // and compare the complete, unfiltered namespace after B is consumed.
-        for (relative, bytes) in &expected_cache_after_a {
-            let path = cache_root.join(relative);
-            match bytes {
-                Some(bytes) => assert_eq!(std::fs::read(&path).unwrap(), *bytes),
-                None => assert!(path.is_dir(), "{}", path.display()),
-            }
-        }
+        // B is still pending and holds A's former marker. A's recovery copy
+        // of that marker must leave the namespace now: a delete-pending name
+        // cannot be reopened and broke reading the tree on Windows (#1463).
+        assert_eq!(snapshot_tree(cache_root), expected_cache_after_a);
+        assert_eq!(
+            snapshot_tree(source)
+                .into_iter()
+                .filter(|(relative, _)| relative
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(".unica-apply-")))
+                .count(),
+            0,
+            "a successful apply leaves no recovery names in the source tree"
+        );
         let second_kind = std::cell::Cell::new(None);
         let second = fixture
             .actor
