@@ -57,6 +57,7 @@ pub(crate) struct OperationContract {
 const REPORTS_HELP: &str = "references/use-cases/reports-printing.md";
 const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
 const ROLE_HELP: &str = "skills/role-edit/SKILL.md";
+const FORM_HELP: &str = "skills/form-edit/SKILL.md";
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ContractError {
@@ -785,6 +786,54 @@ impl OperationContract {
             notes,
             example_args,
             help: ROLE_HELP,
+        })
+    }
+
+    /// Контракт команды формы публикует ровно те ключи, которые писатель
+    /// кладёт в `<Command>` (#1439): ключ, который он не пишет, отказывает
+    /// здесь, а не теряется молча.
+    pub(crate) fn form(op: &str) -> Option<Self> {
+        let (schema, target, effect, notes, example_args) = match op {
+            "formCommand.add" => (
+                object(
+                    &[
+                        ("at", text(true)),
+                        (
+                            "items",
+                            json!({"type":"array","minItems":1,"items":object(&[
+                                ("name",json!({"type":"string","pattern":r"\S",
+                                    "description":"New command name, unused in the form."})),
+                                ("title",json!({"type":"string","pattern":r"\S",
+                                    "description":"Title in the configuration language."})),
+                                ("tooltip",json!({"type":"string","pattern":r"\S",
+                                    "description":"Tooltip in the configuration language."})),
+                                ("action",json!({"type":"string","pattern":r"\S",
+                                    "description":"Handler procedure in the form module; defaults to the command name."})),
+                                ("shortcut",json!({"type":"string","pattern":r"\S",
+                                    "description":"Keyboard shortcut as the platform writes it, e.g. F5."})),
+                                ("picture",json!({"type":"string","pattern":r"^(StdPicture|CommonPicture)\.[^.\s]+$",
+                                    "description":"Picture reference StdPicture.<Name> or CommonPicture.<Name>; written with LoadTransparent=true."})),
+                                ("representation",json!({"type":"string","enum":["Auto","Text","Picture","TextPicture"],
+                                    "description":"Command DefaultRepresentation; the button set (PictureAndText, None, Compact) is not valid for a command."})),
+                            ], &["name"])}),
+                        ),
+                    ],
+                    &["items"],
+                ),
+                "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Command branch before choosing names.",
+                "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with element.add.",
+                "A property outside this schema is refused before any write; use, functionalOptions, currentRowUse, modifiesSavedData and the associated table are not written by this operation.",
+                json!({"items":[{"name":"Refresh","title":"Refresh","tooltip":"Refresh the list","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
+            ),
+            _ => return None,
+        };
+        Some(Self {
+            schema,
+            target,
+            effect,
+            notes,
+            example_args,
+            help: FORM_HELP,
         })
     }
 }

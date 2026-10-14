@@ -1806,8 +1806,17 @@ pub(crate) struct FormInfoParameter {
 pub(crate) struct FormInfoCommand {
     pub(crate) name: String,
     pub(crate) actions: Vec<FormInfoEvent>,
+    /// The command title in its first language; `null` when it has none.
+    pub(crate) title: Option<String>,
+    /// The tooltip in its first language; `null` when the command has none.
+    pub(crate) tooltip: Option<String>,
     /// The keyboard shortcut; `null` when the command declares none.
     pub(crate) shortcut: Option<String>,
+    /// The picture reference (`StdPicture.X`, `CommonPicture.X`); `null`
+    /// when the command has no picture.
+    pub(crate) picture: Option<String>,
+    /// The command's DefaultRepresentation; `null` when it keeps the default.
+    pub(crate) representation: Option<String>,
 }
 
 /// Minimal, provider-neutral form evidence consumed by the hidden event
@@ -1991,7 +2000,12 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
                     call_type: action.attribute("callType").map(str::to_string),
                 })
                 .collect(),
+            title: form_child_text(command, "Title"),
+            tooltip: form_child_text(command, "ToolTip"),
             shortcut: form_child_text(command, "Shortcut"),
+            picture: form_child(command, "Picture")
+                .and_then(|picture| form_child_text(picture, "Ref")),
+            representation: form_child_text(command, "Representation"),
         })
         .collect()
 }
@@ -5238,7 +5252,7 @@ pub(crate) fn form_edit_apply_definition(
                     continue;
                 };
                 let id = cmd_ids.next()?;
-                emit_form_edit_command_item(&mut lines, object, name, id, "\t\t", lang)?;
+                emit_form_command(&mut lines, object, name, id, "\t\t", lang)?;
                 added_cmds.push(FormEditAddedCommand {
                     name: name.to_string(),
                     action: object
@@ -7775,7 +7789,13 @@ pub(crate) fn emit_form_edit_attribute_item(
     Ok(())
 }
 
-pub(crate) fn emit_form_edit_command_item(
+/// One form `<Command>` for both the form compiler and `formCommand.add`.
+/// Properties follow the platform's FormCommand XDTO order: Title, ToolTip,
+/// Use, Shortcut, Picture, Action, FunctionalOptions, Representation, ...
+/// The element shapes match 8.3.27 dumps: multilingual Title and ToolTip,
+/// Shortcut as text, Picture as `xr:Ref` with `xr:LoadTransparent`, and
+/// Representation from the command's own DefaultRepresentation set.
+pub(crate) fn emit_form_command(
     lines: &mut Vec<String>,
     cmd: &Map<String, Value>,
     name: &str,
@@ -7791,8 +7811,29 @@ pub(crate) fn emit_form_edit_command_item(
     if let Some(title) = cmd.get("title").and_then(Value::as_str) {
         emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
+    if let Some(tooltip) = cmd.get("tooltip") {
+        emit_form_mltext_value(lines, &inner, "ToolTip", tooltip, lang)?;
+    }
+    if let Some(value) = cmd.get("shortcut").and_then(Value::as_str) {
+        lines.push(format!("{inner}<Shortcut>{}</Shortcut>", escape_xml(value)));
+    }
+    if let Some(picture) = cmd.get("picture").and_then(Value::as_str) {
+        lines.push(format!("{inner}<Picture>"));
+        lines.push(format!("{inner}\t<xr:Ref>{}</xr:Ref>", escape_xml(picture)));
+        lines.push(format!(
+            "{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>"
+        ));
+        lines.push(format!("{inner}</Picture>"));
+    }
     if let Some(action) = cmd.get("action").and_then(Value::as_str) {
         lines.push(format!("{inner}<Action>{}</Action>", escape_xml(action)));
+    }
+    if let Some(value) = cmd.get("representation").and_then(Value::as_str) {
+        let representation = form_compile_command_representation(value)
+            .ok_or_else(|| form_command_representation_error(name, value))?;
+        lines.push(format!(
+            "{inner}<Representation>{representation}</Representation>"
+        ));
     }
     lines.push(format!("{indent}</Command>"));
     Ok(())
@@ -10854,39 +10895,7 @@ pub(crate) fn emit_form_commands(
             .and_then(Value::as_str)
             .ok_or_else(|| "Form command is missing name".to_string())?;
         let cmd_id = ids.next()?;
-        lines.push(format!(
-            "{indent}\t<Command name=\"{}\" id=\"{cmd_id}\">",
-            escape_xml(name)
-        ));
-        let inner = format!("{indent}\t\t");
-        if let Some(title) = object.get("title").and_then(Value::as_str) {
-            emit_form_mltext(lines, &inner, "Title", title, lang)?;
-        }
-        // Properties follow the platform's FormCommand XDTO order: Title,
-        // ToolTip, Use, Shortcut, Picture, Action, FunctionalOptions,
-        // Representation, ...
-        if let Some(value) = object.get("shortcut").and_then(Value::as_str) {
-            lines.push(format!("{inner}<Shortcut>{}</Shortcut>", escape_xml(value)));
-        }
-        if let Some(picture) = object.get("picture").and_then(Value::as_str) {
-            lines.push(format!("{inner}<Picture>"));
-            lines.push(format!("{inner}\t<xr:Ref>{}</xr:Ref>", escape_xml(picture)));
-            lines.push(format!(
-                "{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>"
-            ));
-            lines.push(format!("{inner}</Picture>"));
-        }
-        if let Some(value) = object.get("action").and_then(Value::as_str) {
-            lines.push(format!("{inner}<Action>{}</Action>", escape_xml(value)));
-        }
-        if let Some(value) = object.get("representation").and_then(Value::as_str) {
-            let representation = form_compile_command_representation(value)
-                .ok_or_else(|| form_command_representation_error(name, value))?;
-            lines.push(format!(
-                "{inner}<Representation>{representation}</Representation>"
-            ));
-        }
-        lines.push(format!("{indent}\t</Command>"));
+        emit_form_command(lines, object, name, cmd_id, &format!("{indent}\t"), lang)?;
     }
     lines.push(format!("{indent}</Commands>"));
     Ok(())
@@ -16212,6 +16221,162 @@ pub(crate) mod tests {
             order,
             ["Title", "Shortcut", "Picture", "Action", "Representation"],
             "{xml}"
+        );
+    }
+
+    /// Each command key `formCommand.add` publishes is written exactly as an
+    /// 8.3.27 dump writes it (#1439). Every expected block repeats, with
+    /// neutral names and texts, the shape of a `<Command>` from a platform
+    /// dump that carries only the keys under test: tabs, element order,
+    /// multilingual ToolTip, Shortcut text, Picture with `xr:Ref` and
+    /// `xr:LoadTransparent`, Representation from the command set.
+    #[test]
+    fn form_command_keys_are_written_like_the_platform_dump() {
+        let cases = [
+            (
+                json!({"action": "ЗаполнитьСведения",
+                       "tooltip": "Заполнить сведения из документа"}),
+                "ЗаполнитьСведения",
+                36,
+                concat!(
+                    "\t\t<Command name=\"ЗаполнитьСведения\" id=\"36\">\n",
+                    "\t\t\t<ToolTip>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Заполнить сведения из документа</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</ToolTip>\n",
+                    "\t\t\t<Action>ЗаполнитьСведения</Action>\n",
+                    "\t\t</Command>",
+                ),
+            ),
+            (
+                json!({"title": "Добавить строку", "shortcut": "Cmd+Z",
+                       "action": "ДобавитьСтроку"}),
+                "ДобавитьСтроку",
+                5,
+                concat!(
+                    "\t\t<Command name=\"ДобавитьСтроку\" id=\"5\">\n",
+                    "\t\t\t<Title>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Добавить строку</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</Title>\n",
+                    "\t\t\t<Shortcut>Cmd+Z</Shortcut>\n",
+                    "\t\t\t<Action>ДобавитьСтроку</Action>\n",
+                    "\t\t</Command>",
+                ),
+            ),
+            (
+                json!({"title": "Отметить все", "picture": "StdPicture.CheckAll",
+                       "action": "ОтметитьВсе"}),
+                "ОтметитьВсе",
+                10,
+                concat!(
+                    "\t\t<Command name=\"ОтметитьВсе\" id=\"10\">\n",
+                    "\t\t\t<Title>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Отметить все</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</Title>\n",
+                    "\t\t\t<Picture>\n",
+                    "\t\t\t\t<xr:Ref>StdPicture.CheckAll</xr:Ref>\n",
+                    "\t\t\t\t<xr:LoadTransparent>true</xr:LoadTransparent>\n",
+                    "\t\t\t</Picture>\n",
+                    "\t\t\t<Action>ОтметитьВсе</Action>\n",
+                    "\t\t</Command>",
+                ),
+            ),
+            (
+                json!({"title": "Сканировать", "action": "Сканировать",
+                       "representation": "Picture"}),
+                "Сканировать",
+                1,
+                concat!(
+                    "\t\t<Command name=\"Сканировать\" id=\"1\">\n",
+                    "\t\t\t<Title>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Сканировать</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</Title>\n",
+                    "\t\t\t<Action>Сканировать</Action>\n",
+                    "\t\t\t<Representation>Picture</Representation>\n",
+                    "\t\t</Command>",
+                ),
+            ),
+            (
+                // Keys in a different order than the platform writes them.
+                json!({"representation": "Picture", "action": "СписокОбновить",
+                       "picture": "StdPicture.Refresh", "shortcut": "F5",
+                       "tooltip": "Обновить список", "title": "Обновить"}),
+                "СписокОбновить",
+                5,
+                DUMP_SHAPED_REFRESH_COMMAND,
+            ),
+        ];
+        for (definition, name, id, expected) in cases {
+            let mut lines = Vec::new();
+            emit_form_command(
+                &mut lines,
+                definition.as_object().unwrap(),
+                name,
+                id,
+                "\t\t",
+                Some("ru"),
+            )
+            .unwrap();
+            assert_eq!(lines.join("\n"), expected, "{name}");
+        }
+    }
+
+    /// A `<Command>` shaped like a platform dump with Title, ToolTip,
+    /// Shortcut, Picture, Action and Representation.
+    const DUMP_SHAPED_REFRESH_COMMAND: &str = concat!(
+        "\t\t<Command name=\"СписокОбновить\" id=\"5\">\n",
+        "\t\t\t<Title>\n",
+        "\t\t\t\t<v8:item>\n",
+        "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+        "\t\t\t\t\t<v8:content>Обновить</v8:content>\n",
+        "\t\t\t\t</v8:item>\n",
+        "\t\t\t</Title>\n",
+        "\t\t\t<ToolTip>\n",
+        "\t\t\t\t<v8:item>\n",
+        "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+        "\t\t\t\t\t<v8:content>Обновить список</v8:content>\n",
+        "\t\t\t\t</v8:item>\n",
+        "\t\t\t</ToolTip>\n",
+        "\t\t\t<Shortcut>F5</Shortcut>\n",
+        "\t\t\t<Picture>\n",
+        "\t\t\t\t<xr:Ref>StdPicture.Refresh</xr:Ref>\n",
+        "\t\t\t\t<xr:LoadTransparent>true</xr:LoadTransparent>\n",
+        "\t\t\t</Picture>\n",
+        "\t\t\t<Action>СписокОбновить</Action>\n",
+        "\t\t\t<Representation>Picture</Representation>\n",
+        "\t\t</Command>",
+    );
+
+    /// The form compiler and `formCommand.add` share one command writer:
+    /// a compiled form carries the same `<Command>` block, ToolTip included.
+    #[test]
+    fn form_compile_writes_the_same_command_block_as_form_command_add() {
+        let commands = json!([{
+            "name": "СписокОбновить",
+            "title": "Обновить",
+            "tooltip": "Обновить список",
+            "shortcut": "F5",
+            "picture": "StdPicture.Refresh",
+            "action": "СписокОбновить",
+            "representation": "Picture"
+        }]);
+        let mut ids = FormIdAllocator { next: 4 };
+        let mut lines = Vec::new();
+        emit_form_commands(&mut lines, Some(&commands), "\t", &mut ids, Some("ru")).unwrap();
+        assert_eq!(
+            lines.join("\n"),
+            format!("\t<Commands>\n{DUMP_SHAPED_REFRESH_COMMAND}\n\t</Commands>")
         );
     }
 
