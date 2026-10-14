@@ -3908,7 +3908,14 @@ fn main() {
             command.env("CARGO_TARGET_DIR", target_dir);
         }
         let mut child = command.spawn().unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        // Сборка — подготовка, а не предмет теста. `-p unica-coder --bin unica`
+        // собирается с другим набором признаков, чем `--workspace` у nextest,
+        // и на двухъядерном Windows-раннере под нагрузкой соседних тестов
+        // пересборка шла 122 с и больше 180 с (#1441). Срок держит зависшую
+        // сборку, оставляя запас до остановки теста по сроку `medium`
+        // (2 × 300 с в `.config/nextest.toml`) на сам дочерний прогон.
+        const BUILD_BUDGET: std::time::Duration = std::time::Duration::from_secs(420);
+        let deadline = std::time::Instant::now() + BUILD_BUDGET;
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
                 break status;
@@ -3916,7 +3923,10 @@ fn main() {
             if std::time::Instant::now() >= deadline {
                 child.kill().unwrap();
                 child.wait().unwrap();
-                panic!("offline Unica binary build exceeded 180 seconds");
+                panic!(
+                    "offline Unica binary build exceeded {} seconds",
+                    BUILD_BUDGET.as_secs()
+                );
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         };
