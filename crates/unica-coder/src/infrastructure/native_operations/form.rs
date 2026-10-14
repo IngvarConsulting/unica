@@ -420,7 +420,9 @@ fn validate_form_inner(
             }
             // The platform loads a command `Representation` only from its own
             // `DefaultRepresentation` set; the button values break the load.
-            if let Some(representation) = form_validation_child_text(*cmd, "Representation") {
+            // An empty element is not `Auto`: it is outside the set as well.
+            if let Some(element) = form_validation_child(*cmd, "Representation") {
+                let representation = form_ml_text(element);
                 let representation = representation.trim();
                 if form_8_3_27_enum_values("DefaultRepresentation")
                     .is_some_and(|allowed| !allowed.contains(&representation))
@@ -11546,7 +11548,8 @@ pub(crate) mod tests {
         let context = temp_context("validate-command-representation");
         let form_path = context.cwd.join("Form.xml");
 
-        for invalid in ["PictureAndText", "None", "Compact"] {
+        // An empty or blank element is outside the set too, not a silent Auto.
+        for invalid in ["PictureAndText", "None", "Compact", "", " "] {
             write_file(&form_path, &form(invalid));
             let outcome = validate_form(&form_path_args(&form_path), &context);
             assert!(!outcome.ok, "{invalid}: {outcome:?}");
