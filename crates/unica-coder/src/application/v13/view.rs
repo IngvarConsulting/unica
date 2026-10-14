@@ -1108,7 +1108,7 @@ mod tests {
             projected["can"] = json!([{"op": "code.replace"}]);
             Ok(projected)
         });
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok, "{}", result.summary);
         assert_eq!(result.source_text.as_deref(), Some(text));
         assert_eq!(
             result.data.unwrap(),
@@ -1133,7 +1133,7 @@ mod tests {
                 Ok(contract)
             },
         );
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok, "{}", result.summary);
         assert!(result.source_text.is_none());
         assert_eq!(result.data.unwrap()["kind"], "Can");
     }
