@@ -5666,6 +5666,60 @@ mod tests {
         }
     }
 
+    /// Resolving a metadata object by its own place answers exactly what the
+    /// full layout directory answers, for every object shape it handles (#1457).
+    #[test]
+    fn resolve_metadata_point_matches_the_full_layout_directory() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+        use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
+        let workspace = resolve_exact_workspace();
+        let source = std::fs::canonicalize(workspace.path().join("src")).unwrap();
+        std::fs::create_dir_all(source.join("Catalogs/Items/Commands/Refresh/Ext")).unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"),
+            "",
+        )
+        .unwrap();
+        let root = RetainedDirectoryCapability::open(&source).unwrap();
+        let directory = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "main",
+                    crate::domain::project_sources::SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::no_deadline(),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        for at in [
+            "main:Configuration",
+            "main:CommonModule.Probe",
+            "main:Catalog.Items",
+            "main:Catalog.Items.Form.Main",
+            "main:Catalog.Items.Command.Refresh",
+            "main:CommonForm.Main",
+        ] {
+            let expected = directory
+                .locate_address(at)
+                .unwrap_or_else(|| panic!("the directory places {at}"));
+            let result =
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+            assert!(result.ok, "{at}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["kind"], expected.kind(), "{at}");
+            assert_eq!(data["path"], expected.placed_path().unwrap(), "{at}");
+        }
+        for at in ["main:Catalog.Missing", "main:Catalog.Items.Command.Missing"] {
+            assert!(directory.locate_address(at).is_none());
+            let result =
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+            assert!(!result.ok, "{at}: {result:?}");
+            assert_eq!(result.diagnostics[0]["code"], "not_found", "{at}");
+        }
+    }
+
     #[test]
     fn resolve_exact_tree_children_use_their_containing_xml() {
         use crate::application::invocation_store::ToolIdentity;
