@@ -1,6 +1,6 @@
 use crate::application::ports::{MetadataChildProfile, MetadataTemplateType};
-use crate::application::v13::body_snapshot::BodySnapshot;
 use crate::application::v13::resolve::ResolvedLines;
+use crate::application::v13::source_text::{admit_text, text_too_large, ModuleText, OversizedText};
 use crate::application::v13::view::{ViewError, ViewReadAuthority, ViewSourceSnapshot};
 use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
@@ -10,7 +10,7 @@ use crate::domain::module_projection::{
     CommonModuleProperties, EventProjection, MethodProjection, ModuleProjectionSet,
     RegionProjection,
 };
-use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
+use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData, TextView};
 use crate::domain::platform_profile::{
     ModuleCapability, ModuleRole, ModuleSourceLayout, PlatformProfile,
 };
@@ -1591,11 +1591,11 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         LogicalViewReadAuthority::read_checkpoint(self)
     }
 
-    fn read_body_disk(
+    fn read_module_text(
         &self,
         at: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
-    ) -> Result<Option<BodySnapshot>, ViewError> {
+    ) -> Result<Option<ModuleText>, ViewError> {
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
         if route.reader() != LogicalReader::Module {
@@ -1626,10 +1626,10 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
             ));
         }
         let target = module_source_address(&module_at, capability)?;
-        let body = self
+        let text = self
             .read
-            .module_body_snapshot(&target, || self.read_checkpoint())?;
-        Ok(Some(body))
+            .module_text_within_limit(&target, || self.read_checkpoint())?;
+        Ok(Some(text))
     }
 
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError> {
@@ -2615,15 +2615,15 @@ fn module_projection_view_data(
             if detail.name().is_none() && detail.kind() == NodeKind::Body =>
         {
             let method = find_method(projections, name)?;
-            let items = projections
-                .body()
-                .iter()
-                .filter(|line| {
-                    line.line >= method.body_from_line && line.line <= method.body_to_line
-                })
-                .map(|line| json!({"line": line.line, "text": line.text}))
-                .collect();
-            module_collection(requested, NodeKind::Body, items)
+            let text = projections.method_text(method);
+            admit_text(text).map_err(|bytes| {
+                text_too_large(
+                    &projections.summary().at,
+                    OversizedText::Method { at: &method.at },
+                    bytes,
+                )
+            })?;
+            Ok(module_text(requested, text))
         }
         (NodeKind::Method, Some(name), Some(detail))
             if detail.name().is_none() && detail.kind() == NodeKind::Compilation =>
@@ -2721,20 +2721,30 @@ fn module_projection_view_data(
                 .map(|range| serde_json::to_value(range).unwrap_or(Value::Null))
                 .collect(),
         ),
-        (NodeKind::Body, None, None) => module_collection(
-            requested,
-            NodeKind::Body,
-            projections
-                .body()
-                .iter()
-                .map(|line| json!({"line": line.line, "text": line.text}))
-                .collect(),
-        ),
+        (NodeKind::Body, None, None) => {
+            let text = projections.source_text();
+            admit_text(text).map_err(|bytes| {
+                text_too_large(&projections.summary().at, OversizedText::Module, bytes)
+            })?;
+            Ok(module_text(requested, text))
+        }
         _ => Err(ViewError::new(
             RefusalCode::NotFound,
             "module projection suffix is not available",
         )),
     }
+}
+
+fn module_text(requested: &QualifiedAddress, text: &str) -> NodeViewData {
+    NodeViewData::Text(TextView::new(
+        NodeView::new(
+            requested.to_string(),
+            NodeKind::Body.as_str(),
+            NodeKind::Body.as_str(),
+            Map::new(),
+        ),
+        text.to_string(),
+    ))
 }
 
 fn module_collection(
@@ -2803,14 +2813,7 @@ fn method_node(method: &MethodProjection) -> NodeView {
             format!("{}.Compilation", method.at),
             method.compilation_count,
         ),
-        BranchRef::new(
-            format!("{}.Body", method.at),
-            if method.body_to_line < method.body_from_line {
-                0
-            } else {
-                method.body_to_line - method.body_from_line + 1
-            },
-        ),
+        BranchRef::new(format!("{}.Body", method.at), method.text_line_count()),
     ])
 }
 

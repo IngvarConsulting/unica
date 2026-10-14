@@ -4518,9 +4518,7 @@ fn view_error_result(
     // Маршрут переносится вместе с кодом и уточнением: иначе два пути наружу
     // расходятся, и отказ теряет альтернативу в зависимости от того, каким
     // из них он вышел.
-    if let Some(next) = error.next() {
-        result.next.push(next.clone());
-    }
+    result.next.extend(error.next().iter().cloned());
     result
 }
 
@@ -5730,14 +5728,18 @@ mod tests {
             std::fs::write(&file, source).unwrap();
             let view = invoke_exact_read(workspace.path(), ToolIdentity::View, at.clone());
             assert!(view.ok, "{source:?}: {view:?}");
-            let items = view.data.as_ref().unwrap()["items"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let viewed = items.last().map_or(
-                json!({"state":"notLineBased"}),
-                |last| json!({"state":"range","from":1,"to":last["line"]}),
-            );
+            // Строки текста `Body` агент считает сам — так же, как `str::lines`.
+            let lines = view
+                .source_text
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .count();
+            let viewed = if lines == 0 {
+                json!({"state":"notLineBased"})
+            } else {
+                json!({"state":"range","from":1,"to":lines})
+            };
             assert_eq!(viewed, expected, "view numbering of {source:?}");
             let resolved = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, at.clone());
             assert!(resolved.ok, "{source:?}: {resolved:?}");

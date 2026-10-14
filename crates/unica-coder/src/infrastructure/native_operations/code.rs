@@ -912,19 +912,20 @@ fn plan_code_postimage(
                 return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
             }
             let selector = args.anchor.clone().map(Selector::Anchor);
+            let target = replacement_target(&args.at, &args.text);
             let site = match &selector {
                 Some(selector) => {
                     locate_replacement_typed(&snapshot, selector, &indexed.methods)
                         .map_err(|error| code_selector_error(error, op_index, selector))?
                 }
                 None => {
-                    locate_addressed_replacement(&snapshot, &args.at, &indexed.methods, &at_path)?
+                    locate_addressed_replacement(&snapshot, &target, &indexed.methods, &at_path)?
                 }
             };
             let replacement = site.replacement(&args.text);
             let no_op =
                 replacement_is_present(snapshot.raw(), site, &replacement, |found, methods| {
-                    relocate_replaced_method(found, methods, &args.at)
+                    relocate_replaced_method(found, methods, &target)
                 });
             let mut after = snapshot.raw().to_vec();
             if !no_op {
@@ -961,7 +962,7 @@ fn plan_code_postimage(
         .at_path(&text_path));
     }
     if let CodePlanOperation::Replace(args) = operation {
-        if replaces_whole_method(&args.at) {
+        if replaces_whole_method(&replacement_target(&args.at, &args.text).at) {
             reject_redeclared_methods(&args.text, &indexed.methods, &post.methods).map_err(
                 |message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&text_path)
@@ -973,8 +974,8 @@ fn plan_code_postimage(
         CodePlanOperation::Replace(args) if args.anchor.is_none() => {
             let repeat_snapshot = SourceTextSnapshot::from_bytes(&after)
                 .map_err(|_| bad_code_arg(&text_path, "invalid patched snapshot"))?;
-            match locate_addressed_replacement(&repeat_snapshot, &args.at, &post.methods, &at_path)
-            {
+            let target = replacement_target(&args.at, &args.text);
+            match locate_addressed_replacement(&repeat_snapshot, &target, &post.methods, &at_path) {
                 Err(error) if error.kind() == ApplyPlanErrorKind::NotFound => Ok(()),
                 Err(_) => Err("patched BSL address became ambiguous or invalid".to_string()),
                 Ok(repeated) => {
@@ -983,7 +984,7 @@ fn plan_code_postimage(
                         repeat_snapshot.raw(),
                         repeated,
                         &bytes,
-                        |found, methods| relocate_replaced_method(found, methods, &args.at),
+                        |found, methods| relocate_replaced_method(found, methods, &target),
                     ) {
                         Ok(())
                     } else {
@@ -1004,12 +1005,62 @@ fn plan_code_postimage(
     Ok(StagedCodePostimage { after, no_op })
 }
 
+/// Адрес замены и её охват.
+struct ReplacementTarget {
+    at: QualifiedAddress,
+    /// Замена начинается с документирующего комментария над методом.
+    with_doc_comment: bool,
+}
+
+/// `…Method.<Имя>.Body` с текстом, который сам объявляет метод, — это текст,
+/// показанный `view` по тому же адресу: документирующий комментарий,
+/// директива, объявление, тело и окончание. Он заменяет метод вместе с
+/// комментарием над ним. Текст без объявления по-прежнему заменяет только
+/// строки между объявлением и окончанием: тело метода в BSL не может
+/// объявить другой метод, поэтому формы не смешиваются.
+fn replacement_target(at: &QualifiedAddress, text: &str) -> ReplacementTarget {
+    let method_text = matches!(
+        code_projection(at),
+        Some((_, CodeProjection::MethodBody(_)))
+    ) && analyze_module(text)
+        .is_ok_and(|analysis| analysis.diagnostics.is_empty() && !analysis.methods.is_empty());
+    let method_at = method_text
+        .then(|| at.to_string())
+        .and_then(|body| body.strip_suffix(".Body").map(str::to_owned))
+        .and_then(|method| QualifiedAddress::parse(&method).ok());
+    match method_at {
+        Some(at) => ReplacementTarget {
+            at,
+            with_doc_comment: true,
+        },
+        None => ReplacementTarget {
+            at: at.clone(),
+            with_doc_comment: false,
+        },
+    }
+}
+
+/// Начало документирующего комментария: подряд идущие строки `//`
+/// непосредственно над строкой `line_start`; пустая строка его обрывает.
+fn doc_comment_start(text: &str, line_start: usize) -> usize {
+    let mut start = line_start;
+    while start > 0 {
+        let previous = safe_line_start(text, start - 1);
+        if previous >= start || !text[previous..start].trim_start().starts_with("//") {
+            break;
+        }
+        start = previous;
+    }
+    start
+}
+
 fn locate_addressed_replacement(
     snapshot: &SourceTextSnapshot,
-    at: &QualifiedAddress,
+    target: &ReplacementTarget,
     methods: &[Method],
     path: &str,
 ) -> Result<ReplacementSite, ApplyPlanError> {
+    let at = &target.at;
     let (_, projection) = code_projection(at)
         .ok_or_else(|| bad_code_arg(path, "at does not select a writable BSL node"))?;
     reject_lone_cr_line_endings(snapshot).map_err(|_| {
@@ -1029,7 +1080,11 @@ fn locate_addressed_replacement(
             let line_start = safe_line_start(text, method.start);
             let line_end = line_end(text, method.end);
             let start = if text[line_start..method.start].trim().is_empty() {
-                line_start
+                if target.with_doc_comment {
+                    doc_comment_start(text, line_start)
+                } else {
+                    line_start
+                }
             } else {
                 method.start
             };
@@ -1988,11 +2043,11 @@ fn replacement_lead(
 fn relocate_replaced_method(
     snapshot: &SourceTextSnapshot,
     methods: &[Method],
-    at: &QualifiedAddress,
+    target: &ReplacementTarget,
 ) -> Option<ReplacementSite> {
-    match code_projection(at) {
+    match code_projection(&target.at) {
         Some((_, CodeProjection::Method(_))) => {
-            locate_addressed_replacement(snapshot, at, methods, "").ok()
+            locate_addressed_replacement(snapshot, target, methods, "").ok()
         }
         Some((_, CodeProjection::ModuleBody | CodeProjection::MethodBody(_))) | None => None,
     }
@@ -4374,6 +4429,54 @@ pub(super) mod tests {
             fs::read(fixture.source.join(relative)).unwrap(),
             expected.as_bytes()
         );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop() {
+        // `view …Method.Base.Body` отдаёт комментарий, директиву, объявление,
+        // тело и окончание; тот же текст с правкой заменяет ровно этот участок.
+        let before = concat!(
+            "// Отдельный комментарий модуля.\r\n",
+            "\r\n",
+            "// Документирует Base.\r\n",
+            "&НаСервере\r\n",
+            "Procedure Base() Export\r\n",
+            "    Value = 1;\r\n",
+            "EndProcedure\r\n",
+            "\r\n",
+            "Function Neighbor() Export\r\n    Return 7;\r\nEndFunction\r\n"
+        );
+        let read = "// Документирует Base.\r\n&НаСервере\r\nProcedure Base() Export\r\n    Value = 1;\r\nEndProcedure\r\n";
+        assert!(before.contains(read));
+        let edited = read.replace("Value = 1;", "Value = 2;");
+        let fixture = staged_code_fixture("view-roundtrip", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at": "main:CommonModule.Sample.Method.Base.Body", "text": edited}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let (mut state, effects) = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            std::slice::from_ref(&operation),
+        )
+        .unwrap();
+        let expected = before.replace(read, &edited);
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        assert_eq!(state.read(relative).unwrap().unwrap(), expected.as_bytes());
+        fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        let repeated = staged_code_admission(&fixture, true);
+        let (state, effects) =
+            plan_admitted_code(&repeated, &fixture.binding, &[operation]).unwrap();
+        assert!(state.planned_changes().is_empty());
+        assert!(effects.events().is_empty());
         fixture.cleanup();
     }
 

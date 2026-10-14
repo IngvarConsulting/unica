@@ -16,6 +16,23 @@ FORM_FILE = "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form
 MODULE_FILE = "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl"
 
 
+def tool_result(response):
+    """Канонический результат вызова: `structuredContent`, а у ответа
+    с исходным текстом BSL — конверт из первого блока `content` и сам
+    текст второго блока под ключом `sourceText`."""
+    result = (response or {}).get("result") or {}
+    structured = result.get("structuredContent")
+    if structured is not None:
+        return structured
+    blocks = result.get("content") or []
+    if len(blocks) == 2 and all(block.get("type") == "text" for block in blocks):
+        envelope = json.loads(blocks[0]["text"])
+        if isinstance(envelope, dict) and "sourceText" not in envelope:
+            envelope["sourceText"] = blocks[1]["text"]
+            return envelope
+    return None
+
+
 def load_corpus(path):
     def unique_object(pairs):
         result = {}

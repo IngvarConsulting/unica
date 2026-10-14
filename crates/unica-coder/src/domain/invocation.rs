@@ -179,6 +179,15 @@ pub(crate) struct DomainResult {
     pub(crate) cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) page: Option<Value>,
+    /// Исходный текст предмета (`Body` модуля или метода BSL). Хранится и
+    /// подписывается вместе с результатом, но наружу идёт отдельным текстовым
+    /// блоком MCP, а не полем конверта.
+    #[serde(
+        default,
+        rename = "sourceText",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) source_text: Option<String>,
 }
 
 impl DomainResult {
@@ -196,6 +205,7 @@ impl DomainResult {
             rev: None,
             cursor: None,
             page: None,
+            source_text: None,
         }
     }
 
@@ -324,6 +334,7 @@ mod tests {
             rev: Some("rev-2".to_string()),
             cursor: Some("cursor-2".to_string()),
             page: Some(json!({"stoppedBy": "limit"})),
+            source_text: None,
         };
 
         let serialized = serde_json::to_value(result).expect("serialize domain result");

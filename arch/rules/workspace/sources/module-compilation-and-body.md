@@ -2,24 +2,40 @@
 id: INV.SOURCE.MODULE-COMPILATION-AND-BODY
 check:
   - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::method_compilation_count_and_nested_guards_match_actual_ranges
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::explicit_body_preserves_lines_paginates_and_filters_without_method_duplication
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::crlf_projection_preserves_source_signature_but_body_lines_drop_record_terminators
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::module_body_returns_every_source_line_with_its_number
-  - crates/unica-coder/src/application/v13/body_snapshot.rs::fragments_reassemble_utf8_line_and_preserve_crlf_boundaries
+  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor
+  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::crlf_method_text_keeps_the_source_line_endings
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::module_body_returns_the_source_text_byte_for_byte
+  - crates/unica-coder/src/application/v13/view.rs::module_text_is_returned_whole_beside_the_projected_node_without_pages
+  - crates/unica-coder/src/application/v13/view.rs::module_text_over_the_limit_is_refused_whole_with_structural_next
+  - crates/unica-coder/src/application/v13/source_text.rs::source_text_limit_is_the_owner_decided_sixteen_kib
+  - crates/unica-coder/src/application/v13/source_text.rs::oversized_method_refusal_routes_to_the_method_and_module_structure
+  - crates/unica-coder/tests/v13_search_integration.rs::public_view_refuses_bsl_text_over_sixteen_kib_whole_with_structural_next
+  - crates/unica-coder/src/infrastructure/native_operations/code.rs::method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
-# Тело BSL сохраняет исходные строки и их номера
+# Тело BSL отдаётся исходным текстом
 
-`Body` возвращает исходные строки модуля с их номерами; среза по контексту
-исполнения у `view` нет. При чтении `Body` строка разбивается на фрагменты только
-тогда, когда целиком не помещается в
-ответ. Каждый фрагмент сохраняет исходный номер и байтовое смещение; клиент
-восстанавливает строку в порядке смещений. Терминатор строки не входит в
-`text`.
+`Body` модуля возвращает текст модуля целиком, байт в байт как в файле.
+Единственная нормализация: начальные U+FEFF в текст не входят. Разделители
+строк, табуляция и отсутствие перевода строки в конце файла сохраняются.
+Текст идёт отдельным текстовым блоком ответа, вне конверта JSON: номеров
+строк, элементов коллекции и курсора у него нет.
+
+`Method.<имя>.Body` возвращает текст метода. Он начинается с
+документирующего комментария — подряд идущих строк `//` непосредственно
+над директивой компиляции или объявлением; пустая строка комментарий
+обрывает. Затем идут директива, объявление, тело и строка `КонецПроцедуры`
+или `КонецФункции` включительно. Инструкции препроцессора вокруг метода
+в текст не входят. Тот же текст с правкой, переданный `code.replace`
+по тому же адресу, заменяет ровно этот участок.
+
+Текст модуля или метода больше 16 КиБ UTF-8 не отдаётся. Ответ отказывает
+`result_too_large` без частичного текста, а `next` ведёт к адресам `Region`
+и `Method` этого модуля, у метода — сначала к самому методу.
 
 Для `Method.<имя>.Body` на большом файле ещё нужен ограниченный по памяти
-способ вычислить диапазоны метода.
+способ вычислить границы метода: сейчас чтение разбирает модуль целиком.
 Этот разрыв учтён в [#1119](https://github.com/IngvarConsulting/unica/issues/1119).
 
 `Compilation` описывает диапазоны и накопленные условия препроцессора,
@@ -27,5 +43,5 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 Директива метода, свойства модуля и условие препроцессора остаются разными
 фактами при вычислении эффективных контекстов.
 
-Проверки проходят построитель проекции; отдельная проверка текущего `view`
-сверяет строки `Body` формы с исходным файлом.
+Проверки проходят построитель проекции, `view` над файлом и публичный MCP;
+обратную запись текста метода проверяет план `code.replace`.

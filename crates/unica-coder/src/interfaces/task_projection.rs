@@ -114,6 +114,11 @@ pub(super) fn call_tool_result(
         }
         Err(CanonicalResultSizeError::Checkpoint(never)) => match never {},
     }
+    if let (true, Some(text)) = (result.ok, result.source_text.as_deref()) {
+        let projected = source_text_result(result, text)?;
+        ensure_projection_bounded(&projected)?;
+        return Ok(projected);
+    }
     let value = serde_json::to_value(result).map_err(|_| TaskProjectionError::Serialization)?;
     // Hosts may ignore structuredContent when isError is true. Mirror only
     // bounded diagnostics, never the potentially 8 MiB subject data.
@@ -126,6 +131,25 @@ pub(super) fn call_tool_result(
             .push(ContentBlock::text(error_text(result)?));
     }
     ensure_projection_bounded(&projected)?;
+    Ok(projected)
+}
+
+/// Ответ с исходным текстом BSL: два текстовых блока без `structuredContent`.
+/// Первый — конверт результата JSON без самого текста, второй — текст UTF-8
+/// как в файле. Хост, видящий `structuredContent`, может передать модели
+/// только его, поэтому текст и конверт идут одним каналом `content`.
+fn source_text_result(
+    result: &DomainResult,
+    text: &str,
+) -> Result<CallToolResult, TaskProjectionError> {
+    let mut envelope = result.clone();
+    envelope.source_text = None;
+    let envelope =
+        serde_json::to_string(&envelope).map_err(|_| TaskProjectionError::Serialization)?;
+    let mut projected = CallToolResult::default();
+    projected.is_error = Some(false);
+    projected.content.push(ContentBlock::text(envelope));
+    projected.content.push(ContentBlock::text(text.to_string()));
     Ok(projected)
 }
 
@@ -359,6 +383,7 @@ mod tests {
             rev: None,
             cursor: None,
             page: None,
+            source_text: None,
         };
         let direct = match super::project_direct_terminal(
             &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
@@ -477,6 +502,66 @@ mod tests {
         );
         result.ok = true;
         assert!(super::call_tool_result(&result).unwrap().content.is_empty());
+    }
+
+    #[test]
+    fn source_text_result_is_an_envelope_then_raw_text_without_structured_content() {
+        let text =
+            "// Документ \"метода\".\r\n&НаСервере\nПроцедура А()\n\tВозврат;\nКонецПроцедуры\n";
+        let mut result = DomainResult::success("logical node text resolved");
+        result.at = Some("main:CommonModule.Пример.Method.А.Body".into());
+        result.data = Some(json!({"at": "main:CommonModule.Пример.Method.А.Body", "kind": "Body"}));
+        result.source_text = Some(text.to_string());
+        let direct = match super::project_direct_terminal(
+            &crate::application::receipt_ledger::ReceiptTerminalOutcome::Completed {
+                result: Box::new(result.clone()),
+            },
+        )
+        .expect("project direct terminal")
+        {
+            super::DirectProjection::Result(projected) => projected,
+            super::DirectProjection::Error(error) => panic!("completed terminal errored: {error}"),
+        };
+        let wire = serde_json::to_value(&direct).unwrap();
+        assert!(wire.get("structuredContent").is_none(), "{wire:#}");
+        assert_eq!(wire["isError"], false);
+        let blocks = wire["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        let envelope: Value = serde_json::from_str(blocks[0]["text"].as_str().unwrap()).unwrap();
+        let mut expected = result.clone();
+        expected.source_text = None;
+        assert_eq!(envelope, serde_json::to_value(&expected).unwrap());
+        assert!(envelope.get("sourceText").is_none());
+        // Текст идёт байт в байт, без экранирования JSON.
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"].as_str().unwrap(), text);
+
+        // Завершённое задание встраивает тот же ответ.
+        let (task_id, invocation_id, receipt_key_digest) = v5_common();
+        let completed = V5DaemonTaskSnapshot::Completed {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            created_at_epoch_ms: 1_777_012_345_678,
+            updated_at_epoch_ms: 1_777_012_346_789,
+            ttl_ms: 3_600_000,
+            poll_interval_ms: 250,
+            version: 3,
+            cancel_requested: false,
+            terminal_epoch_ms: 1_777_012_346_789,
+            terminal_digest: v5_terminal_digest(),
+            result: Box::new(result.clone()),
+        };
+        let detailed = super::detailed_task_v5(&completed).expect("completed task");
+        let rmcp::model::TaskPayload::Completed { result: embedded } = detailed.payload else {
+            panic!("completed task must embed the original call result");
+        };
+        assert_eq!(Value::Object(embedded), wire);
+
+        // Отказ текста не несёт и остаётся структурным.
+        result.ok = false;
+        let refused = serde_json::to_value(super::call_tool_result(&result).unwrap()).unwrap();
+        assert!(refused["structuredContent"].is_object());
     }
 
     #[test]

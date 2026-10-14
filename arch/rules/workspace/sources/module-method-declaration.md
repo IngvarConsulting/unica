@@ -2,7 +2,7 @@
 id: INV.SOURCE.MODULE-METHOD-DECLARATION
 check:
   - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::method_projection_uses_ast_and_omits_body_text
-  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::explicit_body_preserves_lines_paginates_and_filters_without_method_duplication
+  - crates/unica-coder/src/infrastructure/bsl_module_projection.rs::method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor
 ---
 
 # Описание метода отделяет декларацию от тела

@@ -2551,6 +2551,7 @@ mod tests {
             rev: Some("rev-7".into()),
             cursor: Some("cursor-2".into()),
             page: None,
+            source_text: None,
         }
     }
 
@@ -3054,10 +3055,14 @@ mod tests {
         use crate::domain::invocation::{InvocationStatus, TaskId};
         use std::sync::atomic::AtomicUsize;
 
-        for is_error in [false, true] {
+        // Третий случай — ответ с исходным текстом BSL: прямой ответ и итог
+        // задания одинаково несут конверт и сырой текст блоками `content`.
+        let source = "// Комментарий \"метода\".\r\nПроцедура А()\n\tВозврат;\nКонецПроцедуры\n";
+        for (is_error, source_text) in [(false, None), (true, None), (false, Some(source))] {
             let task_id = TaskId::new();
             let mut subject = canonical_result("same terminal subject result");
             subject.ok = !is_error;
+            subject.source_text = source_text.map(str::to_string);
             subject.diagnostics = vec![json!({
                 "code": "provider_unavailable", "outcome": "needsHuman",
                 "message": "v8-runner is unavailable", "remediation": "prefetch the engine"
@@ -3121,6 +3126,18 @@ mod tests {
                     fallback["diagnostics"][0]["remediation"],
                     "prefetch the engine"
                 );
+            } else if let Some(source) = source_text {
+                assert!(
+                    direct["result"].get("structuredContent").is_none(),
+                    "{direct}"
+                );
+                let blocks = direct["result"]["content"].as_array().unwrap();
+                assert_eq!(blocks.len(), 2, "{direct}");
+                let envelope: Value =
+                    serde_json::from_str(blocks[0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(envelope["summary"], "same terminal subject result");
+                assert!(envelope.get("sourceText").is_none());
+                assert_eq!(blocks[1]["text"].as_str().unwrap(), source);
             } else {
                 assert_eq!(direct["result"]["content"], json!([]));
             }

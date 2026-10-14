@@ -5,6 +5,7 @@ check:
   - crates/unica-coder/src/interfaces/mcp.rs::native_task_get_reports_late_cancel_request_without_claiming_cancellation
   - crates/unica-coder/src/interfaces/task_projection.rs::v5_native_projection_keeps_durable_time_ttl_and_maps_queued_to_working
   - crates/unica-coder/src/interfaces/task_projection.rs::v5_completed_task_embeds_the_exact_direct_call_result
+  - crates/unica-coder/src/interfaces/task_projection.rs::source_text_result_is_an_envelope_then_raw_text_without_structured_content
   - crates/unica-coder/src/interfaces/task_projection.rs::error_fallback_is_bounded_without_losing_structured_diagnostics
   - crates/unica-coder/src/interfaces/task_projection.rs::error_without_diagnostics_still_has_readable_summary
   - crates/unica-coder/src/interfaces/mcp.rs::v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free
@@ -33,7 +34,13 @@ check:
 
 Завершённое задание содержит тот же сериализованный `CallToolResult`, что
 и прямой ответ: канонический JSON находится в `structuredContent`,
-при успехе `content` пуст. При `isError: true` он содержит текстовое
+при успехе `content` пуст. Исключение — успешный ответ с исходным текстом
+[тела BSL](../workspace/sources/module-compilation-and-body.md): в нём нет
+`structuredContent`, а `content` несёт два текстовых блока — сначала
+канонический JSON без текста, затем сам текст UTF-8 без экранирования.
+Хост, получивший `structuredContent`, может передать модели только его,
+поэтому конверт и текст идут одним каналом. Сохранённый результат задания
+и его дайджест включают текст. При `isError: true` `content` содержит текстовое
 представление `summary` и `diagnostics`, чтобы клиент мог показать причину
 отказа, даже если не читает `structuredContent`. Текст занимает не более
 4096 байт UTF-8 вместе с явным маркером усечения; полные данные остаются
