@@ -15,6 +15,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::names_with_a_dot_are_published_escaped_and_read_back
   - crates/unica-coder/src/domain/apply.rs::retired_names_with_a_dot_route_to_escaped_addresses
   - crates/unica-coder/src/infrastructure/v13_read_projection.rs::dcs_structure_tests::setting_structure_rows_never_fabricate_or_choose_named_addresses
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::interface_slices_publish_only_addresses_view_opens
 ---
 
 # Логический адрес называет набор исходников и путь по видам объектов

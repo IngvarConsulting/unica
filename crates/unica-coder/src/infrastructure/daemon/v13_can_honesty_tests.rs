@@ -358,17 +358,31 @@ fn invoke_on(
 
 /// Узлы набора исходников, которые показывает чтение: ветви и элементы от
 /// корня, в ширину, не больше `PER_SHAPE` на одну форму адреса.
-fn walk(workspace: &Path, root: &str) -> Vec<String> {
+///
+/// Каждый `at` из `branches` и `items`, до которого дошёл обход, обязан
+/// открываться тем же `view`: адрес, который сервер выдал и сам отверг,
+/// попадает в `unroutable` вместе с причиной отказа (#1467).
+struct Walk {
+    nodes: Vec<String>,
+    unroutable: Vec<String>,
+}
+
+fn walk(workspace: &Path, root: &str) -> Walk {
     let mut seen = BTreeSet::new();
     let mut shapes = BTreeMap::<String, usize>::new();
     let mut queue = VecDeque::from([root.to_string()]);
     let mut nodes = Vec::new();
+    let mut unroutable = Vec::new();
     while let Some(at) = queue.pop_front() {
         if nodes.len() >= NODE_BUDGET || !seen.insert(at.clone()) {
             continue;
         }
-        let Ok(address) = QualifiedAddress::parse(&at) else {
-            continue;
+        let address = match QualifiedAddress::parse(&at) {
+            Ok(address) => address,
+            Err(error) => {
+                unroutable.push(format!("{at}: {error}"));
+                continue;
+            }
         };
         // Ветви графа вызовов `Caller` и `Callee` — коллекция анализатора, а
         // не узлы набора исходников: словаря `can` и фильтра у них нет.
@@ -384,7 +398,13 @@ fn walk(workspace: &Path, root: &str) -> Vec<String> {
             continue;
         }
         let result = invoke(workspace, ToolIdentity::View, json!({"at": at}));
-        let Some(data) = result.data.filter(|_| result.ok) else {
+        if !result.ok {
+            if !dangling_reference(workspace, &address, &result) {
+                unroutable.push(format!("{at}: {}", result.summary));
+            }
+            continue;
+        }
+        let Some(data) = result.data else {
             continue;
         };
         *count += 1;
@@ -397,7 +417,42 @@ fn walk(workspace: &Path, root: &str) -> Vec<String> {
             }
         }
     }
-    nodes
+    Walk { nodes, unroutable }
+}
+
+/// Ссылка на объект, которого нет в исходниках: подсистема или командный
+/// интерфейс урезанной фикстуры называют объект, не вошедший в неё. Такой
+/// адрес разобран и маршрутизирован, а `not_found` отвечает отсутствием
+/// корневого объекта, что видно и по его собственному адресу.
+fn dangling_reference(
+    workspace: &Path,
+    address: &QualifiedAddress,
+    refusal: &DomainResult,
+) -> bool {
+    let code = |result: &DomainResult| {
+        result
+            .diagnostics
+            .first()
+            .and_then(|diagnostic| diagnostic.get("code"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let Some(root) = address.segments().first() else {
+        return false;
+    };
+    let Some(name) = root.name() else {
+        return false;
+    };
+    if code(refusal).as_deref() != Some("not_found") {
+        return false;
+    }
+    let owner = format!(
+        "{}:{}",
+        address.source_set(),
+        crate::domain::address::member_address(&root.kind().as_str(), name)
+    );
+    let owner_result = invoke(workspace, ToolIdentity::View, json!({ "at": owner }));
+    !owner_result.ok && code(&owner_result).as_deref() == Some("not_found")
 }
 
 /// Форма адреса: маршрут и виды сегментов с признаком имени.
@@ -527,6 +582,7 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
     let mut routes = BTreeSet::new();
     let mut covered = BTreeSet::new();
     let mut mismatches = Vec::new();
+    let mut unroutable = Vec::new();
     let fixture = fixture(name);
     NARROWINGS_SEEN.with(|seen| seen.borrow_mut().clear());
     WRITES_CHECKED.with(|done| done.borrow_mut().clear());
@@ -544,7 +600,9 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
         };
         let mut representatives = BTreeMap::new();
         let mut pairs = BTreeMap::new();
-        for at in walk(&fixture.workspace, &format!("{set}:Configuration")) {
+        let walked = walk(&fixture.workspace, &format!("{set}:Configuration"));
+        unroutable.extend(walked.unroutable);
+        for at in walked.nodes {
             let address = QualifiedAddress::parse(&at).unwrap();
             let Some(route) = classify_route(&address, PlatformProfile::v8_3_27()) else {
                 continue;
@@ -591,6 +649,11 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
             check_node(&checked, at, plan_writes, &mut mismatches);
         }
     }
+    assert_eq!(
+        unroutable,
+        Vec::<String>::new(),
+        "{name}: view published addresses it refuses"
+    );
     assert_eq!(mismatches, Vec::<String>::new(), "{name}");
     // Проверка записи не пустая: план с правдоподобными аргументами
     // прошёл хотя бы для этих операций, и их файлы сверены с узлом.
@@ -1999,4 +2062,44 @@ fn retired_member_arguments_route_next_to_the_member_address() {
             None => assert_eq!(refusal.next.len(), 1, "{value}"),
         }
     }
+}
+
+/// Срезы `Interface` модуля — элементы без адреса: `…Interface.Public`
+/// грамматика отвергает, и `view` его больше не выдаёт. Каждый `at` ответа
+/// открывается, а методы среза — адреса, которые `view` читает (#1467).
+#[test]
+fn interface_slices_publish_only_addresses_view_opens() {
+    let fixture = fixture("workspace");
+    let at = "main:Catalog.Валюты.Module.Manager.Interface";
+    let result = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": at}));
+    assert!(result.ok, "{}", result.summary);
+    let data = result.data.expect("interface collection");
+    let items = data["items"].as_array().expect("interface items");
+    let names = items
+        .iter()
+        .map(|item| item["interface"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Public", "Library", "Override"]);
+    let mut opened = Vec::new();
+    for item in items {
+        assert_eq!(item["addressable"], json!(false), "{item}");
+        if let Some(at) = item.get("at").and_then(Value::as_str) {
+            opened.push(at.to_string());
+        }
+        for method in item["methods"].as_array().into_iter().flatten() {
+            opened.push(method.as_str().expect("method address").to_string());
+        }
+    }
+    assert!(
+        opened.contains(&"main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду".to_string()),
+        "{opened:?}"
+    );
+    for at in opened {
+        let view = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": at}));
+        assert!(view.ok, "{at}: {}", view.summary);
+    }
+    assert_eq!(
+        walk(&fixture.workspace, at).unroutable,
+        Vec::<String>::new()
+    );
 }

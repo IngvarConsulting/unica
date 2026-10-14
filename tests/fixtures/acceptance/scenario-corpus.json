@@ -39378,6 +39378,57 @@
      ]
     }
    ]
+  },
+  {
+   "id": "S433",
+   "name": "module-interface-slices-publish-only-routable-addresses",
+   "issue": 1467,
+   "area": "Навигация и чтение",
+   "task": "Прочитать ветвь Interface модуля: срезы Public/Library/Override приходят без адреса, который view отверг бы, а метод среза открывается своим адресом",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Interface"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/interface",
+       "eq": "Public"
+      },
+      {
+       "pointer": "/data/items/0/addressable",
+       "eq": false
+      },
+      {
+       "pointer": "/data/items/0/at",
+       "absent": true
+      },
+      {
+       "pointer": "/data/items/0/methods/0",
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+      }
+     ]
+    }
+   ]
   }
  ]
 }
