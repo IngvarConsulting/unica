@@ -1009,13 +1009,18 @@ fn note_unapplied_load(
         };
         if step["ok"] == true && step["applied"] == true {
             if let Some(mode) = StepMode::parse(&step["mode"]) {
-                result.changed.push(json!({
+                let mut entry = json!({
                     "infobase": true,
                     "kind": "configuration",
                     "sourceSet": set,
                     "mode": mode.as_str(),
                     "appliedToDatabaseConfiguration": true,
-                }));
+                });
+                // Пропущенный набор с `applied: true` применил прежнюю загрузку.
+                if mode == StepMode::Skipped {
+                    entry["appliedEarlierLoad"] = Value::Bool(true);
+                }
+                result.changed.push(entry);
             }
         }
     }
@@ -2736,5 +2741,40 @@ pub(super) mod tests {
         assert!(!result.ok, "{result:?}");
         assert!(result.changed.is_empty(), "{result:?}");
         assert!(!result.summary.contains("issues/1246"), "{result:?}");
+    }
+
+    #[test]
+    fn a_failed_apply_names_a_skipped_set_that_applied_an_earlier_load() {
+        let root = workspace();
+        let plan = [("main", skipped()), ("ext-sales", full())];
+        let mut failed = envelope(&plan, true);
+        failed["ok"] = json!(false);
+        failed["data"]["ok"] = json!(false);
+        failed["data"]["steps"][0]["applied"] = json!(true);
+        failed["data"]["steps"][1]["ok"] = json!(false);
+        failed["data"]["steps"][1]["applied"] = json!(false);
+        failed["error"] = json!({
+            "code": "platform_failure",
+            "kind": "platform",
+            "message": "apply failed",
+            "next": {"command": "apply", "source_set": "ext-sales"}
+        });
+        let runner = SequenceRunner::new(vec![
+            process(envelope(&plan, false), true),
+            process(failed, false),
+        ]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), None, false, false),
+            &runner,
+        );
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(result.changed.len(), 2, "{result:?}");
+        assert_eq!(result.changed[0]["sourceSet"], "main");
+        assert_eq!(result.changed[0]["mode"], "skipped");
+        assert_eq!(result.changed[0]["appliedEarlierLoad"], true);
+        assert_eq!(result.changed[0]["appliedToDatabaseConfiguration"], true);
+        assert_eq!(result.changed[1]["sourceSet"], "ext-sales");
+        assert!(result.changed[1].get("appliedEarlierLoad").is_none());
     }
 }
