@@ -663,10 +663,11 @@ fn v13_tool_definition(name: &str, description: Option<&str>, schema: Value) -> 
     if description.is_none() {
         tool.description = None;
     }
-    if name == "view" {
-        // `view` отдаёт исходный текст в пределах бюджета клиента; хост,
-        // который понимает это объявление, передаёт такой ответ модели
-        // целиком, а не выносит в файл.
+    if returns_source_text(name) {
+        // `view` отдаёт исходный текст в пределах бюджета клиента, а
+        // `task.result` — тот же сохранённый ответ, переданный в задание.
+        // Хост, который понимает это объявление, передаёт любой их ответ
+        // модели целиком, а не выносит в файл.
         let (key, chars) = unica_bootstrap::source_text_tool_meta();
         let mut meta = rmcp::model::MetaObject::new();
         meta.insert(key.to_string(), Value::from(chars));
@@ -675,11 +676,36 @@ fn v13_tool_definition(name: &str, description: Option<&str>, schema: Value) -> 
     tool
 }
 
-/// Бюджет ответа клиента этого соединения: по имени из `initialize`
-/// и окружению запуска (фасад хостов).
-fn client_response_budget(context: &RequestContext<RoleServer>) -> unica_bootstrap::ResponseBudget {
-    let peer = context.peer.peer_info();
-    unica_bootstrap::host_response_budget(peer.as_ref().map(|peer| peer.client_info.name.as_str()))
+/// Инструменты, чей ответ может нести исходный текст BSL.
+fn returns_source_text(name: &str) -> bool {
+    matches!(name, "view" | "task.result")
+}
+
+/// Ключ `_meta`, которым клиент без `initialize` (протокол 2026-07-28)
+/// называет себя в каждом запросе.
+const CLIENT_INFO_META: &str = "io.modelcontextprotocol/clientInfo";
+
+/// Имя клиента: из `initialize`, а без него — из `_meta` запроса.
+fn client_name(peer: Option<String>, metadata: &Map<String, Value>) -> Option<String> {
+    peer.or_else(|| {
+        metadata
+            .get(CLIENT_INFO_META)?
+            .get("name")?
+            .as_str()
+            .map(str::to_owned)
+    })
+}
+
+/// Бюджет ответа клиента: по его имени и окружению запуска (фасад хостов).
+fn client_response_budget(
+    context: &RequestContext<RoleServer>,
+    metadata: &Map<String, Value>,
+) -> unica_bootstrap::ResponseBudget {
+    let peer = context
+        .peer
+        .peer_info()
+        .map(|peer| peer.client_info.name.clone());
+    unica_bootstrap::host_response_budget(client_name(peer, metadata).as_deref())
 }
 
 /// SEP-2549 cache fields are required on list results from protocol revision
@@ -940,7 +966,7 @@ impl ServerHandler for UnicaServer {
         } else {
             unica_bootstrap::ClientRoots::NotDeclared
         };
-        let response_budget = client_response_budget(&context);
+        let response_budget = client_response_budget(&context, &metadata);
         let host = unica_bootstrap::HostRequest {
             metadata,
             roots,
@@ -1090,7 +1116,7 @@ impl ServerHandler for UnicaServer {
         ensure_task_identity(task_id, &snapshot)?;
         crate::interfaces::task_projection::detailed_task_v5(
             &snapshot,
-            client_response_budget(&context),
+            client_response_budget(&context, &context.meta.0 .0),
         )
         .map(GetTaskResult::new)
         .map_err(crate::interfaces::task_projection::projection_error)
@@ -1610,22 +1636,44 @@ mod tests {
     }
 
     #[test]
-    fn only_view_declares_the_source_text_result_size_and_no_tool_declares_an_output_schema() {
+    fn every_tool_that_can_return_source_text_declares_its_result_size() {
         let (key, chars) = unica_bootstrap::source_text_tool_meta();
+        // Текст приходит прямым ответом `view` и итогом задания через
+        // `task.result`; native `tasks/get` инструментом не является.
+        let mut declaring = Vec::new();
         for profile in [V13TaskProfile::Native, V13TaskProfile::Compatibility] {
             for tool in v13_tool_definitions(profile) {
                 assert!(tool.output_schema.is_none(), "{}", tool.name);
-                let declared = tool.meta.as_ref().and_then(|meta| meta.get(key).cloned());
-                if tool.name == "unica.view" {
-                    assert_eq!(declared, Some(Value::from(chars)));
-                    // Бюджет любого хоста в байтах не длиннее объявленного
-                    // предела в символах: символ занимает хотя бы байт.
-                    assert!(unica_bootstrap::MAX_RESPONSE_BUDGET as u64 <= chars);
-                } else {
-                    assert!(tool.meta.is_none(), "{}", tool.name);
+                match tool.meta.as_ref().and_then(|meta| meta.get(key).cloned()) {
+                    Some(declared) => {
+                        assert_eq!(declared, Value::from(chars), "{}", tool.name);
+                        declaring.push(tool.name.to_string());
+                    }
+                    None => assert!(tool.meta.is_none(), "{}", tool.name),
                 }
             }
         }
+        assert_eq!(
+            declaring,
+            ["unica.view", "unica.view", "unica.task.result"],
+            "native and compatibility profiles"
+        );
+        // Бюджет любого хоста в байтах не длиннее объявленного предела
+        // в символах: символ занимает хотя бы байт.
+        assert!(unica_bootstrap::MAX_RESPONSE_BUDGET as u64 <= chars);
+    }
+
+    #[test]
+    fn client_name_comes_from_initialize_or_from_the_request_meta() {
+        let meta =
+            json!({"io.modelcontextprotocol/clientInfo": {"name": "direct", "version": "1"}});
+        let meta = meta.as_object().unwrap();
+        assert_eq!(super::client_name(None, meta).as_deref(), Some("direct"));
+        assert_eq!(
+            super::client_name(Some("initialized".into()), meta).as_deref(),
+            Some("initialized")
+        );
+        assert_eq!(super::client_name(None, &Map::new()), None);
     }
 
     #[test]
@@ -3104,7 +3152,16 @@ mod tests {
         // Третий случай — ответ с исходным текстом BSL: прямой ответ и итог
         // задания одинаково несут конверт и сырой текст блоками `content`.
         let source = "// Комментарий \"метода\".\r\nПроцедура А()\n\tВозврат;\nКонецПроцедуры\n";
-        for (is_error, source_text) in [(false, None), (true, None), (false, Some(source))] {
+        // Четвёртый — текст сверх бюджета клиента по умолчанию: прямой ответ
+        // и итог задания одинаково отказывают.
+        let oversized = format!("// {}\n", "a".repeat(20_000));
+        for (is_error, source_text) in [
+            (false, None),
+            (true, None),
+            (false, Some(source)),
+            (false, Some(oversized.as_str())),
+        ] {
+            let over_budget = source_text.is_some_and(|text| text.len() > 16_384);
             let task_id = TaskId::new();
             let mut subject = canonical_result("same terminal subject result");
             subject.ok = !is_error;
@@ -3159,8 +3216,14 @@ mod tests {
                 }))
                 .await;
             let direct = client.receive().await;
-            assert_eq!(direct["result"]["isError"], is_error);
-            if is_error {
+            assert_eq!(direct["result"]["isError"], is_error || over_budget);
+            if over_budget {
+                assert_eq!(
+                    direct["result"]["structuredContent"]["diagnostics"][0]["code"],
+                    "result_too_large",
+                    "{direct}"
+                );
+            } else if is_error {
                 let fallback: Value = serde_json::from_str(
                     direct["result"]["content"][0]["text"]
                         .as_str()

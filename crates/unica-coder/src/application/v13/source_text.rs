@@ -2,6 +2,7 @@
 //! и `Method.<имя>.Body`, и предел его объёма.
 
 use crate::application::v13::view::ViewError;
+use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::invocation::DomainResult;
 use crate::domain::refusal::RefusalCode;
 use serde_json::{json, Value};
@@ -14,8 +15,10 @@ use std::borrow::Cow;
 /// отказывает `result_too_large`.
 pub(crate) const MAX_SOURCE_TEXT_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
 
-/// Запас на конверт ответа при пометке ветви `Body`, которая не поместится
-/// в бюджет клиента: адрес, вид и словарь операций узла `Body`.
+/// Запас на конверт ответа с текстом `Body`: итог, адрес дважды, вид,
+/// заголовок, словарь операций и ревизия. Настоящий конверт меньше (проверка
+/// по проводу); по этому запасу одинаково решаются отказ и пометка
+/// `overBudget` в сводке модуля.
 const ENVELOPE_RESERVE_BYTES: usize = 2 * 1024;
 
 /// Текст модуля, прочитанный не дальше предела.
@@ -131,12 +134,37 @@ fn view_next(at: &str, reason: &str) -> Value {
 /// Отказ для текста узла `<владелец>.Body` сверх предела или бюджета:
 /// у метода `next` сначала ведёт к самому методу.
 pub(crate) fn oversized_body(body_at: &str, bytes: u64) -> ViewError {
-    let owner = body_at.strip_suffix(".Body").unwrap_or(body_at);
-    match owner.rsplit_once(".Method.") {
-        Some((module_at, _)) => {
-            text_too_large(module_at, OversizedText::Method { at: owner }, bytes)
+    let route = QualifiedAddress::parse(body_at).ok().and_then(|at| {
+        let segments = at.segments();
+        let [.., owner, body] = segments else {
+            return None;
+        };
+        if body.kind() != NodeKind::Body || body.name().is_some() {
+            return None;
         }
-        None => text_too_large(owner, OversizedText::Module, bytes),
+        let owner_len = segments.len() - 1;
+        Some(
+            if owner.kind() == NodeKind::Method && owner.name().is_some() {
+                (at.prefix(owner_len - 1), Some(at.prefix(owner_len)))
+            } else {
+                (at.prefix(owner_len), None)
+            },
+        )
+    });
+    match route {
+        Some((module, Some(method))) => text_too_large(
+            &module.to_string(),
+            OversizedText::Method {
+                at: &method.to_string(),
+            },
+            bytes,
+        ),
+        Some((module, None)) => text_too_large(&module.to_string(), OversizedText::Module, bytes),
+        // Без доказанного адреса маршрута нет: пустой адрес в `next` хуже.
+        None => ViewError::new(
+            RefusalCode::ResultTooLarge,
+            format!("source text is {bytes} bytes, over the response limit"),
+        ),
     }
 }
 
@@ -150,9 +178,18 @@ pub(crate) fn apply_response_budget(result: &DomainResult, budget: usize) -> Cow
         let mut envelope = result.clone();
         envelope.source_text = None;
         let envelope_bytes = serde_json::to_vec(&envelope).map_or(usize::MAX, |bytes| bytes.len());
-        if envelope_bytes.saturating_add(text.len()) > budget {
-            let at = result.at.clone().unwrap_or_default();
-            let error = oversized_body(&at, text.len() as u64);
+        // Отказ и пометка в сводке считают конверт одинаково — запасом;
+        // настоящий конверт сверх запаса тоже не проходит.
+        if !text_fits(text.len() as u64, budget)
+            || envelope_bytes.saturating_add(text.len()) > budget
+        {
+            let error = match result.at.as_deref() {
+                Some(at) => oversized_body(at, text.len() as u64),
+                None => ViewError::new(
+                    RefusalCode::ResultTooLarge,
+                    "source text is over the budget",
+                ),
+            };
             let mut refused = DomainResult::canonical_rejection(
                 result.at.clone(),
                 RefusalCode::ResultTooLarge,
@@ -170,9 +207,7 @@ pub(crate) fn apply_response_budget(result: &DomainResult, budget: usize) -> Cow
         branch
             .get("bytes")
             .and_then(Value::as_u64)
-            .is_some_and(|bytes| {
-                bytes.saturating_add(ENVELOPE_RESERVE_BYTES as u64) > budget as u64
-            })
+            .is_some_and(|bytes| !text_fits(bytes, budget))
     };
     let marked = result
         .data
@@ -197,6 +232,11 @@ pub(crate) fn apply_response_budget(result: &DomainResult, budget: usize) -> Cow
         }
     }
     Cow::Owned(result)
+}
+
+/// Текст этого размера вместе с запасом на конверт помещается в бюджет.
+fn text_fits(bytes: u64, budget: usize) -> bool {
+    bytes.saturating_add(ENVELOPE_RESERVE_BYTES as u64) <= budget as u64
 }
 
 /// Проверка предела для уже прочитанного текста; `Err` несёт его размер.
@@ -234,16 +274,12 @@ mod tests {
         let mut result = DomainResult::success("logical node text resolved");
         result.at = Some(at.into());
         result.data = Some(json!({"at": at, "kind": "Body", "title": "Body"}));
-        result.source_text = Some("а".repeat(1000));
-        let envelope = {
-            let mut envelope = result.clone();
-            envelope.source_text = None;
-            serde_json::to_vec(&envelope).unwrap().len()
-        };
-        // Бюджет считает весь ответ: конверт вместе с текстом.
-        let exact = envelope + 2000;
-        assert!(super::apply_response_budget(&result, exact).as_ref() == &result);
-        let refused = super::apply_response_budget(&result, exact - 1).into_owned();
+        // Отказ и пометка решаются одним запасом на конверт: 2 КиБ. При
+        // бюджете 16 КиБ проходит текст до 14 336 байт включительно.
+        result.source_text = Some("a".repeat(14_336));
+        assert!(super::apply_response_budget(&result, 16_384).as_ref() == &result);
+        result.source_text = Some("a".repeat(14_337));
+        let refused = super::apply_response_budget(&result, 16_384).into_owned();
         assert!(!refused.ok);
         assert!(refused.source_text.is_none());
         assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
@@ -272,6 +308,50 @@ mod tests {
         let branches = default.data.unwrap()["branches"].clone();
         assert_eq!(branches[1]["overBudget"], true);
         assert!(branches[0].get("overBudget").is_none());
+    }
+
+    #[test]
+    fn overbudget_mark_and_refusal_share_one_boundary() {
+        use crate::domain::invocation::DomainResult;
+        use serde_json::json;
+        let branch = |bytes: u64| {
+            let mut summary = DomainResult::success("logical node resolved");
+            summary.data =
+                Some(json!({"branches": [{"at": "m.Body", "count": 1, "bytes": bytes}]}));
+            super::apply_response_budget(&summary, 16_384)
+                .into_owned()
+                .data
+                .unwrap()["branches"][0]
+                .get("overBudget")
+                .cloned()
+        };
+        assert_eq!(branch(14_336), None);
+        assert_eq!(branch(14_337), Some(json!(true)));
+    }
+
+    #[test]
+    fn oversized_body_routes_by_address_segments_not_by_text() {
+        // Объект с именем `Method` не делает модуль методом.
+        let error = super::oversized_body("main:Catalog.Method.Module.Object.Body", 1);
+        let targets = error
+            .next()
+            .iter()
+            .map(|next| next["args"]["at"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            targets,
+            [
+                "main:Catalog.Method.Module.Object.Region",
+                "main:Catalog.Method.Module.Object.Method"
+            ]
+        );
+        // Без доказанного адреса маршрута нет.
+        assert!(super::oversized_body("not an address", 1).next().is_empty());
+        let mut result = crate::domain::invocation::DomainResult::success("text");
+        result.source_text = Some("a".repeat(20_000));
+        let refused = super::apply_response_budget(&result, 16_384).into_owned();
+        assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+        assert!(refused.next.is_empty());
     }
 
     fn accumulate(chunks: &[&[u8]]) -> Result<super::ModuleText, ()> {

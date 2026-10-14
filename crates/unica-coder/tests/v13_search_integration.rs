@@ -432,10 +432,14 @@ fn body_workspace(workspace: &std::path::Path, module_bytes: &[u8]) {
 }
 
 fn initialize_body_mcp(mcp: &mut McpProcess) {
+    initialize_body_mcp_as(mcp, "body-large-test");
+}
+
+fn initialize_body_mcp_as(mcp: &mut McpProcess, client: &str) {
     let response = mcp.exchange(json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "body-large-test", "version": "1"}}
+                   "clientInfo": {"name": client, "version": "1"}}
     }));
     assert_eq!(response["result"]["serverInfo"]["name"], "unica");
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
@@ -596,14 +600,34 @@ fn public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body() {
     );
     narrow.finish();
 
-    let mut wide = McpProcess::start_with(root.path(), &[("UNICA_RESPONSE_BUDGET", "47104")]);
-    initialize_body_mcp(&mut wide);
-    let answer = read(&mut wide, 2, format!("{module}.Method.Large.Body"));
-    assert!(
-        answer["result"].get("structuredContent").is_none(),
-        "{answer:#}"
-    );
+    // Известный клиент получает весь текст по своему имени из `initialize`,
+    // без настройки; явная настройка даёт то же любому клиенту.
+    let mut wide = None;
+    for (client, budget) in unica_bootstrap::known_client_budgets() {
+        assert!(budget > method.len() + 2048, "{client}");
+        let mut known = McpProcess::start(root.path());
+        initialize_body_mcp_as(&mut known, client);
+        let answer = read(&mut known, 2, format!("{module}.Method.Large.Body"));
+        assert!(
+            answer["result"].get("structuredContent").is_none(),
+            "{client}: {answer:#}"
+        );
+        assert_eq!(answer["result"]["content"][1]["text"], method, "{client}");
+        // Настоящий конверт меньше запаса на него, которым решаются отказ
+        // и пометка `overBudget` (2 КиБ).
+        let envelope = answer["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(envelope.len() < 2048, "{client}: {envelope}");
+        match wide {
+            None => wide = Some(known),
+            Some(_) => known.finish(),
+        }
+    }
+    let mut wide = wide.expect("known clients");
+    let mut explicit = McpProcess::start_with(root.path(), &[("UNICA_RESPONSE_BUDGET", "47104")]);
+    initialize_body_mcp(&mut explicit);
+    let answer = read(&mut explicit, 2, format!("{module}.Method.Large.Body"));
     assert_eq!(answer["result"]["content"][1]["text"], method);
+    explicit.finish();
     // Модуль больше наибольшего бюджета известных хостов не отдаётся никому.
     let whole = wide.completed_tool_call(call_tool(
         3,

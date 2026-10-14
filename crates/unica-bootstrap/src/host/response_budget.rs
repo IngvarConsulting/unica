@@ -32,7 +32,10 @@ const CODEX_RESPONSE_BUDGET: usize = 46 * 1024;
 /// в файл; с объявлением 500 000 символов целиком доходят 800 КБ.
 const CLAUDE_RESPONSE_BUDGET: usize = 72 * 1024;
 
-/// Предел символов текстового ответа, который `unica.view` объявляет хосту.
+/// Предел символов текстового ответа, который объявляют `unica.view`
+/// и `unica.task.result`. Он относится к любому их ответу, не только
+/// к тексту `Body`: страницы коллекций у этого хоста тоже доходят до модели
+/// целиком до 100 000 символов.
 const CLAUDE_RESULT_SIZE_CHARS: u64 = 100_000;
 
 /// Наибольший бюджет среди известных хостов: больший текст не отдаётся никому.
@@ -74,8 +77,9 @@ impl Default for ResponseBudget {
 ///
 /// Порядок: явная настройка `UNICA_RESPONSE_BUDGET`; имя клиента из
 /// `initialize` — оно называет сам собеседник, а не окружение, унаследованное
-/// от запустившего процесса; переменные, которыми хост запускает сервер
-/// своего плагина; умолчание. Единый `.mcp.json` для всех хостов не может
+/// от запустившего процесса, и неизвестное имя даёт умолчание; только без
+/// имени — переменные, которыми хост запускает сервер своего плагина;
+/// умолчание. Единый `.mcp.json` для всех хостов не может
 /// назвать хост сам.
 pub fn host_response_budget(client_name: Option<&str>) -> ResponseBudget {
     resolve_response_budget(client_name, &|name| std::env::var_os(name))
@@ -86,20 +90,48 @@ pub fn source_text_tool_meta() -> (&'static str, u64) {
     ("anthropic/maxResultSizeChars", CLAUDE_RESULT_SIZE_CHARS)
 }
 
+/// Клиенты с измеренным бюджетом: имя из `initialize` и бюджет в байтах.
+/// Для проверок по проводу, которым нельзя называть хосты самим.
+pub fn known_client_budgets() -> [(&'static str, usize); 2] {
+    [
+        (CODEX_CLIENT, CODEX_RESPONSE_BUDGET),
+        (CLAUDE_CLIENT, CLAUDE_RESPONSE_BUDGET),
+    ]
+}
+
+/// Негодная настройка не применяется, но и не молчит: одно сообщение
+/// в stderr за процесс.
+fn warn_invalid_budget(value: &OsString) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "unica: {BUDGET_ENV}={value:?} is ignored: expected bytes from 1024 to {MAX_RESPONSE_BUDGET}"
+        );
+    });
+}
+
 fn resolve_response_budget(
     client_name: Option<&str>,
     read_env: &dyn Fn(&str) -> Option<OsString>,
 ) -> ResponseBudget {
-    if let Some(bytes) = read_env(BUDGET_ENV)
-        .and_then(|value| value.to_str()?.trim().parse::<usize>().ok())
-        .filter(|bytes| (1024..=MAX_RESPONSE_BUDGET).contains(bytes))
-    {
-        return ResponseBudget(bytes);
+    if let Some(value) = read_env(BUDGET_ENV) {
+        match value
+            .to_str()
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|bytes| (1024..=MAX_RESPONSE_BUDGET).contains(bytes))
+        {
+            Some(bytes) => return ResponseBudget(bytes),
+            None => warn_invalid_budget(&value),
+        }
     }
-    match client_name {
-        Some(CODEX_CLIENT) => return ResponseBudget(CODEX_RESPONSE_BUDGET),
-        Some(CLAUDE_CLIENT) => return ResponseBudget(CLAUDE_RESPONSE_BUDGET),
-        _ => {}
+    // Названный клиент решает сам: неизвестное имя — умолчание, даже если
+    // окружение унаследовано от процесса другого хоста.
+    if let Some(name) = client_name {
+        return match name {
+            CODEX_CLIENT => ResponseBudget(CODEX_RESPONSE_BUDGET),
+            CLAUDE_CLIENT => ResponseBudget(CLAUDE_RESPONSE_BUDGET),
+            _ => ResponseBudget::default(),
+        };
     }
     if read_env(ZCODE_LAUNCH_ENV).is_some() {
         return ResponseBudget::default();
@@ -172,11 +204,16 @@ mod tests {
                 "{value}"
             );
         }
-        // Имя клиента сильнее окружения, унаследованного от другого хоста.
+        // Имя клиента сильнее окружения, унаследованного от другого хоста;
+        // неизвестное имя — умолчание, окружение запуска тогда не читается.
         let claude_launch = environment(&[("CLAUDE_PLUGIN_DATA", "/d")]);
         assert_eq!(
             resolve_response_budget(Some("codex-mcp-client"), &claude_launch).bytes(),
             CODEX_RESPONSE_BUDGET
+        );
+        assert_eq!(
+            resolve_response_budget(Some("inspector"), &claude_launch).bytes(),
+            DEFAULT_RESPONSE_BUDGET
         );
         assert_eq!(
             resolve_response_budget(None, &claude_launch).bytes(),

@@ -12,8 +12,8 @@ mod workspace_context;
 
 pub use plugin_manifest::verify_installed_plugin_metadata;
 pub use response_budget::{
-    host_response_budget, source_text_tool_meta, ResponseBudget, DEFAULT_RESPONSE_BUDGET,
-    MAX_RESPONSE_BUDGET,
+    host_response_budget, known_client_budgets, source_text_tool_meta, ResponseBudget,
+    DEFAULT_RESPONSE_BUDGET, MAX_RESPONSE_BUDGET,
 };
 pub use runtime_cache::{provider_state_root, runtime_cache_root};
 pub use skill_package::verify_installed_skill_package;

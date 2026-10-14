@@ -1054,8 +1054,8 @@ fn replacement_target(
     }))
 }
 
-/// Первая значащая строка текста (после комментариев, аннотаций и пустых
-/// строк) начинается объявлением метода.
+/// Первая значащая строка текста (после комментариев, аннотаций, инструкций
+/// препроцессора и пустых строк) начинается объявлением метода.
 fn declares_method(text: &str) -> bool {
     const KEYWORDS: &[&str] = &[
         "процедура",
@@ -1067,7 +1067,12 @@ fn declares_method(text: &str) -> bool {
     ];
     text.lines()
         .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with("//") && !line.starts_with('&'))
+        .find(|line| {
+            !line.is_empty()
+                && !line.starts_with("//")
+                && !line.starts_with('&')
+                && !line.starts_with('#')
+        })
         .is_some_and(|line| {
             let lower = line.to_lowercase();
             KEYWORDS.iter().any(|keyword| {
@@ -4561,7 +4566,7 @@ pub(super) mod tests {
             "code.replace",
             &json!({
                 "at": "main:CommonModule.Sample.Method.Base.Body",
-                "text": "// Комментарий.\nProcedure Base(\n    Value = 2;\nEndProcedure\n"
+                "text": "#Если Сервер Тогда\n// Комментарий.\nProcedure Base(\n    Value = 2;\nEndProcedure\n#КонецЕсли\n"
             }),
             0,
             &fixture.binding,

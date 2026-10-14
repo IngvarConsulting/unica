@@ -3769,6 +3769,26 @@ fn module_body_returns_the_source_text_byte_for_byte() {
 }
 
 #[test]
+fn view_never_returns_module_text_above_the_largest_host_budget() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    // 72 КиБ — наибольший бюджет известного хоста; число записано здесь
+    // явно, чтобы смена предела в коде была видна этой проверке.
+    let mut source = vec![b'a'; 73_728];
+    fs::write(&module, &source).unwrap();
+    let whole = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(whole.source_text.as_ref().map(String::len), Some(73_728));
+    source.push(b'a');
+    fs::write(&module, &source).unwrap();
+    let refused = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+    assert!(refused.source_text.is_none());
+}
+
+#[test]
 fn module_body_beyond_the_limit_is_still_checked_as_utf8_in_full() {
     let fixture = RealReaderFixture::new();
     let module = fixture

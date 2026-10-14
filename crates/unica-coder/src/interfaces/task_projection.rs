@@ -543,6 +543,47 @@ mod tests {
     }
 
     #[test]
+    fn task_result_with_source_text_follows_the_client_budget() {
+        let mut result = DomainResult::success("logical node text resolved");
+        result.at = Some("main:CommonModule.Пример.Method.А.Body".into());
+        result.source_text = Some("a".repeat(4_000));
+        let (task_id, invocation_id, receipt_key_digest) = v5_common();
+        let completed = V5DaemonTaskSnapshot::Completed {
+            task_id,
+            invocation_id,
+            receipt_key_digest,
+            created_at_epoch_ms: 1_777_012_345_678,
+            updated_at_epoch_ms: 1_777_012_346_789,
+            ttl_ms: 3_600_000,
+            poll_interval_ms: 250,
+            version: 3,
+            cancel_requested: false,
+            terminal_epoch_ms: 1_777_012_346_789,
+            terminal_digest: v5_terminal_digest(),
+            result: Box::new(result),
+        };
+        let embedded = |budget: usize| {
+            let detailed =
+                super::detailed_task_v5(&completed, ResponseBudget::from_bytes(budget)).unwrap();
+            let rmcp::model::TaskPayload::Completed { result } = detailed.payload else {
+                panic!("completed task must embed its result");
+            };
+            Value::Object(result)
+        };
+        let wide = embedded(16_384);
+        assert_eq!(
+            wide["content"][1]["text"].as_str().map(str::len),
+            Some(4_000)
+        );
+        let narrow = embedded(4_096);
+        assert_eq!(narrow["isError"], true, "{narrow}");
+        assert_eq!(
+            narrow["structuredContent"]["diagnostics"][0]["code"],
+            "result_too_large"
+        );
+    }
+
+    #[test]
     fn source_text_result_is_an_envelope_then_raw_text_without_structured_content() {
         let text =
             "// Документ \"метода\".\r\n&НаСервере\nПроцедура А()\n\tВозврат;\nКонецПроцедуры\n";

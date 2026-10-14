@@ -645,6 +645,14 @@ impl QualifiedAddress {
         &self.segments
     }
 
+    /// Адрес из первых `len` сегментов: владелец узла по его адресу.
+    pub(crate) fn prefix(&self, len: usize) -> Self {
+        Self {
+            source_set: self.source_set.clone(),
+            segments: self.segments[..len.min(self.segments.len())].to_vec(),
+        }
+    }
+
     pub(crate) fn logical_path(&self) -> String {
         render_segments(&self.segments)
     }

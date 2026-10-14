@@ -14,6 +14,12 @@ check:
   - crates/unica-coder/src/application/v13/source_text.rs::streamed_module_text_keeps_memory_bounded_and_counts_the_whole_size
   - crates/unica-coder/src/application/v13/source_text.rs::streamed_module_text_strips_repeated_bom_across_chunks_and_keeps_a_partial_one
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::module_body_beyond_the_limit_is_still_checked_as_utf8_in_full
+  - crates/unica-coder/src/application/v13/source_text.rs::overbudget_mark_and_refusal_share_one_boundary
+  - crates/unica-coder/src/application/v13/source_text.rs::oversized_body_routes_by_address_segments_not_by_text
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::view_never_returns_module_text_above_the_largest_host_budget
+  - crates/unica-coder/src/interfaces/task_projection.rs::task_result_with_source_text_follows_the_client_budget
+  - crates/unica-coder/src/interfaces/mcp.rs::every_tool_that_can_return_source_text_declares_its_result_size
+  - crates/unica-coder/src/interfaces/mcp.rs::client_name_comes_from_initialize_or_from_the_request_meta
   - crates/unica-bootstrap/src/host/response_budget.rs::known_hosts_get_their_measured_budgets_and_others_the_default
   - crates/unica-bootstrap/src/host/response_budget.rs::explicit_setting_then_client_name_then_launch_environment_then_default
   - crates/unica-coder/tests/v13_search_integration.rs::public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next
@@ -48,7 +54,12 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 UTF-8 вместе с конвертом. Известным хостам назначен наибольший бюджет,
 который они надёжно передают модели целиком; больше наибольшего из них
 текст не отдаётся никому. Бюджет задаёт явная настройка, затем имя клиента
-из `initialize`, затем окружение запуска плагина. Ответ сверх бюджета
+из `initialize` или из `_meta` запроса без `initialize` (неизвестное имя —
+умолчание), а без имени — окружение запуска плагина. Бюджет считает весь
+ответ; конверт учитывается одним запасом и для отказа, и для пометки
+в сводке модуля. Инструменты, чей ответ может нести текст (`unica.view`
+и `unica.task.result`), объявляют хосту предел символов ответа; объявление
+относится к любому их ответу, а не только к тексту `Body`. Ответ сверх бюджета
 отказывает `result_too_large` без частичного текста, а `next` ведёт
 к адресам `Region` и `Method` этого модуля, у метода — сначала к самому
 методу. Предел касается только самого текста: контракт операции
