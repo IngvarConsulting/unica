@@ -711,6 +711,75 @@ pub(crate) fn staged_data_set_path(
     dcs_mxl::data_set_path_in_schema(&bytes, name)
 }
 
+/// Путь узла с именем `name` под контейнером в стадированном состоянии:
+/// набора схемы под макетом или элемента под формой. Им снятый аргумент,
+/// называвший узел по имени, ведёт к его настоящему адресу (#1353, #1355).
+pub(crate) fn staged_member_path(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    container: &crate::domain::address::QualifiedAddress,
+    name: &str,
+) -> Option<Vec<String>> {
+    match container.segments().last()?.kind() {
+        crate::domain::address::NodeKind::Form => {
+            let items = staged_form_items(admission, binding, container)?;
+            form_resource::form_item_path(&items, name)
+        }
+        _ => staged_data_set_path(admission, binding, container, name),
+    }
+}
+
+/// Роль элемента стадированной формы по его адресу
+/// `Owner.X.Form.F.Item.A[.Item.B…]`. `None` — элемента или формы нет.
+pub(crate) fn staged_form_item_role(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    item: &crate::domain::address::QualifiedAddress,
+) -> Option<crate::domain::apply::FormItemRole> {
+    use crate::domain::address::NodeKind;
+    let segments = item.segments();
+    if segments.len() < 3
+        || segments[1].kind() != NodeKind::Form
+        || !segments[2..]
+            .iter()
+            .all(|segment| segment.kind() == NodeKind::Item && segment.name().is_some())
+    {
+        return None;
+    }
+    let form = crate::domain::address::QualifiedAddress {
+        source_set: item.source_set().to_string(),
+        segments: segments[..2].to_vec(),
+    };
+    let items = staged_form_items(admission, binding, &form)?;
+    let chain = segments[2..]
+        .iter()
+        .filter_map(|segment| segment.name().map(str::to_string))
+        .collect::<Vec<_>>();
+    form_resource::form_item_at(&items, &chain)
+        .map(|element| crate::domain::apply::FormItemRole::from_tag(&element.tag))
+}
+
+/// Дерево элементов стадированной формы `Owner.X.Form.F`, как его читает
+/// `view`. `None` — формы или её `Form.xml` нет.
+fn staged_form_items(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    form: &crate::domain::address::QualifiedAddress,
+) -> Option<Vec<crate::infrastructure::native_operations::form::FormInfoElement>> {
+    let (address, covered) = descriptor_node(form)?;
+    if covered != 2 {
+        return None;
+    }
+    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+        &address,
+        "Form.xml",
+        binding.source_kind(),
+    )
+    .ok()?;
+    let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
+    form_resource::form_items_of(std::str::from_utf8(&bytes).ok()?).ok()
+}
+
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
 /// описанием есть, когда есть его файл; член объекта метаданных (реквизит,
 /// табличная часть) при существующем описании владельца считается
@@ -773,6 +842,32 @@ pub(crate) fn staged_node_existence(
         }
         (RouteClass::Mxl, NodeKind::Area, 1) => {
             dcs_mxl::spreadsheet_area_exists(&resource("Template.xml")?, terminal.name()?)
+        }
+        // Элемент формы и его событие: есть, когда цепочка `Item` ведёт к
+        // элементу формы; имя события проверяет матрица событий.
+        (RouteClass::Form, NodeKind::Item | NodeKind::Event, _) if covered == 2 => {
+            let tail = &at.segments()[covered..];
+            let chain = match tail {
+                [items @ .., last] if last.kind() == NodeKind::Event => items,
+                items => items,
+            };
+            if chain.is_empty()
+                || !chain
+                    .iter()
+                    .all(|segment| segment.kind() == NodeKind::Item && segment.name().is_some())
+            {
+                return None;
+            }
+            let form = crate::domain::address::QualifiedAddress {
+                source_set: at.source_set().to_string(),
+                segments: at.segments()[..covered].to_vec(),
+            };
+            let items = staged_form_items(admission, binding, &form)?;
+            let chain = chain
+                .iter()
+                .filter_map(|segment| segment.name().map(str::to_string))
+                .collect::<Vec<_>>();
+            Some(form_resource::form_item_at(&items, &chain).is_some())
         }
         _ => None,
     }
@@ -1288,9 +1383,19 @@ mod tests {
         let fixture = ApplySeamFixture::new();
         for (at, op, args) in [
             (
-                "main:Document.First.Form.Main.Item.Header",
+                "main:Document.First.Form.Main.Item.Header.Event.OnChange",
                 "element.add",
                 serde_json::json!({"items": [{"name": "Comment"}]}),
+            ),
+            (
+                "main:Document.First.Form.Main",
+                "element.remove",
+                serde_json::json!({}),
+            ),
+            (
+                "main:Document.First.Form.Main.Item.Header",
+                "event.bind",
+                serde_json::json!({"values": {"handler": "H"}}),
             ),
             (
                 "main:Document.First.Form.Main.Item.Header",
@@ -1333,21 +1438,23 @@ mod tests {
             serde_json::json!({"items": [{"name": "Header", "type": "Group", "headerDataPath": "Object.Ref"}]}),
         );
         assert!(super::parse_apply_operation(0, &request.ops()[0], &fixture.binding).is_ok());
-        // Элемент назван адресом: перенаправить событие или удаление на другой
-        // элемент аргументом нельзя.
-        for (op, args, path) in [
+        // Элемент и событие названы адресом: перенаправить событие или
+        // удаление на другой узел аргументом нельзя (#1355).
+        for (at, op, args, path) in [
             (
+                "main:Document.First.Form.Main.Item.Header.Event.OnChange",
                 "event.bind",
-                serde_json::json!({"values": {"event": "OnChange", "handler": "H", "element": "Other"}}),
+                serde_json::json!({"values": {"handler": "H", "element": "Other"}}),
                 "ops[0].args.values.element",
             ),
             (
+                "main:Document.First.Form.Main.Item.Header",
                 "element.remove",
                 serde_json::json!({"items": ["Other"]}),
                 "ops[0].args.items",
             ),
         ] {
-            let request = seam_request("main:Document.First.Form.Main.Item.Header", op, args);
+            let request = seam_request(at, op, args);
             let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
                 .err()
                 .unwrap_or_else(|| panic!("{op} must not redirect to another element"));

@@ -1007,6 +1007,9 @@ pub(crate) struct FormEventBinding<'a> {
     pub(crate) name: &'a str,
     pub(crate) handler: &'a str,
     pub(crate) call_type: Option<&'a str>,
+    /// Путь данных таблицы-владельца: по нему каталог выбирает события
+    /// источника динамического списка, как при публикации узлов `Event`.
+    pub(crate) data_path: Option<&'a str>,
 }
 
 impl<'a> FormEventBinding<'a> {
@@ -1015,7 +1018,14 @@ impl<'a> FormEventBinding<'a> {
             name,
             handler,
             call_type: None,
+            data_path: None,
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_data_path(mut self, data_path: Option<&'a str>) -> Self {
+        self.data_path = data_path;
+        self
     }
 
     #[must_use]
@@ -1110,6 +1120,22 @@ impl fmt::Display for FormEventDiagnostic {
 
 impl std::error::Error for FormEventDiagnostic {}
 
+/// Событие есть в каталоге 8.3.27 для владельца этого вида и контекста формы.
+fn catalogued_event(
+    context: &FormEventContext,
+    target: FormEventTarget,
+    binding: &FormEventBinding<'_>,
+) -> bool {
+    let owner = match target {
+        FormEventTarget::Form => FormEventOwnerKind::Form,
+        FormEventTarget::Element(FormElementKind::Table) => FormEventOwnerKind::Table,
+        FormEventTarget::Element(kind) => FormEventOwnerKind::Element(kind),
+    };
+    form_event_catalog_8_3_27(context, owner, binding.data_path)
+        .iter()
+        .any(|spec| spec.event_id == binding.name)
+}
+
 pub(crate) fn validate_event(
     context: &FormEventContext,
     target: FormEventTarget,
@@ -1119,7 +1145,12 @@ pub(crate) fn validate_event(
 
     validate_property_event_binding(context, target, binding)?;
 
-    if !target.allowed_events().contains(&binding.name) {
+    // Событие допустимо, если его знает матрица цели или каталог событий
+    // 8.3.27, из которого `view` строит узлы `Event`: привязка на адресе
+    // события исполнима везде, где этот узел опубликован (#1355).
+    if !target.allowed_events().contains(&binding.name)
+        && !catalogued_event(context, target, binding)
+    {
         return Err(FormEventDiagnostic::new(
             FormEventDiagnosticCode::EventNotAllowed,
             target_text,

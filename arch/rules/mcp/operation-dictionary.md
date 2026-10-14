@@ -42,6 +42,12 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::an_area_is_written_only_where_it_exists_and_created_only_by_area_add
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::a_missing_rights_entry_or_area_routes_next_to_the_parent
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::a_missing_target_routes_next_to_the_parent_dictionary
+  - crates/unica-coder/src/domain/apply.rs::a_form_item_or_event_named_by_an_argument_is_refused_with_its_address
+  - crates/unica-coder/src/domain/apply.rs::a_form_item_role_narrows_element_operations
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_form_items_and_events
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_form_arguments_route_next_to_the_item_or_event_address
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::form_add_then_element_and_event_edits_compose_in_one_batch
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::a_form_edit_writes_only_the_addressed_item
 gap: https://github.com/IngvarConsulting/unica/issues/1358
 ---
 
@@ -157,11 +163,29 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 с `next` к владельцу формы, где исполнима `form.add`. Псевдонимов
 прежних форм вызова нет.
 
-До переноса остальных операций на адреса подузлов (пакеты П4–П6 зонта
+Элемент и событие формы адресуются цепочкой
+`Form.<форма>[.Item.<элемент>[.Item.<вложенный>…]][.Event.<событие>]`, как их
+показывает `view`; автоматическая командная панель формы и таблицы видна
+элементом `Item`. `element.add` добавляет в форму или в элемент-контейнер,
+названный адресом, `element.remove` удаляет элемент по его адресу,
+`event.bind` привязывает обработчик (`values.handler`, `values.callType`)
+на адресе события. Словарь элемента учитывает его роль: в поле, декорацию
+и кнопку элемент не добавляется, автоматическая командная панель отдельно
+от владельца не удаляется. Позиция `after` остаётся именем соседа в том же
+контейнере; сосед из другого контейнера отвергается `bad_value`. Снятые
+аргументы — `items[].into` у `element.add`, `items[].name`, элемент-строка
+`items[]` и `values.name` у `element.remove`, `values.element`
+и `values.event` у `event.bind` — получают тот же отказ `bad_value`
+с `next` к узлу, который называло значение: к элементу по его пути
+в форме, к событию с именем из реестра. Элемент, которого в форме нет,
+даёт `not_found` без записи. `event.bind` принимает каждое событие,
+опубликованное узлом `Event`: проверка привязки допускает события
+каталога платформы, по которому `view` строит эти узлы.
+
+До переноса остальных операций на адреса подузлов (пакет П6 зонта
 #1358) обещание «не пишет в другой узел» выполнено не для всех операций:
-те, что ещё называют подузел аргументом (записи таблицы снятых аргументов
-в реестре, например `values.element` у `event.bind`), пишут в подузел,
-названный аргументом, а не адресом.
+те, что ещё называют подузел аргументом, пишут в подузел, названный
+аргументом, а не адресом.
 
 Проверки проходят настоящий вызов `view` для объекта метаданных и
 отдельно проверяют проекции корня, модуля, неизвестного вида и операции

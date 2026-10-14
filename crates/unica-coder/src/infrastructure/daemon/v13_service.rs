@@ -261,14 +261,23 @@ impl CanonicalV13ReadService {
                 &admission, &binding, template,
             )
         };
-        let data_set_path = |template: &QualifiedAddress, name: &str| {
-            crate::infrastructure::native_operations::apply_families::staged_data_set_path(
-                &admission, &binding, template, name,
+        let member_path = |container: &QualifiedAddress, name: &str| {
+            crate::infrastructure::native_operations::apply_families::staged_member_path(
+                &admission, &binding, container, name,
             )
         };
-        if let Err(refusal) =
-            preflight_apply_operations_with(&request, traits, &template_format, &data_set_path)
-        {
+        let form_item = |item: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_form_item_role(
+                &admission, &binding, item,
+            )
+        };
+        if let Err(refusal) = preflight_apply_operations_with(
+            &request,
+            traits,
+            &template_format,
+            &form_item,
+            &member_path,
+        ) {
             return *refusal;
         }
         admission.bind_request(&request);
@@ -3965,16 +3974,18 @@ pub(super) fn preflight_apply_operations(
     source: SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
 ) -> Result<(), Box<DomainResult>> {
-    preflight_apply_operations_with(request, source, template_format, &|_, _| None)
+    preflight_apply_operations_with(request, source, template_format, &|_| None, &|_, _| None)
 }
 
-/// То же, что `preflight_apply_operations`, с поиском набора схемы по имени:
-/// снятый `dataSet` ведёт к настоящему, в том числе вложенному, набору.
+/// То же, что `preflight_apply_operations`, с поиском узла по имени: снятый
+/// `dataSet` ведёт к настоящему, в том числе вложенному, набору, а имя
+/// элемента формы — к его пути в форме.
 pub(super) fn preflight_apply_operations_with(
     request: &crate::domain::apply::ApplyRequest,
     source: SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
-    data_sets: crate::domain::apply::DataSetLookup<'_>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+    members: crate::domain::apply::MemberPathLookup<'_>,
 ) -> Result<(), Box<DomainResult>> {
     let registry = OperationRegistry::closed();
     for (index, operation) in request.ops().iter().enumerate() {
@@ -4032,12 +4043,21 @@ pub(super) fn preflight_apply_operations_with(
                 ),
             )));
         };
-        if let Some(redirect) = registry.retired_argument_redirect_with(
+        if let Some(mut redirect) = registry.retired_argument_redirect_with(
             operation.name(),
             &site,
             operation.args(),
-            data_sets,
+            members,
         ) {
+            // Значение назвало элемент, роль которого операцию не принимает
+            // (`into` поля): `next` ведёт к ближайшему узлу, где она исполнима.
+            if !redirect.listing && !admits_form_item_at(descriptor, &redirect.at, form_item) {
+                if let Some(target) = OperationSite::new(&redirect.at, source).and_then(|target| {
+                    descriptor.nearest_applicable_ancestor_with(&target, template_format, form_item)
+                }) {
+                    redirect.at = target;
+                }
+            }
             let location = Some(format!("ops[{index}].args.{}", redirect.location));
             if redirect.listing {
                 // Значение называло подузел не именем: адрес из него не
@@ -4129,12 +4149,16 @@ pub(super) fn preflight_apply_operations_with(
             }
             return Err(Box::new(refusal));
         }
-        if descriptor.applies_at(&site) {
+        // Роль элемента формы — фильтр поверх места: в поле элемент не
+        // добавить, автоматическую панель отдельно не удалить.
+        if descriptor.applies_at(&site)
+            && admits_form_item_at(descriptor, operation.at(), form_item)
+        {
             continue;
         }
         // Прежний псевдоним запроса `Template.T.Query.D` снят (#1353): отказ
         // называет адрес набора, где операция исполнима.
-        if let Some(target) = descriptor.retired_query_alias_target(&site, data_sets) {
+        if let Some(target) = descriptor.retired_query_alias_target(&site, members) {
             return Err(Box::new(with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),
@@ -4154,7 +4178,9 @@ pub(super) fn preflight_apply_operations_with(
             target_kind.as_str(),
             operation.at()
         );
-        let refusal = match descriptor.nearest_applicable_ancestor(&site, template_format) {
+        let nearest =
+            descriptor.nearest_applicable_ancestor_with(&site, template_format, form_item);
+        let refusal = match nearest {
             Some(target) => with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),
@@ -4191,6 +4217,19 @@ pub(super) fn preflight_apply_operations_with(
         return Err(Box::new(refusal));
     }
     Ok(())
+}
+
+/// Принимает ли роль элемента формы по адресу `at` операцию; адрес не
+/// элемента формы фильтр не проходит.
+fn admits_form_item_at(
+    descriptor: crate::domain::apply::OperationDescriptor,
+    at: &QualifiedAddress,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+) -> bool {
+    at.segments()
+        .last()
+        .is_none_or(|segment| segment.kind() != NodeKind::Item)
+        || descriptor.admits_form_item(form_item(at))
 }
 
 /// `next` к словарю узла, где операция исполнима. Подробный контракт
