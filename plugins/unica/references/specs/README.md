@@ -11,6 +11,6 @@ skill example maps to the expected file shape.
 | Forms | `1c-form-spec.md`, `form-dsl-spec.md`, `form-patterns.md` |
 | Reports and printing | `1c-dcs-spec.md`, `1c-spreadsheet-spec.md`, `mxl-dsl-spec.md` |
 | External processors/reports | `1c-epf-spec.md`, `1c-erf-spec.md` |
-| Roles | `1c-role-spec.md`, `role-dsl-spec.md` |
+| Roles | `1c-role-spec.md` |
 | Subsystems and web | `1c-subsystem-spec.md`, `web-spec.md` |
 | Help and index | `1c-help-spec.md`, `format-index.md` |
