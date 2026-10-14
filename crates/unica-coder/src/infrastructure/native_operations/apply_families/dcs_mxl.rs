@@ -34,7 +34,13 @@ struct MxlCellWrite {
 #[derive(Debug, Clone)]
 struct MxlEdit {
     template: MetadataAddress,
+    /// Квалифицированный адрес макета для текста отказа.
+    template_at: String,
     area: String,
+    /// `area.add` создаёт область, `mxl.set` пишет только в существующую.
+    creates: bool,
+    /// Путь аргументов области: `values` или `items[i]`.
+    location: String,
     columns: Option<i64>,
     cells: Vec<MxlCellWrite>,
 }
@@ -42,7 +48,7 @@ struct MxlEdit {
 #[derive(Debug, Clone)]
 enum DcsMxlPlanKind {
     Dcs(DcsPrimitivePlan),
-    Mxl(MxlEdit),
+    Mxl(Vec<MxlEdit>),
     Unsupported,
 }
 
@@ -219,8 +225,10 @@ pub(crate) fn parse_dcs_mxl_plan_operation(
         Some(crate::domain::apply::OperationFamily::Dcs) => {
             parse_dcs_operation(operation, object, op_index, binding)?
         }
-        Some(crate::domain::apply::OperationFamily::Mxl) if operation == "mxl.set" => {
-            parse_mxl_set(object, op_index, binding)?
+        Some(crate::domain::apply::OperationFamily::Mxl)
+            if matches!(operation, "mxl.set" | "area.add") =>
+        {
+            parse_mxl_operation(operation, object, op_index, binding)?
         }
         _ => DcsMxlPlanKind::Unsupported,
     };
@@ -271,8 +279,27 @@ fn parse_dcs_operation(
         )
         .at_path(format!("ops[{op_index}].args.at")));
     }
-    if matches!(operation, "field.remove" | "parameter.remove") {
-        let expected = if operation == "field.remove" {
+    // Операции подузла исполняются по его адресу (#1354): поле, параметр
+    // или вариант называет адрес, а не аргумент.
+    if matches!(operation, "variant.set" | "variant.remove")
+        && (target.variant.is_empty() || target.terminal.is_some())
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!("{operation} addresses a settings variant: `Template.T.Setting.S`"),
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
+    if matches!(
+        operation,
+        "field.remove"
+            | "field.set"
+            | "fieldRole.set"
+            | "parameter.remove"
+            | "parameter.set"
+            | "parameter.rename"
+    ) {
+        let expected = if operation.starts_with("field") {
             NodeKind::Field
         } else {
             NodeKind::Parameter
@@ -459,46 +486,9 @@ fn require_editable_spreadsheet(xml_text: &str, at_path: &str) -> Result<(), App
     Ok(())
 }
 
-fn parse_mxl_set(
-    args: &Map<String, Value>,
-    op_index: usize,
-    binding: &ProviderRootBinding,
-) -> Result<DcsMxlPlanKind, ApplyPlanError> {
-    let normalized = crate::domain::operation_contract::OperationContract::mxl("mxl.set")
-        .expect("MXL contract")
-        .normalize(
-            &Value::Object(args.clone()),
-            &format!("ops[{op_index}].args"),
-        )
-        .map_err(|error| {
-            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
-        })?;
-    let args = normalized.as_object().expect("object contract");
-    let address = qualified_target(args, op_index, binding)?;
-    if !address
-        .segments()
-        .last()
-        .is_some_and(|segment| segment.kind() == NodeKind::Template && segment.name().is_some())
-    {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            "mxl.set addresses the spreadsheet template itself: `Owner.Name.Template.T`",
-        )
-        .at_path(format!("ops[{op_index}].args.at")));
-    }
-    let target = dcs_target(&address, op_index)?;
-    if target.terminal.is_some() || !target.datasets.is_empty() || !target.variant.is_empty() {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            "mxl.set addresses the spreadsheet template itself: `Owner.Name.Template.T`",
-        )
-        .at_path(format!("ops[{op_index}].args.at")));
-    }
-    let values = required_values(args, op_index)?;
-    let values_path = format!("ops[{op_index}].args.values");
-    let area = required_text(values, &["area"], &values_path)?.to_string();
-    let columns = values.get("columns").and_then(Value::as_i64);
-    let cells_object = values["cells"]
+/// Ячейки области из контракта: строка и колонка с 1, по порядку.
+fn mxl_cells(area: &Map<String, Value>) -> Vec<MxlCellWrite> {
+    let cells_object = area["cells"]
         .as_object()
         .expect("shared contract requires cells object");
     let mut cells = Vec::with_capacity(cells_object.len());
@@ -514,17 +504,160 @@ fn parse_mxl_set(
         cells.push(MxlCellWrite { row, col, text });
     }
     cells.sort_by_key(|cell| (cell.row, cell.col));
-    Ok(DcsMxlPlanKind::Mxl(MxlEdit {
-        template: target.template,
-        area,
-        columns,
-        cells,
-    }))
+    cells
 }
 
-/// Applies the cell writes to a decompiled definition: the area is found or
-/// appended, compressed empty rows are expanded, cells are set by column.
-fn apply_mxl_edit(definition: &mut Value, edit: &MxlEdit) -> Result<(), String> {
+/// `mxl.set` пишет ячейки существующей области `Template.T.Area.A`;
+/// `area.add` на самом макете создаёт новые области с начальными ячейками.
+/// Узел создаёт операция родителя: опечатка в имени области не заводит
+/// новую (#1354).
+fn parse_mxl_operation(
+    operation: &str,
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<DcsMxlPlanKind, ApplyPlanError> {
+    let normalized = crate::domain::operation_contract::OperationContract::mxl(operation)
+        .expect("MXL contract")
+        .normalize(
+            &Value::Object(args.clone()),
+            &format!("ops[{op_index}].args"),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+        })?;
+    let args = normalized.as_object().expect("object contract");
+    let address = qualified_target(args, op_index, binding)?;
+    let at_path = format!("ops[{op_index}].args.at");
+    let segments = address.segments();
+    let shape = if operation == "mxl.set" {
+        "mxl.set addresses an existing area of a spreadsheet template: `Owner.Name.Template.T.Area.A`"
+    } else {
+        "area.add addresses the spreadsheet template itself: `Owner.Name.Template.T`"
+    };
+    let (template_segments, area) = match (operation, segments) {
+        ("mxl.set", [owner, template, area])
+            if area.kind() == NodeKind::Area && area.name().is_some() =>
+        {
+            (vec![owner.clone(), template.clone()], area.name())
+        }
+        ("area.add", [owner, template]) => (vec![owner.clone(), template.clone()], None),
+        _ => return Err(ApplyPlanError::new(ApplyPlanErrorKind::BadValue, shape).at_path(at_path)),
+    };
+    let template_address = QualifiedAddress {
+        source_set: address.source_set().to_string(),
+        segments: template_segments,
+    };
+    let target = dcs_target(&template_address, op_index)?;
+    let edits = match area {
+        Some(area) => {
+            let values = required_values(args, op_index)?;
+            vec![MxlEdit {
+                template: target.template,
+                template_at: template_address.to_string(),
+                area: area.to_string(),
+                creates: false,
+                location: format!("ops[{op_index}].args.values"),
+                columns: values.get("columns").and_then(Value::as_i64),
+                cells: mxl_cells(values),
+            }]
+        }
+        None => {
+            let items = required_items(args, op_index)?;
+            let mut edits: Vec<MxlEdit> = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                let location = format!("ops[{op_index}].args.items[{index}]");
+                let item = item_object(item, &location)?;
+                let name = required_text(item, &["name"], &location)?.to_string();
+                // Имя с точкой адресом области не выражается (#1356).
+                if name.contains('.') {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        "an area name with a dot has no `Area.<name>` address",
+                    )
+                    .at_path(format!("{location}.name")));
+                }
+                // Созданную область `mxl.set` правит по адресу; имя, которое
+                // грамматика адреса не разбирает, оставило бы её без адреса.
+                if QualifiedAddress::parse(&format!("{template_address}.Area.{name}"))
+                    .ok()
+                    .and_then(|address| {
+                        address
+                            .segments()
+                            .last()
+                            .and_then(|s| s.name().map(str::to_string))
+                    })
+                    .as_deref()
+                    != Some(name.as_str())
+                {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        "the area name is not addressable as `Area.<name>`",
+                    )
+                    .at_path(format!("{location}.name")));
+                }
+                if edits.iter().any(|edit| edit.area == name) {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        format!("area `{name}` is listed twice"),
+                    )
+                    .at_path(format!("{location}.name")));
+                }
+                edits.push(MxlEdit {
+                    template: target.template.clone(),
+                    template_at: template_address.to_string(),
+                    area: name,
+                    creates: true,
+                    columns: item.get("columns").and_then(Value::as_i64),
+                    cells: mxl_cells(item),
+                    location,
+                });
+            }
+            edits
+        }
+    };
+    Ok(DcsMxlPlanKind::Mxl(edits))
+}
+
+/// Есть ли именованная область в стадированном табличном документе.
+/// `None` — документ не читается.
+pub(super) fn spreadsheet_area_exists(bytes: &[u8], name: &str) -> Option<bool> {
+    let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
+    let document = roxmltree::Document::parse(text).ok()?;
+    Some(
+        document
+            .root_element()
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "namedItem")
+            .any(|node| {
+                node.children().any(|part| {
+                    part.is_element()
+                        && part.tag_name().name() == "name"
+                        && part.text().map(str::trim) == Some(name)
+                })
+            }),
+    )
+}
+
+/// Why a cell write did not apply: the area's existence contradicts the
+/// operation, or the decompiled definition is malformed.
+#[derive(Debug)]
+enum MxlEditError {
+    AreaExists,
+    AreaMissing,
+    Invalid(String),
+}
+
+impl From<String> for MxlEditError {
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
+}
+
+/// Applies the cell writes to a decompiled definition: `mxl.set` finds the
+/// existing area and `area.add` appends a new one, compressed empty rows are
+/// expanded, cells are set by column.
+fn apply_mxl_edit(definition: &mut Value, edit: &MxlEdit) -> Result<(), MxlEditError> {
     let object = definition
         .as_object_mut()
         .ok_or_else(|| "the decompiled spreadsheet definition is not an object".to_string())?;
@@ -538,15 +671,19 @@ fn apply_mxl_edit(definition: &mut Value, edit: &MxlEdit) -> Result<(), String> 
     let areas = areas
         .as_array_mut()
         .ok_or_else(|| "the decompiled definition has no areas array".to_string())?;
-    let index = match areas
-        .iter()
-        .position(|area| area.get("name").and_then(Value::as_str) == Some(edit.area.as_str()))
-    {
-        Some(index) => index,
-        None => {
+    let index = match (
+        areas
+            .iter()
+            .position(|area| area.get("name").and_then(Value::as_str) == Some(edit.area.as_str())),
+        edit.creates,
+    ) {
+        (Some(index), false) => index,
+        (None, true) => {
             areas.push(serde_json::json!({"name": edit.area, "rows": []}));
             areas.len() - 1
         }
+        (Some(_), true) => return Err(MxlEditError::AreaExists),
+        (None, false) => return Err(MxlEditError::AreaMissing),
     };
     let area = areas[index]
         .as_object_mut()
@@ -622,8 +759,10 @@ pub(crate) fn plan_dcs_mxl_batch(
         require_template_format(&mut staged, &authority, operation.operation(), op_index)?;
         let edit = match &operation.operation().kind {
             DcsMxlPlanKind::Dcs(edit) => edit,
-            DcsMxlPlanKind::Mxl(edit) => {
-                stage_mxl_edit(&mut staged, &authority, edit, op_index, &mut provisional)?;
+            DcsMxlPlanKind::Mxl(edits) => {
+                for edit in edits {
+                    stage_mxl_edit(&mut staged, &authority, edit, op_index, &mut provisional)?;
+                }
                 continue;
             }
             DcsMxlPlanKind::Unsupported => {
@@ -711,7 +850,10 @@ fn require_template_format(
 ) -> Result<(), ApplyPlanError> {
     let template = match &operation.kind {
         DcsMxlPlanKind::Dcs(edit) => &edit.template,
-        DcsMxlPlanKind::Mxl(edit) => &edit.template,
+        DcsMxlPlanKind::Mxl(edits) => match edits.first() {
+            Some(edit) => &edit.template,
+            None => return Ok(()),
+        },
         DcsMxlPlanKind::Unsupported => return Ok(()),
     };
     let Some(descriptor) =
@@ -852,7 +994,7 @@ fn stage_mxl_edit(
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
-    let values_path = format!("ops[{op_index}].args.values");
+    let values_path = edit.location.clone();
     let relative =
         attached_resource_relative(&edit.template, "Template.xml", authority.source_kind())
             .map_err(|message| {
@@ -896,8 +1038,26 @@ fn stage_mxl_edit(
         )
         .at_path(at_path.clone())
     })?;
-    apply_mxl_edit(&mut definition, edit).map_err(|message| {
-        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(values_path.clone())
+    apply_mxl_edit(&mut definition, edit).map_err(|error| match error {
+        MxlEditError::AreaMissing => ApplyPlanError::new(
+            ApplyPlanErrorKind::NotFound,
+            format!(
+                "the template has no area `{}`; create it with area.add at `{}`",
+                edit.area, edit.template_at
+            ),
+        )
+        .at_path(at_path.clone()),
+        MxlEditError::AreaExists => ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            format!(
+                "the template already has area `{}`; change its cells with mxl.set at `{}.Area.{}`",
+                edit.area, edit.template_at, edit.area
+            ),
+        )
+        .at_path(format!("{values_path}.name")),
+        MxlEditError::Invalid(message) => {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(values_path.clone())
+        }
     })?;
     let compiled = crate::infrastructure::native_operations::mxl::mxl_compile_document(&definition)
         .map_err(|message| {
@@ -1279,7 +1439,7 @@ mod tests {
                 ),
                 (
                     "field.set",
-                    json!({"at": data_set, "values": {"field": "Количество", "title": "Count"}}),
+                    json!({"at": format!("{data_set}.Field.Количество"), "values": {"title": "Count"}}),
                 ),
                 (
                     "parameter.add",
@@ -1295,7 +1455,7 @@ mod tests {
                 ),
                 (
                     "variant.set",
-                    json!({"at": format!("{schema}.Setting.Основной"), "values": {"name": "Основной", "title": "Stored versions"}}),
+                    json!({"at": format!("{schema}.Setting.Основной"), "values": {"title": "Stored versions"}}),
                 ),
             ],
         )
@@ -1365,7 +1525,7 @@ mod tests {
             &fixture,
             &[(
                 "field.set",
-                json!({"at": data_set, "values": {"field": "Количество", "title": "Count"}}),
+                json!({"at": format!("{data_set}.Field.Количество"), "values": {"title": "Count"}}),
             )],
         )
         .expect_err("a plain-string title needs the default language");
@@ -1389,8 +1549,8 @@ mod tests {
         let operation = parse_dcs_mxl_plan_operation(
             "fieldRole.set",
             &json!({
-                "at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1",
-                "values":{"field":"РазмерДанных","role":{"dimension":true}}
+                "at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1.Field.РазмерДанных",
+                "values":{"role":{"dimension":true}}
             }),
             0,
             &fixture.binding,
@@ -1570,7 +1730,7 @@ mod tests {
             let authority = admission
                 .dcs_mxl_planning_authority(&fixture.binding)
                 .unwrap();
-            let operation=parse_dcs_mxl_plan_operation("fieldRole.set",&json!({"at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1","values":{"field":"РазмерДанных","role":role_args}}),0,&fixture.binding).unwrap();
+            let operation=parse_dcs_mxl_plan_operation("fieldRole.set",&json!({"at":"main:Report.Versions.Template.Schema.DataSet.НаборДанных1.Field.РазмерДанных","values":{"role":role_args}}),0,&fixture.binding).unwrap();
             let (staged, effects) = plan_dcs_mxl_batch(
                 staged,
                 authority,
