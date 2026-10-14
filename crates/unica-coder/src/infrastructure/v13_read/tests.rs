@@ -4746,9 +4746,7 @@ pub(crate) fn one_read_parses_each_module_source_once_per_actor_revision() {
         .view(ViewRequest::new("main:CommonModule.РеактивныйСервер.Method").unwrap());
     assert!(
         changed_methods.ok,
-        "{}: {:?}",
-        changed_methods.summary,
-        refusal_codes(&changed_methods)
+        "a new read of the changed module must succeed"
     );
     assert!(
         serde_json::to_string(&changed_methods.data)
@@ -6227,11 +6225,7 @@ fn registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_vi
     let service = fixture.view_service();
 
     let root = service.view(ViewRequest::new("main:Configuration").unwrap());
-    assert!(
-        root.ok,
-        "the root proves only Configuration.xml: {:?}",
-        refusal_codes(&root)
-    );
+    assert!(root.ok, "the root proves only Configuration.xml");
     for at in ["main:Role", "main:Role.Missing"] {
         let result = service.view(ViewRequest::new(at).unwrap());
         assert!(

@@ -10736,7 +10736,7 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({"at": "main:Configuration"}),
         );
 
-        assert!(root.ok, "{root:?}");
+        assert!(root.ok, "the configuration root view must succeed");
         let root_reads = reads.take();
         assert!(
             root_reads
@@ -10779,7 +10779,7 @@ struct ActorLogicalReadLease {"#,
             serde_json::json!({"at": "main:Configuration"}),
         );
 
-        assert!(root.ok, "{:?}", root.diagnostics);
+        assert!(root.ok, "the streamed configuration root view must succeed");
         assert_eq!(root.data.as_ref().unwrap()["props"]["totalObjects"], 7);
         let root_reads = reads.take();
         assert!(
