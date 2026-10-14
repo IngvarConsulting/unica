@@ -10826,17 +10826,11 @@ pub(crate) fn emit_form_commands(
         if let Some(title) = object.get("title").and_then(Value::as_str) {
             emit_form_mltext(lines, &inner, "Title", title, lang)?;
         }
-        for (key, tag) in [("action", "Action"), ("shortcut", "Shortcut")] {
-            if let Some(value) = object.get(key).and_then(Value::as_str) {
-                lines.push(format!("{inner}<{tag}>{}</{tag}>", escape_xml(value)));
-            }
-        }
-        if let Some(value) = object.get("representation").and_then(Value::as_str) {
-            let representation = form_compile_command_representation(value)
-                .ok_or_else(|| form_command_representation_error(name, value))?;
-            lines.push(format!(
-                "{inner}<Representation>{representation}</Representation>"
-            ));
+        // Properties follow the platform's FormCommand XDTO order: Title,
+        // ToolTip, Use, Shortcut, Picture, Action, FunctionalOptions,
+        // Representation, ...
+        if let Some(value) = object.get("shortcut").and_then(Value::as_str) {
+            lines.push(format!("{inner}<Shortcut>{}</Shortcut>", escape_xml(value)));
         }
         if let Some(picture) = object.get("picture").and_then(Value::as_str) {
             lines.push(format!("{inner}<Picture>"));
@@ -10845,6 +10839,16 @@ pub(crate) fn emit_form_commands(
                 "{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>"
             ));
             lines.push(format!("{inner}</Picture>"));
+        }
+        if let Some(value) = object.get("action").and_then(Value::as_str) {
+            lines.push(format!("{inner}<Action>{}</Action>", escape_xml(value)));
+        }
+        if let Some(value) = object.get("representation").and_then(Value::as_str) {
+            let representation = form_compile_command_representation(value)
+                .ok_or_else(|| form_command_representation_error(name, value))?;
+            lines.push(format!(
+                "{inner}<Representation>{representation}</Representation>"
+            ));
         }
         lines.push(format!("{indent}\t</Command>"));
     }
@@ -16139,6 +16143,39 @@ pub(crate) mod tests {
             .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Representation")))
             .and_then(|node| node.text());
         assert_eq!(representation, Some("TextPicture"), "{xml}");
+    }
+
+    /// Command properties come out in the FormCommand XDTO order that
+    /// platform dumps use: Title, Shortcut, Picture, Action, Representation.
+    #[test]
+    fn form_compile_writes_command_properties_in_platform_order() {
+        let definition = json!({
+            "commands": [{
+                "name": "Find",
+                "title": "Find",
+                "representation": "Picture",
+                "action": "Find",
+                "picture": "StdPicture.Find",
+                "shortcut": "Ctrl+F"
+            }]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let command = document
+            .descendants()
+            .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Command")))
+            .unwrap();
+        let order = command
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            ["Title", "Shortcut", "Picture", "Action", "Representation"],
+            "{xml}"
+        );
     }
 
     /// The button value set is not the command one: 8.3.27 does not load
