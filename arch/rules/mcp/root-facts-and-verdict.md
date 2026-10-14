@@ -5,6 +5,7 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_recognizes_an_infobase_only_workspace
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_without_at_bootstraps_an_empty_workspace
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_does_not_equate_git_presence_with_repository_readiness
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_leaves_project_health_to_the_root_check
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_inspection_discovers_sources_after_response_handoff
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint
   - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::root_check_does_not_recommend_repeat_for_fixed_failure_or_full_checkpoint

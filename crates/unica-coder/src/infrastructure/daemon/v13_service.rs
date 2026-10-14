@@ -956,23 +956,12 @@ impl CanonicalV13ReadService {
         source_set: &str,
         cancellation: &CancellationToken,
     ) -> Result<FindIndex, Box<DomainResult>> {
-        let sources = invocation.read_sources().map_err(|error| {
-            Box::new(error_result(
-                at.clone(),
-                RefusalCode::ProviderUnavailable,
-                error,
-            ))
-        })?;
-        let source = sources
-            .iter()
-            .find(|source| source.source_set_name() == source_set)
-            .ok_or_else(|| {
-                Box::new(error_result(
-                    at.clone(),
-                    RefusalCode::ProviderUnavailable,
-                    format!("source set `{source_set}` was not admitted by the workspace actor"),
-                ))
-            })?;
+        let source = admitted_read_source(
+            invocation.read_sources(),
+            |source| source.source_set_name(),
+            at.as_deref(),
+            source_set,
+        )?;
         let root = source.retained_root();
         let layout = vec![LayoutFindSource::new(
             source.source_set_name(),
@@ -2314,6 +2303,9 @@ impl CanonicalV13ReadService {
             };
         }
         let at = address.to_string();
+        if let Some(relative) = metadata_layout_path(invocation, address) {
+            return self.resolve_metadata_point(invocation, address, &relative, cancellation);
+        }
         let directory = match self.layout_directory(
             invocation,
             Some(at.clone()),
@@ -2343,6 +2335,60 @@ impl CanonicalV13ReadService {
             at,
             kind,
             placed,
+            ResolvedLines::NotLineBased,
+        ))
+    }
+
+    /// Resolves one metadata object by its own layout place: the target file
+    /// and its necessary owners, the same proof as `resolve(path)`. It never
+    /// builds the full name directory, so foreign descriptors are not read and
+    /// their damage does not decide this answer (#1457).
+    fn resolve_metadata_point(
+        &self,
+        invocation: &ActorBoundExecution,
+        address: &QualifiedAddress,
+        relative: &str,
+        cancellation: &CancellationToken,
+    ) -> DomainResult {
+        let at = address.to_string();
+        let source = match admitted_read_source(
+            invocation.read_sources(),
+            |source| source.source_set_name(),
+            Some(&at),
+            address.source_set(),
+        ) {
+            Ok(source) => source,
+            Err(refusal) => return *refusal,
+        };
+        let root = source.retained_root();
+        let layout = [LayoutFindSource::new(
+            source.source_set_name(),
+            source.source_kind(),
+            root.as_ref(),
+        )];
+        let entry =
+            match self
+                .find_builder
+                .locate_path(&layout, relative, source.deadline(), cancellation)
+            {
+                Ok(entry) => entry,
+                Err(error) => return find_build_error_result(Some(at), error),
+            };
+        let Some((kind, placed)) = entry.as_ref().and_then(|entry| {
+            (entry.at() == at)
+                .then(|| entry.placed_path().map(|placed| (entry.kind(), placed)))
+                .flatten()
+        }) else {
+            return error_result(
+                Some(at.clone()),
+                RefusalCode::NotFound,
+                format!("the source layout does not place `{at}`"),
+            );
+        };
+        resolve_result(ResolvedSource::new(
+            at.clone(),
+            kind.to_string(),
+            placed.to_string(),
             ResolvedLines::NotLineBased,
         ))
     }
@@ -2382,6 +2428,76 @@ impl CanonicalV13ReadService {
             lines,
         ))
     }
+}
+
+/// The admitted read capability of one source set, or the refusal that the
+/// layout readers answer when the actor did not admit it.
+fn admitted_read_source<T>(
+    sources: Result<Vec<T>, String>,
+    source_set_name: impl Fn(&T) -> &str,
+    at: Option<&str>,
+    source_set: &str,
+) -> Result<T, Box<DomainResult>> {
+    let sources = sources.map_err(|error| {
+        Box::new(error_result(
+            at.map(str::to_string),
+            RefusalCode::ProviderUnavailable,
+            error,
+        ))
+    })?;
+    sources
+        .into_iter()
+        .find(|source| source_set_name(source) == source_set)
+        .ok_or_else(|| {
+            Box::new(error_result(
+                at.map(str::to_string),
+                RefusalCode::ProviderUnavailable,
+                format!("source set `{source_set}` was not admitted by the workspace actor"),
+            ))
+        })
+}
+
+/// The layout place of a metadata object address in its own source set:
+/// `Configuration.xml`, an owner descriptor, or a form, template or command
+/// of a top-level owner. Other shapes keep the full directory lookup.
+fn metadata_layout_path(
+    invocation: &ActorBoundExecution,
+    address: &QualifiedAddress,
+) -> Option<String> {
+    let source_kind = invocation
+        .read_sources()
+        .ok()?
+        .into_iter()
+        .find(|source| source.source_set_name() == address.source_set())?
+        .source_kind();
+    let segments = address.segments();
+    if let [root] = segments {
+        if root.kind() == NodeKind::Configuration && root.name().is_none() {
+            return matches!(
+                source_kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+            .then(|| "Configuration.xml".to_string());
+        }
+    }
+    let target = address.to_string();
+    let target = target.split_once(':')?.1;
+    let target = crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        target,
+    )
+    .ok()?;
+    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+        &target,
+        source_kind,
+    )
+    .ok()?;
+    let relative = relative.to_str()?.replace('\\', "/");
+    // A command has no descriptor: the layout places its directory.
+    if matches!(segments.last(), Some(last) if last.kind() == NodeKind::Command) {
+        return relative.strip_suffix(".xml").map(str::to_string);
+    }
+    Some(relative)
 }
 
 /// Поставить движок маршрута, если его нет, и убедиться, что он на месте.

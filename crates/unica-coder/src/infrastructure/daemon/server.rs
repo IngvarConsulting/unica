@@ -4536,6 +4536,78 @@ fn main() {
         assert!(data["diagnostics"].is_array(), "{data}");
     }
 
+    /// `view {}` reports facts: it starts no repository process, runs no
+    /// project-health inspection and opens no object descriptor, while
+    /// `check {}` on the same workspace still computes the verdict (#1457).
+    #[test]
+    fn canonical_view_bootstrap_leaves_project_health_to_the_root_check() {
+        use crate::infrastructure::internal_adapters::process_launch_probe::launches_under_for_test;
+        use crate::infrastructure::project_health::health_inspection_probe::inspections_for_test;
+
+        let (workspace, source) = source_selection_read_fixture();
+        add_unrelated_catalogs(&source, 3);
+        for args in [&["init", "--quiet"][..], &["add", "."][..]] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(workspace.path())
+                .status()
+                .unwrap()
+                .success());
+        }
+        let runtime = bootstrap_runtime();
+        let reads = RetainedReadProbe::watch(workspace.path());
+
+        let view = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(view.ok, "{view:?}");
+        let data = view.data.as_ref().unwrap();
+        for field in [
+            "ready",
+            "discoveredReady",
+            "repositoryReady",
+            "readinessState",
+            "checks",
+            "diagnostics",
+        ] {
+            assert!(data.get(field).is_none(), "view leaked {field}: {data}");
+        }
+        assert!(view
+            .next
+            .iter()
+            .any(|next| next["tool"] == "unica.check" && next["args"] == serde_json::json!({})));
+        assert!(
+            view.next
+                .iter()
+                .any(|next| next["tool"] == "unica.view"
+                    && next["args"]["at"] == "main:Configuration"),
+            "a selected Platform XML source keeps its root link: {view:?}"
+        );
+        assert_eq!(inspections_for_test(workspace.path()), 0);
+        assert_eq!(
+            launches_under_for_test(workspace.path()),
+            Vec::<String>::new()
+        );
+        let view_reads = reads.take();
+        assert!(
+            view_reads
+                .iter()
+                .all(|read| !format!("{read:?}").contains("Catalogs")),
+            "view {{}} read object descriptors: {view_reads:?}"
+        );
+
+        let verdict = submit_root_verdict(&runtime, workspace.path());
+
+        assert!(verdict.ok, "{verdict:?}");
+        assert!(verdict.data.as_ref().unwrap()["checks"].is_array());
+        assert_eq!(inspections_for_test(workspace.path()), 1);
+        assert!(
+            launches_under_for_test(workspace.path())
+                .iter()
+                .any(|program| program.ends_with("git") || program.ends_with("git.exe")),
+            "the root check must still inspect the repository"
+        );
+    }
+
     #[test]
     fn canonical_invalid_view_address_points_back_to_bootstrap() {
         let workspace = tempfile::tempdir().unwrap();
@@ -11757,10 +11829,24 @@ struct ActorLogicalReadLease {"#,
                 ToolIdentity::Search => {
                     selected_reads.take();
                 }
-                // Resolve by address still builds the full layout directory
-                // and reads every descriptor head (#1457).
+                // Resolve proves the target's place: it may enumerate the
+                // directories on the target's own path to match names, but it
+                // opens no other descriptor (#1457).
                 ToolIdentity::Resolve => {
-                    selected_reads.take();
+                    let reads = selected_reads.take();
+                    assert!(
+                        reads.iter().all(|read| match read {
+                            RetainedRead::Listed(path) => {
+                                path.as_os_str().is_empty()
+                                    || path == std::path::Path::new("Catalogs")
+                            }
+                            RetainedRead::Opened(path) => {
+                                path == std::path::Path::new("Configuration.xml")
+                                    || path == std::path::Path::new("Catalogs/Items.xml")
+                            }
+                        }),
+                        "Resolve read beyond the addressed object: {reads:?}"
+                    );
                 }
                 _ => assert_no_unrelated_object_or_listing(&format!("{tool:?}")),
             }

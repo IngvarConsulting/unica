@@ -446,20 +446,6 @@ fn staged_platform_format_marker(
     }
 }
 
-pub(crate) fn inspect_project_health(
-    context: &WorkspaceContext,
-    cancellation: &CancellationToken,
-    deadline: ProviderDeadline,
-) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
-    inspect_project_health_with(
-        context,
-        cancellation,
-        deadline,
-        system_process_runner(),
-        None,
-    )
-}
-
 pub(crate) fn inspect_project_health_continued(
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
@@ -485,6 +471,37 @@ pub(crate) fn inspect_project_health_with_runner(
     inspect_project_health_with(context, cancellation, deadline, runner, None)
 }
 
+/// Тестовый счётчик проверок здоровья проекта по корню рабочего пространства.
+#[cfg(test)]
+pub(crate) mod health_inspection_probe {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static INSPECTED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    fn canonical(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    pub(super) fn record(workspace_root: &Path) {
+        INSPECTED
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(canonical(workspace_root));
+    }
+
+    /// Number of project-health inspections started for `workspace_root`.
+    pub(crate) fn inspections_for_test(workspace_root: &Path) -> usize {
+        let root = canonical(workspace_root);
+        INSPECTED
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .filter(|inspected| **inspected == root)
+            .count()
+    }
+}
+
 fn inspect_project_health_with(
     context: &WorkspaceContext,
     cancellation: &CancellationToken,
@@ -492,6 +509,8 @@ fn inspect_project_health_with(
     runner: &dyn ProcessRunner,
     continuation: Option<&mut ResourceContinuation>,
 ) -> Result<ProjectHealthSnapshot, ProjectHealthInspectionError> {
+    #[cfg(test)]
+    health_inspection_probe::record(&context.workspace_root);
     let layout = SourceLayoutInspector::inspect(context, cancellation, deadline)?;
     if cancellation.is_cancelled() {
         return Err(ProjectHealthInspectionError::Cancelled);
