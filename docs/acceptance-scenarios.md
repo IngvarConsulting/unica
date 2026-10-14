@@ -4,16 +4,16 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **422 сценариев** реальных задач разработчика конфигурации и **1114 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **426 сценариев** реальных задач разработчика конфигурации и **1134 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 406 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 410 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 913 |
-| `refused` | умышленный типизированный отказ | 146 |
+| `ok` | результат | 930 |
+| `refused` | умышленный типизированный отказ | 149 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 26 |
 | `provider` | провайдер недоступен | 21 |
 | `unsupported` | закрытый список | 3 |
@@ -73,7 +73,7 @@
 
 ## Покрытие реестра `apply`
 
-Закрытый реестр держит **121 операций**; сценарии покрывают **114**, помечены реализованными **121**. Операция без сценария — первая кандидатура для новой задачи.
+Закрытый реестр содержит **121** операцию; сценарии покрывают **114** операций, реализованными помечены **121** операцию. Операция без сценария — первая кандидатура для новой задачи.
 
 ### Метаданные: объекты и коллекции
 
@@ -151,10 +151,10 @@
 | `dataSet.add` | `items` | да | S361, S367, S368, S370, S380 |
 | `dataSet.set` | `values` | да | S361 |
 | `dataSet.remove` | только `at` | да | S361 |
-| `field.add` | `items` | да | S181, S326, S361, S366, S368, S380, S388 |
-| `field.set` | `values` | да | S182, S361, S380, S388, S419 |
+| `field.add` | `items` | да | S181, S326, S361, S366, S368, S380, S388, S423 |
+| `field.set` | `values` | да | S182, S361, S380, S388, S419, S423 |
 | `field.remove` | только `at` | да | S183, S368 |
-| `fieldRole.set` | `values` | да | S361, S419 |
+| `fieldRole.set` | `values` | да | S361, S419, S423 |
 | `parameter.add` | `items` | да | S184, S185, S362, S376, S380, S388 |
 | `parameter.set` | `values` | да | S185, S362, S376, S380, S419 |
 | `parameter.remove` | только `at` | да | S362 |
@@ -212,9 +212,9 @@
 | --- | --- | --- | --- |
 | `valueType.add` | `values` | да | S214 |
 | `objectType.add` | `values` | да | S215 |
-| `property.add` | `values` | да | S216 |
+| `property.add` | `values` | да | S216, S422 |
 | `type.remove` | только `at` | да | S217 |
-| `property.remove` | `values` | да | S218 |
+| `property.remove` | только `at` | да | S218, S422 |
 
 ### Подсистемы
 
@@ -239,7 +239,7 @@
 | --- | --- | --- | --- |
 | `commandVisibility.set` | `items` | да | **не покрыто — предложите задачу** |
 | `commandPlacement.set` | `items` | да | **не покрыто — предложите задачу** |
-| `commandOrder.set` | `values` | да | S320 |
+| `commandOrder.set` | `values` | да | S320, S424 |
 | `groupOrder.set` | `values` | да | **не покрыто — предложите задачу** |
 | `subsystemOrder.set` | `values` | да | S321 |
 
@@ -274,17 +274,17 @@
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 239 |
-| `unica.view` | 129 |
+| `unica.apply` | 242 |
+| `unica.view` | 133 |
 | `unica.check` | 72 |
-| `unica.search` | 35 |
+| `unica.search` | 36 |
 | `unica.docs` | 27 |
 | `unica.diff` | 17 |
 | `unica.resolve` | 7 |
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (56) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (34) · Код BSL (45) · Роли и права (16) · СКД (43) · Макеты (15) · Подсистемы и интерфейс (12) · XDTO и обмены (10) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
+Области: Навигация и чтение (56) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (34) · Код BSL (46) · Роли и права (16) · СКД (44) · Макеты (15) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
 
 ### Навигация и чтение
 
@@ -553,6 +553,7 @@
 | S396 | Ветвь графа вызовов заказывает отсутствующий анализатор этим же вызовом, а провал поставки даёт типизированный отказ «нет движка» | `fault-injection/analyzer-delivery-failure` | `view`<br>`view`<br>`view` | `ok`<br>`provider`<br>`provider` |
 | S398 | Подменённый анализатор даёт отказ «нет движка» с полями поставки в data, а не сбой анализа | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S413 | Заменить функцию модуля текстом крупнее 16 КиБ одним вызовом, без нарезки | `source` | `apply` `code.replace`<br>`apply` | `ok`<br>`ok` |
+| S425 | Найти объявление функции по виду метаданных: совпадение называет адрес своего модуля, а не область запроса, совпадает с поиском по самому модулю и открывается через view | `source` | `search`<br>`search`<br>`view` | `ok`<br>`ok`<br>`ok` |
 
 ### Роли и права
 
@@ -621,7 +622,8 @@
 | S379 | Один итог имеет несколько explicit group bindings; set заменяет весь список, пустой список снимает привязки, соседний итог сохраняется | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `total.add`<br>`apply`<br>`view`<br>`apply` `total.set` `total.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S380 | Явные пустые value/title/expression/presentationExpression записываются; повтор такого же сохранённого плана оставляет XML без изменений и имеет нулевой эффект | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add` `field.add` `parameter.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`view`<br>`apply` `parameter.set` `field.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S412 | Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора; снятая form.create ведёт к form.add на владельце, и форма создаётся там | `source` | `view`<br>`apply` `query.set`<br>`view`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `structure.set`<br>`apply` `form.create`<br>`apply` `form.add`<br>`apply` `childSubsystem.remove`<br>`view`<br>`view` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`ok` |
-| S419 | Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр, а снятая форма поля с составным dataPath не уводит к несуществующему адресу | `source` | `view`<br>`apply` `variant.set`<br>`apply` `variant.set`<br>`apply` `parameter.set`<br>`apply` `field.set`<br>`apply` `field.set` `fieldRole.set`<br>`apply` `field.set`<br>`apply` `code.insert`<br>`apply` `code.insert` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`ok` |
+| S419 | Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр | `source` | `view`<br>`apply` `variant.set`<br>`apply` `variant.set`<br>`apply` `parameter.set`<br>`apply` `field.set`<br>`apply` `field.set` `fieldRole.set`<br>`apply` `code.insert`<br>`apply` `code.insert` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`ok` |
+| S423 | Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес и поле читается по нему; снятая форма field.set с values.field отказывает без записи с next к этому адресу, а field.set и fieldRole.set на нём меняют поле, что видно при чтении | `source` | `apply` `field.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `field.set`<br>`apply` `field.set` `fieldRole.set`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Макеты
 
@@ -659,6 +661,7 @@
 | S213 | Узнать по стандартам, как строить командный интерфейс раздела | `source` | `docs` | `ok` / `provider` / `task` |
 | S320 | Переставить важные команды Администрирования, забыв одну — перестановка проходит, неполный список отклоняется без записи | `source` | `apply` `commandOrder.set`<br>`apply` `commandOrder.set` | `ok`<br>`refused` |
 | S321 | Задать порядок подсистем на интерфейсе подсистемы — порядок подсистем живёт в корне, отказ до планирования | `source` | `apply` `subsystemOrder.set` | `refused` |
+| S424 | Группа командного интерфейса CommandGroup.X публикуется адресом с экранированной точкой и читается по нему; порядок её команд задаётся на этом адресе, а прежний values.group отказывает без записи с next к адресу группы | `source` | `view`<br>`view`<br>`apply` `commandOrder.set`<br>`apply` `commandOrder.set` | `ok`<br>`ok`<br>`refused`<br>`ok` |
 
 ### XDTO и обмены
 
@@ -674,6 +677,7 @@
 | S322 | Открыть шаблоны URL и метод HTTP-сервиса из выгрузки Конфигуратора | `source` | `view`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
 | S323 | Открыть операцию веб-сервиса из выгрузки Конфигуратора | `source` | `view`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
 | S420 | Прочитать типы и явные либо эффективные границы глобального свойства и свойств типов XDTO | `source` | `view`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok` |
+| S422 | Свойство вложенного анонимного типа XDTO читается и правится по адресу Type.T.Property.A.Property.B: прежние propertyPath и имя удаляемого свойства отказывают без записи с next к адресу свойства, исправленные вызовы строят предпросмотр | `source` | `view`<br>`view`<br>`apply` `property.add`<br>`apply` `property.add`<br>`apply` `property.remove`<br>`apply` `property.remove` | `ok`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok` |
 
 ### Сборка, ИБ и выгрузка
 
@@ -736,7 +740,7 @@
 | S311 | Спросить документацию из каталога, который ещё не рабочая область | `source` | `docs`<br>`docs` | `ok` / `provider` / `task`<br>`unsupported` |
 | S382 | Найти Developer Guide закреплённой 8.3.26 и прочитать обзор и вложенный раздел | `source` | `docs`<br>`docs`<br>`docs` | `ok` / `provider` / `task`<br>`ok` / `provider` / `task`<br>`ok` / `provider` / `task` |
 | S383 | Найти Administrator Guide закреплённой 8.3.27 и прочитать обзор обоих режимов | `source` | `docs`<br>`docs`<br>`docs` | `ok` / `provider` / `task`<br>`ok` / `provider` / `task`<br>`ok` / `provider` / `task` |
-| S422 | Найти правило диагностики по стандартам, когда сервер стандартов не отвечает: отказ называет поставщика v8std и причину его сбоя, а не только то, что результата нет | `source` | `docs` | `provider` |
+| S426 | Найти правило диагностики по стандартам, когда сервер стандартов не отвечает: отказ называет поставщика v8std и причину его сбоя, а не только то, что результата нет | `source` | `docs` | `provider` |
 
 ### Поддержка поставщика
 

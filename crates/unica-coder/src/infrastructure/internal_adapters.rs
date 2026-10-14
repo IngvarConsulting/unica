@@ -2613,6 +2613,7 @@ impl HttpClient for NetworkHttpClient {
                 &[
                     ("Content-Type", "application/json"),
                     ("Accept", "application/json, text/event-stream"),
+                    ("User-Agent", unica_bootstrap::network::DOCS_USER_AGENT),
                 ],
                 &payload.to_string(),
                 Some(StandardsAdapter::DEFAULT_TIMEOUT),

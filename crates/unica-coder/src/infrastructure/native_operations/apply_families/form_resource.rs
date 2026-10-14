@@ -1,6 +1,6 @@
 use super::metadata::{owner_registration_image, qualified_target};
 use super::validate_platform_xml_binding;
-use crate::domain::address::{NodeKind, QualifiedAddress};
+use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
 use crate::domain::apply::OperationFamily;
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -189,15 +189,48 @@ fn required_string<'a>(
 /// Разбор операций командного интерфейса.
 ///
 /// Адрес несёт интерфейс, а команда лежит в аргументах: предмет операции —
-/// пара «интерфейс и ссылка на команду», а адрес может нести только одно. Приписать факт подсистемы адресу команды,
-/// живущей в другом месте, было бы неверно.
+/// пара «интерфейс и ссылка на команду», а адрес может нести только одно.
+/// Приписать факт подсистемы адресу команды, живущей в другом месте, было бы
+/// неверно. Порядок команд принадлежит группе, и группа — узел интерфейса:
+/// `commandOrder.set` адресует `…Interface.Group.<g>`, имя с точкой
+/// экранируется (`CommandGroup\.X`).
 fn parse_command_interface_operation(
     section: &str,
     target: &QualifiedAddress,
     args: &Map<String, Value>,
     op_index: usize,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let segments = target.segments();
+    let (segments, group) = match target.segments() {
+        [interface @ .., group] if group.kind() == NodeKind::Group => match group.name() {
+            Some(name) => (interface, Some(name)),
+            // Ветвь групп — коллекция, а не группа: порядок пишется в группу.
+            None => {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    format!("`{section}.set` does not target the group collection; name the group: `Subsystem.Name.Interface.Group.G`"),
+                ))
+            }
+        },
+        segments => (segments, None),
+    };
+    if (section == "commandOrder") != group.is_some() {
+        return Err(bad(
+            op_index,
+            "at",
+            if section == "commandOrder" {
+                "`commandOrder.set` targets a command group: `Subsystem.Name.Interface.Group.G`"
+                    .to_string()
+            } else {
+                format!("`{section}.set` does not target a command group")
+            },
+        ));
+    }
+    let interface = QualifiedAddress {
+        source_set: target.source_set().to_string(),
+        segments: segments.to_vec(),
+    };
+    let target = &interface;
     let (address, relative) = match segments {
         // Порядок подсистем верхнего уровня живёт в корневом документе.
         [root] if root.kind() == NodeKind::Configuration => {
@@ -309,11 +342,13 @@ fn parse_command_interface_operation(
             InterfaceEdit::Placement(values)
         }
         "commandOrder" => {
-            let values = required_values(args, op_index, &["group", "commands"])?;
-            // Порядок команд принадлежит группе: без неё нечего сравнивать
-            // с сохранённым составом.
+            let values = required_values(args, op_index, &["commands"])?;
+            // Порядок команд принадлежит группе адреса: без неё нечего
+            // сравнивать с сохранённым составом.
             InterfaceEdit::CommandOrder {
-                group: required_string(values, "group", op_index, "values")?.to_string(),
+                group: group
+                    .expect("a command order target names its group")
+                    .to_string(),
                 commands: listed_strings(values, "commands", op_index)?,
             }
         }
@@ -624,31 +659,44 @@ fn parse_role_operation(
                     ));
                 }
                 let object = required_string(item, "object", op_index, &location)?.to_string();
-                // Запись адресуется `Right.<Вид>_<Имя>`; вложенный объект
-                // (`Kind.X.Command.Y`) адресом не выражается до экранирования
-                // точки (#1356): созданную запись нечем было бы изменить.
-                match object.split('.').collect::<Vec<_>>().as_slice() {
-                    [kind, name] if role_right_owner_kind(kind) && !name.is_empty() => {}
-                    [_, _, _, ..] => {
-                        return Err(bad(
-                            op_index,
-                            &format!("{location}.object"),
-                            "a nested object (`Kind.Name.Command.C`, attribute) has no rights-entry address until #1356; only `Kind.Name` objects are supported",
-                        ))
-                    }
+                // Запись адресуется `Right.<Вид>_<Имя>`; у вложенного объекта
+                // (`Kind.X.Command.Y`) остальные точки имени экранируются.
+                match object.split_once('.') {
+                    Some((kind, name))
+                        if role_right_owner_kind(kind)
+                            && !name.is_empty()
+                            && name.split('.').all(|part| !part.is_empty()) => {}
                     _ => {
                         return Err(bad(
                             op_index,
                             &format!("{location}.object"),
-                            "`object` names a metadata object as `Kind.Name`",
+                            "`object` names a metadata object as `Kind.Name` or a nested one as `Kind.Name.Command.C`",
                         ))
                     }
+                }
+                // Вложенный объект роли — закрытый набор раскладок, которые
+                // платформа пишет в Rights.xml: команда, реквизит, стандартный
+                // реквизит, табличная часть и её реквизиты, измерение, ресурс,
+                // операция веб-сервиса, метод шаблона URL, канал сервиса
+                // интеграции, реквизит адресации задачи, вложенная подсистема.
+                // Опечатка вида (`Comand`) или вложенный объект у корня
+                // конфигурации иначе ушли бы в Rights.xml записью, которой
+                // у платформы нет.
+                let nested = object.split('.').count() > 2;
+                if nested && !crate::domain::role::nested_right_shape_is_modelled(&object) {
+                    return Err(bad(
+                        op_index,
+                        &format!("{location}.object"),
+                        format!(
+                            "`{object}` is not a nested object a role lists: use Kind.Name.Command|Attribute|StandardAttribute|TabularSection|Dimension|Resource|Operation|AddressingAttribute|IntegrationServiceChannel.X, Kind.Name.TabularSection.T.Attribute|StandardAttribute.X, HTTPService.S.URLTemplate.T.Method.M or Subsystem.S.Subsystem.X"
+                        ),
+                    ));
                 }
                 // Созданную запись `right.set` правит по адресу
                 // `Right.<Вид>_<Имя>`; адрес, который грамматика не разбирает,
                 // оставил бы запись без адреса.
                 let entry_name = object.replacen('.', "_", 1);
-                if QualifiedAddress::parse(&format!("{target}.Right.{entry_name}"))
+                if QualifiedAddress::parse(&member_address(&format!("{target}.Right"), &entry_name))
                     .ok()
                     .and_then(|address| {
                         address
@@ -698,6 +746,21 @@ fn parse_role_operation(
                         )),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                if nested {
+                    // Право вложенного объекта — из его закрытого набора
+                    // (View/Edit, Use у операций и каналов), а не права объекта.
+                    if let Some((right, message)) = rights.iter().find_map(|(right, _)| {
+                        crate::domain::role::validate_nested_right(&object, right)
+                            .err()
+                            .map(|message| (right, message))
+                    }) {
+                        return Err(bad(
+                            op_index,
+                            &format!("{location}.rights.{right}"),
+                            message,
+                        ));
+                    }
+                }
                 entries.push(RightEntry { object, rights });
             }
             Ok(FormResourcePlanKind::RightAdd {
@@ -2576,9 +2639,12 @@ pub(crate) fn plan_form_resource_batch(
                                 return Err(ApplyPlanError::new(
                                     ApplyPlanErrorKind::BadValue,
                                     format!(
-                                        "the role already has a rights entry for `{}`; change it with right.set at `{role_at}.Right.{}`",
+                                        "the role already has a rights entry for `{}`; change it with right.set at `{}`",
                                         entry.object,
-                                        entry.object.replacen('.', "_", 1)
+                                        member_address(
+                                            &format!("{role_at}.Right"),
+                                            &entry.object.replacen('.', "_", 1)
+                                        )
                                     ),
                                 )
                                 .at_path(format!("{location}.object")));
@@ -2688,6 +2754,21 @@ pub(crate) fn plan_form_resource_batch(
                         }
                     }
                     InterfaceEdit::CommandOrder { group, commands } => {
+                        // Группа — узел адреса, а `*.set` правит только
+                        // существующий узел: группа объявлена в `GroupsOrder`,
+                        // как её видит чтение. Порядок не создаёт группу.
+                        if !interface_text_direct_item_values(&text, "GroupsOrder", "Group")
+                            .iter()
+                            .any(|declared| declared == group)
+                        {
+                            return Err(ApplyPlanError::new(
+                                ApplyPlanErrorKind::NotFound,
+                                format!(
+                                    "the command interface declares no group `{group}`; read its groups at `…Interface.Group`"
+                                ),
+                            )
+                            .at_path(at_path.clone()));
+                        }
                         let commands = commands
                             .iter()
                             .map(|command| normalize_interface_command_name(command, &mut log))
@@ -3559,14 +3640,36 @@ mod tests {
                 json!({"values": {"right": "Read", "rls": "ГДЕ Автор = &Пользователь"}}),
                 2,
             ),
+            // Вложенный объект — одна запись с экранированными точками
+            // в имени: созданную запись правит `right.set` по её адресу.
+            parse(
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "DataProcessor.D.Command.C", "rights": {"View": true}}]}),
+                3,
+            ),
+            parse(
+                "right.set",
+                "main:Role.Reader.Right.DataProcessor_D\\.Command\\.C",
+                json!({"values": {"right": "View", "value": false}}),
+                4,
+            ),
         ];
         let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
             .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
-        assert_eq!(effects.len(), 3);
+        assert_eq!(effects.len(), 5);
         let text = staged_text(&staged, "Roles/Reader/Ext/Rights.xml");
         assert!(text.starts_with('\u{feff}'), "byte-order mark survives");
         assert!(text.contains("<name>Update</name>"), "{text}");
         assert!(text.contains("<name>Document.Second</name>"), "{text}");
+        let nested = text
+            .split("<object>")
+            .find(|entry| entry.contains("<name>DataProcessor.D.Command.C</name>"))
+            .unwrap_or_else(|| panic!("nested entry is written: {text}"));
+        assert!(
+            nested.contains("<name>View</name>") && nested.contains("<value>false</value>"),
+            "{nested}"
+        );
         assert!(
             text.contains("<condition>ГДЕ Автор = &amp;Пользователь</condition>"),
             "{text}"
@@ -3645,7 +3748,7 @@ mod tests {
             (
                 "right.add",
                 "main:Role.Reader",
-                json!({"items": [{"object": "DataProcessor.D.Command.C", "rights": {"Use": true}}]}),
+                json!({"items": [{"object": "DataProcessor.D..C", "rights": {"Use": true}}]}),
                 "ops[0].args.items[0].object",
             ),
             // Короткий псевдоним чтения — не каноническое имя записи.
@@ -3662,6 +3765,73 @@ mod tests {
                 .expect_err("the subject comes from the address");
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} {path}");
             assert_eq!(error.path(), Some(path), "{op}");
+        }
+    }
+
+    /// Вложенный объект `right.add` — из закрытого набора раскладок
+    /// Rights.xml. Опечатка вида и вложенный объект корня конфигурации
+    /// отклоняются до записи, право вложенного объекта — из его набора.
+    #[test]
+    fn right_add_accepts_only_nested_objects_a_role_lists() {
+        let fixture = ApplySeamFixture::new();
+        for object in [
+            "Catalog.Items.Command.Open",
+            "Catalog.Items.Attribute.Price",
+            "Catalog.Items.StandardAttribute.Code",
+            "Document.Order.TabularSection.Goods",
+            "Document.Order.TabularSection.Goods.Attribute.Qty",
+            "Document.Order.TabularSection.Goods.StandardAttribute.LineNumber",
+            "InformationRegister.Prices.Dimension.Item",
+            "AccumulationRegister.Stock.Resource.Qty",
+            "Task.Job.AddressingAttribute.Assignee",
+            "Subsystem.Sales.Subsystem.Orders.Subsystem.Returns",
+        ] {
+            let args = json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": {"View": true}}]});
+            parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{object}: {error:?}"));
+        }
+        for object in [
+            "WebService.Exchange.Operation.Send",
+            "HTTPService.Api.URLTemplate.Items.Method.Get",
+            "IntegrationService.Bus.IntegrationServiceChannel.Out",
+        ] {
+            let args = json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": {"Use": true}}]});
+            parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{object}: {error:?}"));
+        }
+        for (object, rights, path) in [
+            (
+                "Catalog.Items.Comand.Open",
+                json!({"Read": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Configuration.X.Command.Y",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Constant.Rate.Command.Open",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Catalog.Items.Command.Open.Attribute.X",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Catalog.Items.Command.Open",
+                json!({"Read": true}),
+                "ops[0].args.items[0].rights.Read",
+            ),
+        ] {
+            let args =
+                json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": rights}]});
+            let error = parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .expect_err(object);
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{object}");
+            assert_eq!(error.path(), Some(path), "{object}");
         }
     }
 

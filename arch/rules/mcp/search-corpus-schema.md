@@ -10,6 +10,7 @@ check:
   - crates/unica-coder/tests/v13_search_integration.rs::text_file_coverage_counts_all_uncovered_files_when_details_are_capped
   - crates/unica-coder/tests/v13_search_integration.rs::text_search_refuses_unvisited_depth_instead_of_claiming_complete_coverage
   - crates/unica-coder/tests/v13_search_integration.rs::text_hits_name_their_module_and_view_reads_the_same_line
+  - crates/unica-coder/tests/v13_search_integration.rs::broad_text_search_scopes_name_the_module_of_every_hit
   - crates/unica-coder/src/infrastructure/logical_event_source.rs::module_paths_map_to_the_logical_module_view_reads
   - crates/unica-coder/src/infrastructure/logical_event_source.rs::files_outside_the_module_layout_have_no_logical_address
 ---

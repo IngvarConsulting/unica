@@ -6098,15 +6098,10 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData.Property.Версия",
       "ops": [
        {
-        "op": "property.remove",
-        "args": {
-         "values": {
-          "name": "Версия"
-         }
-        }
+        "op": "property.remove"
        }
       ]
      },
@@ -8744,13 +8739,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Subsystem.Администрирование.Interface",
+      "at": "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
       "ops": [
        {
         "op": "commandOrder.set",
         "args": {
          "values": {
-          "group": "NavigationPanelImportant",
           "commands": [
            "Catalog.ГруппыДоступа.StandardCommand.OpenList",
            "Catalog.Пользователи.StandardCommand.OpenList",
@@ -8773,13 +8767,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "main:Subsystem.Администрирование.Interface",
+      "at": "main:Subsystem.Администрирование.Interface.Group.NavigationPanelImportant",
       "ops": [
        {
         "op": "commandOrder.set",
         "args": {
          "values": {
-          "group": "NavigationPanelImportant",
           "commands": [
            "Catalog.ГруппыДоступа.StandardCommand.OpenList",
            "Catalog.Пользователи.StandardCommand.OpenList",
@@ -37373,7 +37366,7 @@
    "name": "schema-subnodes-and-method-insert-are-addressed",
    "issue": 1354,
    "area": "СКД",
-   "task": "Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр, а снятая форма поля с составным dataPath не уводит к несуществующему адресу",
+   "task": "Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр",
    "wire": [
     {
      "tool": "unica.view",
@@ -37574,34 +37567,6 @@
        "eq": 1
       }
      ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
-       "eq": "$capture.schema"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
-      "ops": [
-       {
-        "op": "field.set",
-        "args": {
-         "values": {
-          "field": "Объект.Код",
-          "title": "Код"
-         }
-        }
-       }
-      ]
-     },
-     "expect": [
-      "refused"
-     ],
-     "refusal": "bad_value: apply operation `field.set` does not apply to DataSet `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1`; it address",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -37954,6 +37919,581 @@
   },
   {
    "id": "S422",
+   "name": "xdto-nested-property-is-addressed",
+   "issue": 1356,
+   "area": "XDTO и обмены",
+   "task": "Свойство вложенного анонимного типа XDTO читается и правится по адресу Type.T.Property.A.Property.B: прежние propertyPath и имя удаляемого свойства отказывают без записи с next к адресу свойства, исправленные вызовы строят предпросмотр",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/branches/0/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property.Документ_ЗаказКлиента"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+      "ops": [
+       {
+        "op": "property.add",
+        "args": {
+         "values": {
+          "propertyPath": "СсылкаНаОбъект",
+          "property": {
+           "name": "Документ_Новый",
+           "type": "xs:string",
+           "minOccurs": 0
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `property.add` names its subject by address, not by `values.propertyPath`; call it at `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНа",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.propertyPath"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект",
+      "ops": [
+       {
+        "op": "property.add",
+        "args": {
+         "values": {
+          "property": {
+           "name": "Документ_Новый",
+           "type": "xs:string",
+           "minOccurs": 0
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+      "ops": [
+       {
+        "op": "property.remove",
+        "args": {
+         "values": {
+          "name": "СсылкаНаОбъект"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `property.remove` names its subject by address, not by `values.name`; call it at `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъек",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.name"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property.Документ_ЗаказКлиента",
+      "ops": [
+       {
+        "op": "property.remove"
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S423",
+   "name": "dcs-composite-field-is-addressed",
+   "issue": 1356,
+   "area": "СКД",
+   "task": "Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес и поле читается по нему; снятая форма field.set с values.field отказывает без записи с next к этому адресу, а field.set и fieldRole.set на нём меняют поле, что видно при чтении",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.add",
+        "args": {
+         "items": [
+          {
+           "name": "ТипОбъекта.Представление",
+           "dataPath": "ТипОбъекта.Представление"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/3/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+      },
+      {
+       "pointer": "/data/title",
+       "eq": "ТипОбъекта.Представление"
+      }
+     ],
+     "captures": {
+      "schema": {
+       "kind": "sha256",
+       "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "field": "ТипОбъекта.Представление",
+          "title": "Тип объекта (представление)"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `field.set` names its subject by address, not by `values.field`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.Наб",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление.Can.field.set"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление",
+      "ops": [
+       {
+        "op": "field.set",
+        "args": {
+         "values": {
+          "title": "Тип объекта (представление)"
+         }
+        }
+       },
+       {
+        "op": "fieldRole.set",
+        "args": {
+         "values": {
+          "role": {
+           "dimension": true
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "eq": "$capture.schema"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}field[{http://v8.1c.ru/8.1/data-composition-system/schema}dataPath='ТипОбъекта.Представление']/{http://v8.1c.ru/8.1/data-composition-system/schema}role/{http://v8.1c.ru/8.1/data-composition-system/common}dimension",
+       "eq": [
+        "true"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление"
+      },
+      {
+       "pointer": "/data/props/title",
+       "eq": "Тип объекта (представление)"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S424",
+   "name": "interface-group-with-a-dot-is-addressed",
+   "issue": 1356,
+   "area": "Подсистемы и интерфейс",
+   "task": "Группа командного интерфейса CommandGroup.X публикуется адресом с экранированной точкой и читается по нему; порядок её команд задаётся на этом адресе, а прежний values.group отказывает без записи с next к адресу группы",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface.Group"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/5/at",
+       "eq": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+      },
+      {
+       "pointer": "/data/items/5/commands",
+       "eq": 2
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/command",
+       "eq": "CommonCommand.НастройкиПрограммы"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface",
+      "ops": [
+       {
+        "op": "commandOrder.set",
+        "args": {
+         "values": {
+          "group": "CommandGroup.НастройкиПрограммы",
+          "commands": [
+           "CommonCommand.ПараметрыРаботыПрограммы",
+           "CommonCommand.НастройкиПрограммы"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `commandOrder.set` names its subject by address, not by `values.group`; call it at `main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрог",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.group"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "main:Subsystem.Администрирование.Interface.Group"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы",
+      "ops": [
+       {
+        "op": "commandOrder.set",
+        "args": {
+         "values": {
+          "commands": [
+           "CommonCommand.ПараметрыРаботыПрограммы",
+           "CommonCommand.НастройкиПрограммы"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S425",
+   "name": "kind-scoped-text-hit-names-its-module",
+   "issue": 1416,
+   "area": "Код BSL",
+   "task": "Найти объявление функции по виду метаданных: совпадение называет адрес своего модуля, а не область запроса, совпадает с поиском по самому модулю и открывается через view",
+   "workspace": "tests/fixtures/acceptance/workspace",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция НастройкиАвторизации(",
+      "corpus": "text",
+      "scope": "main:CommonModule",
+      "limit": 5
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/scope",
+       "eq": "main:CommonModule"
+      },
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "main:CommonModule.GoogleПереводчик"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/data/fileCoverage/complete",
+       "eq": true
+      },
+      {
+       "pointer": "/page/stoppedBy",
+       "eq": "complete"
+      }
+     ],
+     "captures": {
+      "moduleAt": {
+       "pointer": "/data/matches/0/at"
+      },
+      "hitLine": {
+       "pointer": "/data/matches/0/line"
+      },
+      "hitColumn": {
+       "pointer": "/data/matches/0/column"
+      },
+      "hitSnippet": {
+       "pointer": "/data/matches/0/snippet"
+      }
+     }
+    },
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция НастройкиАвторизации(",
+      "corpus": "text",
+      "scope": "main:CommonModule.GoogleПереводчик",
+      "limit": 5
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "$capture.moduleAt"
+      },
+      {
+       "pointer": "/data/matches/0/line",
+       "eq": "$capture.hitLine"
+      },
+      {
+       "pointer": "/data/matches/0/column",
+       "eq": "$capture.hitColumn"
+      },
+      {
+       "pointer": "/data/matches/0/snippet",
+       "eq": "$capture.hitSnippet"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "$capture.moduleAt"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.GoogleПереводчик"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S426",
    "name": "docs-standards-failure-names-its-cause",
    "issue": 1419,
    "area": "Документация и стандарты",

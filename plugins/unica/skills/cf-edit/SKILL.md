@@ -54,8 +54,10 @@ allowed-tools:
 
 `commandVisibility.set`, `commandPlacement.set`, `commandOrder.set` и
 `groupOrder.set` на `<набор>:Configuration` отклоняются: их адрес —
-интерфейс подсистемы, например `main:Subsystem.Продажи.Interface`; вложенная
-подсистема адресуется всей цепочкой. Маршрута `main:Interface` у корня нет.
+интерфейс подсистемы, например `main:Subsystem.Продажи.Interface`, а у
+`commandOrder.set` — группа этого интерфейса (`…Interface.Group.<Группа>`);
+вложенная подсистема адресуется всей цепочкой. Маршрута `main:Interface`
+у корня нет.
 Эти правки описаны в `/unica:interface-edit`.
 
 **Роли по умолчанию, панели и стартовая страница** канонической операции не

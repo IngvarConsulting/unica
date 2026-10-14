@@ -437,6 +437,7 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
         "object.remove"
         | "form.remove"
         | "type.remove"
+        | "property.remove"
         | "event.implement"
         | "childSubsystem.remove" => json!({"at": ""}),
         "form.add" | "formAttribute.add" | "formCommand.add" | "element.add"
@@ -456,7 +457,6 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
             "group": "NavigationPanelImportant"
         }]}),
         "commandOrder.set" => json!({"values": {
-            "group": "NavigationPanelOrdinary",
             "commands": ["Catalog.Sample.StandardCommand.OpenList"]
         }}),
         "groupOrder.set" => json!({"values": {"groups": ["NavigationPanelImportant"]}}),
@@ -464,7 +464,6 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
         "valueType.add" => json!({"values": {"name": "Sample", "base": "xs:string"}}),
         "objectType.add" => json!({"values": {"name": "Sample"}}),
         "property.add" => json!({"values": {"property": {"name": "Sample", "type": "xs:string"}}}),
-        "property.remove" => json!({"values": {"name": "Sample"}}),
         _ => serde_json::to_value(descriptor.copyable_skeleton()).unwrap()["args"].clone(),
     }
 }
