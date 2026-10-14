@@ -11019,6 +11019,72 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
+    /// #1460: платформа не компилирует модуль, где `Перем` стоит после
+    /// методов, а анализатор такой модуль пропускает. `check` модуля через
+    /// настоящий сервис вызова проваливается находкой с текстом платформы и
+    /// местом объявления; тот же модуль с объявлением в начале проходит.
+    #[test]
+    fn module_check_fails_a_variable_declared_after_methods() {
+        let checked = |source: &str| {
+            let workspace = scheduled_handler_workspace("CONFIGURATION", source);
+            let runtime = bootstrap_runtime();
+            let service =
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+            let cancellation = CancellationToken::new();
+            let request = InvocationRequest::new(
+                ToolIdentity::Check,
+                serde_json::json!({"at": "main:CommonModule.Handlers.Body"}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let check = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            let (provider, _analyzer) =
+                crate::infrastructure::diagnostics::analyze_timeout_probe::recording_provider();
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = Some(provider));
+            let checked = service.execute(&check, cancellation.clone());
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = None);
+            let checked = checked.unwrap();
+            assert!(checked.ok, "{checked:?}");
+            checked.data.unwrap()
+        };
+
+        let late = checked("Procedure Run() Export\n    Cache = 1;\nEndProcedure\n\nVar Cache;\n");
+        assert_eq!(late["status"], "failed", "{late}");
+        let diagnostics = late["diagnostics"].as_array().unwrap();
+        assert_eq!(diagnostics.len(), 1, "{late}");
+        let finding = &diagnostics[0];
+        assert_eq!(finding["validator"], "bsl", "{late}");
+        assert_eq!(finding["code"], "VariableDeclarationPlacement", "{late}");
+        assert_eq!(finding["severity"], "error", "{late}");
+        assert_eq!(
+            finding["message"],
+            "Объявления переменных должны быть расположены в начале модуля, процедуры или функции",
+            "{late}"
+        );
+        assert_eq!(finding["location"]["targetKind"], "module", "{late}");
+        assert_eq!(finding["focus"]["range"]["startLine"], 4, "{late}");
+
+        let early = checked("Var Cache;\n\nProcedure Run() Export\n    Cache = 1;\nEndProcedure\n");
+        assert_eq!(early["status"], "passed", "{early}");
+        assert_eq!(early["diagnostics"], serde_json::json!([]), "{early}");
+    }
+
     /// #1338: an addressed module `check` whose analyzer is still being
     /// delivered answers through the daemon's real invocation service with a
     /// retryable `working` delivery state, not with an analysis verdict. The

@@ -3429,15 +3429,17 @@ fn run_bsl_diagnostics(
                     message,
                 )));
             }
+            let structure = bsl_structure_findings(&mapping, address, cancellation)?;
             let findings: Vec<Value> = result
                 .items
                 .iter()
+                .chain(&structure)
                 .map(|item| serde_json::to_value(item).expect("diagnostic items serialize"))
                 .collect();
             // Провалом считается ошибка, а не всякая пометка: подсказка по
             // стилю не ломает модуль, и остальные валидаторы поверхности
             // судят так же.
-            let passed = bsl_findings_passed(&result.items);
+            let passed = bsl_findings_passed(&result.items) && bsl_findings_passed(&structure);
             Ok(CheckStepVerdict {
                 passed,
                 diagnostics: findings,
@@ -3466,6 +3468,69 @@ fn run_bsl_diagnostics(
             ),
         })),
     }
+}
+
+/// Поставщик находок, которые проверяет сам Unica, а не анализатор.
+const UNICA_BSL_STRUCTURE_PROVIDER: &str = "unica";
+
+/// Код находки: объявление переменной не в начале модуля или метода.
+const MISPLACED_VARIABLE_CODE: &str = "VariableDeclarationPlacement";
+
+/// Ошибки компиляции платформы, которых анализатор не видит (#1460).
+///
+/// Анализатор пропускает `Перем` после методов, а платформа такой модуль
+/// не компилирует: `check` отвечал `passed`. Находка принадлежит
+/// проверенному модулю — тому же месту, куда отображение относит находки
+/// анализатора в этом модуле, — и проваливает проверку.
+fn bsl_structure_findings(
+    mapping: &crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping,
+    address: &QualifiedAddress,
+    cancellation: &CancellationToken,
+) -> Result<Vec<crate::domain::diagnostics::DiagnosticItem>, Box<DomainResult>> {
+    use crate::domain::diagnostics::{DiagnosticFocus, DiagnosticItem, DiagnosticSeverity};
+    use crate::domain::source_location::SourceLocation;
+    use crate::domain::source_target::TargetKind;
+    use crate::infrastructure::bsl_outline::{
+        misplaced_variable_declarations, MISPLACED_VARIABLE_MESSAGE,
+    };
+
+    let text = match std::fs::read_to_string(mapping.module_scope().module_path) {
+        Ok(text) => text,
+        // Модуля без файла анализатор тоже не судил: судить нечего.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(Box::new(error_result_detailed(
+                Some(address.to_string()),
+                RefusalDetail::SourceUnreadable,
+                format!("BSL module is unreadable: {}", error.kind()),
+            )))
+        }
+    };
+    if cancellation.is_cancelled() {
+        return Err(Box::new(error_result(
+            Some(address.to_string()),
+            RefusalCode::Cancelled,
+            "check was cancelled before the module structure was checked",
+        )));
+    }
+    let target = mapping.target();
+    Ok(misplaced_variable_declarations(&text)
+        .into_iter()
+        .map(|range| DiagnosticItem::Diagnostic {
+            provider: UNICA_BSL_STRUCTURE_PROVIDER,
+            location: SourceLocation::Addressed {
+                source_set: target.source_set.clone(),
+                metadata_path: target.metadata_path.clone(),
+                target_kind: TargetKind::Module,
+            },
+            location_reason: None,
+            focus: DiagnosticFocus::SourceRange { range },
+            code: MISPLACED_VARIABLE_CODE.to_string(),
+            severity: DiagnosticSeverity::Error,
+            message: MISPLACED_VARIABLE_MESSAGE.to_string(),
+            tags: Vec::new(),
+        })
+        .collect())
 }
 
 fn bsl_result_proves_full_verdict(result: &crate::domain::diagnostics::DiagnosticResult) -> bool {
