@@ -80,7 +80,7 @@ pub(crate) enum MxlEditError {
     RowOutsideArea { key: String, rows: i64 },
     /// The addressed cell cannot take the value: its text cannot be stored
     /// in XML, or the cell lies under a merge, holds a value or control, or
-    /// is filled from a parameter by its row, column or document format.
+    /// takes a parameter or template fill from its row, column, column-set or document format.
     Cell { key: String, message: String },
     /// The document or the addressed node is not what the writer can change.
     Source(String),
@@ -697,7 +697,7 @@ fn write_cell(xml: &mut String, row: i64, column: i64, text: &str) -> Result<(),
         if !own.is_some_and(has_own_fill) {
             if let Some(fill) = inherited_fill(root, row_node, set.as_deref(), column) {
                 return Err(cell_refusal(format!(
-                    "the cell takes the `{fill}` fill of its row, column or document format; edit it in the Designer"
+                    "the cell takes the `{fill}` fill of its row, column, column-set or document format; edit it in the Designer"
                 )));
             }
         }

@@ -236,14 +236,16 @@ New cells have no own format, so they take the row and column formatting.
 area grows it only when nothing follows the area; otherwise create another
 area with `area.add`. Some addressed nodes still refuse before writing: a
 non-Rows area, an area without rows, a cell inside a merge that does not
-start there, a cell holding a value or control, and a cell whose row or
-column format fills it from a parameter. Edit these in the Designer; do not
+start there, a cell holding a value or control, and a cell that takes a
+parameter or template fill from its row, column, column-set or document
+format. Edit these in the Designer; do not
 bypass a refusal with manual XML writes. Support-state rules of the metadata
 owner also apply.
 
 Fonts, styles, merges, palettes and page properties are not public inputs:
-`mxl.set` writes text only, and `view` returns a node projection, not a
-document to send back. An image may inform layout structure, but cannot
+`mxl.set` writes text only. A `null` value is empty text; it does not create
+an absent cell. `view` returns a node projection, not a document to send
+back. An image may inform layout structure, but cannot
 supply capabilities missing from the public contract.
 
 Execute only the preview's own `executionToken`; reread Area/Body/Parameter
