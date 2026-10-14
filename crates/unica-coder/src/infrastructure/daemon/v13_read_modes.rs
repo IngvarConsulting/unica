@@ -203,7 +203,19 @@ pub(super) fn operation_node(
         )));
     }
     let implemented = IMPLEMENTED_APPLY_OPERATIONS.contains(&operation);
-    let contract = descriptor.argument_contract_at(&site);
+    let mut contract = descriptor.argument_contract_at(&site);
+    // Командная панель принимает только кнопки: её контракт `element.add`
+    // публикует один вид, как и отвечает писатель (#1447).
+    let command_bar = data
+        .get("props")
+        .and_then(|props| props.get("tag"))
+        .and_then(Value::as_str)
+        .is_some_and(|tag| tag.starts_with("[AutoCommandBar") || tag.starts_with("[CmdBar"));
+    if operation == "element.add" && command_bar {
+        contract = Some(
+            crate::domain::operation_contract::OperationContract::form_element_add_in_command_bar(),
+        );
+    }
     if implemented && contract.is_none() {
         return Err(ReadModeError::unsupported_section(format!(
             "detailed argument contract for `{operation}` is not available yet"

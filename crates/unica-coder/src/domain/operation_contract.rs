@@ -4,6 +4,11 @@
 
 use serde_json::{json, Map, Value};
 
+mod form;
+#[cfg(test)]
+pub(crate) use form::{form_element_enum, FORM_ELEMENT_KINDS};
+pub(crate) use form::{FORM_DYNAMIC_LIST_KEYS, FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
+
 pub(crate) const MXL_MAX_ROW: i64 = 10_000;
 pub(crate) const MXL_MAX_COLUMN: i64 = 1_000;
 
@@ -840,6 +845,32 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
                 "value is not one of the supported alternatives",
             ));
         }
+    }
+    // Различитель выбирает вариант по значению ключа (вид элемента формы):
+    // ошибка варианта называет точный путь, а не «ни одна альтернатива».
+    // Без ключа выбирается вариант, у которого различитель имеет `default`.
+    if let (Some(alternatives), Some(key), Some(object)) = (
+        schema["anyOf"].as_array(),
+        schema["x-unica-discriminator"].as_str(),
+        value.as_object(),
+    ) {
+        let selected = object.get(key);
+        let variant = alternatives.iter().find(|variant| {
+            let discriminator = &variant["properties"][key];
+            match selected {
+                Some(selected) => discriminator["enum"]
+                    .as_array()
+                    .is_some_and(|values| values.contains(selected)),
+                None => discriminator.get("default").is_some(),
+            }
+        });
+        return match variant {
+            Some(variant) => validate(variant, value, path),
+            None => Err(error(
+                &format!("{path}.{key}"),
+                "value is not one of the supported alternatives",
+            )),
+        };
     }
     if let Some(alternatives) = schema["anyOf"].as_array() {
         if !alternatives
