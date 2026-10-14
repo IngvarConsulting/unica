@@ -37,7 +37,7 @@ allowed-tools:
 | `element.add` | добавляет элементы; `items[]` несёт то же описание, что раздел «JSON формат» ниже |
 | `element.remove` | удаляет элемент, названный адресом (`…Form.Ф.Item.X`) или списком `items` |
 | `formAttribute.add` | добавляет реквизит формы |
-| `formCommand.add` | добавляет команду формы |
+| `formCommand.add` | добавляет команду формы: `name`, `title`, `tooltip`, `action`, `shortcut`, `picture`, `representation`; другой ключ отклоняется до записи. Контракт — `<форма>.Can.formCommand.add` |
 | `event.bind` | привязывает обработчик к событию формы или элемента |
 | `form.add`, `form.set`, `form.remove` | состав форм объекта и их свойства |
 
@@ -361,7 +361,6 @@ Editor до записи проверяет событие по единой п�
 |--------|-----------|
 | `formEvents` | События уровня формы; `callType` только для расширения |
 | `elementEvents` | События существующих элементов; `callType` только для расширения |
-| `callType` на `commands` | callType на Action команды |
 | `callType` на `on` | callType на событиях новых элементов (объектный формат) |
 
 Все extension-секции опциональны — без них навык работает как с обычными формами.
