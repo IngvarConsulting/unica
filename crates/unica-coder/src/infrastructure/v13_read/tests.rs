@@ -4742,12 +4742,17 @@ pub(crate) fn one_read_parses_each_module_source_once_per_actor_revision() {
     assert_eq!(authority.configuration_payload_read_count(), 1);
     let changed_methods = ViewService::new(fixture.read_authority(), ViewCursorStore::default())
         .view(ViewRequest::new("main:CommonModule.РеактивныйСервер.Method").unwrap());
-    assert!(changed_methods.ok, "{changed_methods:?}");
+    assert!(
+        changed_methods.ok,
+        "{}: {:?}",
+        changed_methods.summary,
+        refusal_codes(&changed_methods)
+    );
     assert!(
         serde_json::to_string(&changed_methods.data)
             .unwrap()
             .contains("AfterRevisionChange"),
-        "a new read must parse the changed module source: {changed_methods:?}"
+        "a new read must parse the changed module source"
     );
 
     let second_authority = fixture.read_authority();
@@ -6168,7 +6173,11 @@ fn registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_vi
     let service = fixture.view_service();
 
     let root = service.view(ViewRequest::new("main:Configuration").unwrap());
-    assert!(root.ok, "the root proves only Configuration.xml: {root:?}");
+    assert!(
+        root.ok,
+        "the root proves only Configuration.xml: {:?}",
+        refusal_codes(&root)
+    );
     for at in ["main:Role", "main:Role.Missing"] {
         let result = service.view(ViewRequest::new(at).unwrap());
         assert!(
