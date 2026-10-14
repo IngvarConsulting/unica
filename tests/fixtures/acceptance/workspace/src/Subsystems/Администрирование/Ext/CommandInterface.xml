@@ -673,6 +673,14 @@
 			<CommandGroup>ActionsPanelReports</CommandGroup>
 			<Placement>Auto</Placement>
 		</Command>
+		<Command name="CommonCommand.НастройкиПрограммы">
+			<CommandGroup>CommandGroup.НастройкиПрограммы</CommandGroup>
+			<Placement>Auto</Placement>
+		</Command>
+		<Command name="CommonCommand.ПараметрыРаботыПрограммы">
+			<CommandGroup>CommandGroup.НастройкиПрограммы</CommandGroup>
+			<Placement>Auto</Placement>
+		</Command>
 	</CommandsPlacement>
 	<CommandsOrder>
 		<Command name="Catalog.Пользователи.StandardCommand.OpenList">
@@ -1065,6 +1073,12 @@
 		<Command name="CommonForm.РазрешенныеНеаккредитованныеУЦ.StandardCommand.Open">
 			<CommandGroup>ActionsPanelTools</CommandGroup>
 		</Command>
+		<Command name="CommonCommand.НастройкиПрограммы">
+			<CommandGroup>CommandGroup.НастройкиПрограммы</CommandGroup>
+		</Command>
+		<Command name="CommonCommand.ПараметрыРаботыПрограммы">
+			<CommandGroup>CommandGroup.НастройкиПрограммы</CommandGroup>
+		</Command>
 	</CommandsOrder>
 	<GroupsOrder>
 		<Group>NavigationPanelImportant</Group>
@@ -1072,5 +1086,6 @@
 		<Group>NavigationPanelSeeAlso</Group>
 		<Group>ActionsPanelReports</Group>
 		<Group>ActionsPanelTools</Group>
+		<Group>CommandGroup.НастройкиПрограммы</Group>
 	</GroupsOrder>
 </CommandInterface>

@@ -120,7 +120,7 @@ impl OperationContract {
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
         let query_target = "The query of an existing dataset: Template.DataSet.<name>.Query; repeat DataSet.<name> for a nested Union member. The address names the dataset; there is no dataset argument.";
         let setting_target = "Existing DCS Template.Setting.<name>; the address names the variant. Optional group selects a unique named structure item; read Setting.Item first.";
-        let field_target = "Existing DCS field Template.DataSet.<name>.Field.<dataPath>; repeat DataSet.<name> for a nested Union member. The address names the field; there is no field argument. A composite dataPath with a dot is not addressable yet (#1356).";
+        let field_target = "Existing DCS field Template.DataSet.<name>.Field.<dataPath>; repeat DataSet.<name> for a nested Union member. The address names the field; there is no field argument. A composite dataPath escapes its dot: Field.Owner\\.Code.";
         let parameter_target = "Existing DCS Template.Parameter.<name>; the address names the parameter. A missing parameter is refused; create it with parameter.add on the template.";
         let title = json!({"anyOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]});
         let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
@@ -733,8 +733,8 @@ impl OperationContract {
                         (
                             "items",
                             json!({"type":"array","minItems":1,"items":object(&[
-                                ("object",json!({"type":"string","pattern":r"^[^.\s]+\.[^.\s]+$",
-                                    "description":"A top-level metadata object `Kind.Name` (or `Configuration.Name`) without a rights entry in the role yet."})),
+                                ("object",json!({"type":"string","pattern":r"^[^.\s]+\.[^.\s]+(\.[^.\s]+\.[^.\s]+)*$",
+                                    "description":"A metadata object `Kind.Name` (or `Configuration.Name`), or a nested one such as `Kind.Name.Command.C`, without a rights entry in the role yet."})),
                                 ("rights",json!({"type":"object","minProperties":1,"additionalProperties":{"type":"boolean"},
                                     "description":"Initial rights by platform name, e.g. Read, View, Use; values different from the role default for new objects are stored."})),
                             ], &["object","rights"])}),
@@ -744,7 +744,7 @@ impl OperationContract {
                 ),
                 "The existing role itself: <source-set>:Role.<Name>. Read its Right branch before choosing objects without an entry.",
                 "Create rights entries for objects the role does not list yet, each with its initial rights. An object that already has an entry is refused; change it with right.set at Role.<Name>.Right.<Kind>_<Name>.",
-                "An entry whose rights all equal the role default would stay empty and is refused. Restrict records with right.set on the new entry in the same batch. Nested objects (commands, attributes) have no entry address until #1356 and are refused.",
+                "An entry whose rights all equal the role default would stay empty and is refused. Restrict records with right.set on the new entry in the same batch. A nested object (command, attribute) is one entry whose further dots are escaped: Role.<Name>.Right.<Kind>_<Name>\\.Command\\.<C>.",
                 json!({"items":[{"object":"Catalog.Sample","rights":{"Read":true,"View":true}}]}),
             ),
             "right.set" => {
@@ -1011,7 +1011,7 @@ mod tests {
                 "args.items[0].rights.Read",
             ),
             (
-                json!({"items":[{"object":"DataProcessor.A.Command.B","rights":{"Use":true}}]}),
+                json!({"items":[{"object":"DataProcessor.A.Command","rights":{"Use":true}}]}),
                 "args.items[0].object",
             ),
             (
@@ -1022,6 +1022,13 @@ mod tests {
             let error = add.normalize(&args, "args").unwrap_err();
             assert_eq!(error.path, path, "{args}");
         }
+        // Вложенный объект — одна запись роли (#1356).
+        assert!(add
+            .normalize(
+                &json!({"items":[{"object":"DataProcessor.A.Command.B","rights":{"Use":true}}]}),
+                "args"
+            )
+            .is_ok());
         let set = OperationContract::role("right.set").unwrap();
         assert!(set
             .normalize(

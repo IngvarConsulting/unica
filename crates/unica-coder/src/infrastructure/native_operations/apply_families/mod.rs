@@ -1181,6 +1181,32 @@ mod tests {
             text.contains("Total") && text.contains("Sum"),
             "both cells are written"
         );
+        // Точка в имени области экранируется в адресе: созданную область
+        // `mxl.set` находит по `Area.Head\.er`.
+        let (staged, _) = plan_hidden_v13_apply(
+            &request(serde_json::json!([area("Head.er"), set("Head\\.er")])),
+            &fixture.binding,
+            &admission,
+        )
+        .unwrap_or_else(|error| panic!("an area with a dot is addressable: {error}"));
+        let written = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path.ends_with("Print/Ext/Template.xml"))
+            .expect("the spreadsheet body is staged");
+        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
+            written.current
+        else {
+            panic!("the spreadsheet keeps bytes");
+        };
+        assert_eq!(
+            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Head.er"),
+            Some(true)
+        );
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("Sum"),
+            "the cell is written"
+        );
         for (ops, kind, path) in [
             (
                 serde_json::json!([area("Header"), set("Headr")]),
@@ -1191,11 +1217,6 @@ mod tests {
                 serde_json::json!([area("Header"), area("Header")]),
                 ApplyPlanErrorKind::BadValue,
                 "ops[2].args.items[0].name",
-            ),
-            (
-                serde_json::json!([area("Head.er")]),
-                ApplyPlanErrorKind::BadValue,
-                "ops[1].args.items[0].name",
             ),
             (
                 serde_json::json!([area("1Header")]),
