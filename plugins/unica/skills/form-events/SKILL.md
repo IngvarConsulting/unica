@@ -43,6 +43,7 @@ A form module holds client and server code in one file, and the directive on eac
 4. Count the server calls the change adds on the path of a single user action. If it adds one, name the reason.
 5. Declare any new form parameter through `unica.apply` (`formAttribute.add`) before reading it in the module.
 6. Apply module changes with `unica.apply`, one verifiable step at a time, giving every new procedure exactly one directive.
+   A handler is wired at the event's own address from the `Event` branch of the form or its item, `…Form.<Form>[.Item.<Item>…].Event.<Event>`: `event.implement` writes the binding and the procedure, `event.bind` writes only the binding with `values: {handler[, callType]}`. The event and its item are named by the address, not by arguments.
 7. Verify statically with `unica.check` on the module node (test runs are outside the v0.13 surface), and require separate evidence for runtime behavior and opening the affected form.
 
 ## Command Availability

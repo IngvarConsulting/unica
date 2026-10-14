@@ -113,6 +113,68 @@ fn validate_remove_elements(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Имя события формы, как его пишет реестр: по-английски. Русское имя
+/// приходит от разработчика и переводится здесь; неизвестное проходит как
+/// есть, и его проверяет матрица событий. Адрес события (`…Event.OnOpen`)
+/// и отказ по снятому `values.event` строятся из этого же имени.
+pub(crate) fn canonical_form_event_name(name: &str) -> &str {
+    match name {
+        "ПриОткрытии" => "OnOpen",
+        "ПриПовторномОткрытии" => "OnReopen",
+        "ПриЗакрытии" => "OnClose",
+        "ПередЗакрытием" => "BeforeClose",
+        "ПриСозданииНаСервере" => "OnCreateAtServer",
+        "ПриЧтенииНаСервере" => "OnReadAtServer",
+        "ПередЗаписью" => "BeforeWrite",
+        "ПередЗаписьюНаСервере" => "BeforeWriteAtServer",
+        "ПриЗаписиНаСервере" => "OnWriteAtServer",
+        "ПослеЗаписи" => "AfterWrite",
+        "ПослеЗаписиНаСервере" => "AfterWriteAtServer",
+        "ОбработкаВыбора" => "ChoiceProcessing",
+        "ОбработкаОповещения" => "NotificationProcessing",
+        "ОбработкаПроверкиЗаполненияНаСервере" => {
+            "FillCheckProcessingAtServer"
+        }
+        "ПриЗагрузкеДанныхИзНастроекНаСервере" => {
+            "OnLoadDataFromSettingsAtServer"
+        }
+        "ПередЗагрузкойДанныхИзНастроекНаСервере" => {
+            "BeforeLoadDataFromSettingsAtServer"
+        }
+        "ПриСохраненииДанныхВНастройкахНаСервере" => {
+            "OnSaveDataInSettingsAtServer"
+        }
+        "ПриИзменении" => "OnChange",
+        "НачалоВыбора" => "StartChoice",
+        "Очистка" => "Clearing",
+        "АвтоПодбор" => "AutoComplete",
+        "ОкончаниеВводаТекста" => "TextEditEnd",
+        "Нажатие" => "Click",
+        "Выбор" => "Selection",
+        "ПриАктивизацииСтроки" => "OnActivateRow",
+        "ПередНачаломДобавления" => "BeforeAddRow",
+        "ПередУдалением" => "BeforeDeleteRow",
+        "ПередНачаломИзменения" => "BeforeRowChange",
+        "ПриНачалеРедактирования" => "OnStartEdit",
+        "ПриОкончанииРедактирования" => "OnEditEnd",
+        "ПередОкончаниемРедактирования" => "BeforeEditEnd",
+        "ПриАктивизацииЯчейки" => "OnActivateCell",
+        "ПриАктивизацииПоля" => "OnActivateField",
+        "ПередРазворачиванием" => "BeforeExpand",
+        "ПриПолученииДанныхНаСервере" => "OnGetDataAtServer",
+        "ПередЗагрузкойПользовательскихНастроекНаСервере" => {
+            "BeforeLoadUserSettingsAtServer"
+        }
+        "ПриЗагрузкеПользовательскихНастроекНаСервере" => {
+            "OnLoadUserSettingsAtServer"
+        }
+        "ПриОбновленииСоставаПользовательскихНастроекНаСервере" => {
+            "OnUpdateUserSettingSetAtServer"
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

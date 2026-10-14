@@ -9929,17 +9929,19 @@ struct ActorLogicalReadLease {"#,
                     {"name": "HtmlSource", "type": "String"}
                 ]}},
                 {"op": "element.add", "args": {"items": [
-                    {"name": "Content", "type": "Group"}, {
-                    "name": "Html", "type": "HTMLDocumentField", "path": "HtmlSource", "into": "Content",
+                    {"name": "Content", "type": "Group"}
+                ]}},
+                {"op": "element.add", "args": {"at": "main:Document.Order.Form.Main.Item.Content", "items": [{
+                    "name": "Html", "type": "HTMLDocumentField", "path": "HtmlSource",
                     "titleLocation": "none", "width": 1, "height": 1,
                     "autoMaxWidth": false, "skipOnInput": true, "on": ["OnClick"]
                 }]}}
             ]),
         );
         apply_pair(
-            at,
+            &format!("{item_at}.Event.DocumentComplete"),
             serde_json::json!([{"op": "event.bind", "args": {"values": {
-                "element": "Html", "event": "DocumentComplete", "handler": "HtmlDocumentComplete"
+                "handler": "HtmlDocumentComplete"
             }}}]),
         );
 
@@ -10022,9 +10024,9 @@ struct ActorLogicalReadLease {"#,
 
         // A later operation must not discard an HTML field it did not create.
         apply_pair(
-            at,
+            "main:Document.Order.Form.Main.Item.Content",
             serde_json::json!([{"op": "element.add", "args": {"items": [
-                {"name": "Neighbor", "type": "InputField", "path": "HtmlSource", "into": "Content", "after": "Html"}
+                {"name": "Neighbor", "type": "InputField", "path": "HtmlSource", "after": "Html"}
             ]}}]),
         );
         let with_neighbor = std::fs::read_to_string(&form_path).unwrap();
@@ -10063,7 +10065,7 @@ struct ActorLogicalReadLease {"#,
                     "at": at,
                     "ops": [
                         {"op": "element.add", "args": {"items": [{"name": "MustNotAppear", "type": "InputField", "path": "HtmlSource"}]}},
-                        {"op": "event.bind", "args": {"values": {"element": "Html", "event": "OnChange", "handler": "InvalidHandler"}}}
+                        {"op": "event.bind", "args": {"at": format!("{item_at}.Event.OnChange"), "values": {"handler": "InvalidHandler"}}}
                     ]
                 }),
             );

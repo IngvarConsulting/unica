@@ -19,7 +19,8 @@ use crate::application::invocation_store::ToolIdentity;
 use crate::application::ports::TokioClock;
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{
-    ApplyRequest, OperationDescriptor, OperationFamily, OperationRegistry, SourceSetTraits,
+    ApplyRequest, FormItemRole, OperationDescriptor, OperationFamily, OperationRegistry,
+    SourceSetTraits,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -443,7 +444,7 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
         "form.add" | "formAttribute.add" | "formCommand.add" | "element.add"
         | "childSubsystem.add" => json!({"items": [{"name": "Sample"}]}),
         "form.set" => json!({"values": {"defaultObjectForm": "Sample"}}),
-        "event.bind" => json!({"values": {"event": "OnOpen", "handler": "Sample"}}),
+        "event.bind" => json!({"values": {"handler": "Sample"}}),
         "content.add" => json!({"items": [{"object": "Catalog.Sample"}]}),
         "right.set" => json!({"values": {"right": "Read", "value": true}}),
         "right.add" => {
@@ -468,24 +469,19 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
     }
 }
 
-/// Аргументы на конкретном узле: удаление элемента на адресе элемента не
-/// называет список, а на форме — называет.
+/// Аргументы на конкретном узле: удаляемый элемент формы называет только
+/// адрес (#1355).
 fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
-    let item_address = at
-        .segments()
-        .last()
-        .is_some_and(|segment| segment.kind() == NodeKind::Item);
     let method_address = at
         .segments()
         .last()
         .is_some_and(|segment| segment.kind() == NodeKind::Method);
     match descriptor.name() {
-        "element.remove" if item_address => json!({"at": ""}),
+        "element.remove" => json!({"at": ""}),
         // Место вставки у метода — до или после него (#1354).
         "code.insert" if method_address => {
             json!({"at": "", "text": "// sample\n", "position": "after"})
         }
-        "element.remove" => json!({"items": [{"name": "Sample"}]}),
         _ => sample_args(descriptor),
     }
 }
@@ -658,6 +654,7 @@ const FIXTURE_COVERAGE: &[FixtureCoverage] = &[
             (RouteClass::Metadata, "EnumValue"),
             (RouteClass::Metadata, "Column"),
             (RouteClass::Form, "Attribute"),
+            (RouteClass::Form, "Item"),
             (RouteClass::Form, "Event"),
             (RouteClass::Module, "Event"),
             (RouteClass::Module, "Method"),
@@ -831,6 +828,10 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
     let route = classify_route(&address, PlatformProfile::v8_3_27()).unwrap();
     let terminal = address.segments().last().unwrap().kind().as_str();
     let template = terminal == NodeKind::Template.as_str();
+    // Роль элемента формы — фильтр словаря поверх места, как формат макета.
+    let item_role = (terminal == NodeKind::Item.as_str())
+        .then(|| data["props"]["tag"].as_str().map(FormItemRole::from_tag))
+        .flatten();
     NARROWINGS_SEEN.with(|narrowings_seen| {
     for descriptor in OperationRegistry::closed().descriptors().iter().copied() {
         let op = descriptor.name();
@@ -889,10 +890,18 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             && plan(checked, &request)
                 .err()
                 .is_some_and(|message| message.contains("of format"));
-        let expected = placed && !format_refused;
+        // Роль элемента проверяет планировщик на настоящей форме: операцию,
+        // которую фильтр роли не выпускает, он отвергает.
+        let role_refused = placed && !descriptor.admits_form_item(item_role);
+        if role_refused && plan(checked, &request).is_ok() {
+            mismatches.push(format!(
+                "{at}: `{op}` is filtered by the item role {item_role:?}, but the planner accepts it"
+            ));
+        }
+        let expected = placed && !format_refused && !role_refused;
         if listed != expected {
             mismatches.push(format!(
-                "{at}: `{op}` can={listed}, preflight={placed}, template format refused={format_refused}"
+                "{at}: `{op}` can={listed}, preflight={placed}, template format refused={format_refused}, item role refused={role_refused}"
             ));
             continue;
         }
@@ -1012,9 +1021,16 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
         ),
         (
             "cf:Catalog.Items.Form.Main.Item.Header",
-            "element.add",
+            "formAttribute.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main",
+            false,
+        ),
+        (
+            "cf:Catalog.Items.Form.Main.Item.Header.Event.OnChange",
+            "element.add",
+            json!({"items": [{"name": "Comment"}]}),
+            "cf:Catalog.Items.Form.Main.Item.Header",
             false,
         ),
         (
@@ -1069,7 +1085,7 @@ fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
             "element.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Attribute.Code",
-            "`Kind.Name.Form.F`",
+            "`Kind.Name.Form.F[.Item.I…]`",
         ),
         (
             "cf:Report.Sales.Template.Schema.Area.Header",
@@ -1154,6 +1170,213 @@ fn a_missing_member_answers_not_found_with_the_owner_dictionary_next() {
         result.next[0]["args"],
         json!({"at": "main:Catalog.Валюты"}),
         "{value}"
+    );
+}
+
+/// Матрица словаря формы (#1355): на форме, на контейнере любой глубины,
+/// на поле, на автоматической командной панели и на событиях формы и
+/// элемента `can` называет ровно те операции формы, которые `apply`
+/// исполняет на этом адресе, и каждая из них строит предпросмотр.
+#[test]
+fn honest_can_on_form_items_and_events() {
+    let fixture = fixture("workspace");
+    let form = "main:Catalog.Валюты.Form.ФормаЭлемента";
+    let list = "main:Catalog.Валюты.Form.ФормаСписка";
+    let form_ops = [
+        "form.remove",
+        "element.add",
+        "element.remove",
+        "formAttribute.add",
+        "formCommand.add",
+        "event.bind",
+        "event.implement",
+    ];
+    let cases: [(String, &[&str]); 8] = [
+        (
+            form.to_string(),
+            &[
+                "form.remove",
+                "element.add",
+                "formAttribute.add",
+                "formCommand.add",
+            ],
+        ),
+        (
+            format!("{form}.Item.ГруппаСлужебная"),
+            &["element.add", "element.remove"],
+        ),
+        (format!("{form}.Item.ПолеНаименование"), &["element.remove"]),
+        (
+            format!("{form}.Item.ФормаКоманднаяПанель"),
+            &["element.add"],
+        ),
+        (
+            format!("{list}.Item.List.Item.ListCommandBar"),
+            &["element.add"],
+        ),
+        (
+            format!("{form}.Event.OnOpen"),
+            &["event.bind", "event.implement"],
+        ),
+        (
+            format!("{form}.Item.ПолеНаименование.Event.OnChange"),
+            &["event.bind", "event.implement"],
+        ),
+        // Событие источника динамического списка: каталог выбирает его
+        // по пути данных таблицы и для узла, и для привязки.
+        (
+            format!("{list}.Item.List.Event.OnUpdateUserSettingSetAtServer"),
+            &["event.bind", "event.implement"],
+        ),
+    ];
+    let args = |op: &str, at: &str| match op {
+        "element.add" => {
+            json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close"}]})
+        }
+        "element.remove" | "form.remove" | "event.implement" => json!({"at": at}),
+        "formAttribute.add" => json!({"items": [{"name": "Проба", "type": "String"}]}),
+        "formCommand.add" => json!({"items": [{"name": "Проба"}]}),
+        "event.bind" => json!({"values": {"handler": "Проба"}}),
+        other => panic!("{other} has no sample"),
+    };
+    for (at, expected) in cases {
+        let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": at}));
+        assert!(viewed.ok, "{at}: {viewed:?}");
+        let can = viewed.data.unwrap()["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["op"].as_str().unwrap().to_string())
+            .filter(|op| form_ops.contains(&op.as_str()))
+            .collect::<BTreeSet<_>>();
+        let expected = expected
+            .iter()
+            .map(|op| (*op).to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(can, expected, "{at}");
+        for op in form_ops {
+            let result = invoke(
+                &fixture.workspace,
+                ToolIdentity::Apply,
+                json!({"at": at, "ops": [{"op": op, "args": args(op, &at)}]}),
+            );
+            assert_eq!(
+                result.ok,
+                expected.contains(op),
+                "{op} at {at}: {}",
+                serde_json::to_value(&result).unwrap()
+            );
+            // В поле элемент не добавить: отказ до планирования ведёт
+            // к ближайшему узлу, где `element.add` исполнима.
+            if op == "element.add" && at.ends_with(".Item.ПолеНаименование") {
+                assert_eq!(result.at.as_deref(), Some("ops[0].at"), "{result:?}");
+                assert_eq!(result.next[0]["args"]["at"], form, "{result:?}");
+            }
+        }
+    }
+}
+
+/// Формы (#1355): контейнер, удаляемый элемент и событие, прежде названные
+/// аргументом, задаёт адрес. Настоящий вызов со снятым аргументом получает
+/// `bad_value` до планирования; первый `next` ведёт к узлу по его пути
+/// в форме (вложенная командная панель таблицы — через таблицу), второй —
+/// к ветви его вида; исправленный вызов по первому `next` строит
+/// предпросмотр.
+#[test]
+fn retired_form_arguments_route_next_to_the_item_or_event_address() {
+    let fixture = fixture("workspace");
+    let element = "main:Catalog.Валюты.Form.ФормаЭлемента";
+    let list = "main:Catalog.Валюты.Form.ФормаСписка";
+    let button = json!({"name": "Проба", "type": "Button", "stdCommand": "Close"});
+    for (at, op, args, location, next, branch, fixed) in [
+        (
+            list.to_string(),
+            "element.add",
+            json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close", "into": "ListCommandBar"}]}),
+            "ops[0].args.items[0].into",
+            format!("{list}.Item.List.Item.ListCommandBar"),
+            format!("{list}.Item.List.Item"),
+            json!({"items": [button.clone()]}),
+        ),
+        (
+            element.to_string(),
+            "element.remove",
+            json!({"items": [{"name": "ГруппаСлужебная"}]}),
+            "ops[0].args.items[0].name",
+            format!("{element}.Item.ГруппаСлужебная"),
+            format!("{element}.Item"),
+            json!({}),
+        ),
+        (
+            element.to_string(),
+            "event.bind",
+            json!({"values": {"event": "ПриИзменении", "handler": "ПолеНаименованиеПриИзменении", "element": "ПолеНаименование"}}),
+            "ops[0].args.values.element",
+            format!("{element}.Item.ПолеНаименование.Event.OnChange"),
+            format!("{element}.Item.ПолеНаименование.Event"),
+            json!({"values": {"handler": "ПолеНаименованиеПриИзменении"}}),
+        ),
+        (
+            element.to_string(),
+            "event.bind",
+            json!({"values": {"event": "ПриОткрытии", "handler": "ПриОткрытии"}}),
+            "ops[0].args.values.event",
+            format!("{element}.Event.OnOpen"),
+            format!("{element}.Event"),
+            json!({"values": {"handler": "ПриОткрытии"}}),
+        ),
+    ] {
+        let case = format!("{op} at {at}");
+        let refused = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at": at, "ops": [{"op": op, "args": args}]}),
+        );
+        let value = serde_json::to_value(&refused).unwrap();
+        assert!(!refused.ok, "{case}: {value}");
+        assert_eq!(
+            value["diagnostics"][0]["code"], "bad_value",
+            "{case}: {value}"
+        );
+        assert_eq!(refused.at.as_deref(), Some(location), "{case}: {value}");
+        let actual = refused
+            .next
+            .iter()
+            .map(|next| next["args"]["at"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, vec![next.clone(), branch], "{case}: {value}");
+        let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": next}));
+        assert!(viewed.ok, "{case}: {viewed:?}");
+        let can = &viewed.data.unwrap()["can"];
+        assert!(
+            can.as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["op"] == op),
+            "{case}: {can}"
+        );
+        let corrected = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at": next, "ops": [{"op": op, "args": fixed}]}),
+        );
+        assert!(
+            corrected.ok,
+            "{case}: {}",
+            serde_json::to_value(&corrected).unwrap()
+        );
+    }
+    // Без имени события значение называет только элемент: `next` ведёт
+    // к его событиям, где видны имена.
+    let refused = invoke(
+        &fixture.workspace,
+        ToolIdentity::Apply,
+        json!({"at": element, "ops": [{"op": "event.bind", "args": {"values": {"handler": "H", "element": "ПолеНаименование"}}}]}),
+    );
+    assert!(!refused.ok);
+    assert_eq!(
+        refused.next[0]["args"]["at"],
+        format!("{element}.Item.ПолеНаименование.Event")
     );
 }
 
@@ -1395,6 +1618,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
     let refusal = super::v13_service::preflight_apply_operations_with(
         &request,
         traits,
+        &|_| None,
         &|_| None,
         &|template, name| {
             (template.to_string() == schema && name == "Member")
