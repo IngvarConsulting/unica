@@ -142,7 +142,7 @@ pub(crate) use predefined::{
     predefined_item_id, predefined_post_image, read_complete_predefined_items_for_code_type,
     require_predefined_code_type, PredefinedCodeType, MISSING_PREDEFINED_CODE_TYPE,
 };
-pub(crate) use publisher::{fresh_metadata_uuid, prepare_meta_add};
+pub(crate) use publisher::prepare_meta_add;
 #[cfg(test)]
 pub(crate) use publisher::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,

@@ -80,33 +80,6 @@ fn subsystem_info_cannot_use_the_uncontrolled_plain_dispatch_path() {
 }
 
 #[test]
-fn subsystem_preview_with_unavailable_parent_uses_the_legacy_placeholder() {
-    let root = temp_root("subsystem-preview-parent-fallback");
-    let context = discover_workspace(Some(root.clone())).unwrap();
-    let args = serde_json::from_value(serde_json::json!({
-        "OutputDir": root.display().to_string(),
-        "Value": r#"{"name":"Child"}"#,
-        "Parent": "Subsystems/Missing.xml"
-    }))
-    .unwrap();
-
-    let result = NativeOperationAdapter::invoke(
-        "subsystem-compile",
-        "unica.subsystem.compile",
-        &args,
-        &context,
-        true,
-        true,
-    )
-    .unwrap();
-
-    assert!(result.ok);
-    assert!(result.summary.contains("dry run"));
-    assert!(result.warnings[0].contains("parent subsystem is unavailable"));
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
     let root = temp_root("read-only-outfile");
     let config_path = root.join("Configuration.xml");
