@@ -2303,8 +2303,8 @@ impl CanonicalV13ReadService {
             };
         }
         let at = address.to_string();
-        if let Some(relative) = metadata_layout_path(invocation, address) {
-            return self.resolve_metadata_point(invocation, address, &relative, cancellation);
+        if let Some(result) = self.resolve_metadata_point(invocation, address, cancellation) {
+            return result;
         }
         let directory = match self.layout_directory(
             invocation,
@@ -2347,9 +2347,8 @@ impl CanonicalV13ReadService {
         &self,
         invocation: &ActorBoundExecution,
         address: &QualifiedAddress,
-        relative: &str,
         cancellation: &CancellationToken,
-    ) -> DomainResult {
+    ) -> Option<DomainResult> {
         let at = address.to_string();
         let source = match admitted_read_source(
             invocation.read_sources(),
@@ -2358,8 +2357,10 @@ impl CanonicalV13ReadService {
             address.source_set(),
         ) {
             Ok(source) => source,
-            Err(refusal) => return *refusal,
+            Err(refusal) => return Some(*refusal),
         };
+        let relative = metadata_layout_path(address, source.source_kind())?;
+        let relative = relative.as_str();
         let root = source.retained_root();
         let layout = [LayoutFindSource::new(
             source.source_set_name(),
@@ -2372,25 +2373,25 @@ impl CanonicalV13ReadService {
                 .locate_path(&layout, relative, source.deadline(), cancellation)
             {
                 Ok(entry) => entry,
-                Err(error) => return find_build_error_result(Some(at), error),
+                Err(error) => return Some(find_build_error_result(Some(at), error)),
             };
         let Some((kind, placed)) = entry.as_ref().and_then(|entry| {
             (entry.at() == at)
                 .then(|| entry.placed_path().map(|placed| (entry.kind(), placed)))
                 .flatten()
         }) else {
-            return error_result(
+            return Some(error_result(
                 Some(at.clone()),
                 RefusalCode::NotFound,
                 format!("the source layout does not place `{at}`"),
-            );
+            ));
         };
-        resolve_result(ResolvedSource::new(
+        Some(resolve_result(ResolvedSource::new(
             at.clone(),
             kind.to_string(),
             placed.to_string(),
             ResolvedLines::NotLineBased,
-        ))
+        )))
     }
 
     fn resolve_projected_source(
@@ -2460,16 +2461,7 @@ fn admitted_read_source<T>(
 /// The layout place of a metadata object address in its own source set:
 /// `Configuration.xml`, an owner descriptor, or a form, template or command
 /// of a top-level owner. Other shapes keep the full directory lookup.
-fn metadata_layout_path(
-    invocation: &ActorBoundExecution,
-    address: &QualifiedAddress,
-) -> Option<String> {
-    let source_kind = invocation
-        .read_sources()
-        .ok()?
-        .into_iter()
-        .find(|source| source.source_set_name() == address.source_set())?
-        .source_kind();
+fn metadata_layout_path(address: &QualifiedAddress, source_kind: SourceSetKind) -> Option<String> {
     let segments = address.segments();
     if let [root] = segments {
         if root.kind() == NodeKind::Configuration && root.name().is_none() {
@@ -5718,6 +5710,22 @@ mod tests {
             assert!(!result.ok, "{at}: {result:?}");
             assert_eq!(result.diagnostics[0]["code"], "not_found", "{at}");
         }
+        std::fs::remove_file(source.join("Catalogs/Items.xml")).unwrap();
+        let orphan = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::Resolve,
+            json!({"at":"main:Catalog.Items.Form.Main"}),
+        );
+        assert!(!orphan.ok);
+        assert_eq!(orphan.diagnostics[0]["code"], "invalid_source");
+        assert!(
+            orphan.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("`Catalogs/Items.xml`")
+                    && message.contains("missing")),
+            "the refusal names the missing owner descriptor: {:?}",
+            orphan.diagnostics[0]["message"]
+        );
     }
 
     #[test]

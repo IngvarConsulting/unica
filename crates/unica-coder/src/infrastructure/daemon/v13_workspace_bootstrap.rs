@@ -274,7 +274,7 @@ fn bootstrap_result(
     let facts_only = question == RootQuestion::Facts;
     #[cfg(test)]
     if !source_map.source_sets.is_empty() {
-        test_control::pause_before_health(&context.workspace_root);
+        test_control::pause_before_root_answer(&context.workspace_root);
     }
     let health = if source_map.source_sets.is_empty() || facts_only {
         None
@@ -1405,7 +1405,7 @@ mod tests {
         ) else {
             panic!("root inspection must prepare before source admission");
         };
-        let pause = super::test_control::HealthInspectionPause::install(root);
+        let pause = super::test_control::RootInspectionPause::install(root);
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert_eq!(inspection.execute(cancelled).unwrap_err().code, "cancelled");

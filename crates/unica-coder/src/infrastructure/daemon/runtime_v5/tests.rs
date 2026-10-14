@@ -7,7 +7,7 @@ use super::*;
 use crate::domain::operation_deadline::OperationDeadline;
 
 use crate::infrastructure::daemon::protocol_v5::V5DaemonTaskSnapshot;
-use crate::infrastructure::daemon::v13_workspace_bootstrap::test_control::HealthInspectionPause;
+use crate::infrastructure::daemon::v13_workspace_bootstrap::test_control::RootInspectionPause;
 
 #[test]
 fn losing_daemon_does_not_rewrite_capacity_snapshot_before_receipt_authority() {
@@ -106,7 +106,7 @@ impl CanonicalInvocationService for SourceAdmissionProbe {
 }
 
 struct InspectionDaemon {
-    pause: HealthInspectionPause,
+    pause: RootInspectionPause,
     stop: Arc<AtomicBool>,
     server: Option<thread::JoinHandle<Result<(), String>>>,
 }
@@ -133,7 +133,7 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
     std::fs::write(workspace_root.join("v8project.yaml"), project_bytes).unwrap();
     std::fs::write(workspace_root.join("src/Configuration.xml"), source_bytes).unwrap();
     let independent_workspace = tempfile::tempdir().unwrap();
-    let pause = HealthInspectionPause::install(workspace_root.clone());
+    let pause = RootInspectionPause::install(workspace_root.clone());
     let clock = Arc::new(InspectionClock {
         start: Instant::now(),
         elapsed_ms: AtomicU64::new(0),
