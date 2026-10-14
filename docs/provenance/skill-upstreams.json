@@ -550,7 +550,6 @@
           ],
           "localPaths": [
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-compile",
-            "plugins/unica/references/specs/mxl-dsl-spec.md",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
             "crates/unica-coder/src/domain/operation_contract.rs"
@@ -576,7 +575,6 @@
           ],
           "localPaths": [
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-decompile",
-            "plugins/unica/references/specs/mxl-dsl-spec.md",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
             "crates/unica-coder/src/domain/operation_contract.rs"
@@ -602,7 +600,6 @@
           ],
           "localPaths": [
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-info",
-            "plugins/unica/references/specs/mxl-dsl-spec.md",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
             "crates/unica-coder/src/domain/operation_contract.rs"
