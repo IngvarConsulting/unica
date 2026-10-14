@@ -1989,6 +1989,9 @@ mod registration_cache_tests {
             )
             .unwrap()
         };
+        // Let the stamps leave the timestamp-granularity window, as files
+        // of a real workspace have, so the actor may retain what it parsed.
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
         let cancellation = CancellationToken::new();
         let execution = bind().begin_execution(&cancellation).unwrap();
         let first = execution.read_sources().unwrap().remove(0);
@@ -2036,6 +2039,9 @@ mod registration_cache_tests {
             &marker,
         )
         .unwrap();
+        // Let the stamps leave the timestamp-granularity window, as files
+        // of a real workspace have, so the actor may retain what it parsed.
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
         let after_marker = bind()
             .begin_execution(&cancellation)
             .unwrap()

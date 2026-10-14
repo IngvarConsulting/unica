@@ -10753,6 +10753,44 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// The streamed root of a `Configuration.xml` above 8 MiB proves only the
+    /// file itself, like the ordinary root.
+    #[test]
+    fn streamed_configuration_root_view_opens_no_object_descriptor() {
+        let (workspace, source) = source_selection_read_fixture();
+        add_unrelated_catalogs(&source, 6);
+        let configuration = source.join("Configuration.xml");
+        let text = std::fs::read_to_string(&configuration).unwrap();
+        std::fs::write(
+            &configuration,
+            text.replace(
+                "</MetaDataObject>",
+                &format!("<!--{}--></MetaDataObject>", "x".repeat(9 * 1024 * 1024)),
+            ),
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime();
+        let reads = RetainedReadProbe::watch(&source);
+
+        let root = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::View,
+            serde_json::json!({"at": "main:Configuration"}),
+        );
+
+        assert!(root.ok, "{:?}", root.diagnostics);
+        assert_eq!(root.data.as_ref().unwrap()["props"]["totalObjects"], 7);
+        let root_reads = reads.take();
+        assert!(
+            root_reads.iter().all(|read| match read {
+                RetainedRead::Opened(path) => !path.starts_with("Catalogs"),
+                RetainedRead::Listed(_) => false,
+            }),
+            "the streamed configuration root read object descriptors: {root_reads:?}"
+        );
+    }
+
     #[test]
     fn borrowed_logical_read_admits_and_publishes_without_unrelated_objects() {
         assert_logical_read_files_do_not_grow_with_unrelated_objects(true);

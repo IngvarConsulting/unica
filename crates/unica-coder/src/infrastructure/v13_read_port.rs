@@ -45,7 +45,8 @@ use crate::infrastructure::platform_xml_owner::{
     PlatformXmlSourceSetOwnerEvidence,
 };
 use crate::infrastructure::v13_large_configuration::{
-    read_configuration_root, RegistrationCache, RegistrationIndex, StreamedConfigurationRoot,
+    read_configuration_root, RegistrationCache, RegistrationIndex, RetainedSupportState,
+    StreamedConfigurationRoot,
 };
 use serde_json::{json, Value};
 #[cfg(test)]
@@ -107,7 +108,7 @@ pub(crate) struct ProviderReadAuthority {
     /// The parsed `Ext/ParentConfigurations.bin` marker. One authority serves
     /// one admitted operation, so the marker is read and parsed once instead
     /// of once per owner descriptor that asks for its support state.
-    support_state: std::sync::Mutex<Option<Option<Arc<SupportState>>>>,
+    support_state: std::sync::Mutex<Option<RetainedSupportState>>,
     #[cfg(test)]
     module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
     #[cfg(test)]
@@ -1521,20 +1522,31 @@ impl ProviderReadAuthority {
                 "support-state cache is poisoned",
             )
         })?;
-        if let Some(state) = memo.as_ref() {
-            checkpoint()?;
-            return Ok(state.clone());
+        // The memo answers only for the marker stamp it was read under: a
+        // marker replaced during this operation is read again, so a payload
+        // built later never combines a new stamp with an old state.
+        if let Some((stamp, state)) = memo.as_ref() {
+            let current = self
+                .root
+                .relative_file_stamp(Path::new("Ext/ParentConfigurations.bin"))
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
+            if current == *stamp {
+                checkpoint()?;
+                return Ok(state.clone());
+            }
         }
-        let state = self
-            .artifacts
-            .support_state(&self.root, checkpoint, |file, checkpoint| {
-                #[cfg(test)]
-                self.support_state_reads
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                parse_support_state(file, checkpoint)
-            })?;
+        let (stamp, state) =
+            self.artifacts
+                .support_state(&self.root, checkpoint, |file, checkpoint| {
+                    #[cfg(test)]
+                    self.support_state_reads
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    parse_support_state(file, checkpoint)
+                })?;
         checkpoint()?;
-        *memo = Some(state.clone());
+        *memo = Some((stamp, state.clone()));
         Ok(state)
     }
 

@@ -4828,6 +4828,58 @@ pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
     );
 }
 
+/// A support marker replaced after an object read of the same operation
+/// must not reach the configuration root, and the retained root must never
+/// pair the new marker's stamp with the state read before it.
+#[test]
+fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
+    use crate::infrastructure::v13_large_configuration::RegistrationCache;
+
+    let fixture = RealReaderFixture::new();
+    let marker = fixture.source.join("Ext/ParentConfigurations.bin");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::copy(
+        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        &marker,
+    )
+    .unwrap();
+    let reader = |artifacts: Arc<RegistrationCache>| {
+        ProviderReadAuthority::new(
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap()),
+        )
+        .with_artifacts(artifacts)
+    };
+    let fresh = || reader(Arc::new(RegistrationCache::default()));
+    let supported = configuration_payload(&fresh()).unwrap()["support"].clone();
+
+    let retained = Arc::new(RegistrationCache::with_settle_window_for_test(
+        std::time::Duration::ZERO,
+    ));
+    let operation = reader(Arc::clone(&retained));
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    operation.object_support(&target, &mut || Ok(())).unwrap();
+    fs::remove_file(&marker).unwrap();
+
+    let expected = configuration_payload(&fresh()).unwrap()["support"].clone();
+    assert_ne!(
+        expected, supported,
+        "the fixture must change the support answer"
+    );
+    assert_eq!(
+        configuration_payload(&operation).unwrap()["support"],
+        expected,
+        "the root combined a removed marker with the state read before it"
+    );
+    assert_eq!(
+        configuration_payload(&reader(retained)).unwrap()["support"],
+        expected,
+        "the retained root kept the support state of a replaced marker"
+    );
+}
+
 #[test]
 fn large_support_marker_reads_late_rules_once_for_multiple_owners() {
     use crate::domain::support_state::ObjectSupportState;
