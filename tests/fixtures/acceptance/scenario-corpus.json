@@ -38394,6 +38394,147 @@
   },
   {
    "id": "S425",
+   "name": "kind-scoped-text-hit-names-its-module",
+   "issue": 1416,
+   "area": "Код BSL",
+   "task": "Найти объявление функции по виду метаданных: совпадение называет адрес своего модуля, а не область запроса, совпадает с поиском по самому модулю и открывается через view",
+   "workspace": "tests/fixtures/acceptance/workspace",
+   "wire": [
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция НастройкиАвторизации(",
+      "corpus": "text",
+      "scope": "main:CommonModule",
+      "limit": 5
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/scope",
+       "eq": "main:CommonModule"
+      },
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "main:CommonModule.GoogleПереводчик"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      },
+      {
+       "pointer": "/data/fileCoverage/complete",
+       "eq": true
+      },
+      {
+       "pointer": "/page/stoppedBy",
+       "eq": "complete"
+      }
+     ],
+     "captures": {
+      "moduleAt": {
+       "pointer": "/data/matches/0/at"
+      },
+      "hitLine": {
+       "pointer": "/data/matches/0/line"
+      },
+      "hitColumn": {
+       "pointer": "/data/matches/0/column"
+      },
+      "hitSnippet": {
+       "pointer": "/data/matches/0/snippet"
+      }
+     }
+    },
+    {
+     "tool": "unica.search",
+     "args": {
+      "query": "Функция НастройкиАвторизации(",
+      "corpus": "text",
+      "scope": "main:CommonModule.GoogleПереводчик",
+      "limit": 5
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/matches/0/at",
+       "eq": "$capture.moduleAt"
+      },
+      {
+       "pointer": "/data/matches/0/line",
+       "eq": "$capture.hitLine"
+      },
+      {
+       "pointer": "/data/matches/0/column",
+       "eq": "$capture.hitColumn"
+      },
+      {
+       "pointer": "/data/matches/0/snippet",
+       "eq": "$capture.hitSnippet"
+      },
+      {
+       "pointer": "/data/matches/1",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "$capture.moduleAt"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.GoogleПереводчик"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S426",
+   "name": "docs-standards-failure-names-its-cause",
+   "issue": 1419,
+   "area": "Документация и стандарты",
+   "task": "Найти правило диагностики по стандартам, когда сервер стандартов не отвечает: отказ называет поставщика v8std и причину его сбоя, а не только то, что результата нет",
+   "workspace": "tests/fixtures/acceptance/workspace-docs-standards-unreachable",
+   "wire": [
+    {
+     "tool": "unica.docs",
+     "args": {
+      "query": "GetFormMethod",
+      "source": "development-standard"
+     },
+     "expect": [
+      "provider"
+     ],
+     "assertions": [
+      {
+       "pointer": "/ok",
+       "eq": false
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "provider_unavailable"
+      },
+      {
+       "pointer": "/diagnostics/0/message",
+       "contains": "v8std/public-standards — failed: сервер стандартов недоступен"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S427",
    "name": "dcs-schema-nodes-and-structure-items-by-address",
    "issue": 1357,
    "area": "СКД",
