@@ -26,6 +26,7 @@ check:
   - crates/unica-coder/tests/v13_search_integration.rs::public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body
   - crates/unica-coder/src/infrastructure/native_operations/code.rs::method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop
   - crates/unica-coder/src/infrastructure/native_operations/code.rs::method_text_that_does_not_parse_is_refused_as_the_input_text
+  - crates/unica-coder/src/infrastructure/native_operations/code.rs::method_body_text_with_a_preprocessor_wrapper_is_refused_in_wrapped_and_plain_modules
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
@@ -48,7 +49,9 @@ gap: https://github.com/IngvarConsulting/unica/issues/1119
 метод, заменяет участок, который отдаёт `view`: от комментария до строки
 окончания. Текст без объявления заменяет только строки между объявлением
 и окончанием. Текст с объявлением, который не разбирается как BSL,
-отклоняется `bad_value` до записи с указанием на сам текст.
+отклоняется `bad_value` до записи с указанием на сам текст; текст, где
+объявлению предшествуют инструкции препроцессора, тоже: обёртка метода
+в его текст не входит и правится по адресу модуля.
 
 Ответ с текстом не превышает бюджета ответа клиента — по умолчанию 16 КиБ
 UTF-8 вместе с конвертом. Известным хостам назначен наибольший бюджет,

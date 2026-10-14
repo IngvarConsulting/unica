@@ -99,6 +99,12 @@ pub fn known_client_budgets() -> [(&'static str, usize); 2] {
     ]
 }
 
+/// Переменные окружения, от которых зависит бюджет: проверкам, которые
+/// запускают сервер, нужно их убрать, чтобы не зависеть от окружения.
+pub fn response_budget_environment_keys() -> [&'static str; 3] {
+    [BUDGET_ENV, ZCODE_LAUNCH_ENV, CLAUDE_LAUNCH_ENV]
+}
+
 /// Негодная настройка не применяется, но и не молчит: одно сообщение
 /// в stderr за процесс.
 fn warn_invalid_budget(value: &OsString) {

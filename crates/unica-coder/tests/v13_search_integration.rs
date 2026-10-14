@@ -27,7 +27,12 @@ impl McpProcess {
         std::fs::create_dir_all(&state).expect("create isolated search state");
         let state = std::fs::canonicalize(state).expect("canonical isolated search state");
         let workspace = std::fs::canonicalize(workspace).expect("canonical search workspace");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_unica"));
+        // Бюджет ответа задаёт только сама проверка, не окружение прогона.
+        for key in unica_bootstrap::response_budget_environment_keys() {
+            command.env_remove(key);
+        }
+        let mut child = command
             .current_dir(&workspace)
             .env("UNICA_PROVIDER_STATE_DIR", &state)
             // Демон переживает MCP: без назначенной паузы он остаётся на

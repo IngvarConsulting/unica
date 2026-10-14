@@ -685,7 +685,7 @@ fn returns_source_text(name: &str) -> bool {
 /// называет себя в каждом запросе.
 const CLIENT_INFO_META: &str = "io.modelcontextprotocol/clientInfo";
 
-/// Имя клиента: из `initialize`, а без него — из `_meta` запроса.
+/// Имя клиента, названное SDK, а без него — из `_meta` запроса.
 fn client_name(peer: Option<String>, metadata: &Map<String, Value>) -> Option<String> {
     peer.or_else(|| {
         metadata
@@ -701,11 +701,11 @@ fn client_response_budget(
     context: &RequestContext<RoleServer>,
     metadata: &Map<String, Value>,
 ) -> unica_bootstrap::ResponseBudget {
-    let peer = context
-        .peer
-        .peer_info()
-        .map(|peer| peer.client_info.name.clone());
-    unica_bootstrap::host_response_budget(client_name(peer, metadata).as_deref())
+    // SDK знает оба источника: `_meta` запроса и, для сеанса с
+    // `initialize`, его `clientInfo`. Свой разбор — запасной путь для
+    // `_meta`, который SDK положил только в параметры запроса.
+    let named = context.client_info().map(|client| client.name);
+    unica_bootstrap::host_response_budget(client_name(named, metadata).as_deref())
 }
 
 /// SEP-2549 cache fields are required on list results from protocol revision
@@ -2750,12 +2750,17 @@ mod tests {
     fn direct_outcome(
         result: crate::domain::invocation::DomainResult,
     ) -> Result<CanonicalCallOutcome, ErrorData> {
-        crate::interfaces::task_projection::call_tool_result(
-            &result,
-            unica_bootstrap::ResponseBudget::default(),
-        )
-        .map(CanonicalCallOutcome::Direct)
-        .map_err(crate::interfaces::task_projection::projection_error)
+        direct_outcome_within(result, unica_bootstrap::ResponseBudget::default())
+    }
+
+    /// Прямой ответ в бюджете клиента, как его строит роутер демона.
+    fn direct_outcome_within(
+        result: crate::domain::invocation::DomainResult,
+        budget: unica_bootstrap::ResponseBudget,
+    ) -> Result<CanonicalCallOutcome, ErrorData> {
+        crate::interfaces::task_projection::call_tool_result(&result, budget)
+            .map(CanonicalCallOutcome::Direct)
+            .map_err(crate::interfaces::task_projection::projection_error)
     }
 
     fn canonical_profile_server() -> UnicaServer {
@@ -3155,13 +3160,26 @@ mod tests {
         // Четвёртый — текст сверх бюджета клиента по умолчанию: прямой ответ
         // и итог задания одинаково отказывают.
         let oversized = format!("// {}\n", "a".repeat(20_000));
-        for (is_error, source_text) in [
-            (false, None),
-            (true, None),
-            (false, Some(source)),
-            (false, Some(oversized.as_str())),
+        // Пятый — тот же текст клиенту протокола 2026-07-28 без `initialize`,
+        // назвавшему себя в `_meta` запроса известным хостом: его бюджет
+        // больше, и текст проходит и прямым ответом, и итогом задания.
+        let (known_client, known_budget) = unica_bootstrap::known_client_budgets()[0];
+        assert!(known_budget > oversized.len() + 2048);
+        for (is_error, source_text, named) in [
+            (false, None, false),
+            (true, None, false),
+            (false, Some(source), false),
+            (false, Some(oversized.as_str()), false),
+            (false, Some(oversized.as_str()), true),
         ] {
-            let over_budget = source_text.is_some_and(|text| text.len() > 16_384);
+            // Остальные случаи называют неизвестного клиента: бюджет по
+            // умолчанию тогда не зависит от окружения запуска прогона.
+            let mut meta = modern_meta();
+            meta["io.modelcontextprotocol/clientInfo"] = json!({
+                "name": if named { known_client } else { "unica-tests" },
+                "version": "1"
+            });
+            let over_budget = !named && source_text.is_some_and(|text| text.len() > 16_384);
             let task_id = TaskId::new();
             let mut subject = canonical_result("same terminal subject result");
             subject.ok = !is_error;
@@ -3173,10 +3191,10 @@ mod tests {
             let executions = Arc::new(AtomicUsize::new(0));
             let execution_observed = Arc::clone(&executions);
             let direct_subject = subject.clone();
-            let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, _, _, _| {
+            let call: Arc<CanonicalCallHandler> = Arc::new(move |_, arguments, host, _, _| {
                 execution_observed.fetch_add(1, Ordering::SeqCst);
                 if arguments.get("direct").and_then(Value::as_bool) == Some(true) {
-                    direct_outcome(direct_subject.clone())
+                    direct_outcome_within(direct_subject.clone(), host.response_budget)
                 } else {
                     Ok(CanonicalCallOutcome::Task(canonical_snapshot(
                         task_id,
@@ -3211,7 +3229,7 @@ mod tests {
                 .send(json!({
                     "jsonrpc":"2.0", "id":1, "method":"tools/call",
                     "params":{
-                        "name":"unica.check", "arguments":{"direct":true}, "_meta":modern_meta()
+                        "name":"unica.check", "arguments":{"direct":true}, "_meta":meta.clone()
                     }
                 }))
                 .await;
@@ -3254,7 +3272,7 @@ mod tests {
                 .send(json!({
                     "jsonrpc":"2.0", "id":2, "method":"tools/call",
                     "params":{
-                        "name":"unica.check", "arguments":{}, "_meta":modern_meta()
+                        "name":"unica.check", "arguments":{}, "_meta":meta.clone()
                     }
                 }))
                 .await;
@@ -3269,7 +3287,7 @@ mod tests {
                     "params":{
                         "name":"unica.task.result",
                         "arguments":{"taskId":task_id.to_string(), "waitMs":0},
-                        "_meta":modern_meta()
+                        "_meta":meta.clone()
                     }
                 }))
                 .await;
@@ -3284,7 +3302,7 @@ mod tests {
                     "params":{
                         "name":"unica.task.result",
                         "arguments":{"taskId":task_id.to_string()},
-                        "_meta":modern_meta()
+                        "_meta":meta.clone()
                     }
                 }))
                 .await;

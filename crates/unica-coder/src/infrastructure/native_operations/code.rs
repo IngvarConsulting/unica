@@ -1032,8 +1032,18 @@ fn replacement_target(
     if !matches!(
         code_projection(at),
         Some((_, CodeProjection::MethodBody(_)))
-    ) || !declares_method(text)
-    {
+    ) {
+        return Ok(unchanged());
+    }
+    // Условие препроцессора вокруг метода в его текст не входит; обёртка
+    // в тексте замены удвоила бы ту, что уже стоит в модуле.
+    if method_head(text).is_some_and(|head| head.after_preprocessor) {
+        return Err(bad_code_arg(
+            text_path,
+            "Method Body text does not include the preprocessor around the method; pass the method text without #If/#Region lines, or change the wrapper with code.insert or code.replace on the module address with selector.anchor",
+        ));
+    }
+    if !declares_method(text) {
         return Ok(unchanged());
     }
     let parsed = analyze_module(text)
@@ -1054,9 +1064,14 @@ fn replacement_target(
     }))
 }
 
-/// Первая значащая строка текста (после комментариев, аннотаций, инструкций
-/// препроцессора и пустых строк) начинается объявлением метода.
-fn declares_method(text: &str) -> bool {
+/// Объявление метода в тексте: первая значащая строка после комментариев,
+/// аннотаций, пустых строк и инструкций препроцессора.
+struct MethodHead {
+    /// Перед объявлением стоят инструкции препроцессора.
+    after_preprocessor: bool,
+}
+
+fn method_head(text: &str) -> Option<MethodHead> {
     const KEYWORDS: &[&str] = &[
         "процедура",
         "функция",
@@ -1065,22 +1080,28 @@ fn declares_method(text: &str) -> bool {
         "асинх",
         "async",
     ];
-    text.lines()
-        .map(str::trim)
-        .find(|line| {
-            !line.is_empty()
-                && !line.starts_with("//")
-                && !line.starts_with('&')
-                && !line.starts_with('#')
+    let mut after_preprocessor = false;
+    let line = text.lines().map(str::trim).find(|line| {
+        if line.starts_with('#') {
+            after_preprocessor = true;
+            return false;
+        }
+        !line.is_empty() && !line.starts_with("//") && !line.starts_with('&')
+    })?;
+    let lower = line.to_lowercase();
+    KEYWORDS
+        .iter()
+        .any(|keyword| {
+            lower
+                .strip_prefix(keyword)
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace()))
         })
-        .is_some_and(|line| {
-            let lower = line.to_lowercase();
-            KEYWORDS.iter().any(|keyword| {
-                lower
-                    .strip_prefix(keyword)
-                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace()))
-            })
-        })
+        .then_some(MethodHead { after_preprocessor })
+}
+
+/// Текст начинается объявлением метода (без препроцессора перед ним).
+fn declares_method(text: &str) -> bool {
+    method_head(text).is_some_and(|head| !head.after_preprocessor)
 }
 
 /// Начало документирующего комментария: подряд идущие строки `//`
@@ -1335,6 +1356,11 @@ impl PatchSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InsertionSite {
     offset: usize,
+    /// Конец головы метода, перед которым вставка `before`: строки
+    /// комментария, вставленные над методом, становятся его документирующим
+    /// комментарием, и голова растёт вверх. Повтор ищет вставку на любой
+    /// границе строк от `offset` до этой точки.
+    head_end: usize,
     position: Position,
     eol: LineEnding,
     leading_separator: LeadingSeparator,
@@ -1736,6 +1762,7 @@ fn locate_selector_typed(
 ) -> Result<InsertionSite, SelectorResolutionError> {
     reject_lone_cr_line_endings(snapshot).map_err(SelectorResolutionError::invalid_source)?;
     let text = snapshot.decoded_text();
+    let mut head_end = None;
     let offset = match selector {
         Selector::Method(name) => {
             let folded_name = name.to_lowercase();
@@ -1755,7 +1782,10 @@ fn locate_selector_typed(
             };
             let (start, end) = method_unit(text, method);
             match position {
-                Position::Before => start,
+                Position::Before => {
+                    head_end = Some(safe_line_start(text, method.start));
+                    start
+                }
                 Position::After => end,
             }
         }
@@ -1792,6 +1822,7 @@ fn locate_selector_typed(
     };
     Ok(InsertionSite {
         offset,
+        head_end: head_end.unwrap_or(offset),
         position,
         eol,
         leading_separator,
@@ -1835,6 +1866,7 @@ fn locate_module_tail(snapshot: &SourceTextSnapshot) -> Result<InsertionSite, St
     };
     Ok(InsertionSite {
         offset,
+        head_end: offset,
         position: Position::Before,
         eol,
         leading_separator,
@@ -2414,9 +2446,12 @@ fn normalized_content(
 
 fn insertion_is_present(text: &[u8], site: InsertionSite, insertion: &[u8]) -> bool {
     match site.position {
-        Position::Before => text
-            .get(..site.offset)
-            .is_some_and(|head| head.ends_with(insertion)),
+        Position::Before => (site.offset..=site.head_end.max(site.offset))
+            .filter(|&boundary| boundary == site.offset || text.get(boundary - 1) == Some(&b'\n'))
+            .any(|boundary| {
+                text.get(..boundary)
+                    .is_some_and(|head| head.ends_with(insertion))
+            }),
         Position::After => text
             .get(site.offset..)
             .is_some_and(|tail| tail.starts_with(insertion)),
@@ -2655,6 +2690,7 @@ pub(super) mod tests {
         let before = b"// marker\nProcedure First()";
         let before_site = super::InsertionSite {
             offset: 10,
+            head_end: 10,
             position: Position::Before,
             eol: LineEnding::Lf,
             leading_separator: LeadingSeparator::None,
@@ -2664,6 +2700,7 @@ pub(super) mod tests {
         let after = b"Procedure First()\n// marker\n";
         let after_site = super::InsertionSite {
             offset: after.len() - b"// marker\n".len(),
+            head_end: after.len() - b"// marker\n".len(),
             position: Position::After,
             eol: LineEnding::Lf,
             leading_separator: LeadingSeparator::None,
@@ -4566,7 +4603,7 @@ pub(super) mod tests {
             "code.replace",
             &json!({
                 "at": "main:CommonModule.Sample.Method.Base.Body",
-                "text": "#Если Сервер Тогда\n// Комментарий.\nProcedure Base(\n    Value = 2;\nEndProcedure\n#КонецЕсли\n"
+                "text": "// Комментарий.\nProcedure Base(\n    Value = 2;\nEndProcedure\n"
             }),
             0,
             &fixture.binding,
@@ -4581,6 +4618,83 @@ pub(super) mod tests {
             "{error}"
         );
         assert!(!error.to_string().contains("patched BSL module"), "{error}");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn method_body_text_with_a_preprocessor_wrapper_is_refused_in_wrapped_and_plain_modules() {
+        for (before, name) in [
+            ("Procedure Base()\n    Value = 1;\nEndProcedure\n", "plain"),
+            (
+                "#Если Сервер Тогда\nProcedure Base()\n    Value = 1;\nEndProcedure\n#КонецЕсли\n",
+                "wrapped",
+            ),
+        ] {
+            let fixture = staged_code_fixture(&format!("wrapper-{name}"), before.as_bytes());
+            for text in [
+                "#Если Сервер Тогда\nProcedure Base()\n    Value = 2;\nEndProcedure\n#КонецЕсли\n",
+                "#Область Основная\n// Комментарий.\nProcedure Base()\n    Value = 2;\nEndProcedure\n#КонецОбласти\n",
+            ] {
+                let operation = parse_code_plan_operation(
+                    "code.replace",
+                    &json!({"at": "main:CommonModule.Sample.Method.Base.Body", "text": text}),
+                    0,
+                    &fixture.binding,
+                )
+                .unwrap();
+                let admission = staged_code_admission(&fixture, false);
+                let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+                    .expect_err("a wrapper is not part of the method text");
+                assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{name}");
+                assert!(error.to_string().contains("preprocessor"), "{name}: {error}");
+            }
+            // Условие внутри тела метода — обычное тело, а не обёртка.
+            let operation = parse_code_plan_operation(
+                "code.replace",
+                &json!({
+                    "at": "main:CommonModule.Sample.Method.Base.Body",
+                    "text": "#Если Сервер Тогда\n    Value = 2;\n#КонецЕсли"
+                }),
+                0,
+                &fixture.binding,
+            )
+            .unwrap();
+            let admission = staged_code_admission(&fixture, false);
+            assert!(
+                plan_admitted_code(&admission, &fixture.binding, &[operation]).is_ok(),
+                "{name}"
+            );
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn a_comment_inserted_before_a_method_joins_its_head_and_repeats_as_noop() {
+        let fixture = staged_code_fixture("comment-head", b"Procedure Base()\nEndProcedure\n");
+        let before = "Procedure Other()\nEndProcedure\n\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n";
+        for (text, expected) in [
+            (
+                "// TODO\n",
+                "Procedure Other()\nEndProcedure\n\n// TODO\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+            ),
+            (
+                "Procedure Added()\nEndProcedure\n// Описание Target.\n",
+                "Procedure Other()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n// Описание Target.\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+            ),
+        ] {
+            let operation = parse_code_plan_operation(
+                "code.insert",
+                &json!({"at": "main:CommonModule.Sample.Method.Target", "text": text, "position": "before"}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap();
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0)
+                .unwrap_or_else(|error| panic!("{text:?}: {error}"));
+            assert_eq!(std::str::from_utf8(&post.after).unwrap(), expected);
+            let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+            assert!(repeated.no_op, "{text:?}");
+        }
         fixture.cleanup();
     }
 
@@ -5047,7 +5161,22 @@ pub(super) mod tests {
             )
             .unwrap()
         };
-        let cases: [(&str, &str, &str, &str); 8] = [
+        let cases: [(&str, &str, &str, &str); 10] = [
+            // Вложенные условия только вокруг метода обходятся все, а
+            // комментарий над внешним условием идёт вместе с ним.
+            (
+                "// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
+                "Target",
+                "before",
+                "Procedure Added()\nEndProcedure\n// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
+            ),
+            // Пустая строка между условием и головой оставляет вставку внутри.
+            (
+                "#Если Сервер Тогда\n\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "Target",
+                "before",
+                "#Если Сервер Тогда\n\nProcedure Added()\nEndProcedure\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+            ),
             // Комментарий и директива остаются со своим методом.
             (
                 "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
