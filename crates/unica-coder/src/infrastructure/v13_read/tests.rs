@@ -3722,12 +3722,7 @@ fn module_body_returns_the_source_text_byte_for_byte() {
     for source in [original.as_str(), crlf] {
         fs::write(&module, source).unwrap();
         let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
-        assert!(
-            result.ok,
-            "{}: {:?}",
-            result.summary,
-            refusal_codes(&result)
-        );
+        assert!(result.ok, "module Body must be read");
         assert_eq!(
             result.source_text.as_deref(),
             Some(source.trim_start_matches('\u{feff}'))
@@ -3779,11 +3774,8 @@ fn module_body_beyond_the_limit_is_still_checked_as_utf8_in_full() {
     let broken = fixture.view_service().view(ViewRequest::new(at).unwrap());
     assert!(!broken.ok);
     assert_ne!(
-        broken.diagnostics[0]["code"],
-        "result_too_large",
-        "{}: {:?}",
-        broken.summary,
-        refusal_codes(&broken)
+        broken.diagnostics[0]["code"], "result_too_large",
+        "a broken byte beyond the limit must not be reported as size"
     );
     assert!(broken.source_text.is_none());
 }
