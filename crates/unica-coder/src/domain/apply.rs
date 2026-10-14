@@ -471,6 +471,40 @@ impl<'a> OperationSite<'a> {
                     && metadata_collection_matches(owner.kind(), collection))
     }
 
+    /// Узел схемы прямо под макетом владельца: `Owner.X.Template.T.<kind>.N`.
+    fn dcs_schema_member(&self, kind: NodeKind) -> bool {
+        self.route == RouteClass::Dcs
+            && matches!(self.segments(), [owner, template, member]
+                if owner.name().is_some()
+                    && template.kind() == NodeKind::Template
+                    && template.name().is_some()
+                    && member.kind() == kind
+                    && member.name().is_some()
+                    && metadata_collection_matches(owner.kind(), MetaCollection::Templates))
+    }
+
+    /// Вариант настроек макета владельца и цепочка именованных элементов его
+    /// структуры: число сегментов `Item` после `Setting`, `None` — адрес не
+    /// такой формы.
+    fn dcs_structure_depth(&self) -> Option<usize> {
+        if self.route != RouteClass::Dcs {
+            return None;
+        }
+        let [owner, template, setting, items @ ..] = self.segments() else {
+            return None;
+        };
+        (owner.name().is_some()
+            && template.kind() == NodeKind::Template
+            && template.name().is_some()
+            && setting.kind() == NodeKind::Setting
+            && setting.name().is_some()
+            && metadata_collection_matches(owner.kind(), MetaCollection::Templates)
+            && items
+                .iter()
+                .all(|item| item.kind() == NodeKind::Item && item.name().is_some()))
+        .then_some(items.len())
+    }
+
     fn dcs_terminal(&self, kinds: &[NodeKind]) -> bool {
         self.route == RouteClass::Dcs
             && kinds.contains(&self.terminal().kind())
@@ -543,6 +577,19 @@ enum OperationApplicability {
     DcsParameter,
     /// Поле набора данных.
     DcsField,
+    /// Источник данных схемы: `Template.T.DataSource.S` (#1357).
+    DcsDataSource,
+    /// Вычисляемое поле схемы: `Template.T.CalculatedField.F`.
+    DcsCalculatedField,
+    /// Итог схемы: `Template.T.Total.F`.
+    DcsTotal,
+    /// Вариант настроек или именованный элемент его структуры любой
+    /// вложенности: `Setting.S[.Item.I…]`. Коллекции настроек элемента
+    /// (отбор, выбор, порядок, оформление, параметры вывода) и вложенные
+    /// элементы структуры берут контейнер из адреса.
+    DcsSettingsContainer,
+    /// Именованный элемент структуры варианта: `Setting.S.Item.I[.Item.J…]`.
+    DcsStructureItem,
     /// Макет-табличный документ как узел владельца.
     Mxl,
     /// Именованная область макета-табличного документа.
@@ -612,6 +659,11 @@ impl OperationApplicability {
             Self::DcsSettings => "`Kind.Name.Template.T.Setting.S`",
             Self::DcsParameter => "`Kind.Name.Template.T.Parameter.P`",
             Self::DcsField => "`Kind.Name.Template.T.DataSet.D.Field.F`",
+            Self::DcsDataSource => "`Kind.Name.Template.T.DataSource.S`",
+            Self::DcsCalculatedField => "`Kind.Name.Template.T.CalculatedField.F`",
+            Self::DcsTotal => "`Kind.Name.Template.T.Total.F`",
+            Self::DcsSettingsContainer => "`Kind.Name.Template.T.Setting.S[.Item.I…]`",
+            Self::DcsStructureItem => "`Kind.Name.Template.T.Setting.S.Item.I[.Item.J…]`",
             Self::Mxl => "`Kind.Name.Template.T` of a spreadsheet",
             Self::MxlArea => "`Kind.Name.Template.T.Area.A` of a spreadsheet",
             Self::XdtoPackage => "`XDTOPackage.Name`",
@@ -771,6 +823,11 @@ impl OperationApplicability {
             Self::DcsSettings => site.dcs_terminal(&[NodeKind::Setting]),
             Self::DcsParameter => site.dcs_terminal(&[NodeKind::Parameter]),
             Self::DcsField => site.dcs_terminal(&[NodeKind::Field]),
+            Self::DcsDataSource => site.dcs_schema_member(NodeKind::DataSource),
+            Self::DcsCalculatedField => site.dcs_schema_member(NodeKind::CalculatedField),
+            Self::DcsTotal => site.dcs_schema_member(NodeKind::Total),
+            Self::DcsSettingsContainer => site.dcs_structure_depth().is_some(),
+            Self::DcsStructureItem => site.dcs_structure_depth().is_some_and(|depth| depth > 0),
             Self::XdtoPackage => {
                 site.route == RouteClass::Xdto
                     && matches!(segments, [package] if package.name().is_some())
@@ -1181,7 +1238,7 @@ impl OperationDescriptor {
     pub(crate) fn retired_query_alias_target(
         self,
         site: &OperationSite<'_>,
-        data_sets: DataSetLookup<'_>,
+        data_sets: SchemaLookup<'_>,
     ) -> Option<QualifiedAddress> {
         let segments = site.segments();
         let position = segments
@@ -1198,7 +1255,9 @@ impl OperationDescriptor {
             source_set: site.at.source_set().to_string(),
             segments: segments[..position].to_vec(),
         };
-        let data_set = named_data_set(&template, name, data_sets)?;
+        let NamedNode::Found(data_set) = named_data_set(&template, name, data_sets)? else {
+            return None;
+        };
         [".Query", ""].into_iter().find_map(|suffix| {
             let candidate = QualifiedAddress::parse(&format!("{data_set}{suffix}")).ok()?;
             OperationSite::new(&candidate, site.source)
@@ -1354,8 +1413,8 @@ operation_descriptors!(
     ("right.add", Role, Role, Items),
     ("right.set", Role, RoleRight, Values),
     ("dataSource.add", Dcs, DcsSchema, Items),
-    ("dataSource.set", Dcs, DcsSchema, Values),
-    ("dataSource.remove", Dcs, DcsSchema, Values),
+    ("dataSource.set", Dcs, DcsDataSource, Values),
+    ("dataSource.remove", Dcs, DcsDataSource, Target),
     ("dataSet.add", Dcs, DcsDataContainer, Items),
     ("dataSet.set", Dcs, DcsData, Values),
     ("dataSet.remove", Dcs, DcsData, Target),
@@ -1369,41 +1428,58 @@ operation_descriptors!(
     ("parameter.rename", Dcs, DcsParameter, Values),
     ("parameter.reorder", Dcs, DcsSchema, Items),
     ("calculatedField.add", Dcs, DcsSchema, Items),
-    ("calculatedField.remove", Dcs, DcsSchema, Values),
+    ("calculatedField.remove", Dcs, DcsCalculatedField, Target),
     ("total.add", Dcs, DcsSchema, Items),
-    ("total.remove", Dcs, DcsSchema, Values),
+    ("total.remove", Dcs, DcsTotal, Target),
     ("variant.add", Dcs, DcsSchema, Items),
     ("variant.set", Dcs, DcsSettings, Values),
     ("variant.remove", Dcs, DcsSettings, Target),
     ("query.set", Dcs, DcsQuery, Values),
     ("query.patch", Dcs, DcsQuery, Values),
-    ("filter.add", Dcs, DcsSettings, Items),
-    ("filter.set", Dcs, DcsSettings, Values),
-    ("filter.remove", Dcs, DcsSettings, Values),
-    ("filter.clear", Dcs, DcsSettings, Values),
-    ("selection.add", Dcs, DcsSettings, Items),
-    ("selection.clear", Dcs, DcsSettings, Values),
-    ("order.add", Dcs, DcsSettings, Items),
-    ("order.clear", Dcs, DcsSettings, Values),
+    ("filter.add", Dcs, DcsSettingsContainer, Items),
+    ("filter.set", Dcs, DcsSettingsContainer, Values),
+    ("filter.remove", Dcs, DcsSettingsContainer, Values),
+    ("filter.clear", Dcs, DcsSettingsContainer, Values),
+    ("selection.add", Dcs, DcsSettingsContainer, Items),
+    ("selection.clear", Dcs, DcsSettingsContainer, Values),
+    ("order.add", Dcs, DcsSettingsContainer, Items),
+    ("order.clear", Dcs, DcsSettingsContainer, Values),
+    // Параметры данных есть только у самих настроек варианта: у элемента
+    // структуры их коллекции нет.
     ("dataParameter.add", Dcs, DcsSettings, Items),
     ("dataParameter.set", Dcs, DcsSettings, Values),
-    ("outputParameter.set", Dcs, DcsSettings, Values),
-    ("conditionalAppearance.add", Dcs, DcsSettings, Items),
-    ("conditionalAppearance.clear", Dcs, DcsSettings, Values),
-    ("structure.add", Dcs, DcsSettings, Items),
+    ("outputParameter.set", Dcs, DcsSettingsContainer, Values),
+    (
+        "conditionalAppearance.add",
+        Dcs,
+        DcsSettingsContainer,
+        Items
+    ),
+    (
+        "conditionalAppearance.clear",
+        Dcs,
+        DcsSettingsContainer,
+        Values
+    ),
+    ("structure.add", Dcs, DcsSettingsContainer, Items),
     ("structure.set", Dcs, DcsSettings, Values),
-    ("structure.patch", Dcs, DcsSettings, Values),
-    ("structure.remove", Dcs, DcsSettings, Values),
+    ("structure.patch", Dcs, DcsStructureItem, Values),
+    ("structure.remove", Dcs, DcsStructureItem, Target),
     ("dataSetLink.add", Dcs, DcsSchema, Items),
-    ("calculatedField.set", Dcs, DcsSchema, Values),
-    ("total.set", Dcs, DcsSchema, Values),
-    ("selection.set", Dcs, DcsSettings, Values),
-    ("selection.remove", Dcs, DcsSettings, Values),
-    ("order.set", Dcs, DcsSettings, Values),
-    ("order.remove", Dcs, DcsSettings, Values),
+    ("calculatedField.set", Dcs, DcsCalculatedField, Values),
+    ("total.set", Dcs, DcsTotal, Values),
+    ("selection.set", Dcs, DcsSettingsContainer, Values),
+    ("selection.remove", Dcs, DcsSettingsContainer, Values),
+    ("order.set", Dcs, DcsSettingsContainer, Values),
+    ("order.remove", Dcs, DcsSettingsContainer, Values),
     ("dataParameter.remove", Dcs, DcsSettings, Values),
-    ("outputParameter.remove", Dcs, DcsSettings, Values),
-    ("conditionalAppearance.remove", Dcs, DcsSettings, Values),
+    ("outputParameter.remove", Dcs, DcsSettingsContainer, Values),
+    (
+        "conditionalAppearance.remove",
+        Dcs,
+        DcsSettingsContainer,
+        Values
+    ),
     ("dataSetLink.set", Dcs, DcsSchema, Values),
     ("dataSetLink.remove", Dcs, DcsSchema, Values),
     ("mxl.set", Mxl, MxlArea, Values),
@@ -1453,7 +1529,12 @@ operation_descriptors!(
 /// адреса не строит. `{dataSet}` — набор схемы, названный значением: сегмент
 /// `DataSet` адреса вызова с этим именем, иначе набор, найденный по имени
 /// в схеме макета (вложенный набор объединения тоже), иначе набор верхнего
-/// уровня. Шаблон, который
+/// уровня; если наборов с этим именем несколько, отказ ведёт к ветви наборов
+/// макета и перечисляет их адреса. `{item}` — элемент структуры варианта,
+/// названный значением: варианту адреса вызова принадлежит цепочка
+/// `Setting.V.Item.<имя>[.Item.<имя>…]` до этого элемента, иначе элемент
+/// верхнего уровня; повторённое имя ведёт к ветви `Setting.V.Item`.
+/// Шаблон, который
 /// кончается на `.{name}` вместо `{value}`, — для ключа, который называл
 /// подузел не его именем (идентификатором предопределённого элемента):
 /// адрес из значения не строится, и отказ ведёт к чтению коллекции, где
@@ -1573,10 +1654,12 @@ retired_arguments!(
         "{at^Template}.Setting.{value}",
         true
     ),
+    // Правка элемента структуры переехала на его адрес (#1357): вариант,
+    // названный аргументом, ведёт к элементам его структуры.
     (
         "structure.patch",
         "values.variant",
-        "{at^Template}.Setting.{value}",
+        "{at^Template}.Setting.{value}.Item.{name}",
         true
     ),
     (
@@ -1716,6 +1799,76 @@ retired_arguments!(
         "{at^Module}.Method.{value}",
         true
     ),
+    // Новые узлы СКД (П6, #1357): источник, вычисляемое поле и итог
+    // адресуются под макетом, элемент структуры варианта — цепочкой
+    // `Setting.V.Item.<имя>[.Item.<имя>…]`. `{item}` — элемент, названный
+    // значением в структуре варианта адреса вызова: см. `RetiredArgument`.
+    (
+        "dataSource.set",
+        "values.name",
+        "{at^Template}.DataSource.{value}",
+        true
+    ),
+    (
+        "dataSource.remove",
+        "values.name",
+        "{at^Template}.DataSource.{value}",
+        true
+    ),
+    (
+        "calculatedField.set",
+        "values.name",
+        "{at^Template}.CalculatedField.{value}",
+        true
+    ),
+    (
+        "calculatedField.remove",
+        "values.name",
+        "{at^Template}.CalculatedField.{value}",
+        true
+    ),
+    (
+        "total.set",
+        "values.field",
+        "{at^Template}.Total.{value}",
+        true
+    ),
+    (
+        "total.remove",
+        "values.name",
+        "{at^Template}.Total.{value}",
+        true
+    ),
+    ("filter.add", "items[].group", "{item}", true),
+    ("filter.set", "values.group", "{item}", true),
+    ("filter.remove", "values.group", "{item}", true),
+    ("filter.clear", "values.group", "{item}", true),
+    ("selection.add", "items[].group", "{item}", true),
+    ("selection.set", "values.group", "{item}", true),
+    ("selection.remove", "values.group", "{item}", true),
+    ("selection.clear", "values.group", "{item}", true),
+    ("order.add", "items[].group", "{item}", true),
+    ("order.set", "values.group", "{item}", true),
+    ("order.remove", "values.group", "{item}", true),
+    ("order.clear", "values.group", "{item}", true),
+    ("conditionalAppearance.add", "items[].group", "{item}", true),
+    (
+        "conditionalAppearance.remove",
+        "values.group",
+        "{item}",
+        true
+    ),
+    (
+        "conditionalAppearance.clear",
+        "values.group",
+        "{item}",
+        true
+    ),
+    ("outputParameter.set", "values.group", "{item}", true),
+    ("outputParameter.remove", "values.group", "{item}", true),
+    ("structure.add", "items[].parent", "{item}", true),
+    ("structure.patch", "values.name", "{item}", true),
+    ("structure.remove", "values.name", "{item}", true),
     // Формы (П4, #1355): элемент события задаётся адресом `Item`.
     ("event.bind", "values.element", "{at}.Item.{value}", false),
 );
@@ -1731,6 +1884,11 @@ pub(crate) struct ArgumentRedirect {
     /// Значение ключа не было именем подузла: операция исполнима на
     /// `<at>.<Имя>`, а имя читается в коллекции `at`.
     pub(crate) listing: bool,
+    /// Значение называет несколько узлов: `at` — их ветвь, здесь — адреса
+    /// узлов, где операция исполнима. Пусто — значение назвало один узел.
+    pub(crate) candidates: Vec<QualifiedAddress>,
+    /// Узлов с таким именем несколько: `at` — ветвь, где они видны.
+    pub(crate) ambiguous: bool,
 }
 
 /// Подстановка цепочки имён: значение — путь, где неэкранированная точка
@@ -1779,7 +1937,7 @@ impl RetiredArgument {
         at: &QualifiedAddress,
         args: &Map<String, Value>,
     ) -> Option<ArgumentRedirect> {
-        self.redirect_with(at, args, &|_, _| None)
+        self.redirect_with(at, args, &no_schema_lookup)
     }
 
     /// То же, что `redirect`, с поиском набора схемы по имени.
@@ -1787,16 +1945,38 @@ impl RetiredArgument {
         self,
         at: &QualifiedAddress,
         args: &Map<String, Value>,
-        data_sets: DataSetLookup<'_>,
+        data_sets: SchemaLookup<'_>,
     ) -> Option<ArgumentRedirect> {
         let (location, value) = find_key(&Value::Object(args.clone()), self.key, String::new())?;
         // Шаблон подставляется строкой и разбирается заново; имя из значения
         // проходит `escape_name`, поэтому точка в нём остаётся внутри имени.
-        let raw = if self.address.contains("{dataSet}") {
-            let data_set = named_data_set(at, &value, data_sets)?;
-            self.address.replace("{dataSet}", &data_set.to_string())
+        let named = if self.address.contains("{dataSet}") {
+            Some(("{dataSet}", named_data_set(at, &value, data_sets)?))
+        } else if self.address.contains("{item}") {
+            Some(("{item}", named_structure_item(at, &value, data_sets)?))
         } else {
-            expand_anchor(self.address, at)?.replace("{at}", &at.to_string())
+            None
+        };
+        let raw = match named {
+            Some((placeholder, NamedNode::Found(node))) => {
+                self.address.replace(placeholder, &node.to_string())
+            }
+            Some((placeholder, NamedNode::Ambiguous { branch, candidates })) => {
+                let suffix = self.address.split_once(placeholder)?.1;
+                let candidates = candidates
+                    .iter()
+                    .map(|candidate| QualifiedAddress::parse(&format!("{candidate}{suffix}")))
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()?;
+                return Some(ArgumentRedirect {
+                    location,
+                    at: branch,
+                    listing: false,
+                    candidates,
+                    ambiguous: true,
+                });
+            }
+            None => expand_anchor(self.address, at)?.replace("{at}", &at.to_string()),
         };
         let raw = match raw.find(PATH_PLACEHOLDER) {
             Some(index) => {
@@ -1808,8 +1988,11 @@ impl RetiredArgument {
         if let Some(collection) = raw.strip_suffix(".{name}") {
             return Some(ArgumentRedirect {
                 location,
-                at: QualifiedAddress::parse(collection).ok()?,
+                at: QualifiedAddress::parse(&collection.replace("{value}", &escape_name(&value)))
+                    .ok()?,
                 listing: true,
+                candidates: Vec::new(),
+                ambiguous: false,
             });
         }
         // Запись прав роли называется `<Вид>_<Имя>[.Вложенный…]`: первая
@@ -1823,6 +2006,8 @@ impl RetiredArgument {
             location,
             at: target,
             listing: false,
+            candidates: Vec::new(),
+            ambiguous: false,
         })
     }
 }
@@ -1831,50 +2016,125 @@ impl ArgumentRedirect {
     /// Адрес, на котором операция исполнима: для записи с `listing` — член
     /// коллекции с подставленным именем.
     fn executable_at(&self) -> Option<QualifiedAddress> {
-        if !self.listing {
+        if let Some(candidate) = self.candidates.first() {
+            return Some(candidate.clone());
+        }
+        if !self.listing && !self.ambiguous {
             return Some(self.at.clone());
         }
         QualifiedAddress::parse(&format!("{}.{LISTED_MEMBER}", self.at)).ok()
     }
 }
 
-/// Путь набора схемы от макета по имени набора: `["A", "B"]` для вложенного
-/// набора `DataSet.A.DataSet.B`. `None` — набора с таким именем в схеме нет
-/// или их несколько.
-pub(crate) type DataSetLookup<'a> = &'a dyn Fn(&QualifiedAddress, &str) -> Option<Vec<String>>;
+/// Поиск узла схемы по имени в стадированном теле макета. Владелец — адрес
+/// макета (ищется набор данных, в том числе член объединения) или варианта
+/// настроек (ищется именованный элемент его структуры).
+pub(crate) type SchemaLookup<'a> = &'a dyn Fn(&QualifiedAddress, &str) -> NamedLookup;
+
+/// Ответ поиска узла схемы по имени: путь имён от владельца
+/// (`["A", "B"]` — `DataSet.A.DataSet.B` или `Item.A.Item.B`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NamedLookup {
+    /// Узел с таким именем один.
+    Found(Vec<String>),
+    /// Такого узла нет или тело макета не читается.
+    Missing,
+    /// Узлов с таким именем несколько; пути тех, что адресуемы.
+    Ambiguous(Vec<Vec<String>>),
+}
+
+/// Поиск, который ничего не знает о теле макета.
+pub(crate) fn no_schema_lookup(_: &QualifiedAddress, _: &str) -> NamedLookup {
+    NamedLookup::Missing
+}
+
+/// Узел, который назвало значение снятого аргумента.
+enum NamedNode {
+    Found(QualifiedAddress),
+    /// Имя повторяется: ветвь узлов этого вида и адреса совпавших.
+    Ambiguous {
+        branch: QualifiedAddress,
+        candidates: Vec<QualifiedAddress>,
+    },
+}
+
+/// Адрес владельца с путём имён: `{owner}.Kind.A.Kind.B`.
+fn owner_path(owner: &QualifiedAddress, kind: &str, path: &[String]) -> Option<QualifiedAddress> {
+    QualifiedAddress::parse(&format!(
+        "{owner}{}",
+        path.iter()
+            .map(|name| format!(".{kind}.{}", escape_name(name)))
+            .collect::<String>()
+    ))
+    .ok()
+}
+
+/// Начало адреса до последнего сегмента вида `kind` включительно.
+fn prefix_through(at: &QualifiedAddress, kind: NodeKind) -> Option<QualifiedAddress> {
+    let length = at
+        .segments()
+        .iter()
+        .rposition(|segment| segment.kind() == kind)?
+        + 1;
+    Some(QualifiedAddress {
+        source_set: at.source_set().to_string(),
+        segments: at.segments()[..length].to_vec(),
+    })
+}
+
+/// Найденное по имени: один узел, несколько или ни одного (тогда — узел
+/// верхнего уровня с этим именем, адрес которого `view` честно не найдёт).
+fn resolve_named(
+    owner: &QualifiedAddress,
+    kind: &str,
+    name: &str,
+    lookup: SchemaLookup<'_>,
+) -> Option<NamedNode> {
+    match lookup(owner, name) {
+        NamedLookup::Found(path) => owner_path(owner, kind, &path).map(NamedNode::Found),
+        NamedLookup::Missing => owner_path(owner, kind, &[name.to_string()]).map(NamedNode::Found),
+        NamedLookup::Ambiguous(paths) => Some(NamedNode::Ambiguous {
+            branch: QualifiedAddress::parse(&format!("{owner}.{kind}")).ok()?,
+            candidates: paths
+                .iter()
+                .map(|path| owner_path(owner, kind, path))
+                .collect::<Option<Vec<_>>>()?,
+        }),
+    }
+}
 
 /// Набор схемы, названный значением снятого `dataSet`: сегмент адреса вызова
 /// с этим именем; иначе найденный в схеме макета; иначе набор верхнего уровня.
+/// Несколько наборов с этим именем (члены разных объединений) — ветвь
+/// наборов макета и их адреса (#1357).
 fn named_data_set(
     at: &QualifiedAddress,
     name: &str,
-    data_sets: DataSetLookup<'_>,
-) -> Option<QualifiedAddress> {
+    data_sets: SchemaLookup<'_>,
+) -> Option<NamedNode> {
     let segments = at.segments();
-    let prefix = |length: usize| QualifiedAddress {
-        source_set: at.source_set().to_string(),
-        segments: segments[..length].to_vec(),
-    };
     if let Some(index) = segments
         .iter()
         .rposition(|segment| segment.kind() == NodeKind::DataSet && segment.name() == Some(name))
     {
-        return Some(prefix(index + 1));
+        return Some(NamedNode::Found(QualifiedAddress {
+            source_set: at.source_set().to_string(),
+            segments: segments[..=index].to_vec(),
+        }));
     }
-    let template = prefix(
-        segments
-            .iter()
-            .rposition(|segment| segment.kind() == NodeKind::Template)?
-            + 1,
-    );
-    let path = data_sets(&template, name).unwrap_or_else(|| vec![name.to_string()]);
-    QualifiedAddress::parse(&format!(
-        "{template}{}",
-        path.iter()
-            .map(|name| format!(".DataSet.{}", escape_name(name)))
-            .collect::<String>()
-    ))
-    .ok()
+    let template = prefix_through(at, NodeKind::Template)?;
+    resolve_named(&template, "DataSet", name, data_sets)
+}
+
+/// Элемент структуры варианта, названный значением снятого `group`, `parent`
+/// или `name`: цепочка именованных элементов варианта адреса вызова.
+fn named_structure_item(
+    at: &QualifiedAddress,
+    name: &str,
+    items: SchemaLookup<'_>,
+) -> Option<NamedNode> {
+    let setting = prefix_through(at, NodeKind::Setting)?;
+    resolve_named(&setting, "Item", name, items)
 }
 
 /// Подставляет `{at^Kind}`: начало `at` до последнего сегмента вида `Kind`
@@ -1947,7 +2207,7 @@ fn retired_argument_redirect_in(
     descriptor: OperationDescriptor,
     site: &OperationSite<'_>,
     args: &Map<String, Value>,
-    data_sets: DataSetLookup<'_>,
+    data_sets: SchemaLookup<'_>,
 ) -> Option<ArgumentRedirect> {
     entries
         .iter()
@@ -2039,7 +2299,7 @@ impl OperationRegistry {
         site: &OperationSite<'_>,
         args: &Map<String, Value>,
     ) -> Option<ArgumentRedirect> {
-        self.retired_argument_redirect_with(op, site, args, &|_, _| None)
+        self.retired_argument_redirect_with(op, site, args, &no_schema_lookup)
     }
 
     /// То же с поиском набора схемы по имени: снятый `dataSet` ведёт
@@ -2049,7 +2309,7 @@ impl OperationRegistry {
         op: &str,
         site: &OperationSite<'_>,
         args: &Map<String, Value>,
-        data_sets: DataSetLookup<'_>,
+        data_sets: SchemaLookup<'_>,
     ) -> Option<ArgumentRedirect> {
         let descriptor = self.lookup(op)?;
         retired_argument_redirect_in(RETIRED_ARGUMENTS, descriptor, site, args, data_sets)
@@ -2933,7 +3193,12 @@ mod tests {
     #[test]
     fn every_retired_argument_entry_builds_a_routable_member_address() {
         let registry = OperationRegistry::closed();
-        let duplicates = [DUPLICATE_ARGUMENT_OPERATIONS, SUBNODE_OPERATIONS].concat();
+        let duplicates = [
+            DUPLICATE_ARGUMENT_OPERATIONS,
+            SUBNODE_OPERATIONS,
+            DCS_NODE_OPERATIONS,
+        ]
+        .concat();
         let traits =
             SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let owners = [
@@ -3032,7 +3297,8 @@ mod tests {
             assert_eq!(
                 entry.address.ends_with(".{name}"),
                 entry.op.starts_with("predefinedItem.")
-                    || (entry.op == "property.remove" && entry.key.ends_with("propertyPath")),
+                    || (entry.op == "property.remove" && entry.key.ends_with("propertyPath"))
+                    || (entry.op == "structure.patch" && entry.key == "values.variant"),
                 "{}",
                 entry.op
             );
@@ -3235,6 +3501,357 @@ mod tests {
         }
     }
 
+    /// Операции пакета П6 (#1357): источник, вычисляемое поле, итог и
+    /// элемент структуры варианта задаются адресом.
+    const DCS_NODE_OPERATIONS: &[&str] = &[
+        "dataSource.set",
+        "dataSource.remove",
+        "calculatedField.set",
+        "calculatedField.remove",
+        "total.set",
+        "total.remove",
+        "filter.add",
+        "filter.set",
+        "filter.remove",
+        "filter.clear",
+        "selection.add",
+        "selection.set",
+        "selection.remove",
+        "selection.clear",
+        "order.add",
+        "order.set",
+        "order.remove",
+        "order.clear",
+        "conditionalAppearance.add",
+        "conditionalAppearance.remove",
+        "conditionalAppearance.clear",
+        "outputParameter.set",
+        "outputParameter.remove",
+        "structure.add",
+        "structure.patch",
+        "structure.remove",
+    ];
+
+    /// Новые узлы схемы (#1357): операция исполнима ровно на своём узле, а
+    /// прежний аргумент, называвший источник, вычисляемое поле, итог или
+    /// контейнер настроек, отказывает с адресом узла. Без схемы элемент
+    /// структуры, названный аргументом, — элемент верхнего уровня варианта.
+    #[test]
+    fn dcs_schema_nodes_and_structure_items_take_their_subject_from_the_address() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let schema = "main:Report.Sales.Template.Schema";
+        let setting = format!("{schema}.Setting.Main");
+        let group = format!("{setting}.Item.ByCategory");
+        let nested = format!("{group}.Item.Details");
+        // Матрица применимости: узел и операции, которые на нём исполнимы
+        // из этого набора; остальные операции набора на нём не исполнимы.
+        let container = [
+            "filter.add",
+            "filter.remove",
+            "selection.set",
+            "order.clear",
+            "conditionalAppearance.remove",
+            "outputParameter.set",
+            "outputParameter.remove",
+            "structure.add",
+        ];
+        let item = [&container[..], &["structure.patch", "structure.remove"]].concat();
+        let variant = [
+            &container[..],
+            &[
+                "dataParameter.add",
+                "dataParameter.remove",
+                "structure.set",
+                "variant.set",
+            ],
+        ]
+        .concat();
+        let matrix: Vec<(String, Vec<&str>)> = vec![
+            (
+                schema.to_string(),
+                vec![
+                    "dataSource.add",
+                    "calculatedField.add",
+                    "total.add",
+                    "variant.add",
+                ],
+            ),
+            (
+                format!("{schema}.DataSource.Local"),
+                vec!["dataSource.set", "dataSource.remove"],
+            ),
+            (
+                format!("{schema}.CalculatedField.Owner\\.Code"),
+                vec!["calculatedField.set", "calculatedField.remove"],
+            ),
+            (
+                format!("{schema}.Total.Amount"),
+                vec!["total.set", "total.remove"],
+            ),
+            (setting.clone(), variant),
+            (group.clone(), item.clone()),
+            (nested.clone(), item),
+        ];
+        let checked = [
+            "dataSource.add",
+            "dataSource.set",
+            "dataSource.remove",
+            "calculatedField.add",
+            "calculatedField.set",
+            "calculatedField.remove",
+            "total.add",
+            "total.set",
+            "total.remove",
+            "variant.add",
+            "variant.set",
+            "filter.add",
+            "filter.remove",
+            "selection.set",
+            "order.clear",
+            "conditionalAppearance.remove",
+            "outputParameter.set",
+            "outputParameter.remove",
+            "dataParameter.add",
+            "dataParameter.remove",
+            "structure.add",
+            "structure.set",
+            "structure.patch",
+            "structure.remove",
+        ];
+        for (raw, applicable) in matrix {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            for op in checked {
+                assert_eq!(
+                    registry.lookup(op).unwrap().applies_at(&site),
+                    applicable.contains(&op),
+                    "{op} at {raw}"
+                );
+            }
+        }
+        // Безымянная ветвь и элемент структуры вне варианта — не узлы
+        // операций.
+        for raw in [
+            format!("{schema}.DataSource"),
+            format!("{setting}.Item"),
+            format!("{schema}.Item.Link"),
+        ] {
+            let at = address(&raw);
+            if let Some(site) = OperationSite::new(&at, traits) {
+                for op in DCS_NODE_OPERATIONS {
+                    assert!(
+                        !registry.lookup(op).unwrap().applies_at(&site),
+                        "{op} at {raw}"
+                    );
+                }
+            }
+        }
+        let cases = [
+            (
+                "dataSource.set",
+                schema.to_string(),
+                json!({"values": {"name": "Local", "kind": "Local"}}),
+                "values.name",
+                format!("{schema}.DataSource.Local"),
+            ),
+            (
+                "dataSource.remove",
+                format!("{schema}.DataSet.Main"),
+                json!({"values": {"name": "Local"}}),
+                "values.name",
+                format!("{schema}.DataSource.Local"),
+            ),
+            (
+                "calculatedField.set",
+                schema.to_string(),
+                json!({"values": {"name": "Owner.Code", "expression": "1"}}),
+                "values.name",
+                format!("{schema}.CalculatedField.Owner\\.Code"),
+            ),
+            (
+                "calculatedField.remove",
+                schema.to_string(),
+                json!({"values": {"name": "Double"}}),
+                "values.name",
+                format!("{schema}.CalculatedField.Double"),
+            ),
+            (
+                "total.set",
+                schema.to_string(),
+                json!({"values": {"field": "Amount", "expression": "Сумма(Amount)"}}),
+                "values.field",
+                format!("{schema}.Total.Amount"),
+            ),
+            (
+                "total.remove",
+                schema.to_string(),
+                json!({"values": {"name": "Amount"}}),
+                "values.name",
+                format!("{schema}.Total.Amount"),
+            ),
+            (
+                "filter.add",
+                setting.clone(),
+                json!({"items": [{"field": "Amount", "group": "ByCategory"}]}),
+                "items[0].group",
+                group.clone(),
+            ),
+            (
+                "selection.set",
+                setting.clone(),
+                json!({"values": {"field": "Amount", "use": false, "group": "ByCategory"}}),
+                "values.group",
+                group.clone(),
+            ),
+            (
+                "outputParameter.remove",
+                group.clone(),
+                json!({"values": {"name": "Title", "group": "ByCategory"}}),
+                "values.group",
+                group.clone(),
+            ),
+            (
+                "structure.add",
+                setting.clone(),
+                json!({"items": [{"name": "Details", "parent": "ByCategory"}]}),
+                "items[0].parent",
+                group.clone(),
+            ),
+            (
+                "structure.patch",
+                setting.clone(),
+                json!({"values": {"name": "ByCategory", "groupBy": ["Category"]}}),
+                "values.name",
+                group.clone(),
+            ),
+            (
+                "structure.remove",
+                setting.clone(),
+                json!({"values": {"name": "Report.Rows"}}),
+                "values.name",
+                format!("{setting}.Item.Report\\.Rows"),
+            ),
+        ];
+        for (op, raw, args, location, expected) in cases {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let args = args.as_object().unwrap();
+            let redirect = registry
+                .retired_argument_redirect(op, &site, args)
+                .unwrap_or_else(|| panic!("{op} at {raw} keeps its retired argument"));
+            assert_eq!(redirect.location, location, "{op} at {raw}");
+            assert_eq!(redirect.at.to_string(), expected, "{op} at {raw}");
+            assert!(!redirect.ambiguous, "{op} at {raw}");
+            let target = OperationSite::new(&redirect.at, traits).unwrap();
+            assert!(
+                registry.lookup(op).unwrap().applies_at(&target),
+                "{op} applies at {expected}"
+            );
+        }
+        for op in DCS_NODE_OPERATIONS {
+            assert!(
+                RETIRED_ARGUMENTS
+                    .iter()
+                    .any(|entry| entry.op == *op && entry.retired),
+                "{op} has a retired entry"
+            );
+        }
+    }
+
+    /// Поиск по имени трёхзначен (#1357): найденный узел даёт свой адрес,
+    /// повторённое имя — ветвь узлов этого вида и адреса совпавших, а не
+    /// выдуманный узел верхнего уровня.
+    #[test]
+    fn a_repeated_schema_name_routes_next_to_the_branch_and_every_match() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let schema = "main:Report.Sales.Template.Schema";
+        let lookup = |owner: &QualifiedAddress, name: &str| {
+            let owner = owner.to_string();
+            match (owner.as_str(), name) {
+                (owner, "Twin") if owner == schema => super::NamedLookup::Ambiguous(vec![
+                    vec!["Left".to_string(), "Twin".to_string()],
+                    vec!["Right".to_string(), "Twin".to_string()],
+                ]),
+                (owner, "Rows") if owner.ends_with(".Setting.Main") => {
+                    super::NamedLookup::Ambiguous(vec![
+                        vec!["Table".to_string(), "Rows".to_string()],
+                        vec!["Chart".to_string(), "Rows".to_string()],
+                    ])
+                }
+                (owner, "Details") if owner.ends_with(".Setting.Main") => {
+                    super::NamedLookup::Found(vec!["Table".to_string(), "Details".to_string()])
+                }
+                _ => super::NamedLookup::Missing,
+            }
+        };
+        let lookup = &lookup as super::SchemaLookup<'_>;
+        let at = address(&format!("{schema}.DataSet.Main.Query"));
+        let site = OperationSite::new(&at, traits).unwrap();
+        let redirect = registry
+            .retired_argument_redirect_with(
+                "query.set",
+                &site,
+                json!({"values": {"dataSet": "Twin", "query": "ВЫБРАТЬ 1"}})
+                    .as_object()
+                    .unwrap(),
+                lookup,
+            )
+            .expect("the dataSet argument is retired");
+        assert!(redirect.ambiguous);
+        assert_eq!(redirect.at.to_string(), format!("{schema}.DataSet"));
+        assert_eq!(
+            redirect
+                .candidates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                format!("{schema}.DataSet.Left.DataSet.Twin.Query"),
+                format!("{schema}.DataSet.Right.DataSet.Twin.Query"),
+            ]
+        );
+        let setting = address(&format!("{schema}.Setting.Main"));
+        let site = OperationSite::new(&setting, traits).unwrap();
+        let redirect = registry
+            .retired_argument_redirect_with(
+                "filter.clear",
+                &site,
+                json!({"values": {"group": "Rows"}}).as_object().unwrap(),
+                lookup,
+            )
+            .expect("the group argument is retired");
+        assert!(redirect.ambiguous);
+        assert_eq!(redirect.at.to_string(), format!("{setting}.Item"));
+        assert_eq!(
+            redirect
+                .candidates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                format!("{setting}.Item.Table.Item.Rows"),
+                format!("{setting}.Item.Chart.Item.Rows"),
+            ]
+        );
+        let redirect = registry
+            .retired_argument_redirect_with(
+                "structure.remove",
+                &site,
+                json!({"values": {"name": "Details"}}).as_object().unwrap(),
+                lookup,
+            )
+            .expect("the name argument is retired");
+        assert!(!redirect.ambiguous);
+        assert_eq!(
+            redirect.at.to_string(),
+            format!("{setting}.Item.Table.Item.Details")
+        );
+    }
+
     /// Узел создаёт операция родителя: снятая `form.create` называет
     /// `form.add` на владельце формы, а `*.set` подузла знает, какая
     /// операция родителя создаёт его узел (#1354).
@@ -3341,13 +3958,6 @@ mod tests {
                 format!("{template}.Setting.Main"),
             ),
             (
-                "structure.patch",
-                format!("{template}.Setting.Main"),
-                json!({"values": {"variant": "Extra", "name": "G", "groupBy": ["A"]}}),
-                "values.variant",
-                format!("{template}.Setting.Extra"),
-            ),
-            (
                 "childSubsystem.remove",
                 "main:Subsystem.Sales".to_string(),
                 json!({"items": [{"name": "Orders"}]}),
@@ -3416,6 +4026,25 @@ mod tests {
                 "{op} at {raw} without {location}"
             );
         }
+        // Правка элемента структуры исполняется на его адресе (#1357):
+        // вариант, названный аргументом, ведёт к элементам его структуры.
+        let at = address(&format!("{template}.Setting.Main.Item.G"));
+        let site = OperationSite::new(&at, traits).unwrap();
+        let redirect = registry
+            .retired_argument_redirect(
+                "structure.patch",
+                &site,
+                json!({"values": {"variant": "Extra", "groupBy": ["A"]}})
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("the variant argument is retired");
+        assert!(redirect.listing);
+        assert_eq!(redirect.location, "values.variant");
+        assert_eq!(
+            redirect.at.to_string(),
+            format!("{template}.Setting.Extra.Item")
+        );
         // Набор, не названный в адресе вызова, ищется в схеме: член
         // объединения получает свой вложенный адрес; без схемы — верхний
         // уровень.
@@ -3425,15 +4054,19 @@ mod tests {
         let args = args.as_object().unwrap();
         let lookup = |schema: &QualifiedAddress, name: &str| {
             assert_eq!(schema.to_string(), template);
-            (name == "Member").then(|| vec!["Union".to_string(), "Member".to_string()])
+            if name == "Member" {
+                super::NamedLookup::Found(vec!["Union".to_string(), "Member".to_string()])
+            } else {
+                super::NamedLookup::Missing
+            }
         };
         for (lookup, expected) in [
             (
-                &lookup as super::DataSetLookup<'_>,
+                &lookup as super::SchemaLookup<'_>,
                 format!("{template}.DataSet.Union.DataSet.Member.Query"),
             ),
             (
-                &|_: &QualifiedAddress, _: &str| None,
+                &super::no_schema_lookup as super::SchemaLookup<'_>,
                 format!("{template}.DataSet.Member.Query"),
             ),
         ] {
@@ -3620,7 +4253,7 @@ mod tests {
                 registry.lookup("attribute.set").unwrap(),
                 &site,
                 json!({"values": {"name": "Goods"}}).as_object().unwrap(),
-                &|_, _| None,
+                &super::no_schema_lookup,
             ),
             None
         );

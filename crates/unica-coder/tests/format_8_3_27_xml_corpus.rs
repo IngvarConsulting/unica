@@ -2033,42 +2033,37 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         "structure.add",
         json!({"items":[{"name":"Corpus group","kind":"group","groupBy":["Value"]}]}),
     );
+    // Контейнер настроек — адрес: вариант или его элемент структуры (#1357).
     add(
-        ".Setting.Main",
+        ".Setting.Main.Item.Corpus group",
         "structure.add",
-        json!({"items":[{"name":"Details","kind":"group","parent":"Corpus group","groupBy":[]}]}),
+        json!({"items":[{"name":"Details","kind":"group","groupBy":[]}]}),
     );
-    for group in [None, Some("Corpus group")] {
-        let decorate = |mut value: Value| {
-            if let Some(group) = group {
-                value["group"] = json!(group);
-            }
-            value
-        };
+    for container in [".Setting.Main", ".Setting.Main.Item.Corpus group"] {
         add(
-            ".Setting.Main",
+            container,
             "selection.add",
-            json!({"items":[decorate(json!({"field":"Value"})),decorate(json!({"field":"Amount"}))]}),
+            json!({"items":[{"field":"Value"},{"field":"Amount"}]}),
         );
         add(
-            ".Setting.Main",
+            container,
             "filter.add",
-            json!({"items":[decorate(json!({"field":"Amount","comparison":"Greater","value":0}))]}),
+            json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]}),
         );
         add(
-            ".Setting.Main",
+            container,
             "order.add",
-            json!({"items":[decorate(json!({"field":"Amount","direction":"Desc"}))]}),
+            json!({"items":[{"field":"Amount","direction":"Desc"}]}),
         );
         add(
-            ".Setting.Main",
+            container,
             "conditionalAppearance.add",
-            json!({"items":[decorate(json!({"fields":["Amount"],"filter":[{"field":"Amount","comparison":"Greater","value":0}],"appearance":{"ЦветТекста":"web:Red"}}))]}),
+            json!({"items":[{"fields":["Amount"],"filter":[{"field":"Amount","comparison":"Greater","value":0}],"appearance":{"ЦветТекста":"web:Red"}}]}),
         );
         add(
-            ".Setting.Main",
+            container,
             "outputParameter.set",
-            json!({"values":decorate(json!({"name":"Заголовок","value":if group.is_some(){"Corpus group"}else{"Corpus report"}}))}),
+            json!({"values":{"name":"Заголовок","value":if container.ends_with("group"){"Corpus group"}else{"Corpus report"}}}),
         );
     }
     add(
@@ -6269,12 +6264,13 @@ fn dcs_corpus_exercises_xsd_order_sensitive_contracts() {
             .filter(|entry| entry["op"] == op)
             .collect::<Vec<_>>();
         assert_eq!(matching.len(), 2, "missing variant/group settings {op}");
-        let operand = if op == "outputParameter.set" {
-            &matching[1]["args"]["values"]
-        } else {
-            &matching[1]["args"]["items"][0]
-        };
-        assert_eq!(operand["group"], "Corpus group");
+        assert!(
+            matching[1]["args"]["at"]
+                .as_str()
+                .unwrap()
+                .ends_with(".Setting.Main.Item.Corpus group"),
+            "{op} addresses the structure item"
+        );
     }
     assert_eq!(
         find("dataParameter.add")["args"]["items"][0]["name"],

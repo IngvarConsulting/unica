@@ -119,7 +119,12 @@ impl OperationContract {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
         let query_target = "The query of an existing dataset: Template.DataSet.<name>.Query; repeat DataSet.<name> for a nested Union member. The address names the dataset; there is no dataset argument.";
-        let setting_target = "Existing DCS Template.Setting.<name>; the address names the variant. Optional group selects a unique named structure item; read Setting.Item first.";
+        let setting_target = "Existing DCS Template.Setting.<name>; the address names the variant.";
+        let container_target = "Existing DCS Template.Setting.<name> or its named structure item Setting.<name>.Item.<item>[.Item.<child>…]; the address names the settings container. A named item under unnamed groups is addressed from its nearest named ancestor; read Setting.<name>.Item first.";
+        let structure_target = "Existing named structure item Template.Setting.<name>.Item.<item>[.Item.<child>…]; the address names the item. Read Setting.<name>.Item first.";
+        let data_source_target = "Existing DCS Template.DataSource.<name>; the address names the source. Create a source with dataSource.add on the template.";
+        let calculated_target = "Existing DCS Template.CalculatedField.<dataPath>; the address names the calculated field. A dataPath dot is escaped: CalculatedField.A\\.B.";
+        let total_target = "Existing DCS Template.Total.<dataPath>; the address names the total. A dataPath dot is escaped: Total.A\\.B.";
         let field_target = "Existing DCS field Template.DataSet.<name>.Field.<dataPath>; repeat DataSet.<name> for a nested Union member. The address names the field; there is no field argument. A composite dataPath escapes its dot: Field.Owner\\.Code.";
         let parameter_target = "Existing DCS Template.Parameter.<name>; the address names the parameter. A missing parameter is refused; create it with parameter.add on the template.";
         let title = json!({"anyOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]});
@@ -155,7 +160,6 @@ impl OperationContract {
                         ),
                         ("userSettingID", text(true)),
                         ("userSettingPresentation", text(false)),
-                        ("group", text(true)),
                     ],
                     &[],
                 ),
@@ -171,7 +175,6 @@ impl OperationContract {
                         json!({"type":"string","enum":["group","table","chart"],"default":"group"}),
                     ),
                     ("groupBy", strings.clone()),
-                    ("parent", text(true)),
                     (
                         "axis",
                         json!({"type":"string","enum":["row","column","point","series"]}),
@@ -221,12 +224,12 @@ impl OperationContract {
             )
         };
         let (key, inner, target, effect, example_args) = match op {
-            "dataSource.add" | "dataSource.set" => {
-                let mut kind = json!({"type":"string","enum":["Local","External"]});
-                if op.ends_with("add") {kind["default"]=json!("Local");}
-                (if op.ends_with("add"){"items"}else{"values"},object(&[("name",text(true)),("kind",kind)],if op.ends_with("add"){&["name"][..]}else{&["name","kind"][..]}),schema_target,if op.ends_with("add"){"Add a new named source; an existing name is refused."}else{"Change only the kind of an existing named source. A missing name is refused; create it with dataSource.add."},if op.ends_with("add"){json!({"items":[{"name":"Database"}]})}else{json!({"values":{"name":"Database","kind":"Local"}})})
+            "dataSource.add" => {
+                let kind = json!({"type":"string","enum":["Local","External"],"default":"Local"});
+                ("items",object(&[("name",text(true)),("kind",kind)],&["name"]),schema_target,"Add a new named source; an existing name is refused. Change it later at Template.DataSource.<name>.",json!({"items":[{"name":"Database"}]}))
             }
-            "dataSource.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove an unused named source; a referenced source is refused.",json!({"values":{"name":"Unused"}})),
+            "dataSource.set" => ("values",object(&[("kind",json!({"type":"string","enum":["Local","External"]}))],&["kind"]),data_source_target,"Change only the kind of the addressed source.",json!({"values":{"kind":"Local"}})),
+            "dataSource.remove" => ("",json!({}),data_source_target,"Remove the addressed source; a source still referenced by a dataset is refused.",json!({})),
             "dataSet.add" => {
                 let inner=object(&[("name",text(true)),("kind",json!({"type":"string","enum":["Query","Object","Union"],"default":"Query"})),("dataSource",text(true)),("query",text(true)),("objectName",text(true))],&["name"]);
                 ("items",inner,"DCS Template adds a top-level dataset; an existing Union DataSet adds one member.","Create one Query/Object/Union dataset. Query requires dataSource and query; Object requires dataSource and objectName; Union members are separate dataSet.add operations. Add fields separately.",json!({"items":[{"name":"Data","kind":"Query","dataSource":"ИсточникДанных1","query":"ВЫБРАТЬ 1 КАК Amount"}]}))
@@ -262,44 +265,52 @@ impl OperationContract {
             "calculatedField.add" => {
                 let mut inner=aliases(object(&[("name",text(true)),("dataPath",text(true)),("expression",text(true)),("title",title.clone()),("type",text(false))],&["expression"]),&["name","dataPath"]);
                 inner["properties"]["useRestriction"]=restriction.clone();
-                ("items",inner,schema_target,"Add a calculated field; selection is independent.",json!({"items":[{"name":"DoubleAmount","expression":"Amount * 2"}]}))
+                ("items",inner,schema_target,"Add a calculated field; selection is independent. Change it later at Template.CalculatedField.<dataPath>.",json!({"items":[{"name":"DoubleAmount","expression":"Amount * 2"}]}))
             }
-            "total.add" => ("items",aliases(object(&[("field",text(true)),("dataPath",text(true)),("expression",text(false)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&[]),&["field","dataPath"]),schema_target,"Add a total with explicit expression/group. Omitted expression is Сумма(field).",json!({"items":[{"field":"Amount","expression":"Сумма(Amount)"}]})),
-            "total.remove" | "calculatedField.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove the named schema total/calculation only.",json!({"values":{"name":"Amount"}})),
+            "total.add" => ("items",aliases(object(&[("field",text(true)),("dataPath",text(true)),("expression",text(false)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&[]),&["field","dataPath"]),schema_target,"Add a total with explicit expression/group. Omitted expression is Сумма(field). Change it later at Template.Total.<dataPath>.",json!({"items":[{"field":"Amount","expression":"Сумма(Amount)"}]})),
+            "calculatedField.remove" => ("",json!({}),calculated_target,"Remove the addressed calculated field only; references to it are separate operations.",json!({})),
+            "total.remove" => ("",json!({}),total_target,"Remove the addressed total only.",json!({})),
             "variant.add" => ("items",optional_aliases(object(&[("name",text(true)),("title",title.clone()),("presentation",title.clone())],&["name"]),&["title","presentation"]),schema_target,"Create an empty settings variant. Configure selection and structure separately.",json!({"items":[{"name":"Additional","title":"Additional"}]})),
             "variant.set" => ("values",optional_aliases(object(&[("title",title.clone()),("presentation",title.clone())],&[]),&["title","presentation"]),setting_target,"Change the presentation of the addressed settings variant. A missing variant is refused; create it with variant.add on the template.",json!({"values":{"title":"Report"}})),
             "variant.remove" => ("",json!({}),setting_target,"Remove the addressed variant.",json!({})),
             "query.set" => ("values",aliases(object(&[("query",text(true)),("text",text(true))],&[]),&["query","text"]),query_target,"Replace query text. Supply literal text, not @file.",json!({"values":{"query":"ВЫБРАТЬ 1 КАК Amount"}})),
             "query.patch" => ("values",object(&[("find",text(true)),("replace",json!({"type":"string","default":""})),("once",json!({"type":"boolean","default":false}))],&["find"]),query_target,"Patch decoded query text. No matches fail; once=true requires exactly one. Comments/PI are preserved; a marker within replaced text anchors to replacement start.",json!({"values":{"find":"1 КАК Amount","replace":"2 КАК Amount","once":true}})),
-            "filter.add" | "filter.set" => (if op.ends_with("add"){"items"}else{"values"},filter(),setting_target,"Add a filter or patch one uniquely selected by field. Literal strings retain @, brackets and comparison words. Set requires a unique match.",if op.ends_with("add"){json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]})}else{json!({"values":{"field":"Amount","comparison":"Greater","value":1}})}),
-            "filter.remove" => ("values",object(&[("field",text(true)),("group",text(true))],&["field"]),setting_target,"Remove one uniquely selected filter; multiple matches fail.",json!({"values":{"field":"Amount"}})),
+            "filter.add" | "filter.set" => (if op.ends_with("add"){"items"}else{"values"},filter(),container_target,"Add a filter or patch one uniquely selected by field in the addressed settings container. Literal strings retain @, brackets and comparison words. Set requires a unique match.",if op.ends_with("add"){json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]})}else{json!({"values":{"field":"Amount","comparison":"Greater","value":1}})}),
+            "filter.remove" => ("values",object(&[("field",text(true))],&["field"]),container_target,"Remove one uniquely selected filter; multiple matches fail.",json!({"values":{"field":"Amount"}})),
             "selection.add" | "order.add" => {
-                let mut inner=optional_aliases(object(&[("field",text(true)),("dataPath",text(true)),("kind",json!({"type":"string","enum":["Field","Auto"],"default":"Field"})),("group",text(true))],&[]),&["field","dataPath"]);
+                let mut inner=optional_aliases(object(&[("field",text(true)),("dataPath",text(true)),("kind",json!({"type":"string","enum":["Field","Auto"],"default":"Field"}))],&[]),&["field","dataPath"]);
                 if op=="order.add" {inner["properties"]["direction"]=json!({"type":"string","enum":["Asc","Desc"],"default":"Asc"});}
-                ("items",inner,setting_target,"Add one explicit Field or Auto selection/order item. Field requires field; Auto has no field. Use index selectors for anonymous Auto items.",json!({"items":[{"field":"Amount"}]}))
+                ("items",inner,container_target,"Add one explicit Field or Auto selection/order item. Field requires field; Auto has no field. Use index selectors for anonymous Auto items.",json!({"items":[{"field":"Amount"}]}))
             }
-            "filter.clear" | "selection.clear" | "order.clear" | "conditionalAppearance.clear" => ("values",object(&[("group",text(true))],&[]),setting_target,"Clear the selected collection's elements. The collection's attributes/comments stay; an absent collection is unchanged.",json!({"values":{}})),
-            "dataParameter.add" | "dataParameter.set" | "outputParameter.set" => (if op=="dataParameter.add"{"items"}else{"values"},object(&[("name",text(true)),("value",typed_value.clone()),("valueType",text(true)),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",title.clone()),("group",text(true))],if op=="dataParameter.add"{&["name","value"][..]}else{&["name"][..]}),setting_target,"Set only supplied variant data/output parameter properties. Typed defaults, NULL, periods, references and localized values preserve their platform type; schema parameter declarations remain separate.",if op=="dataParameter.add"{json!({"items":[{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}]})}else{json!({"values":{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}})}),
+            "filter.clear" | "selection.clear" | "order.clear" | "conditionalAppearance.clear" => ("values",object(&[],&[]),container_target,"Clear the selected collection's elements. The collection's attributes/comments stay; an absent collection is unchanged.",json!({"values":{}})),
+            "dataParameter.add" | "dataParameter.set" | "outputParameter.set" => (if op=="dataParameter.add"{"items"}else{"values"},object(&[("name",text(true)),("value",typed_value.clone()),("valueType",text(true)),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",title.clone())],if op=="dataParameter.add"{&["name","value"][..]}else{&["name"][..]}),if op=="outputParameter.set"{container_target}else{setting_target},"Set only supplied variant data/output parameter properties. Typed defaults, NULL, periods, references and localized values preserve their platform type; schema parameter declarations remain separate.",if op=="dataParameter.add"{json!({"items":[{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}]})}else{json!({"values":{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}})}),
             "conditionalAppearance.add" => {
                 let mut condition = filter();
-                condition["properties"].as_object_mut().unwrap().remove("group");
                 condition["properties"]["comparison"]["default"] = json!("Equal");
-                ("items",object(&[("fields",strings.clone()),("filter",json!({"type":"array","items":condition})),("use",json!({"type":"boolean"})),("appearance",json!({"type":"object","minProperties":1,"additionalProperties":appearance_value.clone()})),("group",text(true))],&["fields","appearance"]),setting_target,"Add conditional appearance with explicit use, comparisons and typed value atoms. Formatting does not change field values.",json!({"items":[{"fields":["Amount"],"use":false,"appearance":{"Формат":{"valueType":"v8:LocalStringType","value":{"ru":"ЧДЦ=2"}}}}]}))
+                ("items",object(&[("fields",strings.clone()),("filter",json!({"type":"array","items":condition})),("use",json!({"type":"boolean"})),("appearance",json!({"type":"object","minProperties":1,"additionalProperties":appearance_value.clone()}))],&["fields","appearance"]),container_target,"Add conditional appearance with explicit use, comparisons and typed value atoms. Formatting does not change field values.",json!({"items":[{"fields":["Amount"],"use":false,"appearance":{"Формат":{"valueType":"v8:LocalStringType","value":{"ru":"ЧДЦ=2"}}}}]}))
             }
-            "structure.add" => ("items",structure(),setting_target,"Add one named group/table/chart; parent selects an existing unique item, axis selects its row/column/point/series. Add each child with a separate operation.",json!({"items":[{"name":"ByAmount","kind":"group","groupBy":["Amount"]}]})),
+            "structure.add" => ("items",structure(),container_target,"Add one named group/table/chart into the addressed variant or structure item; axis selects the row/column/point/series of an addressed table/chart. The name must be new in the variant. Add each child with a separate operation at its parent's address.",json!({"items":[{"name":"ByAmount","kind":"group","groupBy":["Amount"]}]})),
             "structure.set" => ("values",object(&[("name",text(true)),("groupBy",json!({"type":"array","items":text(true),"default":[]})),("details",json!({"type":"boolean","default":true}))],&[]),setting_target,"Replace the variant structure with one group and optional nested details. groupBy=[] is a details group; use structure.add for tables/charts and nested composition.",json!({"values":{"name":"ByAmount","groupBy":["Amount"],"details":true}})),
-            "structure.patch" => ("values",object(&[("name",text(true)),("groupBy",strings.clone())],&["name","groupBy"]),setting_target,"Patch groupBy of one uniquely named group. Other structure and settings are preserved. Names and fields are separate operands.",json!({"values":{"name":"ExistingGroup","groupBy":["Amount"]}})),
-            "structure.remove" => ("values",object(&[("name",text(true))],&["name"]),setting_target,"Remove a unique named structure item and its children.",json!({"values":{"name":"ExistingGroup"}})),
-            "calculatedField.set" => ("values",object(&[("name",text(true)),("expression",text(true)),("title",title.clone()),("type",text(true)),("useRestriction",restriction.clone())],&["name"]),schema_target,"Patch only supplied calculation properties.",json!({"values":{"name":"DoubleAmount","expression":"Amount * 3"}})),
-            "total.set" => ("values",object(&[("field",text(true)),("expression",text(true)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&["field"]),schema_target,"Patch supplied total expression/group.",json!({"values":{"field":"Amount","expression":"Максимум(Amount)"}})),
-            "selection.set" | "order.set" => {
-                let mut inner=object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0})),("group",text(true)),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",text(false))],&[]);
-                if op=="order.set"{inner["properties"]["direction"]=json!({"type":"string","enum":["Asc","Desc"]});}
-                ("values",inner,setting_target,"Patch one uniquely selected field item, preserving unspecified settings.",json!({"values":{"field":"Amount","use":false}}))
+            "structure.patch" => ("values",object(&[("groupBy",strings.clone())],&[]),structure_target,"Patch groupBy and supplied view properties of the addressed structure item. Other structure and settings are preserved.",json!({"values":{"groupBy":["Amount"]}})),
+            "structure.remove" => ("",json!({}),structure_target,"Remove the addressed structure item and its children.",json!({})),
+            "calculatedField.set" => {
+                let mut inner=object(&[("expression",text(true)),("title",title.clone()),("type",text(true)),("useRestriction",restriction.clone())],&[]);
+                inner["minProperties"]=json!(1);
+                ("values",inner,calculated_target,"Patch only supplied properties of the addressed calculated field.",json!({"values":{"expression":"Amount * 3"}}))
             }
-            "selection.remove" | "order.remove" => ("values",object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0})),("group",text(true))],&[]),setting_target,"Remove one uniquely selected field item.",json!({"values":{"field":"Amount"}})),
-            "dataParameter.remove" | "outputParameter.remove" => ("values",object(&[("name",text(true)),("group",text(true))],&["name"]),setting_target,"Remove the uniquely named settings parameter.",json!({"values":{"name":"Period"}})),
-            "conditionalAppearance.remove" => ("values",object(&[("index",json!({"type":"integer","minimum":0})),("group",text(true))],&["index"]),setting_target,"Remove the zero-based appearance item from the captured settings image; read props before selecting.",json!({"values":{"index":0}})),
+            "total.set" => {
+                let mut inner=object(&[("expression",text(true)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&[]);
+                inner["minProperties"]=json!(1);
+                ("values",inner,total_target,"Patch supplied expression or grouping list of the addressed total.",json!({"values":{"expression":"Максимум(Amount)"}}))
+            }
+            "selection.set" | "order.set" => {
+                let mut inner=object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0})),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",text(false))],&[]);
+                if op=="order.set"{inner["properties"]["direction"]=json!({"type":"string","enum":["Asc","Desc"]});}
+                ("values",inner,container_target,"Patch one uniquely selected field item, preserving unspecified settings.",json!({"values":{"field":"Amount","use":false}}))
+            }
+            "selection.remove" | "order.remove" => ("values",object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0}))],&[]),container_target,"Remove one uniquely selected field item.",json!({"values":{"field":"Amount"}})),
+            "dataParameter.remove" | "outputParameter.remove" => ("values",object(&[("name",text(true))],&["name"]),if op=="outputParameter.remove"{container_target}else{setting_target},"Remove the uniquely named settings parameter.",json!({"values":{"name":"Period"}})),
+            "conditionalAppearance.remove" => ("values",object(&[("index",json!({"type":"integer","minimum":0}))],&["index"]),container_target,"Remove the zero-based appearance item from the captured settings image; read props before selecting.",json!({"values":{"index":0}})),
             "dataSetLink.set" | "dataSetLink.remove" => ("values",object(&[("selector",object(&[("source",text(true)),("destination",text(true)),("sourceExpression",text(true)),("destinationExpression",text(true))],&["source","destination","sourceExpression","destinationExpression"])),("parameter",text(true)),("parameterListAllowed",json!({"type":"boolean"})),("required",json!({"type":"boolean"})),("condition",text(false)),("startExpression",text(false))],&["selector"]),schema_target,"Select one unique dataset link by its endpoints and expressions. Patch only supplied properties or remove the selected link.",json!({"values":{"selector":{"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount"},"condition":"Amount > 0"}})),
             "dataSetLink.add" => ("items",object(&[("source",text(true)),("destination",text(true)),("sourceExpression",text(true)),("destinationExpression",text(true)),("parameter",text(true)),("parameterListAllowed",json!({"type":"boolean"})),("required",json!({"type":"boolean"})),("condition",text(false)),("startExpression",text(false))],&["source","destination","sourceExpression","destinationExpression"]),schema_target,"Add one dataset link between existing top-level datasets.",json!({"items":[{"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount"}]})),
             _ => return None,
@@ -339,7 +350,7 @@ impl OperationContract {
             props.insert("userSettingID".into(), text(true));
             props.insert("userSettingPresentation".into(), title.clone());
             if op == "structure.patch" {
-                inner["required"] = json!(["name"]);
+                inner["minProperties"] = json!(1);
             }
         }
         let inner = if key == "items" { items(inner) } else { inner };

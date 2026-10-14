@@ -688,27 +688,49 @@ pub(crate) fn staged_template_format(
     dcs_mxl::template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw))
 }
 
-/// Путь набора с именем `name` в стадированной схеме макета `template`:
-/// по нему снятый `dataSet` ведёт к настоящему, в том числе вложенному,
-/// набору (#1353). `None` — схемы нет или набор не найден однозначно.
-pub(crate) fn staged_data_set_path(
+/// Поиск узла схемы по имени в стадированном макете: владелец — адрес
+/// макета (набор данных, в том числе член объединения, #1353) или его
+/// варианта настроек (именованный элемент структуры, #1357). Схемы нет —
+/// `Missing`.
+pub(crate) fn staged_schema_lookup(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    template: &crate::domain::address::QualifiedAddress,
+    owner: &crate::domain::address::QualifiedAddress,
     name: &str,
-) -> Option<Vec<String>> {
-    let (address, covered) = descriptor_node(template)?;
+) -> crate::domain::apply::NamedLookup {
+    use crate::domain::address::NodeKind;
+    use crate::domain::apply::NamedLookup;
+    let segments = owner.segments();
+    let (template, variant) = match segments.last() {
+        Some(last) if last.kind() == NodeKind::Template => (owner.clone(), None),
+        Some(last) if last.kind() == NodeKind::Setting && segments.len() > 1 => (
+            crate::domain::address::QualifiedAddress {
+                source_set: owner.source_set().to_string(),
+                segments: segments[..segments.len() - 1].to_vec(),
+            },
+            last.name(),
+        ),
+        _ => return NamedLookup::Missing,
+    };
+    let Some((address, covered)) = descriptor_node(&template) else {
+        return NamedLookup::Missing;
+    };
     if covered != template.segments().len() {
-        return None;
+        return NamedLookup::Missing;
     }
-    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+    let Some(bytes) = crate::infrastructure::logical_event_source::attached_resource_relative(
         &address,
         "Template.xml",
         binding.source_kind(),
     )
-    .ok()?;
-    let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
-    dcs_mxl::data_set_path_in_schema(&bytes, name)
+    .ok()
+    .and_then(|relative| admission.staged_state().ok()?.read(&relative).ok()?) else {
+        return NamedLookup::Missing;
+    };
+    match variant {
+        Some(variant) => dcs_mxl::structure_item_path_in_schema(&bytes, variant, name),
+        None => dcs_mxl::data_set_path_in_schema(&bytes, name),
+    }
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
