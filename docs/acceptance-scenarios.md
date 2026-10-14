@@ -4,16 +4,16 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **427 сценариев** реальных задач разработчика конфигурации и **1144 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **431 сценариев** реальных задач разработчика конфигурации и **1157 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 411 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 415 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 937 |
-| `refused` | умышленный типизированный отказ | 152 |
+| `ok` | результат | 947 |
+| `refused` | умышленный типизированный отказ | 155 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 26 |
 | `provider` | провайдер недоступен | 21 |
 | `unsupported` | закрытый список | 3 |
@@ -127,11 +127,11 @@
 | `form.add` | `items` | да | S125, S126, S129, S136, S137, S138, S145, S273, S283, S312, S388, S412, S416 |
 | `form.set` | `values` | да | S127 |
 | `form.remove` | только `at` | да | S128, S295 |
-| `element.add` | `items` | да | S130, S139, S141, S142, S388, S393, S407, S408 |
-| `element.remove` | только `at` | да | S131 |
+| `element.add` | `items` | да | S130, S139, S141, S142, S388, S393, S407, S408, S428 |
+| `element.remove` | только `at` | да | S131, S430 |
 | `formAttribute.add` | `items` | да | S132, S388 |
 | `formCommand.add` | `items` | да | S133, S135, S388 |
-| `event.bind` | `values` | да | S134, S140, S143, S325, S404, S405 |
+| `event.bind` | `values` | да | S134, S140, S143, S325, S404, S405, S429 |
 
 ### Роли и права
 
@@ -146,7 +146,7 @@
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
 | `dataSource.add` | `items` | да | S361 |
-| `dataSource.set` | `values` | да | S361, S427 |
+| `dataSource.set` | `values` | да | S361, S431 |
 | `dataSource.remove` | только `at` | да | S361, S366 |
 | `dataSet.add` | `items` | да | S361, S367, S368, S370, S380 |
 | `dataSet.set` | `values` | да | S361 |
@@ -169,7 +169,7 @@
 | `variant.remove` | только `at` | да | S363 |
 | `query.set` | `values` | да | S188, S326, S327, S329, S361, S412 |
 | `query.patch` | `values` | да | S189, S327, S329, S361, S367 |
-| `filter.add` | `items` | да | S186, S363, S364, S365, S427 |
+| `filter.add` | `items` | да | S186, S363, S364, S365, S431 |
 | `filter.set` | `values` | да | S363 |
 | `filter.remove` | `values` | да | S363 |
 | `filter.clear` | `values` | да | S187, S365, S369 |
@@ -184,7 +184,7 @@
 | `conditionalAppearance.clear` | `values` | да | S365 |
 | `structure.add` | `items` | да | S364, S375 |
 | `structure.set` | `values` | да | S193, S364, S412 |
-| `structure.patch` | `values` | да | S326, S327, S364, S375, S427 |
+| `structure.patch` | `values` | да | S326, S327, S364, S375, S431 |
 | `structure.remove` | только `at` | да | S364 |
 | `dataSetLink.add` | `items` | да | S361, S370 |
 | `calculatedField.set` | `values` | да | S371 |
@@ -262,8 +262,8 @@
 | --- | --- |
 | `cf` | S224, S267, S271, S301 |
 | `cfe` | S290, S313, S314, S397 |
-| `form` | S225, S268, S302, S325, S404 |
-| `dcs` | S194, S326, S328, S329, S330, S361, S364, S380, S427 |
+| `form` | S225, S268, S302, S325, S404, S427 |
+| `dcs` | S194, S326, S328, S329, S330, S361, S364, S380, S431 |
 | `mxl` | S201, S331, S332, S335, S350 |
 | `role` | S175, S179, S269, S291, S303 |
 | `subsystem` | S210, S212, S270 |
@@ -274,9 +274,9 @@
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 243 |
-| `unica.view` | 134 |
-| `unica.check` | 73 |
+| `unica.apply` | 246 |
+| `unica.view` | 137 |
+| `unica.check` | 74 |
 | `unica.search` | 36 |
 | `unica.docs` | 27 |
 | `unica.diff` | 17 |
@@ -284,7 +284,7 @@
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (56) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (34) · Код BSL (46) · Роли и права (16) · СКД (45) · Макеты (15) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
+Области: Навигация и чтение (56) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (38) · Код BSL (46) · Роли и права (16) · СКД (45) · Макеты (15) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
 
 ### Навигация и чтение
 
@@ -496,13 +496,17 @@
 | S312 | Повторно добавить существующую форму элемента — отказ без дубля регистрации | `source` | `apply` `form.add` | `refused` |
 | S325 | Проверка формы принимает прежнюю трёхпараметровую сигнатуру обработчика выбора и предупреждает об обработчике с сигнатурой другого события (#791) | `source` | `apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`check` валидаторы `form`<br>`apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`check` валидаторы `form` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S388 | В конфигурации с единственным языком en заголовки и подсказки новых элементов формы и заголовки СКД пишутся на en; ru не появляется | `source` | `apply` `form.add` `formAttribute.add` `element.add` `formCommand.add`<br>`apply`<br>`apply` `field.add` `field.set` `parameter.add` `variant.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok` |
-| S393 | element.add на адресе элемента формы отказывает без записи, next ведёт к can формы, а исправленный вызов на форме с into строит предпросмотр | `source` | `view`<br>`apply` `element.add`<br>`view`<br>`apply` `element.add` | `ok`<br>`refused`<br>`ok`<br>`ok` |
+| S393 | element.add на адресе события поля отказывает без записи; next минует поле, в которое элемент не добавить, и ведёт к can формы, а исправленный вызов на адресе группы строит предпросмотр | `source` | `view`<br>`apply` `element.add`<br>`view`<br>`apply` `element.add` | `ok`<br>`refused`<br>`ok`<br>`ok` |
 | S404 | Проверка формы принимает обработчик выбора таблицы с полной сигнатурой события, `Знач` и необязательным лишним параметром | `source` | `apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`check` валидаторы `form` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S405 | Реализовать обработчик события элемента формы: `event.implement` пишет `Элемент` первым параметром, `view` показывает событие реализованным; обработчик с полной сигнатурой, написанный вручную, тоже реализован, а с сигнатурой другого события элемента — нет | `source` | `apply` `event.implement`<br>`apply`<br>`view`<br>`view`<br>`apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`view`<br>`apply` `event.bind`<br>`apply`<br>`apply` `code.insert`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S406 | Реализовать обработчик события самой формы: `event.implement` пишет сигнатуру без `Элемент`, `view` показывает событие реализованным | `source` | `apply` `event.implement`<br>`apply`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok` |
-| S407 | Кнопка, добавленная через into в корневую или табличную автоматическую командную панель, ложится в её ChildItems как CommandBarButton | `source` | `apply` `element.add`<br>`apply`<br>`apply` `element.add`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok` |
-| S408 | element.add с into, имя которого носят две командные панели формы, отказывает без записи | `source` | `view`<br>`apply` `element.add` | `ok`<br>`refused` |
+| S407 | Кнопка, добавленная по адресу корневой или табличной автоматической командной панели, ложится в её ChildItems как CommandBarButton | `source` | `apply` `element.add`<br>`apply`<br>`apply` `element.add`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok` |
+| S408 | element.add по адресу командной панели, имя которой носят обе командные панели формы, отказывает без записи | `source` | `view`<br>`apply` `element.add` | `ok`<br>`refused` |
 | S416 | Форма справочника регистрируется после его табличных частей и имеющихся форм, а макет — перед командами, как в выгрузке платформы | `source` | `apply` `form.add`<br>`apply`<br>`apply` `command.add`<br>`apply`<br>`apply` `template.add`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S427 | Проверка формы называет команду с отображением из набора кнопки (PictureAndText): платформа такую форму не загружает; команда со своим значением TextPicture замечаний не получает | `source` | `check` валидаторы `form` | `ok` |
+| S428 | Прежний items[].into у element.add отказывает без записи; next ведёт к адресу контейнера по его пути в форме (командная панель таблицы — через таблицу), его can содержит element.add, и вызов на этом адресе строит предпросмотр | `source` | `view`<br>`apply` `element.add`<br>`view`<br>`apply` `element.add` | `ok`<br>`refused`<br>`ok`<br>`ok` |
+| S429 | Прежние values.element и values.event у event.bind отказывают без записи; next ведёт к узлу события элемента, его can содержит event.bind, и привязка на этом адресе применяется | `source` | `view`<br>`apply` `event.bind`<br>`view`<br>`apply` `event.bind`<br>`apply` | `ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
+| S430 | element.remove на форме с именем в items отказывает без записи; next ведёт к адресу элемента, а удаление по этому адресу строит предпросмотр | `source` | `view`<br>`apply` `element.remove`<br>`apply` `element.remove` | `ok`<br>`refused`<br>`ok` |
 
 ### Код BSL
 
@@ -624,7 +628,7 @@
 | S412 | Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора; снятая form.create ведёт к form.add на владельце, и форма создаётся там | `source` | `view`<br>`apply` `query.set`<br>`view`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `structure.set`<br>`apply` `form.create`<br>`apply` `form.add`<br>`apply` `childSubsystem.remove`<br>`view`<br>`view` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`ok` |
 | S419 | Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр | `source` | `view`<br>`apply` `variant.set`<br>`apply` `variant.set`<br>`apply` `parameter.set`<br>`apply` `field.set`<br>`apply` `field.set` `fieldRole.set`<br>`apply` `code.insert`<br>`apply` `code.insert` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`ok` |
 | S423 | Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес и поле читается по нему; снятая форма field.set с values.field отказывает без записи с next к этому адресу, а field.set и fieldRole.set на нём меняют поле, что видно при чтении | `source` | `apply` `field.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `field.set`<br>`apply` `field.set` `fieldRole.set`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
-| S427 | Источник данных и именованная группа варианта читаются своими адресами и правятся на них; прежние values.name и group отказывают без записи с next к адресу узла, исправленный вызов проходит предпросмотр и публикуется | `source` | `view`<br>`view`<br>`apply` `dataSource.set`<br>`apply` `dataSource.set`<br>`view`<br>`apply` `structure.patch`<br>`apply` `filter.add`<br>`apply` `structure.patch` `filter.add`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
+| S431 | Источник данных и именованная группа варианта читаются своими адресами и правятся на них; прежние values.name и group отказывают без записи с next к адресу узла, исправленный вызов проходит предпросмотр и публикуется | `source` | `view`<br>`view`<br>`apply` `dataSource.set`<br>`apply` `dataSource.set`<br>`view`<br>`apply` `structure.patch`<br>`apply` `filter.add`<br>`apply` `structure.patch` `filter.add`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Макеты
 
@@ -820,7 +824,7 @@
 
 | № | Задача | Профиль | Провод | Классы шагов |
 | --- | --- | --- | --- | --- |
-| S356 | Перенести существующее поле вместе с companions в существующую группу: element.move пока отсутствует (#919) | `source` | `apply` `element.move` | `gap` / `unsupported` |
+| S356 | Перенести существующее поле вместе с companions в существующую группу: element.move по адресу поля пока отсутствует (#919) | `source` | `apply` `element.move` | `gap` / `unsupported` |
 
 ### Применение изменений
 

@@ -1157,7 +1157,7 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 | `modifiesSavedData` | bool | Команда изменяет сохраняемые данные (`<ModifiesSavedData>`); эмитится только `true` |
 | `shortcut` | string | Клавиатурное сочетание |
 | `picture` | string \| object | Ссылка на картинку (`StdPicture.Name`; `abs:X` → `<xr:Abs>`). Скаляр ИЛИ объект `{src, loadTransparent?, transparentPixel?}` (как у `button`, §«button») |
-| `representation` | string | `Auto`, `Picture`, `Text`, `PictureAndText` |
+| `representation` | string | `Auto`, `Text`, `Picture`, `TextPicture`. Набор команды отличается от набора кнопки: `PictureAndText` у команды отклоняется до записи, платформа такую форму не загружает |
 
 ---
 

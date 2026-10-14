@@ -1565,6 +1565,7 @@ fn project_known_form_event(
                 name: binding.event.as_str(),
                 handler: binding.handler.as_str(),
                 call_type: binding.call_type.as_deref(),
+                data_path: None,
             },
         )
         .is_ok()
