@@ -2053,34 +2053,7 @@ impl LogicalViewReadAuthority<'_> {
                 let payload = self
                     .read
                     .dcs_payload(child, &mut || self.read_checkpoint())?;
-                vec![
-                    (
-                        NodeKind::DataSet,
-                        payload
-                            .get("dataSets")
-                            .and_then(Value::as_array)
-                            .map_or(0, Vec::len),
-                    ),
-                    (
-                        NodeKind::Setting,
-                        payload
-                            .get("variants")
-                            .and_then(Value::as_array)
-                            .map_or(0, Vec::len),
-                    ),
-                    (
-                        NodeKind::Item,
-                        ["dataSources", "links"]
-                            .iter()
-                            .map(|key| {
-                                payload
-                                    .get(*key)
-                                    .and_then(Value::as_array)
-                                    .map_or(0, Vec::len)
-                            })
-                            .sum(),
-                    ),
-                ]
+                crate::infrastructure::v13_read_projection::dcs_template_branches(&payload)
             }
             Ok(MetadataChildProfile::Template(MetadataTemplateType::SpreadsheetDocument)) => {
                 let payload = self

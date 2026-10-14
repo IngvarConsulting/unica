@@ -157,9 +157,12 @@ pub(super) fn form_item_at<'a>(
     }
 }
 
-/// Путь элемента с именем `name` от корня формы. `None` — элемента нет или
-/// имя носят несколько элементов.
-pub(super) fn form_item_path(elements: &[FormInfoElement], name: &str) -> Option<Vec<String>> {
+/// Путь элемента с именем `name` от корня формы: один, ни одного или
+/// несколько элементов с этим именем.
+pub(super) fn form_item_path(
+    elements: &[FormInfoElement],
+    name: &str,
+) -> crate::domain::apply::NamedLookup {
     fn collect(
         elements: &[FormInfoElement],
         name: &str,
@@ -177,9 +180,10 @@ pub(super) fn form_item_path(elements: &[FormInfoElement], name: &str) -> Option
     }
     let mut found = Vec::new();
     collect(elements, name, &mut Vec::new(), &mut found);
-    match found.as_slice() {
-        [path] => Some(path.clone()),
-        _ => None,
+    match found.len() {
+        0 => crate::domain::apply::NamedLookup::Missing,
+        1 => crate::domain::apply::NamedLookup::Found(found.remove(0)),
+        _ => crate::domain::apply::NamedLookup::Ambiguous(found),
     }
 }
 

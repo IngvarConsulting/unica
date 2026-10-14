@@ -658,12 +658,22 @@ const FIXTURE_COVERAGE: &[FixtureCoverage] = &[
             (RouteClass::Form, "Event"),
             (RouteClass::Module, "Event"),
             (RouteClass::Module, "Method"),
+            // Узлы схемы (#1357): источник, итог и элемент структуры
+            // варианта с вложенной таблицей и диаграммой.
+            (RouteClass::Dcs, "DataSource"),
+            (RouteClass::Dcs, "Total"),
+            (RouteClass::Dcs, "Item"),
         ],
     ),
     (
         "workspace-dcs",
         &[RouteClass::Dcs],
-        &[(RouteClass::Metadata, "Template")],
+        &[
+            (RouteClass::Metadata, "Template"),
+            (RouteClass::Dcs, "DataSource"),
+            (RouteClass::Dcs, "Item"),
+            (RouteClass::Dcs, "Setting"),
+        ],
     ),
     (
         "workspace-mxl",
@@ -1621,8 +1631,14 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
         &|_| None,
         &|_| None,
         &|template, name| {
-            (template.to_string() == schema && name == "Member")
-                .then(|| vec!["Union".to_string(), "Member".to_string()])
+            if template.to_string() == schema && name == "Member" {
+                crate::domain::apply::NamedLookup::Found(vec![
+                    "Union".to_string(),
+                    "Member".to_string(),
+                ])
+            } else {
+                crate::domain::apply::NamedLookup::Missing
+            }
         },
     )
     .expect_err("the dataSet argument is retired");
@@ -1834,6 +1850,102 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
     );
     assert_eq!(refusal.next.len(), 1);
     assert_eq!(refusal.next[0]["args"]["at"], "cf:Catalog.Items");
+}
+
+/// Новые узлы схемы (#1357): снятый `group`, `parent` или `name` ведёт
+/// `next` к `can` элемента структуры и к ветви `Setting.V.Item`, а снятое
+/// имя источника, вычисляемого поля и итога — к их адресу. Повторённое имя
+/// ведёт к ветви и к `can` каждого совпавшего элемента.
+#[test]
+fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
+    let traits = SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+    let schema = "cf:Report.Sales.Template.Schema";
+    let setting = format!("{schema}.Setting.Main");
+    let lookup = |owner: &QualifiedAddress, name: &str| match name {
+        "Details" if owner.to_string().ends_with(".Setting.Main") => {
+            crate::domain::apply::NamedLookup::Found(vec!["Top".into(), "Details".into()])
+        }
+        "Twin" if owner.to_string().ends_with(".Setting.Main") => {
+            crate::domain::apply::NamedLookup::Ambiguous(vec![
+                vec!["Top".into(), "Twin".into()],
+                vec!["Table".into(), "Twin".into()],
+            ])
+        }
+        _ => crate::domain::apply::NamedLookup::Missing,
+    };
+    for (at, op, args, location, expected) in [
+        (
+            setting.clone(),
+            "filter.add",
+            json!({"items": [{"field": "Amount", "group": "Details"}]}),
+            "ops[0].args.items[0].group",
+            vec![
+                format!("{setting}.Item.Top.Item.Details.Can.filter.add"),
+                format!("{setting}.Item.Top.Item"),
+            ],
+        ),
+        (
+            setting.clone(),
+            "structure.patch",
+            json!({"values": {"name": "Details", "groupBy": ["Amount"]}}),
+            "ops[0].args.values.name",
+            vec![
+                format!("{setting}.Item.Top.Item.Details.Can.structure.patch"),
+                format!("{setting}.Item.Top.Item"),
+            ],
+        ),
+        (
+            setting.clone(),
+            "order.clear",
+            json!({"values": {"group": "Twin"}}),
+            "ops[0].args.values.group",
+            vec![
+                format!("{setting}.Item"),
+                format!("{setting}.Item.Top.Item.Twin.Can.order.clear"),
+                format!("{setting}.Item.Table.Item.Twin.Can.order.clear"),
+            ],
+        ),
+        (
+            schema.to_string(),
+            "total.set",
+            json!({"values": {"field": "Amount", "expression": "Сумма(Amount)"}}),
+            "ops[0].args.values.field",
+            vec![
+                format!("{schema}.Total.Amount.Can.total.set"),
+                format!("{schema}.Total"),
+            ],
+        ),
+        (
+            schema.to_string(),
+            "dataSource.remove",
+            json!({"values": {"name": "Local"}}),
+            "ops[0].args.values.name",
+            vec![
+                format!("{schema}.DataSource.Local.Can.dataSource.remove"),
+                format!("{schema}.DataSource"),
+            ],
+        ),
+    ] {
+        let request = apply_request(&at, op, args);
+        let refusal = super::v13_service::preflight_apply_operations_with(
+            &request,
+            traits,
+            &|_| None,
+            &|_| None,
+            &lookup,
+        )
+        .expect_err("a retired DCS argument refuses before planning");
+        let case = format!("{op} at {at}");
+        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{case}");
+        assert_eq!(refusal.at.as_deref(), Some(location), "{case}");
+        let actual = refusal
+            .next
+            .iter()
+            .map(|next| next["args"]["at"].clone())
+            .collect::<Vec<_>>();
+        let expected = expected.into_iter().map(|at| json!(at)).collect::<Vec<_>>();
+        assert_eq!(actual, expected, "{case}");
+    }
 }
 
 /// Снятые аргументы членов метаданных: прежний вызов на владельце получает

@@ -9348,15 +9348,15 @@
        "pointer": "/data/branches",
        "eq": [
         {
+         "at": "cf:Report.F05Report.Template.F05Schema.DataSource",
+         "count": 1
+        },
+        {
          "at": "cf:Report.F05Report.Template.F05Schema.DataSet",
          "count": 1
         },
         {
          "at": "cf:Report.F05Report.Template.F05Schema.Setting",
-         "count": 1
-        },
-        {
-         "at": "cf:Report.F05Report.Template.F05Schema.Item",
          "count": 1
         }
        ]
@@ -9412,14 +9412,15 @@
        "pointer": "/data/items",
        "eq": [
         {
-         "index": 0,
-         "parentIndex": null,
-         "axis": null,
-         "kind": "Group",
-         "name": "F05Group",
-         "groupBy": [
-          "Category"
-         ]
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+         "kind": "Item",
+         "title": "F05Group",
+         "props": {
+          "kind": "Group",
+          "groupBy": [
+           "Category"
+          ]
+         }
         }
        ]
       }
@@ -9631,7 +9632,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Can.structure.patch"
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group.Can.structure.patch"
      },
      "expect": [
       "ok"
@@ -9658,13 +9659,12 @@
     {
      "tool": "unica.apply",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
       "ops": [
        {
         "op": "structure.patch",
         "args": {
          "values": {
-          "name": "F05Group",
           "groupBy": [
            "Amount"
           ]
@@ -9801,14 +9801,15 @@
        "pointer": "/data/items",
        "eq": [
         {
-         "index": 0,
-         "parentIndex": null,
-         "axis": null,
-         "kind": "Group",
-         "name": "F05Group",
-         "groupBy": [
-          "Amount"
-         ]
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+         "kind": "Item",
+         "title": "F05Group",
+         "props": {
+          "kind": "Group",
+          "groupBy": [
+           "Amount"
+          ]
+         }
         }
        ]
       }
@@ -10049,7 +10050,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group"
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.Missing"
      },
      "expect": [
       "refused"
@@ -10061,7 +10062,7 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "not_found: DCS structure items are rows of Setting.<name>.Item, not named logical nodes",
+     "refusal": "not_found: DCS structure item `Missing` was not found uniquely; read the Item collection of its parent",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -10069,7 +10070,7 @@
         {
          "code": "not_found",
          "outcome": "fixCall",
-         "message": "DCS structure items are rows of Setting.<name>.Item, not named logical nodes"
+         "message": "DCS structure item `Missing` was not found uniquely; read the Item collection of its parent"
         }
        ]
       }
@@ -10272,8 +10273,8 @@
        {
         "op": "structure.patch",
         "args": {
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.Missing",
          "values": {
-          "name": "Missing",
           "groupBy": [
            "Amount"
           ]
@@ -10292,7 +10293,7 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "bad_value: Missing was not found",
+     "refusal": "bad_value: structure item `Missing` was not found uniquely; read the Item collection of its parent",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -10300,7 +10301,7 @@
         {
          "code": "bad_value",
          "outcome": "fixCall",
-         "message": "Missing was not found"
+         "message": "structure item `Missing` was not found uniquely; read the Item collection of its parent"
         }
        ]
       }
@@ -10314,8 +10315,8 @@
        {
         "op": "structure.patch",
         "args": {
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
          "values": {
-          "name": "F05Group",
           "groupBy": [
            "Amount"
           ]
@@ -10325,8 +10326,8 @@
        {
         "op": "structure.patch",
         "args": {
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.Missing",
          "values": {
-          "name": "Missing",
           "groupBy": [
            "Category"
           ]
@@ -10345,7 +10346,7 @@
        "eq": "$capture.unchanged"
       }
      ],
-     "refusal": "bad_value: Missing was not found",
+     "refusal": "bad_value: structure item `Missing` was not found uniquely; read the Item collection of its parent",
      "assertions": [
       {
        "pointer": "/diagnostics",
@@ -10353,7 +10354,7 @@
         {
          "code": "bad_value",
          "outcome": "fixCall",
-         "message": "Missing was not found"
+         "message": "structure item `Missing` was not found uniquely; read the Item collection of its parent"
         }
        ]
       }
@@ -10367,8 +10368,8 @@
        {
         "op": "structure.patch",
         "args": {
+         "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
          "values": {
-          "name": "F05Group",
           "groupBy": "Amount"
          }
         }
@@ -11053,11 +11054,11 @@
        "pointer": "/data/branches",
        "eq": [
         {
-         "at": "cf:Report.F05Report.Template.NewSkeleton.Setting",
+         "at": "cf:Report.F05Report.Template.NewSkeleton.DataSource",
          "count": 1
         },
         {
-         "at": "cf:Report.F05Report.Template.NewSkeleton.Item",
+         "at": "cf:Report.F05Report.Template.NewSkeleton.Setting",
          "count": 1
         }
        ]
@@ -21296,8 +21297,8 @@
        {
         "op": "dataSource.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSource.Disposable",
          "values": {
-          "name": "Disposable",
           "kind": "Local"
          }
         }
@@ -21880,9 +21881,7 @@
        {
         "op": "dataSource.remove",
         "args": {
-         "values": {
-          "name": "Disposable"
-         }
+         "at": "cf:Report.F05Report.Template.PrimitiveData.DataSource.Disposable"
         }
        }
       ]
@@ -22350,17 +22349,13 @@
        {
         "op": "calculatedField.remove",
         "args": {
-         "values": {
-          "name": "Double"
-         }
+         "at": "cf:Report.F05Report.Template.PrimitiveParameters.CalculatedField.Double"
         }
        },
        {
         "op": "total.remove",
         "args": {
-         "values": {
-          "name": "Amount"
-         }
+         "at": "cf:Report.F05Report.Template.PrimitiveParameters.Total.Amount"
         }
        }
       ]
@@ -23213,10 +23208,10 @@
        {
         "op": "structure.add",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Table",
          "items": [
           {
            "name": "Rows",
-           "parent": "Table",
            "axis": "row",
            "groupBy": [
             "Category"
@@ -23224,15 +23219,21 @@
           },
           {
            "name": "Columns",
-           "parent": "Table",
            "axis": "column",
            "groupBy": [
             "Amount"
            ]
-          },
+          }
+         ]
+        }
+       },
+       {
+        "op": "structure.add",
+        "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Chart",
+         "items": [
           {
            "name": "Points",
-           "parent": "Chart",
            "axis": "point",
            "groupBy": [
             "Category"
@@ -23240,15 +23241,21 @@
           },
           {
            "name": "Series",
-           "parent": "Chart",
            "axis": "series",
            "groupBy": [
             "Amount"
            ]
-          },
+          }
+         ]
+        }
+       },
+       {
+        "op": "structure.add",
+        "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone",
+         "items": [
           {
            "name": "Child",
-           "parent": "Standalone",
            "groupBy": [
             "Amount"
            ]
@@ -23352,8 +23359,8 @@
        {
         "op": "structure.patch",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone",
          "values": {
-          "name": "Standalone",
           "groupBy": [
            "Amount"
           ]
@@ -23363,10 +23370,10 @@
        {
         "op": "selection.add",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone.Item.Child",
          "items": [
           {
-           "field": "Amount",
-           "group": "Child"
+           "field": "Amount"
           }
          ]
         }
@@ -23374,12 +23381,12 @@
        {
         "op": "filter.add",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone.Item.Child",
          "items": [
           {
            "field": "Amount",
            "comparison": "Greater",
-           "value": 0,
-           "group": "Child"
+           "value": 0
           }
          ]
         }
@@ -23387,11 +23394,11 @@
        {
         "op": "order.add",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Standalone.Item.Child",
          "items": [
           {
            "field": "Amount",
-           "direction": "Asc",
-           "group": "Child"
+           "direction": "Asc"
           }
          ]
         }
@@ -23501,9 +23508,7 @@
        {
         "op": "structure.remove",
         "args": {
-         "values": {
-          "name": "Chart"
-         }
+         "at": "cf:Report.F05Report.Template.PrimitiveStructure.Setting.Основной.Item.Chart"
         }
        }
       ]
@@ -24113,9 +24118,7 @@
        {
         "op": "dataSource.remove",
         "args": {
-         "values": {
-          "name": "LocalSource"
-         }
+         "at": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource"
         }
        }
       ]
@@ -25215,28 +25218,36 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/items/1/kind",
+       "pointer": "/data/items/0/kind",
        "eq": "DataSetLink"
       },
       {
-       "pointer": "/data/items/1/source",
+       "pointer": "/data/items/0/source",
        "eq": "Left"
       },
       {
-       "pointer": "/data/items/1/condition",
+       "pointer": "/data/items/0/condition",
        "eq": "Amount > 0"
       },
       {
-       "pointer": "/data/items/1/parameter",
+       "pointer": "/data/items/0/parameter",
        "eq": "Period"
       },
       {
-       "pointer": "/data/items/1/startExpression",
+       "pointer": "/data/items/0/startExpression",
        "eq": "1"
       },
       {
-       "pointer": "/data/items/2/sourceExpression",
+       "pointer": "/data/items/1/sourceExpression",
        "eq": "Category"
+      },
+      {
+       "pointer": "/data/items/0/parameterListAllowed",
+       "eq": true
+      },
+      {
+       "pointer": "/data/items/0/required",
+       "eq": false
       },
       {
        "pointer": "/data/items/1/parameterListAllowed",
@@ -25244,14 +25255,6 @@
       },
       {
        "pointer": "/data/items/1/required",
-       "eq": false
-      },
-      {
-       "pointer": "/data/items/2/parameterListAllowed",
-       "eq": true
-      },
-      {
-       "pointer": "/data/items/2/required",
        "eq": false
       }
      ]
@@ -25557,8 +25560,8 @@
        {
         "op": "calculatedField.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveCalculationPatch.CalculatedField.Double",
          "values": {
-          "name": "Double",
           "expression": "Amount * 3",
           "useRestriction": {
            "field": true,
@@ -25570,8 +25573,8 @@
        {
         "op": "total.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveCalculationPatch.Total.Amount",
          "values": {
-          "field": "Amount",
           "expression": "Максимум(Amount)"
          }
         }
@@ -27023,10 +27026,10 @@
        {
         "op": "structure.add",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Table",
          "items": [
           {
            "name": "RowA",
-           "parent": "Table",
            "axis": "row",
            "groupBy": [
             "Amount"
@@ -27034,7 +27037,6 @@
           },
           {
            "name": "RowB",
-           "parent": "Table",
            "axis": "row",
            "groupBy": [
             "Category"
@@ -27043,15 +27045,21 @@
           },
           {
            "name": "ColumnA",
-           "parent": "Table",
            "axis": "column",
            "groupBy": [
             "Period"
            ]
-          },
+          }
+         ]
+        }
+       },
+       {
+        "op": "structure.add",
+        "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Chart",
+         "items": [
           {
            "name": "PointA",
-           "parent": "Chart",
            "axis": "point",
            "groupBy": [
             "Category"
@@ -27059,7 +27067,6 @@
           },
           {
            "name": "PointB",
-           "parent": "Chart",
            "axis": "point",
            "groupBy": [
             "Amount"
@@ -27214,8 +27221,8 @@
        {
         "op": "structure.patch",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Table",
          "values": {
-          "name": "Table",
           "use": true,
           "rowsViewMode": "Normal",
           "userSettingPresentation": {
@@ -27228,8 +27235,8 @@
        {
         "op": "structure.patch",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Table.Item.RowB",
          "values": {
-          "name": "RowB",
           "groupBy": [],
           "viewMode": "Normal"
          }
@@ -27238,8 +27245,8 @@
        {
         "op": "structure.patch",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Group",
          "values": {
-          "name": "Group",
           "groupBy": []
          }
         }
@@ -29157,8 +29164,8 @@
        {
         "op": "total.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTotalGroups.Total.Amount",
          "values": {
-          "field": "Amount",
           "expression": "Максимум(Amount)",
           "group": [
            "ByPeriod",
@@ -29170,8 +29177,8 @@
        {
         "op": "total.set",
         "args": {
+         "at": "cf:Report.F05Report.Template.PrimitiveTotalGroups.Total.Count",
          "values": {
-          "field": "Count",
           "group": []
          }
         }
@@ -38888,6 +38895,332 @@
   },
   {
    "id": "S431",
+   "name": "dcs-schema-nodes-and-structure-items-by-address",
+   "issue": 1357,
+   "area": "СКД",
+   "task": "Источник данных и именованная группа варианта читаются своими адресами и правятся на них; прежние values.name и group отказывают без записи с next к адресу узла, исправленный вызов проходит предпросмотр и публикуется",
+   "workspace": "tests/fixtures/acceptance/workspace-dcs",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSource"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource"
+      }
+     ],
+     "captures": {
+      "before": {
+       "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "kind": "sha256"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource.Can.dataSource.set"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/op",
+       "eq": "dataSource.set"
+      },
+      {
+       "pointer": "/data/props/implemented",
+       "eq": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema",
+      "ops": [
+       {
+        "op": "dataSource.set",
+        "args": {
+         "values": {
+          "name": "LocalSource",
+          "kind": "Local"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `dataSource.set` names its subject by address, not by `values.name`; call it at `cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.name"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource.Can.dataSource.set"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.DataSource"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "kind": "sha256",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource",
+      "ops": [
+       {
+        "op": "dataSource.set",
+        "args": {
+         "values": {
+          "kind": "Local"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "kind": "sha256",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/kind",
+       "eq": "Group"
+      },
+      {
+       "pointer": "/data/props/groupBy",
+       "eq": [
+        "Category"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+      "ops": [
+       {
+        "op": "structure.patch",
+        "args": {
+         "values": {
+          "name": "F05Group",
+          "groupBy": [
+           "Amount"
+          ]
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `structure.patch` names its subject by address, not by `values.name`; call it at `cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.name"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group.Can.structure.patch"
+      },
+      {
+       "pointer": "/next/1/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "kind": "sha256",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+      "ops": [
+       {
+        "op": "filter.add",
+        "args": {
+         "items": [
+          {
+           "field": "Amount",
+           "group": "F05Group"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: `filter.add` names its subject by address, not by `items[0].group`; call it at `cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].group"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group.Can.filter.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "kind": "sha256",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+      "ops": [
+       {
+        "op": "structure.patch",
+        "args": {
+         "values": {
+          "groupBy": [
+           "Amount"
+          ]
+         }
+        }
+       },
+       {
+        "op": "filter.add",
+        "args": {
+         "items": [
+          {
+           "field": "Amount",
+           "comparison": "Greater",
+           "value": 0
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "kind": "sha256",
+       "eq": "$capture.before"
+      }
+     ],
+     "captures": {
+      "token": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.token"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='F05Group']/{http://v8.1c.ru/8.1/data-composition-system/settings}groupItems/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+       "eq": [
+        "Amount"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='F05Group']/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}left",
+       "eq": [
+        "Amount"
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "cf:Report.F05Report.Template.F05Schema"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "passed",
+     "validators": [
+      "dcs"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S432",
    "name": "form-command-add-writes-tooltip-shortcut-representation",
    "issue": 1439,
    "area": "Формы",

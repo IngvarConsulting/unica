@@ -3974,7 +3974,13 @@ pub(super) fn preflight_apply_operations(
     source: SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
 ) -> Result<(), Box<DomainResult>> {
-    preflight_apply_operations_with(request, source, template_format, &|_| None, &|_, _| None)
+    preflight_apply_operations_with(
+        request,
+        source,
+        template_format,
+        &|_| None,
+        &crate::domain::apply::no_member_lookup,
+    )
 }
 
 /// То же, что `preflight_apply_operations`, с поиском узла по имени: снятый
@@ -4059,6 +4065,45 @@ pub(super) fn preflight_apply_operations_with(
                 }
             }
             let location = Some(format!("ops[{index}].args.{}", redirect.location));
+            if redirect.ambiguous {
+                // Имя повторяется (члены разных объединений, одноимённые
+                // группы в разных ветвях структуры): адрес за вызывающего
+                // не выбирается. `next` — ветвь, где видны все, и словари
+                // совпавших узлов (#1357).
+                let mut refusal = error_result(
+                    location,
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; the name does not select one addressable node{}; read `{}` and call it at the one you mean",
+                        operation.name(),
+                        redirect.location,
+                        if redirect.candidates.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                ": {}",
+                                redirect
+                                    .candidates
+                                    .iter()
+                                    .map(|candidate| format!("`{candidate}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        },
+                        redirect.at
+                    ),
+                );
+                refusal.next.push(json!({
+                    "tool": "unica.view",
+                    "args": {"at": redirect.at.to_string()},
+                    "reason": "одноимённые узлы этого вида: выберите адрес",
+                }));
+                for candidate in &redirect.candidates {
+                    refusal =
+                        with_operation_dictionary(refusal, &candidate.to_string(), descriptor);
+                }
+                return Err(Box::new(refusal));
+            }
             if redirect.listing {
                 // Значение называло подузел не именем: адрес из него не
                 // строится, и `next` ведёт к коллекции, где имя видно.

@@ -4,16 +4,16 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **431 сценариев** реальных задач разработчика конфигурации и **1152 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **432 сценариев** реальных задач разработчика конфигурации и **1162 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 415 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 416 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 944 |
-| `refused` | умышленный типизированный отказ | 153 |
+| `ok` | результат | 951 |
+| `refused` | умышленный типизированный отказ | 156 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 26 |
 | `provider` | провайдер недоступен | 21 |
 | `unsupported` | закрытый список | 3 |
@@ -130,7 +130,7 @@
 | `element.add` | `items` | да | S130, S139, S141, S142, S388, S393, S407, S408, S428 |
 | `element.remove` | только `at` | да | S131, S430 |
 | `formAttribute.add` | `items` | да | S132, S388 |
-| `formCommand.add` | `items` | да | S133, S135, S388, S431 |
+| `formCommand.add` | `items` | да | S133, S135, S388, S432 |
 | `event.bind` | `values` | да | S134, S140, S143, S325, S404, S405, S429 |
 
 ### Роли и права
@@ -146,8 +146,8 @@
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
 | `dataSource.add` | `items` | да | S361 |
-| `dataSource.set` | `values` | да | S361 |
-| `dataSource.remove` | `values` | да | S361, S366 |
+| `dataSource.set` | `values` | да | S361, S431 |
+| `dataSource.remove` | только `at` | да | S361, S366 |
 | `dataSet.add` | `items` | да | S361, S367, S368, S370, S380 |
 | `dataSet.set` | `values` | да | S361 |
 | `dataSet.remove` | только `at` | да | S361 |
@@ -161,15 +161,15 @@
 | `parameter.rename` | `values` | да | S362 |
 | `parameter.reorder` | `items` | да | S362 |
 | `calculatedField.add` | `items` | да | S190, S362, S371 |
-| `calculatedField.remove` | `values` | да | S362 |
+| `calculatedField.remove` | только `at` | да | S362 |
 | `total.add` | `items` | да | S191, S362, S371, S379 |
-| `total.remove` | `values` | да | S362 |
+| `total.remove` | только `at` | да | S362 |
 | `variant.add` | `items` | да | S192, S363 |
 | `variant.set` | `values` | да | S363, S388, S419 |
 | `variant.remove` | только `at` | да | S363 |
 | `query.set` | `values` | да | S188, S326, S327, S329, S361, S412 |
 | `query.patch` | `values` | да | S189, S327, S329, S361, S367 |
-| `filter.add` | `items` | да | S186, S363, S364, S365 |
+| `filter.add` | `items` | да | S186, S363, S364, S365, S431 |
 | `filter.set` | `values` | да | S363 |
 | `filter.remove` | `values` | да | S363 |
 | `filter.clear` | `values` | да | S187, S365, S369 |
@@ -184,8 +184,8 @@
 | `conditionalAppearance.clear` | `values` | да | S365 |
 | `structure.add` | `items` | да | S364, S375 |
 | `structure.set` | `values` | да | S193, S364, S412 |
-| `structure.patch` | `values` | да | S326, S327, S364, S375 |
-| `structure.remove` | `values` | да | S364 |
+| `structure.patch` | `values` | да | S326, S327, S364, S375, S431 |
+| `structure.remove` | только `at` | да | S364 |
 | `dataSetLink.add` | `items` | да | S361, S370 |
 | `calculatedField.set` | `values` | да | S371 |
 | `total.set` | `values` | да | S371, S379 |
@@ -263,7 +263,7 @@
 | `cf` | S224, S267, S271, S301 |
 | `cfe` | S290, S313, S314, S397 |
 | `form` | S225, S268, S302, S325, S404, S427 |
-| `dcs` | S194, S326, S328, S329, S330, S361, S364, S380 |
+| `dcs` | S194, S326, S328, S329, S330, S361, S364, S380, S431 |
 | `mxl` | S201, S331, S332, S335, S350 |
 | `role` | S175, S179, S269, S291, S303 |
 | `subsystem` | S210, S212, S270 |
@@ -274,9 +274,9 @@
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 246 |
-| `unica.view` | 137 |
-| `unica.check` | 73 |
+| `unica.apply` | 247 |
+| `unica.view` | 138 |
+| `unica.check` | 74 |
 | `unica.search` | 36 |
 | `unica.docs` | 27 |
 | `unica.diff` | 17 |
@@ -284,7 +284,7 @@
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (56) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (39) · Код BSL (46) · Роли и права (16) · СКД (44) · Макеты (15) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
+Области: Навигация и чтение (56) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (39) · Код BSL (46) · Роли и права (16) · СКД (45) · Макеты (15) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
 
 ### Навигация и чтение
 
@@ -507,7 +507,7 @@
 | S428 | Прежний items[].into у element.add отказывает без записи; next ведёт к адресу контейнера по его пути в форме (командная панель таблицы — через таблицу), его can содержит element.add, и вызов на этом адресе строит предпросмотр | `source` | `view`<br>`apply` `element.add`<br>`view`<br>`apply` `element.add` | `ok`<br>`refused`<br>`ok`<br>`ok` |
 | S429 | Прежние values.element и values.event у event.bind отказывают без записи; next ведёт к узлу события элемента, его can содержит event.bind, и привязка на этом адресе применяется | `source` | `view`<br>`apply` `event.bind`<br>`view`<br>`apply` `event.bind`<br>`apply` | `ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
 | S430 | element.remove на форме с именем в items отказывает без записи; next ведёт к адресу элемента, а удаление по этому адресу строит предпросмотр | `source` | `view`<br>`apply` `element.remove`<br>`apply` `element.remove` | `ok`<br>`refused`<br>`ok` |
-| S431 | Добавить команду формы с подсказкой, сочетанием клавиш и отображением: ключ, который операция не пишет, отказывает до записи, а свойства исполненной команды видны в view | `source` | `view`<br>`apply` `formCommand.add`<br>`apply` `formCommand.add`<br>`apply`<br>`view` | `ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
+| S432 | Добавить команду формы с подсказкой, сочетанием клавиш и отображением: ключ, который операция не пишет, отказывает до записи, а свойства исполненной команды видны в view | `source` | `view`<br>`apply` `formCommand.add`<br>`apply` `formCommand.add`<br>`apply`<br>`view` | `ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Код BSL
 
@@ -609,7 +609,7 @@
 | S361 | Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check; снятый dataSet, названный членом объединения, ведёт next к вложенному запросу этого члена | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSource.add` `dataSource.set` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `field.add` `field.add` `field.add` `field.add` `dataSet.set` `dataSet.set`<br>`apply`<br>`view`<br>`apply` `field.set` `fieldRole.set` `query.set` `query.patch` `dataSetLink.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `query.set`<br>`check` валидаторы `dcs`<br>`view`<br>`apply` `dataSet.remove` `dataSource.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S362 | Параметры, вычисления и итоги имеют отдельные операции; rename сохраняет ссылки, reorder сохраняет чужие элементы, удаления проверены после положительных эффектов | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `parameter.add` `calculatedField.add` `total.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `parameter.rename` `parameter.reorder`<br>`apply`<br>`view`<br>`apply` `parameter.remove` `calculatedField.remove` `total.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S363 | Создать отдельный вариант: явная выборка, сортировка, отбор, параметры данных/вывода и оформление; set меняет только выбранное свойство и сохраняет соседние настройки | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `variant.add`<br>`apply`<br>`view`<br>`apply` `selection.add` `order.add` `filter.add` `dataParameter.add` `outputParameter.set` `conditionalAppearance.add`<br>`apply`<br>`view`<br>`apply` `variant.set` `filter.set` `dataParameter.set` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `filter.remove`<br>`apply`<br>`view`<br>`apply` `variant.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S364 | Составить table/chart с осями и именованными вложенными группами; локальная настройка и patch сохраняют остальные элементы; заменить и удалить структуру явно | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `structure.add` `structure.add`<br>`apply`<br>`view`<br>`apply` `structure.patch` `selection.add` `filter.add` `order.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `structure.remove`<br>`apply`<br>`view`<br>`apply` `structure.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S364 | Составить table/chart с осями и именованными вложенными группами; локальная настройка и patch сохраняют остальные элементы; заменить и удалить структуру явно | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `structure.add` `structure.add` `structure.add` `structure.add`<br>`apply`<br>`view`<br>`apply` `structure.patch` `selection.add` `filter.add` `order.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `structure.remove`<br>`apply`<br>`view`<br>`apply` `structure.set`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S365 | Положительные эффекты четырёх настроек наблюдаются перед clear; очистка одной коллекции сохраняет остальные и параметры вывода | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.add` `filter.add` `order.add` `conditionalAppearance.add` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `selection.clear`<br>`apply`<br>`view`<br>`apply` `filter.clear` `order.clear` `conditionalAppearance.clear`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S366 | Поздняя ошибка удаления используемого источника отменяет ранее подготовленное поле; XML остаётся побайтно прежним, token не выдаётся | `source` | `view`<br>`apply` `field.add` `dataSource.remove` | `ok`<br>`refused` |
 | S367 | Типизированный query.patch принимает прежние управляющие последовательности как буквальный текст и сохраняет остальные запросы | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `dataSet.add`<br>`apply`<br>`view`<br>`apply` `query.patch`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
@@ -620,7 +620,7 @@
 | S372 | Патч и удаление выбранного элемента не очищают соседние элементы выборки/сортировки, параметры данных и вывода удаляются отдельно | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.add` `order.add` `dataParameter.add` `outputParameter.set` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `selection.set` `order.set`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.remove` `order.remove` `dataParameter.remove` `outputParameter.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S373 | conditionalAppearance.remove использует прочитанный индекс и удаляет один элемент; второй элемент и параметры вывода сохраняются | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `conditionalAppearance.add` `outputParameter.set`<br>`apply`<br>`view`<br>`view`<br>`apply` `conditionalAppearance.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S374 | Явно вернуть Auto после clear; set/remove выбирают прочитанный индекс Auto, сохраняют соседние Field элементы | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.clear` `order.clear` `selection.add` `order.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.set` `order.set`<br>`apply`<br>`view`<br>`apply` `selection.remove` `order.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S375 | Отключение и пользовательские свойства Table/Chart/Group; повторные именованные оси и patch groupBy=[] с сохранением соседей | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `structure.add` `structure.add`<br>`apply`<br>`view`<br>`apply` `structure.patch` `structure.patch` `structure.patch`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S375 | Отключение и пользовательские свойства Table/Chart/Group; повторные именованные оси и patch groupBy=[] с сохранением соседей | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `structure.add` `structure.add` `structure.add`<br>`apply`<br>`view`<br>`apply` `structure.patch` `structure.patch` `structure.patch`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S376 | Типизированные значения reference/nil, список default/available values и именованный/Custom StandardPeriod; изменение ссылки сохраняет заявленный тип | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `parameter.add`<br>`apply`<br>`view`<br>`apply` `parameter.set` `parameter.set` `parameter.set`<br>`apply`<br>`view`<br>`apply` `parameter.set` `parameter.set` `parameter.set` `parameter.set`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S377 | Условное оформление имеет отдельный typed filter, use=false, Color и многоязычный формат; заголовок и enum параметра вывода сохраняют платформенные типы | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `conditionalAppearance.add` `outputParameter.set` `outputParameter.set` `outputParameter.set`<br>`apply`<br>`view`<br>`apply` `outputParameter.set` `outputParameter.set`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S378 | Folder создаётся отдельно от детей; parentIndexes из чтения точно выбирают вложенную выборку при set/remove и сохраняют соседей, заголовки и placement | `source` | `apply` `template.add`<br>`apply`<br>`view`<br>`apply` `selection.clear` `selection.add` `selection.add` `selection.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `selection.set` `selection.set` `selection.remove`<br>`apply`<br>`view`<br>`apply` `selection.remove`<br>`apply` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
@@ -629,6 +629,7 @@
 | S412 | Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора; снятая form.create ведёт к form.add на владельце, и форма создаётся там | `source` | `view`<br>`apply` `query.set`<br>`view`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `query.set`<br>`apply` `structure.set`<br>`apply` `form.create`<br>`apply` `form.add`<br>`apply` `childSubsystem.remove`<br>`view`<br>`view` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`ok` |
 | S419 | Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр | `source` | `view`<br>`apply` `variant.set`<br>`apply` `variant.set`<br>`apply` `parameter.set`<br>`apply` `field.set`<br>`apply` `field.set` `fieldRole.set`<br>`apply` `code.insert`<br>`apply` `code.insert` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`refused`<br>`ok`<br>`refused`<br>`ok` |
 | S423 | Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес и поле читается по нему; снятая форма field.set с values.field отказывает без записи с next к этому адресу, а field.set и fieldRole.set на нём меняют поле, что видно при чтении | `source` | `apply` `field.add`<br>`apply`<br>`view`<br>`view`<br>`apply` `field.set`<br>`apply` `field.set` `fieldRole.set`<br>`apply`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
+| S431 | Источник данных и именованная группа варианта читаются своими адресами и правятся на них; прежние values.name и group отказывают без записи с next к адресу узла, исправленный вызов проходит предпросмотр и публикуется | `source` | `view`<br>`view`<br>`apply` `dataSource.set`<br>`apply` `dataSource.set`<br>`view`<br>`apply` `structure.patch`<br>`apply` `filter.add`<br>`apply` `structure.patch` `filter.add`<br>`apply`<br>`check` валидаторы `dcs` | `ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Макеты
 
