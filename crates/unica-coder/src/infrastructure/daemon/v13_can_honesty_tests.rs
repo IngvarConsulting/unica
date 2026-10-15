@@ -492,15 +492,16 @@ fn shape_key(address: &QualifiedAddress) -> String {
 /// и отказ по цели не прячется за отказом по аргументам.
 fn sample_args(descriptor: OperationDescriptor) -> Value {
     // Аргументы зависят только от операции, а контракт строится заново на
-    // каждый вызов: обход спрашивает их на каждом узле.
+    // каждый вызов: обход спрашивает их на каждом узле. Ключ — семейство и
+    // имя: у общего имени двух семейств (#1465) свои аргументы.
     thread_local! {
-        static SAMPLES: std::cell::RefCell<BTreeMap<&'static str, Value>> =
+        static SAMPLES: std::cell::RefCell<BTreeMap<String, Value>> =
             const { std::cell::RefCell::new(BTreeMap::new()) };
     }
     SAMPLES.with(|samples| {
         samples
             .borrow_mut()
-            .entry(descriptor.name())
+            .entry(write_key(descriptor))
             .or_insert_with(|| build_sample_args(descriptor))
             .clone()
     })
