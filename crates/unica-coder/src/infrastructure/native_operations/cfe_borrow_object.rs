@@ -431,7 +431,7 @@ fn closing_start(text: &str, node: Node<'_, '_>) -> usize {
 
 // Expanded names and values drive no-op detection; formatting and equivalent
 // namespace prefixes do not trigger a rewrite of the user's descriptor.
-fn equivalent(a: Node<'_, '_>, b: Node<'_, '_>) -> bool {
+pub(crate) fn equivalent(a: Node<'_, '_>, b: Node<'_, '_>) -> bool {
     if a.node_type() != b.node_type() {
         return false;
     }
@@ -497,7 +497,7 @@ fn resolved_value(node: Node<'_, '_>, value: &str) -> (Option<String>, String) {
 // Preserve a copied subtree's meaning, making inherited namespace bindings
 // explicit. Each element is serialized with its own in-scope bindings so a
 // nested rebind and QName-valued content retain their original meaning.
-fn standalone_fragment(node: Node<'_, '_>) -> String {
+pub(crate) fn standalone_fragment(node: Node<'_, '_>) -> String {
     if node.is_text() {
         return escape_xml(node.text().unwrap_or_default());
     }
