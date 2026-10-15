@@ -226,7 +226,7 @@ fn check_form_edit_subject(
                         op_index,
                         "at",
                         format!(
-                            "form item `{}` {} does not hold elements; element.add targets the form or a container item",
+                            "form item `{}` {} does not hold elements; item.add targets the form or a container item",
                             item.name, item.tag
                         ),
                     ))
@@ -1274,7 +1274,7 @@ fn form_attribute_type(type_name: &str) -> String {
 
 /// The legacy element definition for one typed v0.13 item: the discriminator
 /// key named after the element type, every other property passed through.
-/// The item has passed the closed `element.add` contract: its keys are the
+/// The item has passed the closed `item.add` contract: its keys are the
 /// ones the writer of its kind writes.
 fn legacy_element_definition(
     item: &Map<String, Value>,
@@ -1356,7 +1356,7 @@ fn legacy_element_definition(
     Ok((Value::Object(definition), after))
 }
 
-/// Ключи, которые `element.add` снял по Р2 (#1447), и внутренние различители
+/// Ключи, которые `item.add` снял по Р2 (#1447), и внутренние различители
 /// вида: отказ с продолжением до проверки контракта, чтобы агент получил
 /// следующий вызов, а не общий «неизвестный аргумент».
 fn refuse_nested_element_content(
@@ -1373,14 +1373,14 @@ fn refuse_nested_element_content(
     let container = format!("{at}.Item.{}", crate::domain::address::escape_name(name));
     let contract = serde_json::json!({
         "tool": "unica.view",
-        "args": {"at": format!("{at}.Can.element.add")},
-        "reason": "контракт element.add: один элемент на запись, ключи по виду",
+        "args": {"at": format!("{at}.Can.item.add")},
+        "reason": "контракт item.add: один элемент на запись, ключи по виду",
     });
     if item.contains_key("html") {
         return Err(bad(
             op_index,
             &format!("{location}.html"),
-            "html is an internal discriminator; use name and type: HTMLDocumentField in element.add",
+            "html is an internal discriminator; use name and type: HTMLDocumentField in item.add",
         )
         .with_next(contract));
     }
@@ -1392,7 +1392,7 @@ fn refuse_nested_element_content(
             op_index,
             &format!("{location}.{key}"),
             format!(
-                "element.add adds one element without nested content; drop `{key}` and add each nested element with a separate element.add at `{container}` once this element exists"
+                "item.add adds one element without nested content; drop `{key}` and add each nested element with a separate item.add at `{container}` once this element exists"
             ),
         )
         .with_next(contract));
@@ -1405,7 +1405,7 @@ fn refuse_nested_element_content(
             op_index,
             &format!("{location}.{key}"),
             format!(
-                "element.add does not bind events; drop `{key}` and bind each handler with event.bind at `{container}.Event.<Event>` once this element exists, naming the handler explicitly"
+                "item.add does not bind events; drop `{key}` and bind each handler with event.bind at `{container}.Event.<Event>` once this element exists, naming the handler explicitly"
             ),
         )
         .with_next(contract));
@@ -1466,24 +1466,24 @@ fn parse_form_operation(
     // пишет молча в форму, элемент или владельца (#1351, #1355).
     let placed = match operation {
         "form.add" | "form.set" => target.form.is_none(),
-        "element.add" => target.form.is_some() && target.event.is_none(),
-        "element.remove" => !target.items.is_empty() && target.event.is_none(),
+        "item.add" => target.form.is_some() && target.event.is_none(),
+        "item.remove" => !target.items.is_empty() && target.event.is_none(),
         "event.bind" => target.event.is_some(),
         _ => target.form.is_some() && target.items.is_empty() && target.event.is_none(),
     };
     if !placed {
         let shape = match operation {
             "form.add" | "form.set" => "the form owner `Owner.Name`, not a form",
-            "element.add" => {
+            "item.add" => {
                 "the form `Owner.Name.Form.F` or its item `….Item.A[.Item.B…]` that receives the elements"
             }
-            "element.remove" => "the removed item `Owner.Name.Form.F.Item.A[.Item.B…]`",
+            "item.remove" => "the removed item `Owner.Name.Form.F.Item.A[.Item.B…]`",
             "event.bind" => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
             _ => "the form `Owner.Name.Form.F`",
         };
         return Err(bad(op_index, "at", format!("{operation} targets {shape}")));
     }
-    if operation == "element.add" {
+    if operation == "item.add" {
         if let Some(items) = args.get("items").and_then(Value::as_array) {
             for (index, item) in items.iter().enumerate() {
                 if let Some(item) = item.as_object() {
@@ -1623,7 +1623,7 @@ fn parse_form_operation(
                 form,
             })
         }
-        "element.add" => {
+        "item.add" => {
             let form = form_of(&target)?;
             let items = args
                 .get("items")
@@ -1667,7 +1667,7 @@ fn parse_form_operation(
                 definitions,
             })
         }
-        "element.remove" => {
+        "item.remove" => {
             let form = form_of(&target)?;
             // Элемент назван адресом: список в аргументах называл бы другие
             // узлы, и молча его не отбрасываем.
@@ -1678,14 +1678,14 @@ fn parse_form_operation(
                 return Err(bad(
                     op_index,
                     key,
-                    "element.remove removes the item named by its address; drop the argument",
+                    "item.remove removes the item named by its address; drop the argument",
                 ));
             }
             let name = target
                 .items
                 .last()
                 .cloned()
-                .expect("element.remove target carries an item");
+                .expect("item.remove target carries an item");
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
@@ -3302,11 +3302,11 @@ mod tests {
         String::from_utf8(bytes).unwrap()
     }
 
-    /// Р2 (#1447): `element.add` добавляет один элемент. Вложенное дерево,
+    /// Р2 (#1447): `item.add` добавляет один элемент. Вложенное дерево,
     /// companion-содержимое и события отказывают `bad_value` по точному
-    /// пути до записи, а `next` ведёт к контракту `element.add`.
+    /// пути до записи, а `next` ведёт к контракту `item.add`.
     #[test]
-    fn element_add_refuses_nested_content_and_events_with_the_next_call() {
+    fn item_add_refuses_nested_content_and_events_with_the_next_call() {
         let fixture = ApplySeamFixture::new();
         let at = "main:Document.First.Form.ФормаДокумента";
         for key in crate::domain::operation_contract::FORM_ELEMENT_NESTED_KEYS
@@ -3317,7 +3317,7 @@ mod tests {
             let mut item = json!({"name": "Parent", "type": "Group"});
             item[*key] = json!([{"name": "Child", "type": "HTMLDocumentField"}]);
             let error = parse_form_resource_plan_operation(
-                "element.add",
+                "item.add",
                 &json!({"at": at, "items": [item]}),
                 0,
                 &fixture.binding,
@@ -3328,7 +3328,7 @@ mod tests {
             assert_eq!(error.path(), Some(path.as_str()), "{key}");
             assert_eq!(
                 error.next().unwrap()["args"]["at"],
-                json!(format!("{at}.Can.element.add")),
+                json!(format!("{at}.Can.item.add")),
                 "{key}"
             );
             let follow_up = if *key == "html" {
@@ -3343,7 +3343,7 @@ mod tests {
     /// Перекрёстные правила, которых схема не выражает: ключи динамического
     /// списка без `_dynList` и две команды у кнопки пропали бы молча.
     #[test]
-    fn element_add_refuses_keys_the_writer_would_drop_by_a_neighbour() {
+    fn item_add_refuses_keys_the_writer_would_drop_by_a_neighbour() {
         let fixture = ApplySeamFixture::new();
         for (item, path) in [
             (
@@ -3356,7 +3356,7 @@ mod tests {
             ),
         ] {
             let error = parse_form_resource_plan_operation(
-                "element.add",
+                "item.add",
                 &json!({"at": "main:Document.First.Form.ФормаДокумента", "items": [item]}),
                 0,
                 &fixture.binding,
@@ -3398,7 +3398,7 @@ mod tests {
         }
     }
 
-    /// Контракт `element.add` и писатель согласны по каждому виду: каждый
+    /// Контракт `item.add` и писатель согласны по каждому виду: каждый
     /// опубликованный ключ принимают контракт и планировщик, и хотя бы одно
     /// его значение меняет записанный XML вида (#1447). Ключ, который
     /// писатель вида не пишет, в контракт не попадает.
@@ -3407,7 +3407,7 @@ mod tests {
         use crate::infrastructure::native_operations::form::{emit_form_element, FormIdAllocator};
         let fixture = ApplySeamFixture::new();
         let contract =
-            crate::domain::operation_contract::OperationContract::form("element.add").unwrap();
+            crate::domain::operation_contract::OperationContract::form("item.add").unwrap();
         let variants = contract.schema["properties"]["items"]["items"]["anyOf"]
             .as_array()
             .unwrap()
@@ -3448,7 +3448,7 @@ mod tests {
                     let mut item = baseline.clone();
                     item[*key] = value;
                     parse_form_resource_plan_operation(
-                        "element.add",
+                        "item.add",
                         &json!({"at": "main:Document.First.Form.ФормаДокумента", "items": [item.clone()]}),
                         0,
                         &fixture.binding,
@@ -3613,7 +3613,7 @@ mod tests {
                 0,
             ),
             parse(
-                "element.add",
+                "item.add",
                 json!({"at": form, "items": [
                     {"name": "Header", "type": "Group", "title": "Header"},
                     {"name": "Total", "path": "Объект.Total", "title": "Total",
@@ -3705,7 +3705,7 @@ mod tests {
                 json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]}),
             ),
             (
-                "element.add",
+                "item.add",
                 json!({"at": form, "items": [{"name": "Header", "type": "Group", "title": "Header"}]}),
             ),
         ])
@@ -3723,7 +3723,7 @@ mod tests {
         std::fs::remove_file(fixture.source_dir().join("Languages/Русский.xml")).unwrap();
 
         let error = plan(&[(
-            "element.add",
+            "item.add",
             json!({"at": form, "items": [{"name": "Footer", "type": "Group", "title": "Footer"}]}),
         )])
         .expect_err("a new title needs the default language");
@@ -3731,11 +3731,11 @@ mod tests {
 
         let staged = plan(&[
             (
-                "element.add",
+                "item.add",
                 json!({"at": form, "items": [{"name": "Plain", "path": "Объект.Total"}]}),
             ),
             (
-                "element.add",
+                "item.add",
                 json!({"at": form, "items": [{"name": "Hinted", "path": "Объект.Total",
                     "tooltip": {"en": "Hint"}}]}),
             ),
@@ -3746,11 +3746,8 @@ mod tests {
         assert!(text.contains("<v8:lang>en</v8:lang>"), "{text}");
         assert!(!text.contains("<v8:lang></v8:lang>"), "{text}");
 
-        let staged = plan(&[(
-            "element.remove",
-            json!({"at": format!("{form}.Item.Header")}),
-        )])
-        .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let staged = plan(&[("item.remove", json!({"at": format!("{form}.Item.Header")}))])
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
         assert!(!text.contains("name=\"Header\""), "{text}");
     }
@@ -3777,7 +3774,7 @@ mod tests {
                 0,
             ),
             parse(
-                "element.add",
+                "item.add",
                 json!({
                     "at": "main:Document.First.Form.ФормаДокумента",
                     "items": [{"name": "ГруппаИтог", "type": "UsualGroup"}]
@@ -3786,7 +3783,7 @@ mod tests {
             ),
             // Группа, добавленная предыдущей операцией, уже адресуется.
             parse(
-                "element.add",
+                "item.add",
                 json!({
                     "at": "main:Document.First.Form.ФормаДокумента.Item.ГруппаИтог",
                     "items": [{"name": "ПолеИтог", "path": "Объект.Total", "title": "Итог"}]
@@ -3862,7 +3859,7 @@ mod tests {
                 )
                 .unwrap(),
                 parse(
-                    "element.add",
+                    "item.add",
                     json!({"at": form, "items": [
                         {"name": "Header", "type": "Group"},
                         {"name": "Footer", "type": "Group"}
@@ -3871,7 +3868,7 @@ mod tests {
                 )
                 .unwrap(),
                 parse(
-                    "element.add",
+                    "item.add",
                     json!({"at": format!("{form}.Item.Header"), "items": [
                         {"name": "Total", "path": "Объект.Total"},
                         {"name": "Count", "path": "Объект.Total"}
@@ -3908,25 +3905,25 @@ mod tests {
         };
         for (op, args, kind, path) in [
             (
-                "element.add",
+                "item.add",
                 json!({"at": format!("{form}.Item.Footer.Item.Total"), "items": [{"name": "X", "path": "Объект.Total"}]}),
                 ApplyPlanErrorKind::NotFound,
                 "ops[3].args.at",
             ),
             (
-                "element.add",
+                "item.add",
                 json!({"at": format!("{form}.Item.Header.Item.Total"), "items": [{"name": "X", "path": "Объект.Total"}]}),
                 ApplyPlanErrorKind::BadValue,
                 "ops[3].args.at",
             ),
             (
-                "element.add",
+                "item.add",
                 json!({"at": format!("{form}.Item.Footer"), "items": [{"name": "X", "path": "Объект.Total", "after": "Total"}]}),
                 ApplyPlanErrorKind::BadValue,
                 "ops[3].args.items[0].after",
             ),
             (
-                "element.remove",
+                "item.remove",
                 json!({"at": format!("{form}.Item.Total")}),
                 ApplyPlanErrorKind::NotFound,
                 "ops[3].args.at",
@@ -3946,7 +3943,7 @@ mod tests {
         }
         // Сосед в том же контейнере задаёт место.
         let elements = plan(
-            "element.add",
+            "item.add",
             json!({"at": format!("{form}.Item.Header"), "items": [{"name": "X", "path": "Объект.Total", "after": "Total"}]}),
         )
         .unwrap();
@@ -3954,7 +3951,7 @@ mod tests {
         assert_eq!(names(&header.children), ["Total", "X", "Count"]);
         // Удаление вложенного элемента оставляет контейнер и соседа.
         let elements = plan(
-            "element.remove",
+            "item.remove",
             json!({"at": format!("{form}.Item.Header.Item.Total")}),
         )
         .unwrap();
@@ -3979,12 +3976,12 @@ mod tests {
         // Снятые аргументы разбор семейства отвергает и в обход реестра.
         for (op, args, path) in [
             (
-                "element.add",
+                "item.add",
                 json!({"at": form, "items": [{"name": "X", "into": "Header"}]}),
                 "ops[3].args.items[0].into",
             ),
             (
-                "element.remove",
+                "item.remove",
                 json!({"at": format!("{form}.Item.Header"), "items": [{"name": "Total"}]}),
                 "ops[3].args.items",
             ),
@@ -4009,7 +4006,7 @@ mod tests {
 
     /// Сосед `after` может быть добавлен раньше в том же `items` (#1443).
     #[test]
-    fn element_add_after_names_an_item_added_earlier_in_the_same_list() {
+    fn item_add_after_names_an_item_added_earlier_in_the_same_list() {
         let fixture = ApplySeamFixture::new();
         let admission = fixture.admission();
         let form = "main:Document.First.Form.Main";
@@ -4027,12 +4024,12 @@ mod tests {
                 0,
             ),
             parse(
-                "element.add",
+                "item.add",
                 json!({"at": form, "items": [{"name": "Header", "type": "Group"}]}),
                 1,
             ),
             parse(
-                "element.add",
+                "item.add",
                 json!({"at": format!("{form}.Item.Header"), "items": [
                     {"name": "A", "path": "Объект.Total"},
                     {"name": "B", "path": "Объект.Total", "after": "A"}
@@ -4092,7 +4089,7 @@ mod tests {
             // `URLListGetProcessing` таблицы есть только у источника
             // динамического списка, его выбирает путь данных таблицы.
             parse(
-                "element.add",
+                "item.add",
                 json!({
                     "at": "main:Document.First.Form.List",
                     "items": [{

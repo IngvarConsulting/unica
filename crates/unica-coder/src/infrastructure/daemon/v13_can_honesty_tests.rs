@@ -193,7 +193,7 @@ const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
             "commandVisibility.set",
             "content.add",
             "content.remove",
-            "element.add",
+            "item.add",
             "event.bind",
             "form.remove",
             "formAttribute.add",
@@ -525,7 +525,7 @@ fn build_sample_args(descriptor: OperationDescriptor) -> Value {
         | "property.remove"
         | "event.implement"
         | "childSubsystem.remove" => json!({"at": ""}),
-        "form.add" | "formAttribute.add" | "formCommand.add" | "element.add"
+        "form.add" | "formAttribute.add" | "formCommand.add" | "item.add"
         | "childSubsystem.add" => json!({"items": [{"name": "Sample"}]}),
         "form.set" => json!({"values": {"defaultObjectForm": "Sample"}}),
         "event.bind" => json!({"values": {"handler": "Sample"}}),
@@ -561,7 +561,7 @@ fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
         .last()
         .is_some_and(|segment| segment.kind() == NodeKind::Method);
     match descriptor.name() {
-        "element.remove" => json!({"at": ""}),
+        "item.remove" => json!({"at": ""}),
         // Место вставки у метода — до или после него (#1354).
         "code.insert" if method_address => {
             json!({"at": "", "text": "// sample\n", "position": "after"})
@@ -1130,7 +1130,7 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
         ),
         (
             "cf:Catalog.Items.Form.Main.Item.Header.Event.OnChange",
-            "element.add",
+            "item.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main.Item.Header",
             true,
@@ -1184,7 +1184,7 @@ fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
         ),
         (
             "cf:Catalog.Items.Attribute.Code",
-            "element.add",
+            "item.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Attribute.Code",
             "`Kind.Name.Form.F[.Item.I…]`",
@@ -1286,8 +1286,8 @@ fn honest_can_on_form_items_and_events() {
     let list = "main:Catalog.Валюты.Form.ФормаСписка";
     let form_ops = [
         "form.remove",
-        "element.add",
-        "element.remove",
+        "item.add",
+        "item.remove",
         "formAttribute.add",
         "formCommand.add",
         "event.bind",
@@ -1298,23 +1298,20 @@ fn honest_can_on_form_items_and_events() {
             form.to_string(),
             &[
                 "form.remove",
-                "element.add",
+                "item.add",
                 "formAttribute.add",
                 "formCommand.add",
             ],
         ),
         (
             format!("{form}.Item.ГруппаСлужебная"),
-            &["element.add", "element.remove"],
+            &["item.add", "item.remove"],
         ),
-        (format!("{form}.Item.ПолеНаименование"), &["element.remove"]),
-        (
-            format!("{form}.Item.ФормаКоманднаяПанель"),
-            &["element.add"],
-        ),
+        (format!("{form}.Item.ПолеНаименование"), &["item.remove"]),
+        (format!("{form}.Item.ФормаКоманднаяПанель"), &["item.add"]),
         (
             format!("{list}.Item.List.Item.ListCommandBar"),
-            &["element.add"],
+            &["item.add"],
         ),
         (
             format!("{form}.Event.OnOpen"),
@@ -1332,10 +1329,10 @@ fn honest_can_on_form_items_and_events() {
         ),
     ];
     let args = |op: &str, at: &str| match op {
-        "element.add" => {
+        "item.add" => {
             json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close"}]})
         }
-        "element.remove" | "form.remove" | "event.implement" => json!({"at": at}),
+        "item.remove" | "form.remove" | "event.implement" => json!({"at": at}),
         "formAttribute.add" => json!({"items": [{"name": "Проба", "type": "String"}]}),
         "formCommand.add" => json!({"items": [{"name": "Проба"}]}),
         "event.bind" => json!({"values": {"handler": "Проба"}}),
@@ -1369,12 +1366,12 @@ fn honest_can_on_form_items_and_events() {
                 serde_json::to_value(&result).unwrap()
             );
             // В поле элемент не добавить: отказ до планирования ведёт
-            // к ближайшему узлу, где `element.add` исполнима.
-            if op == "element.add" && at.ends_with(".Item.ПолеНаименование") {
+            // к ближайшему узлу, где `item.add` исполнима.
+            if op == "item.add" && at.ends_with(".Item.ПолеНаименование") {
                 assert_eq!(result.at.as_deref(), Some("ops[0].at"), "{result:?}");
                 assert_eq!(
                     result.next[0]["args"]["at"],
-                    format!("{form}.Can.element.add"),
+                    format!("{form}.Can.item.add"),
                     "{result:?}"
                 );
             }
@@ -1397,7 +1394,7 @@ fn honest_can_on_form_items_and_events() {
             // Командная панель принимает только кнопки: её контракт публикует
             // один вид, а поле ввода в ней планировщик отвергает.
             let command_bar = at.ends_with("КоманднаяПанель") || at.ends_with("ListCommandBar");
-            if *op == "element.add" {
+            if *op == "item.add" {
                 let kinds = contract["argsSchema"]["properties"]["items"]["items"]["anyOf"]
                     .as_array()
                     .unwrap()
@@ -1443,7 +1440,7 @@ fn retired_form_arguments_route_next_to_the_item_or_event_address() {
     for (at, op, args, location, next, branch, fixed) in [
         (
             list.to_string(),
-            "element.add",
+            "item.add",
             json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close", "into": "ListCommandBar"}]}),
             "ops[0].args.items[0].into",
             format!("{list}.Item.List.Item.ListCommandBar"),
@@ -1452,7 +1449,7 @@ fn retired_form_arguments_route_next_to_the_item_or_event_address() {
         ),
         (
             element.to_string(),
-            "element.remove",
+            "item.remove",
             json!({"items": [{"name": "ГруппаСлужебная"}]}),
             "ops[0].args.items[0].name",
             format!("{element}.Item.ГруппаСлужебная"),
@@ -1996,6 +1993,62 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
     );
     assert_eq!(refusal.next.len(), 1);
     assert_eq!(refusal.next[0]["args"]["at"], "cf:Catalog.Items");
+    // Операции элемента формы названы по узлу `Item` (#1465): снятые
+    // `element.*` называют `item.*` на ближайшем узле, где она исполнима:
+    // на самом адресе или на его предке, а `next` ведёт к её контракту.
+    let form = "cf:Catalog.Items.Form.Choice";
+    let add = json!({"items": [{"name": "Code", "type": "InputField", "path": "Code"}]});
+    for (at, retired, args, target) in [
+        (
+            form.to_string(),
+            "element.add",
+            add.clone(),
+            Some(form.to_string()),
+        ),
+        (
+            format!("{form}.Item.Code"),
+            "element.remove",
+            json!({}),
+            Some(format!("{form}.Item.Code")),
+        ),
+        (
+            format!("{form}.Item.Code.Event.OnChange"),
+            "element.add",
+            add.clone(),
+            Some(format!("{form}.Item.Code")),
+        ),
+        // На форме удалять нечего: элемент называет его адрес.
+        (form.to_string(), "element.remove", json!({}), None),
+    ] {
+        let replacement = retired.replace("element.", "item.");
+        let request = apply_request(&at, retired, args);
+        let refusal = preflight_apply_operations(&request, traits, &|_| None)
+            .expect_err("a retired operation refuses before planning");
+        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{retired}");
+        assert_eq!(refusal.at.as_deref(), Some("ops[0].op"), "{retired}");
+        let message = refusal.diagnostics[0]["message"].as_str().unwrap();
+        assert_eq!(refusal.next.len(), 1, "{retired} at {at}");
+        match target {
+            Some(target) => {
+                assert!(
+                    message.contains(&format!("call `{replacement}` at `{target}`")),
+                    "{message}"
+                );
+                assert_eq!(
+                    refusal.next[0]["args"]["at"],
+                    format!("{target}.Can.{replacement}"),
+                    "{retired} at {at}"
+                );
+            }
+            None => {
+                assert!(
+                    message.contains(&format!("call `{replacement}`, which addresses")),
+                    "{message}"
+                );
+                assert_eq!(refusal.next[0]["args"]["at"], at, "{retired} at {at}");
+            }
+        }
+    }
 }
 
 /// Новые узлы схемы (#1357): снятый `group`, `parent` или `name` ведёт
