@@ -1902,7 +1902,7 @@ fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> 
 
 /// Элементы владельца, как их адресует `view`: его автоматическая командная
 /// панель (у формы и таблицы), затем `ChildItems`. Панель — место кнопок,
-/// которые добавляет `element.add` по её адресу (#1355); остальные
+/// которые добавляет `item.add` по её адресу (#1355); остальные
 /// companions (`ContextMenu`, `ExtendedTooltip`, …) в дерево не входят.
 fn form_info_children(owner: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
     form_child(owner, "AutoCommandBar")

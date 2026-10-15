@@ -3900,7 +3900,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -3930,7 +3930,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
       "ops": [
        {
-        "op": "element.remove"
+        "op": "item.remove"
        }
       ]
      },
@@ -4177,7 +4177,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -4232,7 +4232,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаСписка",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -4262,7 +4262,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -20246,7 +20246,7 @@
    "id": "S356",
    "issue": 919,
    "area": "Известные пробелы",
-   "task": "Перенести существующее поле вместе с companions в существующую группу: element.move по адресу поля пока отсутствует (#919)",
+   "task": "Перенести существующее поле вместе с companions в существующую группу: item.move по адресу поля пока отсутствует (#919)",
    "wire": [
     {
      "tool": "unica.apply",
@@ -20254,7 +20254,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное",
       "ops": [
        {
-        "op": "element.move"
+        "op": "item.move"
        }
       ]
      },
@@ -20282,7 +20282,7 @@
         {
          "code": "unsupported_operation",
          "outcome": "goElsewhere",
-         "message": "apply operation `element.move` is not in the canonical registry"
+         "message": "apply operation `item.move` is not in the canonical registry"
         }
        ]
       }
@@ -32610,7 +32610,7 @@
         }
        },
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "at": "cf:Report.Sales.Form.Main",
          "items": [
@@ -33419,7 +33419,7 @@
    "name": "misplaced-element-add-routes-to-form-can",
    "issue": 1351,
    "area": "Формы",
-   "task": "element.add на адресе события поля отказывает без записи; next минует поле, в которое элемент не добавить, и ведёт к can формы, а исправленный вызов на адресе группы строит предпросмотр",
+   "task": "item.add на адресе события поля отказывает без записи; next минует поле, в которое элемент не добавить, и ведёт к can формы, а исправленный вызов на адресе группы строит предпросмотр",
    "workspace": "tests/fixtures/acceptance/workspace",
    "wire": [
     {
@@ -33434,7 +33434,7 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "element.add",
+        "op": "item.add",
         "args": "items",
         "implemented": true
        }
@@ -33442,7 +33442,7 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "element.remove",
+        "op": "item.remove",
         "args": "at",
         "implemented": true
        }
@@ -33461,7 +33461,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -33476,11 +33476,11 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `element.add` does not apply to Event `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange`; it applies at `main:Catalog",
+     "refusal": "bad_value: apply operation `item.add` does not apply to Event `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange`; it applies at `main:Catalog.Ва",
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
       }
      ],
      "fileAssertions": [
@@ -33503,7 +33503,7 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "element.add",
+        "op": "item.add",
         "args": "items",
         "implemented": true
        }
@@ -33516,7 +33516,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -35445,7 +35445,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ФормаКоманднаяПанель",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -35493,7 +35493,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -35542,7 +35542,7 @@
    "name": "element-add-ambiguous-placement-refused",
    "issue": 1392,
    "area": "Формы",
-   "task": "element.add по адресу командной панели, имя которой носят обе командные панели формы, отказывает без записи",
+   "task": "item.add по адресу командной панели, имя которой носят обе командные панели формы, отказывает без записи",
    "workspace": "tests/fixtures/acceptance/workspace-form-names",
    "wire": [
     {
@@ -35566,7 +35566,7 @@
       "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Панель",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -38889,7 +38889,7 @@
    "name": "form-element-add-into-routes-to-the-container-address",
    "issue": 1355,
    "area": "Формы",
-   "task": "Прежний items[].into у element.add отказывает без записи; next ведёт к адресу контейнера по его пути в форме (командная панель таблицы — через таблицу), его can содержит element.add, и вызов на этом адресе строит предпросмотр",
+   "task": "Прежний items[].into у item.add отказывает без записи; next ведёт к адресу контейнера по его пути в форме (командная панель таблицы — через таблицу), его can содержит item.add, и вызов на этом адресе строит предпросмотр",
    "wire": [
     {
      "tool": "unica.view",
@@ -38912,7 +38912,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаСписка",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -38929,7 +38929,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: `element.add` names its subject by address, not by `items[0].into`; call it at `main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar`",
+     "refusal": "bad_value: `item.add` names its subject by address, not by `items[0].into`; call it at `main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar`",
      "assertions": [
       {
        "pointer": "/at",
@@ -38937,7 +38937,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar.Can.element.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar.Can.item.add"
       },
       {
        "pointer": "/next/1/args/at",
@@ -38964,7 +38964,7 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "element.add",
+        "op": "item.add",
         "args": "items",
         "implemented": true
        }
@@ -38977,7 +38977,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -39137,7 +39137,7 @@
    "name": "form-element-remove-by-name-routes-to-the-item-address",
    "issue": 1355,
    "area": "Формы",
-   "task": "element.remove на форме с именем в items отказывает без записи; next ведёт к адресу элемента, а удаление по этому адресу строит предпросмотр",
+   "task": "item.remove на форме с именем в items отказывает без записи; next ведёт к адресу элемента, а удаление по этому адресу строит предпросмотр",
    "wire": [
     {
      "tool": "unica.view",
@@ -39160,7 +39160,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.remove",
+        "op": "item.remove",
         "args": {
          "items": [
           {
@@ -39174,7 +39174,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: `element.remove` names its subject by address, not by `items[0].name`; call it at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная`",
+     "refusal": "bad_value: `item.remove` names its subject by address, not by `items[0].name`; call it at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная`",
      "assertions": [
       {
        "pointer": "/at",
@@ -39182,7 +39182,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.element.remove"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.item.remove"
       }
      ],
      "fileAssertions": [
@@ -39199,7 +39199,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
       "ops": [
        {
-        "op": "element.remove"
+        "op": "item.remove"
        }
       ]
      },
@@ -39983,7 +39983,7 @@
    "name": "form-element-add-refuses-a-key-its-kind-does-not-write",
    "issue": 1447,
    "area": "Формы",
-   "task": "Подробный контракт element.add публикует ключи по виду элемента; backColor у поля ввода, которого писатель поля не пишет, отказывает bad_value по точному пути без записи, а тот же элемент без него строит предпросмотр",
+   "task": "Подробный контракт item.add публикует ключи по виду элемента; backColor у поля ввода, которого писатель поля не пишет, отказывает bad_value по точному пути без записи, а тот же элемент без него строит предпросмотр",
    "wire": [
     {
      "tool": "unica.view",
@@ -40003,7 +40003,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
      },
      "expect": [
       "ok"
@@ -40021,7 +40021,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40038,7 +40038,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].backColor: unknown argument; `element.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add`",
+     "refusal": "bad_value: ops[0].args.items[0].backColor: unknown argument; `item.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add`",
      "assertions": [
       {
        "pointer": "/at",
@@ -40046,7 +40046,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
       }
      ],
      "fileAssertions": [
@@ -40063,7 +40063,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40093,7 +40093,7 @@
    "name": "form-element-add-adds-one-element-without-nested-content",
    "issue": 1447,
    "area": "Формы",
-   "task": "element.add добавляет один элемент: вложенные children и событие on отказывают bad_value без записи, next ведёт к контракту element.add; группа и поле в ней добавляются двумя операциями, обработчик — event.bind на адресе события",
+   "task": "item.add добавляет один элемент: вложенные children и событие on отказывают bad_value без записи, next ведёт к контракту item.add; группа и поле в ней добавляются двумя операциями, обработчик — event.bind на адресе события",
    "wire": [
     {
      "tool": "unica.view",
@@ -40116,7 +40116,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40138,7 +40138,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: element.add adds one element without nested content; drop `children` and add each nested element with a separate element.add at `main:Catalog.Валюты.Form.ФормаЭ",
+     "refusal": "bad_value: item.add adds one element without nested content; drop `children` and add each nested element with a separate item.add at `main:Catalog.Валюты.Form.ФормаЭлемент",
      "assertions": [
       {
        "pointer": "/at",
@@ -40146,7 +40146,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
       },
       {
        "pointer": "/summary",
@@ -40167,7 +40167,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40186,7 +40186,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: element.add does not bind events; drop `on` and bind each handler with event.bind at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>`",
+     "refusal": "bad_value: item.add does not bind events; drop `on` and bind each handler with event.bind at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>` on",
      "assertions": [
       {
        "pointer": "/at",
@@ -40211,7 +40211,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40222,7 +40222,7 @@
         }
        },
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий",
          "items": [
@@ -40414,6 +40414,196 @@
        "kind": "xml",
        "select": ".//{http://v8.1c.ru/8.3/xcf/logform}FillChecking",
        "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S437",
+   "name": "form-item-operations-are-named-by-the-item-node",
+   "issue": 1465,
+   "area": "Формы",
+   "task": "Операции элемента формы названы по узлу Item: can формы и элемента-контейнера выдаёт item.add, can элемента — item.remove; снятые element.add и element.remove отказывают bad_value без записи, next ведёт на тот же адрес, а item.add и item.remove строят предпросмотр",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "item.add",
+        "args": "items",
+        "implemented": true
+       }
+      }
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "item.add",
+        "args": "items",
+        "implemented": true
+       }
+      },
+      {
+       "pointer": "/data/can",
+       "contains": {
+        "op": "item.remove",
+        "args": "at",
+        "implemented": true
+       }
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеЗагружаетсяИзИнтернета",
+           "type": "InputField",
+           "path": "Объект.ЗагружаетсяИзИнтернета"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `element.add` is retired: call `item.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].op"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
+      "ops": [
+       {
+        "op": "element.remove"
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `element.remove` is retired: call `item.remove` at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная`; the arguments are unchanged",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].op"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "item.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеЗагружаетсяИзИнтернета",
+           "type": "InputField",
+           "path": "Объект.ЗагружаетсяИзИнтернета"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
+      "ops": [
+       {
+        "op": "item.remove"
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
       }
      ]
     }

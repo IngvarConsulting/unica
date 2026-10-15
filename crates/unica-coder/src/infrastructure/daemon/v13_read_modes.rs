@@ -204,16 +204,16 @@ pub(super) fn operation_node(
     }
     let implemented = IMPLEMENTED_APPLY_OPERATIONS.contains(&operation);
     let mut contract = descriptor.argument_contract_at(&site);
-    // Командная панель принимает только кнопки: её контракт `element.add`
+    // Командная панель принимает только кнопки: её контракт `item.add`
     // публикует один вид, как и отвечает писатель (#1447).
     let command_bar = data
         .get("props")
         .and_then(|props| props.get("tag"))
         .and_then(Value::as_str)
         .is_some_and(|tag| tag.starts_with("[AutoCommandBar") || tag.starts_with("[CmdBar"));
-    if operation == "element.add" && command_bar {
+    if operation == "item.add" && command_bar {
         contract = Some(
-            crate::domain::operation_contract::OperationContract::form_element_add_in_command_bar(),
+            crate::domain::operation_contract::OperationContract::form_item_add_in_command_bar(),
         );
     }
     if implemented && contract.is_none() {
@@ -526,7 +526,7 @@ mod inherited_can_tests {
         let form_ops = ops(&form);
         assert!(!form_ops
             .iter()
-            .any(|op| op == "element.add" || op == "event.bind"));
+            .any(|op| op == "item.add" || op == "event.bind"));
         assert!(form_ops.iter().any(|op| op == "form.remove"));
 
         let at = "ext:Role.R.Can.right.add";

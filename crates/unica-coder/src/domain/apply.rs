@@ -1067,8 +1067,8 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "form.add",
     "form.set",
     "form.remove",
-    "element.add",
-    "element.remove",
+    "item.add",
+    "item.remove",
     "formAttribute.add",
     "formCommand.add",
     "event.bind",
@@ -1235,8 +1235,8 @@ impl OperationDescriptor {
     pub(crate) fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
         !matches!(
             (self.name, role),
-            ("element.add", Some(FormItemRole::Leaf))
-                | ("element.remove", Some(FormItemRole::AutoCommandBar))
+            ("item.add", Some(FormItemRole::Leaf))
+                | ("item.remove", Some(FormItemRole::AutoCommandBar))
         )
     }
 
@@ -1494,8 +1494,8 @@ operation_descriptors!(
         MetadataPredefinedItem,
         Target
     ),
-    ("element.add", Form, FormItemContainer, Items),
-    ("element.remove", Form, FormItem, Target),
+    ("item.add", Form, FormItemContainer, Items),
+    ("item.remove", Form, FormItem, Target),
     ("formAttribute.add", Form, Form, Items),
     ("formCommand.add", Form, Form, Items),
     ("event.bind", Form, FormEvent, Values),
@@ -1966,10 +1966,10 @@ retired_arguments!(
     // Формы (П4, #1355): контейнер нового элемента, удаляемый элемент и
     // событие задаются адресом `Item…Item[.Event]`. Позиция `after` остаётся
     // именем соседа.
-    ("element.add", "items[].into", "{item}", true),
-    ("element.remove", "items[].name", "{item}", true),
-    ("element.remove", "items[]", "{item}", true),
-    ("element.remove", "values.name", "{item}", true),
+    ("item.add", "items[].into", "{item}", true),
+    ("item.remove", "items[].name", "{item}", true),
+    ("item.remove", "items[]", "{item}", true),
+    ("item.remove", "values.name", "{item}", true),
     ("event.bind", "values.element", "{item}.Event.{event}", true),
     // Без имени события `next` ведёт к событиям элемента, где видны имена.
     ("event.bind", "values.element", "{item}.Event.{name}", true),
@@ -2375,26 +2375,42 @@ fn retired_argument_redirect_in(
         })
 }
 
-/// Снятая операция и та, что её заменила на узле-родителе (#1354): узел
-/// создаёт операция родителя с именем в аргументах, а не адрес ещё
-/// несуществующего узла. Псевдонима нет — вызов снятой операции получает
-/// отказ с адресом родителя.
+/// Снятая операция и та, что её заменила (#1354, #1465). Узел создаёт
+/// операция родителя с именем в аргументах, а не адрес ещё несуществующего
+/// узла; операция элемента формы называется по виду узла `Item`.
+/// Псевдонима нет — вызов снятой операции получает отказ без записи
+/// с адресом, где исполнима заменившая.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RetiredOperation {
     pub(crate) op: &'static str,
     pub(crate) replacement: &'static str,
-    /// Вид узла, который снятая операция создавала по своему адресу.
-    pub(crate) creates: NodeKind,
+    /// Вид узла, который снятая операция создавала по своему адресу;
+    /// `None` — операция переименована и исполнима на том же адресе.
+    pub(crate) creates: Option<NodeKind>,
     /// Как аргументы прежнего вызова выражаются в заменившей операции.
     pub(crate) arguments: &'static str,
 }
 
-pub(crate) const RETIRED_OPERATIONS: &[RetiredOperation] = &[RetiredOperation {
-    op: "form.create",
-    replacement: "form.add",
-    creates: NodeKind::Form,
-    arguments: "`items: [{name, type}]` names the form and its type",
-}];
+pub(crate) const RETIRED_OPERATIONS: &[RetiredOperation] = &[
+    RetiredOperation {
+        op: "form.create",
+        replacement: "form.add",
+        creates: Some(NodeKind::Form),
+        arguments: "`items: [{name, type}]` names the form and its type",
+    },
+    RetiredOperation {
+        op: "element.add",
+        replacement: "item.add",
+        creates: None,
+        arguments: "the arguments are unchanged",
+    },
+    RetiredOperation {
+        op: "element.remove",
+        replacement: "item.remove",
+        creates: None,
+        arguments: "the arguments are unchanged",
+    },
+];
 
 impl RetiredOperation {
     pub(crate) fn lookup(op: &str) -> Option<Self> {
@@ -2407,10 +2423,13 @@ impl RetiredOperation {
     /// Узел, на котором исполнима заменившая операция: родитель узла вида
     /// `creates` в адресе вызова, иначе сам адрес вызова.
     pub(crate) fn replacement_at(self, at: &QualifiedAddress) -> QualifiedAddress {
+        let Some(creates) = self.creates else {
+            return at.clone();
+        };
         match at
             .segments()
             .iter()
-            .rposition(|segment| segment.kind() == self.creates)
+            .rposition(|segment| segment.kind() == creates)
         {
             Some(index) if index > 0 => QualifiedAddress {
                 source_set: at.source_set().to_string(),
@@ -2550,7 +2569,7 @@ mod tests {
         for (op, expected) in [
             ("right.set", Some("Rights.xml")),
             ("right.add", Some("Rights.xml")),
-            ("element.add", Some("Form.xml")),
+            ("item.add", Some("Form.xml")),
             ("event.bind", Some("Form.xml")),
             ("event.implement", Some("Form.xml")),
             ("code.insert", Some("Form.xml")),
@@ -2772,8 +2791,8 @@ mod tests {
             "predefinedItem.add",
             "predefinedItem.set",
             "predefinedItem.remove",
-            "element.add",
-            "element.remove",
+            "item.add",
+            "item.remove",
             "formAttribute.add",
             "formCommand.add",
             "event.bind",
@@ -2975,9 +2994,9 @@ mod tests {
                 true,
             ),
             ("attribute.set", "main:Document.Order", false),
-            ("element.add", "main:Document.Order.Attribute.Total", false),
+            ("item.add", "main:Document.Order.Attribute.Total", false),
             ("event.bind", "main:Document.Order.Attribute.Total", false),
-            ("element.add", "main:Document.Order.Command.Print", false),
+            ("item.add", "main:Document.Order.Command.Print", false),
             // Реквизит формы — узел формы, не метаданных.
             (
                 "attribute.set",
@@ -2986,30 +3005,30 @@ mod tests {
             ),
             // Элементы и события формы адресуются цепочкой `Item` любой
             // глубины (#1355): контейнер нового элемента — сам адрес.
-            ("element.add", "main:Document.Order.Form.Main", true),
+            ("item.add", "main:Document.Order.Form.Main", true),
             (
-                "element.add",
+                "item.add",
                 "main:Document.Order.Form.Main.Item.Header",
                 true,
             ),
             (
-                "element.add",
+                "item.add",
                 "main:Document.Order.Form.Main.Item.Header.Item.Inner",
                 true,
             ),
             (
-                "element.add",
+                "item.add",
                 "main:Document.Order.Form.Main.Item.Header.Event.OnChange",
                 false,
             ),
-            ("element.remove", "main:Document.Order.Form.Main", false),
+            ("item.remove", "main:Document.Order.Form.Main", false),
             (
-                "element.remove",
+                "item.remove",
                 "main:Document.Order.Form.Main.Item.Header",
                 true,
             ),
             (
-                "element.remove",
+                "item.remove",
                 "main:Document.Order.Form.Main.Item.Header.Item.Inner",
                 true,
             ),
@@ -3350,7 +3369,7 @@ mod tests {
                 Some("main:Configuration"),
             ),
             (
-                "element.add",
+                "item.add",
                 "main:Document.Order.Form.Main.Item.Header.Event.OnChange",
                 Some("main:Document.Order.Form.Main.Item.Header"),
             ),
@@ -3359,7 +3378,7 @@ mod tests {
                 "main:Document.Order.Form.Main.Item.Header",
                 Some("main:Document.Order.Form.Main"),
             ),
-            ("element.add", "main:Document.Order.Attribute.Total", None),
+            ("item.add", "main:Document.Order.Attribute.Total", None),
             // Под макетом-схемой областей нет: `next` не ведёт туда, где
             // планировщик откажет по формату.
             (
@@ -3529,7 +3548,7 @@ mod tests {
     }
 
     /// Операции пакета П4 (#1355): элемент и событие формы задаются адресом.
-    const FORM_OPERATIONS: &[&str] = &["element.add", "element.remove", "event.bind"];
+    const FORM_OPERATIONS: &[&str] = &["item.add", "item.remove", "event.bind"];
 
     /// Контейнер, удаляемый элемент и событие формы, прежде названные
     /// аргументом, задаются адресом `Item…Item[.Event]` (#1355). Имя
@@ -3554,7 +3573,7 @@ mod tests {
         };
         let cases = [
             (
-                "element.add",
+                "item.add",
                 form.to_string(),
                 json!({"items": [{"name": "New"}, {"name": "Other", "into": "Header"}]}),
                 "items[1].into",
@@ -3562,7 +3581,7 @@ mod tests {
                 false,
             ),
             (
-                "element.add",
+                "item.add",
                 format!("{form}.Item.Header"),
                 json!({"items": [{"name": "New", "into": "Field"}]}),
                 "items[0].into",
@@ -3570,7 +3589,7 @@ mod tests {
                 false,
             ),
             (
-                "element.remove",
+                "item.remove",
                 form.to_string(),
                 json!({"items": [{"name": "Field"}]}),
                 "items[0].name",
@@ -3578,7 +3597,7 @@ mod tests {
                 false,
             ),
             (
-                "element.remove",
+                "item.remove",
                 form.to_string(),
                 json!({"items": ["Missing"]}),
                 "items[0]",
@@ -3586,7 +3605,7 @@ mod tests {
                 false,
             ),
             (
-                "element.remove",
+                "item.remove",
                 form.to_string(),
                 json!({"values": {"name": "Header"}}),
                 "values.name",
@@ -3648,11 +3667,11 @@ mod tests {
         // Вызов на адресе без снятых ключей таблицу не трогает.
         for (op, raw, args) in [
             (
-                "element.add",
+                "item.add",
                 format!("{form}.Item.Header"),
                 json!({"items": [{"name": "New", "after": "Field"}]}),
             ),
-            ("element.remove", format!("{form}.Item.Header"), json!({})),
+            ("item.remove", format!("{form}.Item.Header"), json!({})),
             (
                 "event.bind",
                 format!("{form}.Event.OnOpen"),
@@ -3714,8 +3733,8 @@ mod tests {
                     .unwrap()
                     .applies_to_node(&site, None, role)
             };
-            assert_eq!(verdict("element.add"), add, "{tag}");
-            assert_eq!(verdict("element.remove"), remove, "{tag}");
+            assert_eq!(verdict("item.add"), add, "{tag}");
+            assert_eq!(verdict("item.remove"), remove, "{tag}");
         }
     }
 
@@ -4275,6 +4294,37 @@ mod tests {
             );
         }
         assert!(super::RetiredOperation::lookup("form.add").is_none());
+        // Операции элемента формы переименованы по узлу `Item` (#1465):
+        // заменившая исполнима на том же адресе, снятого имени в реестре нет.
+        for (op, replacement, raw) in [
+            ("element.add", "item.add", "main:Catalog.Items.Form.Choice"),
+            (
+                "element.add",
+                "item.add",
+                "main:Catalog.Items.Form.Choice.Item.Header",
+            ),
+            (
+                "element.remove",
+                "item.remove",
+                "main:Catalog.Items.Form.Choice.Item.Header",
+            ),
+        ] {
+            let retired = super::RetiredOperation::lookup(op).expect("element.* is retired");
+            assert_eq!(retired.replacement, replacement, "{op}");
+            assert!(registry.lookup(op).is_none(), "{op}");
+            let at = address(raw);
+            let target = retired.replacement_at(&at);
+            assert_eq!(target, at, "{op} at {raw}");
+            let site = OperationSite::new(
+                &target,
+                SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            )
+            .unwrap();
+            assert!(
+                registry.lookup(replacement).unwrap().applies_at(&site),
+                "{replacement} at {raw}"
+            );
+        }
         for (op, creator) in [
             ("right.set", Some("right.add")),
             ("mxl.set", Some("area.add")),
@@ -4654,7 +4704,7 @@ mod tests {
         );
         // Вложенная позиция в массиве называет номер элемента.
         let nested = super::RetiredArgument {
-            op: "element.add",
+            op: "item.add",
             key: "items[].into",
             address: "{item}",
             retired: true,
