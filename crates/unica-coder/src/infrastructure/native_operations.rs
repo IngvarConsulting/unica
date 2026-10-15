@@ -26,6 +26,7 @@ pub(crate) mod interface;
 pub(crate) mod logical_selector;
 pub(crate) mod meta;
 pub(crate) mod mxl;
+pub(crate) mod mxl_cells;
 pub(crate) mod registry;
 pub(crate) mod role;
 pub(crate) mod single_file_publisher;

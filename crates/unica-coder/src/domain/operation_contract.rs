@@ -4,6 +4,11 @@
 
 use serde_json::{json, Map, Value};
 
+mod form;
+#[cfg(test)]
+pub(crate) use form::{form_element_enum, FORM_ELEMENT_KINDS};
+pub(crate) use form::{FORM_DYNAMIC_LIST_KEYS, FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
+
 pub(crate) const MXL_MAX_ROW: i64 = 10_000;
 pub(crate) const MXL_MAX_COLUMN: i64 = 1_000;
 
@@ -57,7 +62,6 @@ pub(crate) struct OperationContract {
 const REPORTS_HELP: &str = "references/use-cases/reports-printing.md";
 const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
 const ROLE_HELP: &str = "skills/role-edit/SKILL.md";
-const FORM_HELP: &str = "skills/form-edit/SKILL.md";
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ContractError {
@@ -380,17 +384,17 @@ impl OperationContract {
                     "additionalProperties":scalar});
                 let columns = json!({"type":"integer","format":"unica-json-i64","minimum":1,"maximum":i64::MAX,
                     "description":"Positive JSON integer serialized without a decimal point or exponent, in the signed 64-bit range; 1 is accepted, 1.0 and 1e0 are refused."});
-                let notes = "Read Template -> Area -> Body for ordered nonempty text cells; Body index is a reading ordinal, not RnCn. Parameter lists parameter names. Readability is broader than editability: drawings, non-Rows areas, overlapping/reordered areas, outside rows, multiple column sets and multilingual content the writer cannot preserve are refused before writing. Strings remain text; numbers/booleans are serialized as text; null is empty text. Full DSL, fonts, styles, merges and page properties are not public inputs. Create and execute template.add before addressing a new template.";
+                let notes = "Read Template -> Area -> Body for ordered nonempty text cells; Body index is a reading ordinal, not RnCn. Parameter lists parameter names. The writer changes only the addressed cells, rows and areas; other content and bytes stay. A new cell has no own format. Refused before writing: a non-Rows or rowless area, a cell inside a merge it does not start, a cell holding a value or control, a cell that takes a parameter or template fill from its row, column, column-set or document format. Strings remain text; numbers/booleans are serialized as text; null is empty text and writes no new cell. Fonts, styles, merges and page properties are not public inputs. Create and execute template.add before addressing a new template.";
                 if op == "mxl.set" {
                     (object(&[("at",text(true)),("values",object(&[("cells",cells),("columns",columns)], &["cells"]))], &["values"]),
                     "An existing named area of a SpreadsheetDocument Template: <source-set>:<Owner>.<name>.Template.<name>.Area.<area>. The address names the area; a missing area is refused, create it with area.add on the template.",
-                    "Update cells of the existing named Rows area. Addressed parameter/template cells become ordinary text. Unaddressed cells and areas remain. Width grows to max(existing width, written column, columns); it never shrinks.",
+                    "Update cells of the existing named Rows area. Addressed parameter/template cells become ordinary text. Unaddressed cells and areas remain. A row below the area grows the area only when nothing follows it. Width grows to max(existing width, written column, columns); it never shrinks.",
                     notes,
                     json!({"values":{"columns":4,"cells":{"R1C1":"Item","R1C2":"Amount","R2C1":true,"R2C2":null}}}))
                 } else {
                     (object(&[("at",text(true)),("items",json!({"type":"array","minItems":1,"items":object(&[("name",text(true)),("cells",cells),("columns",columns)], &["name","cells"])}))], &["items"]),
                     "The existing SpreadsheetDocument Template itself: <source-set>:<Owner>.<name>.Template.<name>. Read its Area collection before choosing a new area name.",
-                    "Append new named Rows areas after the existing ones with their initial cells. An existing area name is refused; change it with mxl.set at its Area address. Width grows to max(existing width, written column, columns); it never shrinks.",
+                    "Append new named Rows areas after every used row with their initial cells. An existing area name is refused; change it with mxl.set at its Area address. Width grows to max(existing width, written column, columns); it never shrinks.",
                     notes,
                     json!({"items":[{"name":"Header","columns":4,"cells":{"R1C1":"Item","R1C2":"Amount"}}]}))
                 }
@@ -788,54 +792,6 @@ impl OperationContract {
             help: ROLE_HELP,
         })
     }
-
-    /// Контракт команды формы публикует ровно те ключи, которые писатель
-    /// кладёт в `<Command>` (#1439): ключ, который он не пишет, отказывает
-    /// здесь, а не теряется молча.
-    pub(crate) fn form(op: &str) -> Option<Self> {
-        let (schema, target, effect, notes, example_args) = match op {
-            "formCommand.add" => (
-                object(
-                    &[
-                        ("at", text(true)),
-                        (
-                            "items",
-                            json!({"type":"array","minItems":1,"items":object(&[
-                                ("name",json!({"type":"string","pattern":r"\S",
-                                    "description":"New command name, unused in the form."})),
-                                ("title",json!({"type":"string","pattern":r"\S",
-                                    "description":"Title in the configuration language."})),
-                                ("tooltip",json!({"type":"string","pattern":r"\S",
-                                    "description":"Tooltip in the configuration language."})),
-                                ("action",json!({"type":"string","pattern":r"\S",
-                                    "description":"Handler procedure in the form module; defaults to the command name."})),
-                                ("shortcut",json!({"type":"string","pattern":r"\S",
-                                    "description":"Keyboard shortcut as the platform writes it, e.g. F5."})),
-                                ("picture",json!({"type":"string","pattern":r"^(StdPicture|CommonPicture)\.[^.\s]+$",
-                                    "description":"Picture reference StdPicture.<Name> or CommonPicture.<Name>; written with LoadTransparent=true."})),
-                                ("representation",json!({"type":"string","enum":["Auto","Text","Picture","TextPicture"],
-                                    "description":"Command DefaultRepresentation; the button set (PictureAndText, None, Compact) is not valid for a command."})),
-                            ], &["name"])}),
-                        ),
-                    ],
-                    &["items"],
-                ),
-                "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Command branch before choosing names.",
-                "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with element.add.",
-                "A property outside this schema is refused before any write; use, functionalOptions, currentRowUse, modifiesSavedData and the associated table are not written by this operation.",
-                json!({"items":[{"name":"Refresh","title":"Refresh","tooltip":"Refresh the list","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
-            ),
-            _ => return None,
-        };
-        Some(Self {
-            schema,
-            target,
-            effect,
-            notes,
-            example_args,
-            help: FORM_HELP,
-        })
-    }
 }
 
 fn error(path: &str, message: impl Into<String>) -> ContractError {
@@ -900,6 +856,32 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
                 "value is not one of the supported alternatives",
             ));
         }
+    }
+    // Различитель выбирает вариант по значению ключа (вид элемента формы):
+    // ошибка варианта называет точный путь, а не «ни одна альтернатива».
+    // Без ключа выбирается вариант, у которого различитель имеет `default`.
+    if let (Some(alternatives), Some(key), Some(object)) = (
+        schema["anyOf"].as_array(),
+        schema["x-unica-discriminator"].as_str(),
+        value.as_object(),
+    ) {
+        let selected = object.get(key);
+        let variant = alternatives.iter().find(|variant| {
+            let discriminator = &variant["properties"][key];
+            match selected {
+                Some(selected) => discriminator["enum"]
+                    .as_array()
+                    .is_some_and(|values| values.contains(selected)),
+                None => discriminator.get("default").is_some(),
+            }
+        });
+        return match variant {
+            Some(variant) => validate(variant, value, path),
+            None => Err(error(
+                &format!("{path}.{key}"),
+                "value is not one of the supported alternatives",
+            )),
+        };
     }
     if let Some(alternatives) = schema["anyOf"].as_array() {
         if !alternatives

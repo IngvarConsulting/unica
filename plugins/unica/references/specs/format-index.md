@@ -169,4 +169,3 @@
 | DSL | Описание | Спецификация |
 |-----|----------|--------------|
 | Form DSL | JSON-формат для компиляции форм | [form-dsl-spec.md](form-dsl-spec.md) |
-| MXL DSL | JSON-формат для компиляции табличных документов | [mxl-dsl-spec.md](mxl-dsl-spec.md) |
