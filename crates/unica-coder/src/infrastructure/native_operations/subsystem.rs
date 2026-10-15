@@ -990,349 +990,381 @@ pub(crate) fn validate_subsystem(
             }
         };
 
-        let mut report = SubsystemValidationReport::new(detailed);
         let text = fs::read_to_string(&xml_path)
             .map_err(|err| format!("failed to read {}: {err}", xml_path.display()))?;
-        let source = text.trim_start_matches('\u{feff}');
-        let doc = match Document::parse(source) {
-            Ok(doc) => doc,
-            Err(err) => {
-                report.error(format!("1. XML parse error: {err}"));
-                let result = report.finish("");
-                return Ok((false, result, xml_path));
-            }
-        };
+        validate_subsystem_content(
+            &text,
+            xml_path,
+            detailed,
+            |path| Ok(path.exists()),
+            |path| match fs::read_to_string(path) {
+                Ok(text) => Ok(Some(text)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(format!("failed to read {}: {error}", path.display())),
+            },
+        )
+    })();
+    subsystem_validation_outcome(result)
+}
 
-        let root = doc.root_element();
-        let version_literal = root_version_literal(source, root);
-        let version = version_literal.as_deref().unwrap_or("");
-        match classify_root_version(version_literal.as_deref()) {
-            Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-            Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
-            Err(error) => report.error(error.to_string()),
-        }
-        let Some(sub) = root.children().find(|node| {
-            role_info_element(*node, "Subsystem", Some("http://v8.1c.ru/8.3/MDClasses"))
-        }) else {
-            report.error("1. Root structure: expected MetaDataObject/Subsystem, not found");
+/// Validate captured XML with dependencies supplied by the caller's source authority.
+/// Paths label dependencies; this function never opens them itself.
+pub(crate) fn validate_subsystem_content(
+    text: &str,
+    xml_path: PathBuf,
+    detailed: bool,
+    mut exists: impl FnMut(&Path) -> Result<bool, String>,
+    mut read_optional: impl FnMut(&Path) -> Result<Option<String>, String>,
+) -> Result<(bool, String, PathBuf), String> {
+    let mut report = SubsystemValidationReport::new(detailed);
+    let source = text.trim_start_matches('\u{feff}');
+    let doc = match Document::parse(source) {
+        Ok(doc) => doc,
+        Err(err) => {
+            report.error(format!("1. XML parse error: {err}"));
             let result = report.finish("");
             return Ok((false, result, xml_path));
-        };
-        let uuid_val = sub.attribute("uuid").unwrap_or("");
-        if !uuid_val.is_empty() && is_valid_uuid(uuid_val) {
+        }
+    };
+
+    let root = doc.root_element();
+    let version_literal = root_version_literal(source, root);
+    let version = version_literal.as_deref().unwrap_or("");
+    match classify_root_version(version_literal.as_deref()) {
+        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
+        Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
+        Err(error) => report.error(error.to_string()),
+    }
+    let Some(sub) = root
+        .children()
+        .find(|node| role_info_element(*node, "Subsystem", Some("http://v8.1c.ru/8.3/MDClasses")))
+    else {
+        report.error("1. Root structure: expected MetaDataObject/Subsystem, not found");
+        let result = report.finish("");
+        return Ok((false, result, xml_path));
+    };
+    let uuid_val = sub.attribute("uuid").unwrap_or("");
+    if !uuid_val.is_empty() && is_valid_uuid(uuid_val) {
+        report.ok(format!(
+            "1. Root structure: MetaDataObject/Subsystem, uuid={uuid_val}, version {version}"
+        ));
+    } else {
+        report.error("1. Root structure: invalid or missing uuid");
+    }
+
+    let Some(props) = sub
+        .children()
+        .find(|node| role_info_element(*node, "Properties", Some("http://v8.1c.ru/8.3/MDClasses")))
+    else {
+        report.error("2. Properties: <Properties> element not found");
+        let result = report.finish("");
+        return Ok((false, result, xml_path));
+    };
+
+    let required_props = [
+        "Name",
+        "Synonym",
+        "Comment",
+        "IncludeHelpInContents",
+        "IncludeInCommandInterface",
+        "UseOneCommand",
+        "Explanation",
+        "Picture",
+        "Content",
+    ];
+    let missing = required_props
+        .iter()
+        .filter(|prop| {
+            props
+                .children()
+                .all(|node| !role_info_element(node, prop, Some("http://v8.1c.ru/8.3/MDClasses")))
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        report.ok("2. Properties: all 9 required properties present");
+    } else {
+        report.error(format!("2. Properties: missing: {}", missing.join(", ")));
+    }
+
+    let sub_name = child_text(props, "Name", Some("http://v8.1c.ru/8.3/MDClasses"))
+        .trim()
+        .to_string();
+    let header = format!("=== Validation: Subsystem.{sub_name} ===");
+    report.out("");
+    report.out(header.clone());
+    report.lines.insert(0, String::new());
+    report.lines.insert(0, header);
+
+    match validate_subsystem_metadata_name("Name", &sub_name) {
+        Ok(()) => report.ok(format!(
+            "3. Name: \"{sub_name}\" - valid metadata identifier"
+        )),
+        Err(error) => report.error(format!("3. Name: {error}")),
+    }
+
+    if let Some(syn) = props
+        .children()
+        .find(|node| role_info_element(*node, "Synonym", Some("http://v8.1c.ru/8.3/MDClasses")))
+    {
+        let items = syn
+            .children()
+            .filter(|node| role_info_element(*node, "item", None));
+        let mut item_count = 0usize;
+        let mut first_content = String::new();
+        for item in items {
+            item_count += 1;
+            if first_content.is_empty() {
+                if let Some(content) = item
+                    .children()
+                    .find(|node| role_info_element(*node, "content", None))
+                    .and_then(|node| node.text())
+                {
+                    if !content.is_empty() {
+                        first_content = content.to_string();
+                    }
+                }
+            }
+        }
+        if item_count > 0 {
             report.ok(format!(
-                "1. Root structure: MetaDataObject/Subsystem, uuid={uuid_val}, version {version}"
+                "4. Synonym: \"{first_content}\" ({item_count} lang(s))"
             ));
         } else {
-            report.error("1. Root structure: invalid or missing uuid");
+            report.warn("4. Synonym: element exists but no v8:item children");
         }
+    } else {
+        report.warn("4. Synonym: empty or missing");
+    }
 
-        let Some(props) = sub.children().find(|node| {
-            role_info_element(*node, "Properties", Some("http://v8.1c.ru/8.3/MDClasses"))
-        }) else {
-            report.error("2. Properties: <Properties> element not found");
-            let result = report.finish("");
-            return Ok((false, result, xml_path));
-        };
-
-        let required_props = [
-            "Name",
-            "Synonym",
-            "Comment",
-            "IncludeHelpInContents",
-            "IncludeInCommandInterface",
-            "UseOneCommand",
-            "Explanation",
-            "Picture",
-            "Content",
-        ];
-        let missing = required_props
-            .iter()
-            .filter(|prop| {
-                props.children().all(|node| {
-                    !role_info_element(node, prop, Some("http://v8.1c.ru/8.3/MDClasses"))
-                })
-            })
-            .copied()
-            .collect::<Vec<_>>();
-        if missing.is_empty() {
-            report.ok("2. Properties: all 9 required properties present");
-        } else {
-            report.error(format!("2. Properties: missing: {}", missing.join(", ")));
-        }
-
-        let sub_name = child_text(props, "Name", Some("http://v8.1c.ru/8.3/MDClasses"))
-            .trim()
-            .to_string();
-        let header = format!("=== Validation: Subsystem.{sub_name} ===");
-        report.out("");
-        report.out(header.clone());
-        report.lines.insert(0, String::new());
-        report.lines.insert(0, header);
-
-        match validate_subsystem_metadata_name("Name", &sub_name) {
-            Ok(()) => report.ok(format!(
-                "3. Name: \"{sub_name}\" - valid metadata identifier"
-            )),
-            Err(error) => report.error(format!("3. Name: {error}")),
-        }
-
-        if let Some(syn) = props
+    let mut bool_ok = true;
+    let mut use_one = String::new();
+    for prop in [
+        "IncludeHelpInContents",
+        "IncludeInCommandInterface",
+        "UseOneCommand",
+    ] {
+        if let Some(node) = props
             .children()
-            .find(|node| role_info_element(*node, "Synonym", Some("http://v8.1c.ru/8.3/MDClasses")))
+            .find(|node| role_info_element(*node, prop, Some("http://v8.1c.ru/8.3/MDClasses")))
         {
-            let items = syn
-                .children()
-                .filter(|node| role_info_element(*node, "item", None));
-            let mut item_count = 0usize;
-            let mut first_content = String::new();
-            for item in items {
-                item_count += 1;
-                if first_content.is_empty() {
-                    if let Some(content) = item
-                        .children()
-                        .find(|node| role_info_element(*node, "content", None))
-                        .and_then(|node| node.text())
-                    {
-                        if !content.is_empty() {
-                            first_content = content.to_string();
-                        }
-                    }
-                }
+            let value = node.text().unwrap_or("").trim().to_string();
+            if prop == "UseOneCommand" {
+                use_one = value.clone();
             }
-            if item_count > 0 {
-                report.ok(format!(
-                    "4. Synonym: \"{first_content}\" ({item_count} lang(s))"
+            if value != "true" && value != "false" {
+                report.error(format!(
+                    "5. Boolean property {prop} = \"{value}\" (expected true/false)"
                 ));
-            } else {
-                report.warn("4. Synonym: element exists but no v8:item children");
-            }
-        } else {
-            report.warn("4. Synonym: empty or missing");
-        }
-
-        let mut bool_ok = true;
-        let mut use_one = String::new();
-        for prop in [
-            "IncludeHelpInContents",
-            "IncludeInCommandInterface",
-            "UseOneCommand",
-        ] {
-            if let Some(node) = props
-                .children()
-                .find(|node| role_info_element(*node, prop, Some("http://v8.1c.ru/8.3/MDClasses")))
-            {
-                let value = node.text().unwrap_or("").trim().to_string();
-                if prop == "UseOneCommand" {
-                    use_one = value.clone();
-                }
-                if value != "true" && value != "false" {
-                    report.error(format!(
-                        "5. Boolean property {prop} = \"{value}\" (expected true/false)"
-                    ));
-                    bool_ok = false;
-                }
+                bool_ok = false;
             }
         }
-        if bool_ok {
-            report.ok("5. Boolean properties: valid");
-        }
+    }
+    if bool_ok {
+        report.ok("5. Boolean properties: valid");
+    }
 
-        let mut content_items = Vec::<String>::new();
-        if let Some(content) = props
+    let mut content_items = Vec::<String>::new();
+    if let Some(content) = props
+        .children()
+        .find(|node| role_info_element(*node, "Content", Some("http://v8.1c.ru/8.3/MDClasses")))
+    {
+        let xr_items = content
             .children()
-            .find(|node| role_info_element(*node, "Content", Some("http://v8.1c.ru/8.3/MDClasses")))
-        {
-            let xr_items = content
-                .children()
-                .filter(|node| role_info_element(*node, "Item", None))
-                .collect::<Vec<_>>();
-            if xr_items.is_empty() {
-                report.ok("6. Content: empty (no items)");
-            } else {
-                let mut content_ok = true;
-                for item in &xr_items {
-                    let type_attr = attribute_by_local_name(*item, "type").unwrap_or("");
-                    let text = item.text().unwrap_or("").trim().to_string();
-                    content_items.push(text.clone());
-                    if type_attr != "xr:MDObjectRef" {
-                        report.error(format!(
+            .filter(|node| role_info_element(*node, "Item", None))
+            .collect::<Vec<_>>();
+        if xr_items.is_empty() {
+            report.ok("6. Content: empty (no items)");
+        } else {
+            let mut content_ok = true;
+            for item in &xr_items {
+                let type_attr = attribute_by_local_name(*item, "type").unwrap_or("");
+                let text = item.text().unwrap_or("").trim().to_string();
+                content_items.push(text.clone());
+                if type_attr != "xr:MDObjectRef" {
+                    report.error(format!(
                             "6. Content item \"{text}\": xsi:type=\"{type_attr}\" (expected xr:MDObjectRef)"
                         ));
-                        content_ok = false;
-                    }
-                    if !is_subsystem_content_ref(&text) && !is_valid_uuid(&text) {
+                    content_ok = false;
+                }
+                if !is_subsystem_content_ref(&text) && !is_valid_uuid(&text) {
+                    report.error(format!(
+                        "6. Content item \"{text}\": invalid format (expected Type.Name or UUID)"
+                    ));
+                    content_ok = false;
+                }
+                if let Some((prefix, _)) = text.split_once('.') {
+                    if subsystem_known_plural_types().contains(&prefix) {
                         report.error(format!(
-                            "6. Content item \"{text}\": invalid format (expected Type.Name or UUID)"
-                        ));
-                        content_ok = false;
-                    }
-                    if let Some((prefix, _)) = text.split_once('.') {
-                        if subsystem_known_plural_types().contains(&prefix) {
-                            report.error(format!(
                                 "6. Content item \"{text}\": uses plural form \"{prefix}\" (platform requires singular, e.g. Catalog not Catalogs)"
                             ));
-                            content_ok = false;
-                        }
+                        content_ok = false;
                     }
                 }
-                if content_ok {
-                    report.ok(format!(
-                        "6. Content: {} items, all valid MDObjectRef format",
-                        xr_items.len()
-                    ));
-                }
             }
-        } else {
-            report.ok("6. Content: empty (no items)");
-        }
-
-        if !content_items.is_empty() {
-            let duplicates = duplicates_preserve_order(&content_items);
-            if duplicates.is_empty() {
-                report.ok("7. Content: no duplicates");
-            } else {
-                report.warn(format!(
-                    "7. Content: duplicates found: {}",
-                    duplicates.join(", ")
-                ));
-            }
-        }
-
-        let mut child_names = Vec::<String>::new();
-        if let Some(child_objs) = sub.children().find(|node| {
-            role_info_element(*node, "ChildObjects", Some("http://v8.1c.ru/8.3/MDClasses"))
-        }) {
-            let children = child_objs
-                .children()
-                .filter(|node| node.is_element())
-                .collect::<Vec<_>>();
-            if children.is_empty() {
-                report.ok("8. ChildObjects: empty (leaf subsystem)");
-            } else {
-                let mut child_ok = true;
-                for child in children {
-                    let local = child.tag_name().name();
-                    if local != "Subsystem" {
-                        report.error(format!("8. ChildObjects: unexpected element <{local}>"));
-                        child_ok = false;
-                    } else {
-                        let text = child.text().unwrap_or("").trim();
-                        match validate_subsystem_metadata_name("Child subsystem name", text) {
-                            Ok(()) => child_names.push(text.to_string()),
-                            Err(error) => {
-                                report.error(format!("8. ChildObjects: {error}"));
-                                child_ok = false;
-                            }
-                        }
-                    }
-                }
-                if child_ok {
-                    report.ok(format!(
-                        "8. ChildObjects: {} entries, all non-empty",
-                        child_names.len()
-                    ));
-                }
-            }
-        } else {
-            report.ok("8. ChildObjects: empty (leaf subsystem)");
-        }
-
-        if !child_names.is_empty() {
-            let duplicates = duplicates_preserve_order(&child_names);
-            if duplicates.is_empty() {
-                report.ok("9. ChildObjects: no duplicates");
-            } else {
-                report.error(format!(
-                    "9. ChildObjects: duplicates: {}",
-                    duplicates.join(", ")
-                ));
-            }
-
-            let subs_dir = subsystem_dir_for_xml(&xml_path).join("Subsystems");
-            let missing_files = child_names
-                .iter()
-                .filter(|name| !subs_dir.join(format!("{name}.xml")).exists())
-                .cloned()
-                .collect::<Vec<_>>();
-            if missing_files.is_empty() {
+            if content_ok {
                 report.ok(format!(
-                    "10. ChildObjects files: all {} files exist",
+                    "6. Content: {} items, all valid MDObjectRef format",
+                    xr_items.len()
+                ));
+            }
+        }
+    } else {
+        report.ok("6. Content: empty (no items)");
+    }
+
+    if !content_items.is_empty() {
+        let duplicates = duplicates_preserve_order(&content_items);
+        if duplicates.is_empty() {
+            report.ok("7. Content: no duplicates");
+        } else {
+            report.warn(format!(
+                "7. Content: duplicates found: {}",
+                duplicates.join(", ")
+            ));
+        }
+    }
+
+    let mut child_names = Vec::<String>::new();
+    if let Some(child_objs) = sub.children().find(|node| {
+        role_info_element(*node, "ChildObjects", Some("http://v8.1c.ru/8.3/MDClasses"))
+    }) {
+        let children = child_objs
+            .children()
+            .filter(|node| node.is_element())
+            .collect::<Vec<_>>();
+        if children.is_empty() {
+            report.ok("8. ChildObjects: empty (leaf subsystem)");
+        } else {
+            let mut child_ok = true;
+            for child in children {
+                let local = child.tag_name().name();
+                if local != "Subsystem" {
+                    report.error(format!("8. ChildObjects: unexpected element <{local}>"));
+                    child_ok = false;
+                } else {
+                    let text = child.text().unwrap_or("").trim();
+                    match validate_subsystem_metadata_name("Child subsystem name", text) {
+                        Ok(()) => child_names.push(text.to_string()),
+                        Err(error) => {
+                            report.error(format!("8. ChildObjects: {error}"));
+                            child_ok = false;
+                        }
+                    }
+                }
+            }
+            if child_ok {
+                report.ok(format!(
+                    "8. ChildObjects: {} entries, all non-empty",
                     child_names.len()
                 ));
-            } else {
-                report.warn(format!(
-                    "10. ChildObjects files: missing: {}",
-                    missing_files.join(", ")
-                ));
             }
         }
+    } else {
+        report.ok("8. ChildObjects: empty (leaf subsystem)");
+    }
 
-        let ci_path = subsystem_command_interface_path(&xml_path);
-        if ci_path.exists() {
-            match fs::read_to_string(&ci_path)
-                .map_err(|err| format!("failed to read {}: {err}", ci_path.display()))
-                .and_then(|text| {
-                    Document::parse(text.trim_start_matches('\u{feff}'))
-                        .map(|_| ())
-                        .map_err(|err| format!("{err}"))
-                }) {
-                Ok(()) => report.ok("11. CommandInterface: exists, well-formed"),
-                Err(err) => report.warn(format!(
-                    "11. CommandInterface: exists but NOT well-formed: {err}"
-                )),
-            }
+    if !child_names.is_empty() {
+        let duplicates = duplicates_preserve_order(&child_names);
+        if duplicates.is_empty() {
+            report.ok("9. ChildObjects: no duplicates");
         } else {
-            report.ok("11. CommandInterface: not present");
+            report.error(format!(
+                "9. ChildObjects: duplicates: {}",
+                duplicates.join(", ")
+            ));
         }
 
-        if let Some(picture) = props
+        let subs_dir = subsystem_dir_for_xml(&xml_path).join("Subsystems");
+        let missing_files = child_names
+            .iter()
+            .map(|name| {
+                exists(&subs_dir.join(format!("{name}.xml")))
+                    .map(|present| (!present).then(|| name.clone()))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if missing_files.is_empty() {
+            report.ok(format!(
+                "10. ChildObjects files: all {} files exist",
+                child_names.len()
+            ));
+        } else {
+            report.warn(format!(
+                "10. ChildObjects files: missing: {}",
+                missing_files.join(", ")
+            ));
+        }
+    }
+
+    let ci_path = subsystem_command_interface_path(&xml_path);
+    match read_optional(&ci_path).and_then(|text| {
+        text.map(|text| {
+            Document::parse(text.trim_start_matches('\u{feff}'))
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+        .transpose()
+    }) {
+        Ok(Some(())) => report.ok("11. CommandInterface: exists, well-formed"),
+        Ok(None) => report.ok("11. CommandInterface: not present"),
+        Err(error) => report.warn(format!(
+            "11. CommandInterface: exists but NOT well-formed: {error}"
+        )),
+    }
+
+    if let Some(picture) = props
+        .children()
+        .find(|node| role_info_element(*node, "Picture", Some("http://v8.1c.ru/8.3/MDClasses")))
+    {
+        let children = picture
             .children()
-            .find(|node| role_info_element(*node, "Picture", Some("http://v8.1c.ru/8.3/MDClasses")))
-        {
-            let children = picture
-                .children()
-                .filter(|node| node.is_element())
-                .collect::<Vec<_>>();
-            if children.is_empty() {
-                report.ok("12. Picture: empty (not set)");
-            } else if let Some(pic_ref) = children
-                .iter()
-                .find(|node| role_info_element(**node, "Ref", None))
-            {
-                let ref_text = pic_ref.text().unwrap_or("");
-                if ref_text.starts_with("CommonPicture.") {
-                    report.ok(format!("12. Picture: {ref_text}"));
-                } else {
-                    report.warn(format!(
-                        "12. Picture: \"{ref_text}\" (expected CommonPicture.XXX)"
-                    ));
-                }
-            } else {
-                report.warn("12. Picture: has children but no xr:Ref content");
-            }
-        } else {
+            .filter(|node| node.is_element())
+            .collect::<Vec<_>>();
+        if children.is_empty() {
             report.ok("12. Picture: empty (not set)");
-        }
-
-        if use_one == "true" {
-            if content_items.len() == 1 {
-                report.ok("13. UseOneCommand: true, Content has exactly 1 item");
+        } else if let Some(pic_ref) = children
+            .iter()
+            .find(|node| role_info_element(**node, "Ref", None))
+        {
+            let ref_text = pic_ref.text().unwrap_or("");
+            if ref_text.starts_with("CommonPicture.") {
+                report.ok(format!("12. Picture: {ref_text}"));
             } else {
                 report.warn(format!(
-                    "13. UseOneCommand: true but Content has {} items (expected 1)",
-                    content_items.len()
+                    "12. Picture: \"{ref_text}\" (expected CommonPicture.XXX)"
                 ));
             }
         } else {
-            report.ok("13. UseOneCommand: false (no constraint)");
+            report.warn("12. Picture: has children but no xr:Ref content");
         }
+    } else {
+        report.ok("12. Picture: empty (not set)");
+    }
 
-        let ok = report.errors == 0;
-        let result = report.finish(&sub_name);
-        Ok((ok, result, xml_path))
-    })();
+    if use_one == "true" {
+        if content_items.len() == 1 {
+            report.ok("13. UseOneCommand: true, Content has exactly 1 item");
+        } else {
+            report.warn(format!(
+                "13. UseOneCommand: true but Content has {} items (expected 1)",
+                content_items.len()
+            ));
+        }
+    } else {
+        report.ok("13. UseOneCommand: false (no constraint)");
+    }
 
+    let ok = report.errors == 0;
+    let result = report.finish(&sub_name);
+    Ok((ok, result, xml_path))
+}
+
+pub(crate) fn subsystem_validation_outcome(
+    result: Result<(bool, String, PathBuf), String>,
+) -> AdapterOutcome {
     match result {
         Ok((ok, text, artifact)) => {
             let artifacts = if artifact.as_os_str().is_empty() {

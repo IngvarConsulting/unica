@@ -239,6 +239,20 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
     spec: ToolSpec,
     documents: &[SubsystemInfoFormatDocument],
 ) -> Result<FormatGuardCheck, FormatGuardError> {
+    evaluate_prepared_subsystem_format_guard(spec.name, spec.execution.is_mutating(), documents)
+}
+
+pub(crate) fn evaluate_prepared_subsystem_validation_format_guard(
+    documents: &[SubsystemInfoFormatDocument],
+) -> Result<FormatGuardCheck, FormatGuardError> {
+    evaluate_prepared_subsystem_format_guard("subsystem-validate", false, documents)
+}
+
+fn evaluate_prepared_subsystem_format_guard(
+    tool_name: &str,
+    mutating: bool,
+    documents: &[SubsystemInfoFormatDocument],
+) -> Result<FormatGuardCheck, FormatGuardError> {
     let mut owners = Vec::with_capacity(documents.len());
     let mut paths = HashSet::new();
     for document in documents {
@@ -266,12 +280,7 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
                     "compatibility": "invalid",
                     "root": document.path.display().to_string(),
                 });
-                return Ok(format_check(
-                    spec.name,
-                    spec.execution.is_mutating(),
-                    warning,
-                    diagnostic,
-                ));
+                return Ok(format_check(tool_name, mutating, warning, diagnostic));
             }
         };
         let root = parsed.root_element();
@@ -288,7 +297,7 @@ pub(crate) fn evaluate_prepared_subsystem_info_format_guard(
             raw: document.bytes.clone(),
         });
     }
-    evaluate_resolved_format_owners(spec.name, spec.execution.is_mutating(), owners, None)
+    evaluate_resolved_format_owners(tool_name, mutating, owners, None)
 }
 
 fn evaluate_resolved_format_owners(

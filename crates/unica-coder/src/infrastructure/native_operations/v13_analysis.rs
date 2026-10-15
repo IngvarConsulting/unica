@@ -64,6 +64,13 @@ pub(crate) fn validate_mxl_input(
     })
 }
 
+pub(crate) fn subsystem_validation_outcome(
+    guard: Result<FormatGuardCheck, crate::application::ports::FormatGuardError>,
+    outcome: crate::application::AdapterOutcome,
+) -> NativeCheckOutcome {
+    with_format_guard(guard, || outcome)
+}
+
 fn validate_with_format_guard(
     validator: CheckValidator,
     args: &Map<String, Value>,
