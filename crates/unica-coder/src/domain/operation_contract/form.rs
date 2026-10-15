@@ -119,6 +119,21 @@ pub(crate) const FORM_ELEMENT_KINDS: &[FormElementKind] = &[
         ],
     },
     FormElementKind {
+        kind: "TextDocumentField",
+        aliases: &["TextDocumentField"],
+        keys: with_common_flags![
+            "path",
+            "title",
+            "tooltip",
+            "tooltipRepresentation",
+            "titleLocation",
+            "width",
+            "height",
+            "autoMaxWidth",
+            "autoMaxHeight",
+        ],
+    },
+    FormElementKind {
         kind: "Label",
         aliases: &["Label", "LabelDecoration"],
         keys: with_common_flags![
@@ -391,10 +406,10 @@ fn element_item_schema(kinds: &[&str]) -> Value {
             );
             // Без `type` элемент — поле ввода: другие виды требуют его явно,
             // и стандартный валидатор схемы выбирает тот же вариант.
-            let required: &[&str] = if kind.kind == "InputField" {
-                &["name"]
-            } else {
-                &["name", "type"]
+            let required: &[&str] = match kind.kind {
+                "InputField" => &["name"],
+                "TextDocumentField" => &["name", "type", "path"],
+                _ => &["name", "type"],
             };
             object(&fields, required)
         })
@@ -683,6 +698,24 @@ mod tests {
                     .is_ok(),
                 "{item}"
             );
+        }
+    }
+
+    #[test]
+    fn text_document_field_requires_a_binding_path_in_the_closed_contract() {
+        let contract = OperationContract::form("item.add").unwrap();
+        let valid = json!({"name":"Protocol","type":"TextDocumentField","path":"ProtocolValue"});
+        assert!(contract
+            .normalize(&json!({"items":[valid]}), "args")
+            .is_ok());
+        for item in [
+            json!({"name":"Protocol","type":"TextDocumentField"}),
+            json!({"name":"Protocol","type":"TextDocumentField","path":""}),
+        ] {
+            let error = contract
+                .normalize(&json!({"items":[item]}), "args")
+                .unwrap_err();
+            assert_eq!(error.path, "args.items[0].path");
         }
     }
 
