@@ -9794,6 +9794,84 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn saved_apply_rechecks_same_inode_same_length_hash_before_first_write() {
+        use crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events;
+        use crate::infrastructure::platform::filesystem::file_identity;
+
+        let fixture = actor_fixture("saved-plan-same-inode-hash", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let form = fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml");
+        let before = std::fs::read(&form).unwrap();
+        let identity_before = file_identity(&std::fs::File::open(&form).unwrap()).unwrap();
+        let mut changed = before.clone();
+        changed[0] ^= 1;
+        std::fs::write(&form, &changed).unwrap();
+        let identity_after = file_identity(&std::fs::File::open(&form).unwrap()).unwrap();
+        assert_eq!(
+            identity_after, identity_before,
+            "правка должна сохранить inode"
+        );
+        assert_eq!(changed.len(), before.len(), "правка должна сохранить длину");
+        assert_ne!(changed, before, "правка должна изменить байты");
+
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let _ = take_retained_apply_observed_events();
+        let refusal_kind = std::cell::Cell::new(None);
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |result, publication| {
+                    refusal_kind.set(publication.as_ref().err().map(|error| error.kind()));
+                    finish_saved_apply_test(result, publication)
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !result.ok,
+            "изменённый хеш должен устарить сохранённый план"
+        );
+        assert_eq!(
+            refusal_kind.get(),
+            Some(super::ApplyPublicationErrorKind::ConcurrentRevision)
+        );
+        assert!(result.summary.contains("Form.xml"), "{}", result.summary);
+        assert!(
+            result.summary.contains("source write target"),
+            "{}",
+            result.summary
+        );
+        assert!(
+            take_retained_apply_observed_events().is_empty(),
+            "проверка хеша должна завершиться до первой записи исходников или кеша"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
     fn saved_apply_refuses_a_disappeared_write_target_without_writing_cache() {
         let fixture = actor_fixture("saved-plan-missing-write-target", &["main"]);
         write_actor_event_fixture(&fixture.roots[0]);
