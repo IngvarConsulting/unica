@@ -1,0 +1,58 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<ChartOfCalculationTypes uuid="9d412eac-77a8-4b6d-98c7-8ae1cacde5be">
+		<InternalInfo>
+			<xr:GeneratedType name="ChartOfCalculationTypesObject.CorpusCalculationTypes" category="Object">
+				<xr:TypeId>4100a184-de59-4d1f-9e12-abb8007e0f86</xr:TypeId>
+				<xr:ValueId>cf0e9492-66b6-467b-b325-1ab121077b58</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesRef.CorpusCalculationTypes" category="Ref">
+				<xr:TypeId>e479bf0e-9c08-43ae-9873-8cf2792b6524</xr:TypeId>
+				<xr:ValueId>1793e789-8a1d-4b10-8032-2d3b5f1ab10d</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesSelection.CorpusCalculationTypes" category="Selection">
+				<xr:TypeId>799d8c48-9dc9-4643-8a2c-02c34ea94232</xr:TypeId>
+				<xr:ValueId>163aea0f-c597-4c36-b65e-a7172ccee273</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesList.CorpusCalculationTypes" category="List">
+				<xr:TypeId>f268e9c4-bfb5-4d28-94aa-00371fe3685f</xr:TypeId>
+				<xr:ValueId>e7114536-a807-4951-b592-f9741e2e9bff</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="ChartOfCalculationTypesManager.CorpusCalculationTypes" category="Manager">
+				<xr:TypeId>91a76fc2-2dc2-427a-a697-c8d2394e1e44</xr:TypeId>
+				<xr:ValueId>d9fc6c56-1821-4edc-bae5-389a1c82d0d4</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DisplacingCalculationTypes.CorpusCalculationTypes" category="DisplacingCalculationTypes">
+				<xr:TypeId>0f47b33c-0e1c-4bc9-88b5-496bf24099f1</xr:TypeId>
+				<xr:ValueId>423306ab-64d7-4d62-8645-aec35f876f02</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="DisplacingCalculationTypesRow.CorpusCalculationTypes" category="DisplacingCalculationTypesRow">
+				<xr:TypeId>3378eaf9-4cd3-4cf1-8d9d-b449c6e60d16</xr:TypeId>
+				<xr:ValueId>395593d6-d756-4a97-8080-67829ad75572</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="BaseCalculationTypes.CorpusCalculationTypes" category="BaseCalculationTypes">
+				<xr:TypeId>11177fe7-db8f-491f-ab5c-d258119a8074</xr:TypeId>
+				<xr:ValueId>8b7ff7fa-1008-422a-8f01-f81b8e152934</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="BaseCalculationTypesRow.CorpusCalculationTypes" category="BaseCalculationTypesRow">
+				<xr:TypeId>0afcb5af-f2d5-4f45-a8b9-7e2c40c49ca8</xr:TypeId>
+				<xr:ValueId>b66823e6-9104-45e1-830b-14e83eab6787</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="LeadingCalculationTypes.CorpusCalculationTypes" category="LeadingCalculationTypes">
+				<xr:TypeId>8e51e4e2-b2d7-462b-ac60-213efbd8f7e9</xr:TypeId>
+				<xr:ValueId>2467b574-68ca-4069-99e8-9f02290313b8</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="LeadingCalculationTypesRow.CorpusCalculationTypes" category="LeadingCalculationTypesRow">
+				<xr:TypeId>f5f352e0-aa4c-4e78-9cd9-fee58cd5fcca</xr:TypeId>
+				<xr:ValueId>829bf023-592e-4362-8d9d-b45bc919edad</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<ObjectBelonging>Adopted</ObjectBelonging>
+			<Name>CorpusCalculationTypes</Name>
+			<Comment/>
+			<ExtendedConfigurationObject>5d6574fc-2fc6-4d88-8a16-b7a45132caac</ExtendedConfigurationObject>
+		</Properties>
+		<ChildObjects/>
+	</ChartOfCalculationTypes>
+</MetaDataObject>

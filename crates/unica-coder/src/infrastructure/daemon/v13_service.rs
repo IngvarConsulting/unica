@@ -261,7 +261,23 @@ impl CanonicalV13ReadService {
                 &admission, &binding, template,
             )
         };
-        if let Err(refusal) = preflight_apply_operations(&request, traits, &template_format) {
+        let member_path = |container: &QualifiedAddress, name: &str| {
+            crate::infrastructure::native_operations::apply_families::staged_member_path(
+                &admission, &binding, container, name,
+            )
+        };
+        let form_item = |item: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_form_item_role(
+                &admission, &binding, item,
+            )
+        };
+        if let Err(refusal) = preflight_apply_operations_with(
+            &request,
+            traits,
+            &template_format,
+            &form_item,
+            &member_path,
+        ) {
             return *refusal;
         }
         admission.bind_request(&request);
@@ -940,23 +956,12 @@ impl CanonicalV13ReadService {
         source_set: &str,
         cancellation: &CancellationToken,
     ) -> Result<FindIndex, Box<DomainResult>> {
-        let sources = invocation.read_sources().map_err(|error| {
-            Box::new(error_result(
-                at.clone(),
-                RefusalCode::ProviderUnavailable,
-                error,
-            ))
-        })?;
-        let source = sources
-            .iter()
-            .find(|source| source.source_set_name() == source_set)
-            .ok_or_else(|| {
-                Box::new(error_result(
-                    at.clone(),
-                    RefusalCode::ProviderUnavailable,
-                    format!("source set `{source_set}` was not admitted by the workspace actor"),
-                ))
-            })?;
+        let source = admitted_read_source(
+            invocation.read_sources(),
+            |source| source.source_set_name(),
+            at.as_deref(),
+            source_set,
+        )?;
         let root = source.retained_root();
         let layout = vec![LayoutFindSource::new(
             source.source_set_name(),
@@ -2298,6 +2303,9 @@ impl CanonicalV13ReadService {
             };
         }
         let at = address.to_string();
+        if let Some(result) = self.resolve_metadata_point(invocation, address, cancellation) {
+            return result;
+        }
         let directory = match self.layout_directory(
             invocation,
             Some(at.clone()),
@@ -2329,6 +2337,61 @@ impl CanonicalV13ReadService {
             placed,
             ResolvedLines::NotLineBased,
         ))
+    }
+
+    /// Resolves one metadata object by its own layout place: the target file
+    /// and its necessary owners, the same proof as `resolve(path)`. It never
+    /// builds the full name directory, so foreign descriptors are not read and
+    /// their damage does not decide this answer (#1457).
+    fn resolve_metadata_point(
+        &self,
+        invocation: &ActorBoundExecution,
+        address: &QualifiedAddress,
+        cancellation: &CancellationToken,
+    ) -> Option<DomainResult> {
+        let at = address.to_string();
+        let source = match admitted_read_source(
+            invocation.read_sources(),
+            |source| source.source_set_name(),
+            Some(&at),
+            address.source_set(),
+        ) {
+            Ok(source) => source,
+            Err(refusal) => return Some(*refusal),
+        };
+        let relative = metadata_layout_path(address, source.source_kind())?;
+        let relative = relative.as_str();
+        let root = source.retained_root();
+        let layout = [LayoutFindSource::new(
+            source.source_set_name(),
+            source.source_kind(),
+            root.as_ref(),
+        )];
+        let entry =
+            match self
+                .find_builder
+                .locate_path(&layout, relative, source.deadline(), cancellation)
+            {
+                Ok(entry) => entry,
+                Err(error) => return Some(find_build_error_result(Some(at), error)),
+            };
+        let Some((kind, placed)) = entry.as_ref().and_then(|entry| {
+            (entry.at() == at)
+                .then(|| entry.placed_path().map(|placed| (entry.kind(), placed)))
+                .flatten()
+        }) else {
+            return Some(error_result(
+                Some(at.clone()),
+                RefusalCode::NotFound,
+                format!("the source layout does not place `{at}`"),
+            ));
+        };
+        Some(resolve_result(ResolvedSource::new(
+            at.clone(),
+            kind.to_string(),
+            placed.to_string(),
+            ResolvedLines::NotLineBased,
+        )))
     }
 
     fn resolve_projected_source(
@@ -2366,6 +2429,67 @@ impl CanonicalV13ReadService {
             lines,
         ))
     }
+}
+
+/// The admitted read capability of one source set, or the refusal that the
+/// layout readers answer when the actor did not admit it.
+fn admitted_read_source<T>(
+    sources: Result<Vec<T>, String>,
+    source_set_name: impl Fn(&T) -> &str,
+    at: Option<&str>,
+    source_set: &str,
+) -> Result<T, Box<DomainResult>> {
+    let sources = sources.map_err(|error| {
+        Box::new(error_result(
+            at.map(str::to_string),
+            RefusalCode::ProviderUnavailable,
+            error,
+        ))
+    })?;
+    sources
+        .into_iter()
+        .find(|source| source_set_name(source) == source_set)
+        .ok_or_else(|| {
+            Box::new(error_result(
+                at.map(str::to_string),
+                RefusalCode::ProviderUnavailable,
+                format!("source set `{source_set}` was not admitted by the workspace actor"),
+            ))
+        })
+}
+
+/// The layout place of a metadata object address in its own source set:
+/// `Configuration.xml`, an owner descriptor, or a form, template or command
+/// of a top-level owner. Other shapes keep the full directory lookup.
+fn metadata_layout_path(address: &QualifiedAddress, source_kind: SourceSetKind) -> Option<String> {
+    let segments = address.segments();
+    if let [root] = segments {
+        if root.kind() == NodeKind::Configuration && root.name().is_none() {
+            return matches!(
+                source_kind,
+                SourceSetKind::Configuration | SourceSetKind::Extension
+            )
+            .then(|| "Configuration.xml".to_string());
+        }
+    }
+    let target = address.to_string();
+    let target = target.split_once(':')?.1;
+    let target = crate::domain::source_target::MetadataAddress::parse(
+        crate::domain::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        target,
+    )
+    .ok()?;
+    let relative = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+        &target,
+        source_kind,
+    )
+    .ok()?;
+    let relative = relative.to_str()?.replace('\\', "/");
+    // A command has no descriptor: the layout places its directory.
+    if matches!(segments.last(), Some(last) if last.kind() == NodeKind::Command) {
+        return relative.strip_suffix(".xml").map(str::to_string);
+    }
+    Some(relative)
 }
 
 /// Поставить движок маршрута, если его нет, и убедиться, что он на месте.
@@ -3187,7 +3311,9 @@ fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
         }
         ApplyPlanErrorKind::Postcondition => RefusalCode::PostconditionFailed,
     };
-    error_result(at, code, error.to_string())
+    let mut result = error_result(at, code, error.to_string());
+    result.next.extend(error.next().cloned());
+    result
 }
 
 /// Отказ подготовки staged-исходников называет нарушенное предусловие.
@@ -3411,15 +3537,17 @@ fn run_bsl_diagnostics(
                     message,
                 )));
             }
+            let structure = bsl_structure_findings(&mapping, address, cancellation)?;
             let findings: Vec<Value> = result
                 .items
                 .iter()
+                .chain(&structure)
                 .map(|item| serde_json::to_value(item).expect("diagnostic items serialize"))
                 .collect();
             // Провалом считается ошибка, а не всякая пометка: подсказка по
             // стилю не ломает модуль, и остальные валидаторы поверхности
             // судят так же.
-            let passed = bsl_findings_passed(&result.items);
+            let passed = bsl_findings_passed(&result.items) && bsl_findings_passed(&structure);
             Ok(CheckStepVerdict {
                 passed,
                 diagnostics: findings,
@@ -3448,6 +3576,69 @@ fn run_bsl_diagnostics(
             ),
         })),
     }
+}
+
+/// Поставщик находок, которые проверяет сам Unica, а не анализатор.
+const UNICA_BSL_STRUCTURE_PROVIDER: &str = "unica";
+
+/// Код находки: объявление переменной не в начале модуля или метода.
+const MISPLACED_VARIABLE_CODE: &str = "VariableDeclarationPlacement";
+
+/// Ошибки компиляции платформы, которых анализатор не видит (#1460).
+///
+/// Анализатор пропускает `Перем` после методов, а платформа такой модуль
+/// не компилирует: `check` отвечал `passed`. Находка принадлежит
+/// проверенному модулю — тому же месту, куда отображение относит находки
+/// анализатора в этом модуле, — и проваливает проверку.
+fn bsl_structure_findings(
+    mapping: &crate::infrastructure::diagnostics::CanonicalModuleDiagnosticMapping,
+    address: &QualifiedAddress,
+    cancellation: &CancellationToken,
+) -> Result<Vec<crate::domain::diagnostics::DiagnosticItem>, Box<DomainResult>> {
+    use crate::domain::diagnostics::{DiagnosticFocus, DiagnosticItem, DiagnosticSeverity};
+    use crate::domain::source_location::SourceLocation;
+    use crate::domain::source_target::TargetKind;
+    use crate::infrastructure::bsl_outline::{
+        misplaced_variable_declarations, MISPLACED_VARIABLE_MESSAGE,
+    };
+
+    let text = match std::fs::read_to_string(mapping.module_scope().module_path) {
+        Ok(text) => text,
+        // Модуля без файла анализатор тоже не судил: судить нечего.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(Box::new(error_result_detailed(
+                Some(address.to_string()),
+                RefusalDetail::SourceUnreadable,
+                format!("BSL module is unreadable: {}", error.kind()),
+            )))
+        }
+    };
+    if cancellation.is_cancelled() {
+        return Err(Box::new(error_result(
+            Some(address.to_string()),
+            RefusalCode::Cancelled,
+            "check was cancelled before the module structure was checked",
+        )));
+    }
+    let target = mapping.target();
+    Ok(misplaced_variable_declarations(&text)
+        .into_iter()
+        .map(|range| DiagnosticItem::Diagnostic {
+            provider: UNICA_BSL_STRUCTURE_PROVIDER,
+            location: SourceLocation::Addressed {
+                source_set: target.source_set.clone(),
+                metadata_path: target.metadata_path.clone(),
+                target_kind: TargetKind::Module,
+            },
+            location_reason: None,
+            focus: DiagnosticFocus::SourceRange { range },
+            code: MISPLACED_VARIABLE_CODE.to_string(),
+            severity: DiagnosticSeverity::Error,
+            message: MISPLACED_VARIABLE_MESSAGE.to_string(),
+            tags: Vec::new(),
+        })
+        .collect())
 }
 
 fn bsl_result_proves_full_verdict(result: &crate::domain::diagnostics::DiagnosticResult) -> bool {
@@ -3956,9 +4147,44 @@ pub(super) fn preflight_apply_operations(
     source: SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
 ) -> Result<(), Box<DomainResult>> {
+    preflight_apply_operations_with(
+        request,
+        source,
+        template_format,
+        &|_| None,
+        &crate::domain::apply::no_member_lookup,
+    )
+}
+
+/// То же, что `preflight_apply_operations`, с поиском узла по имени: снятый
+/// `dataSet` ведёт к настоящему, в том числе вложенному, набору, а имя
+/// элемента формы — к его пути в форме.
+pub(super) fn preflight_apply_operations_with(
+    request: &crate::domain::apply::ApplyRequest,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+    members: crate::domain::apply::MemberPathLookup<'_>,
+) -> Result<(), Box<DomainResult>> {
     let registry = OperationRegistry::closed();
     for (index, operation) in request.ops().iter().enumerate() {
         let Some(descriptor) = registry.lookup(operation.name()) else {
+            // Снятая операция ведёт к заменившей на узле-родителе (#1354).
+            if let Some(retired) = crate::domain::apply::RetiredOperation::lookup(operation.name())
+            {
+                let target = retired.replacement_at(operation.at());
+                return Err(Box::new(with_node_dictionary(
+                    error_result(
+                        Some(format!("ops[{index}].op")),
+                        RefusalCode::BadValue,
+                        format!(
+                            "apply operation `{}` is retired: call `{}` at `{target}`; {}",
+                            retired.op, retired.replacement, retired.arguments
+                        ),
+                    ),
+                    &target.to_string(),
+                )));
+            }
             return Err(Box::new(with_node_dictionary(
                 error_result(
                     Some(format!("ops[{index}].op")),
@@ -3996,10 +4222,61 @@ pub(super) fn preflight_apply_operations(
                 ),
             )));
         };
-        if let Some(redirect) =
-            registry.retired_argument_redirect(operation.name(), &site, operation.args())
-        {
+        if let Some(mut redirect) = registry.retired_argument_redirect_with(
+            operation.name(),
+            &site,
+            operation.args(),
+            members,
+        ) {
+            // Значение назвало элемент, роль которого операцию не принимает
+            // (`into` поля): `next` ведёт к ближайшему узлу, где она исполнима.
+            if !redirect.listing && !admits_form_item_at(descriptor, &redirect.at, form_item) {
+                if let Some(target) = OperationSite::new(&redirect.at, source).and_then(|target| {
+                    descriptor.nearest_applicable_ancestor_with(&target, template_format, form_item)
+                }) {
+                    redirect.at = target;
+                }
+            }
             let location = Some(format!("ops[{index}].args.{}", redirect.location));
+            if redirect.ambiguous {
+                // Имя повторяется (члены разных объединений, одноимённые
+                // группы в разных ветвях структуры): адрес за вызывающего
+                // не выбирается. `next` — ветвь, где видны все, и словари
+                // совпавших узлов (#1357).
+                let mut refusal = error_result(
+                    location,
+                    RefusalCode::BadValue,
+                    format!(
+                        "`{}` names its subject by address, not by `{}`; the name does not select one addressable node{}; read `{}` and call it at the one you mean",
+                        operation.name(),
+                        redirect.location,
+                        if redirect.candidates.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                ": {}",
+                                redirect
+                                    .candidates
+                                    .iter()
+                                    .map(|candidate| format!("`{candidate}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        },
+                        redirect.at
+                    ),
+                );
+                refusal.next.push(json!({
+                    "tool": "unica.view",
+                    "args": {"at": redirect.at.to_string()},
+                    "reason": "одноимённые узлы этого вида: выберите адрес",
+                }));
+                for candidate in &redirect.candidates {
+                    refusal =
+                        with_operation_dictionary(refusal, &candidate.to_string(), descriptor);
+                }
+                return Err(Box::new(refusal));
+            }
             if redirect.listing {
                 // Значение называло подузел не именем: адрес из него не
                 // строится, и `next` ведёт к коллекции, где имя видно.
@@ -4026,9 +4303,17 @@ pub(super) fn preflight_apply_operations(
             }
             // Адрес построен из значения аргумента, и узла с таким именем
             // может не быть: вторым шагом — коллекция, где видны имена.
-            let (member, owner) = redirect
+            // Безымянный узел (`DataSet.D.Query`) — часть своего именованного
+            // родителя: ветвь строится по родителю.
+            let named = redirect
                 .at
                 .segments()
+                .iter()
+                .rposition(|segment| segment.name().is_some())
+                .map_or(redirect.at.segments(), |last| {
+                    &redirect.at.segments()[..=last]
+                });
+            let (member, owner) = named
                 .split_last()
                 .expect("a member address has a terminal segment");
             let branch = QualifiedAddress {
@@ -4036,29 +4321,74 @@ pub(super) fn preflight_apply_operations(
                 segments: owner.to_vec(),
             };
             let branch = format!("{branch}.{}", member.kind().as_str());
-            let mut refusal = with_operation_dictionary(
-                error_result(
-                    location,
-                    RefusalCode::BadValue,
-                    format!(
-                        "`{}` names its subject by address, not by `{}`; call it at `{}`",
-                        operation.name(),
-                        redirect.location,
-                        redirect.at
-                    ),
-                ),
-                &redirect.at.to_string(),
-                descriptor,
-            );
+            // Аргумент, повторявший сам адрес вызова, просто лишний.
+            let mut message = if redirect.at == *operation.at() {
+                format!(
+                    "`{}` takes its subject from `at`; remove `{}` and call it at `{}`",
+                    operation.name(),
+                    redirect.location,
+                    redirect.at
+                )
+            } else {
+                format!(
+                    "`{}` names its subject by address, not by `{}`; call it at `{}`",
+                    operation.name(),
+                    redirect.location,
+                    redirect.at
+                )
+            };
+            // `*.set` пишет только в существующий узел: отсутствующий
+            // создаёт операция родителя (#1354).
+            if let Some(creator) = descriptor.creator() {
+                message.push_str(&format!(
+                    "; a missing one is created by `{creator}` on its parent"
+                ));
+            }
+            let refusal = error_result(location, RefusalCode::BadValue, message);
+            let mut refusal =
+                with_operation_dictionary(refusal, &redirect.at.to_string(), descriptor);
             refusal.next.push(json!({
                 "tool": "unica.view",
                 "args": {"at": branch},
                 "reason": "существующие узлы этого вида у владельца",
             }));
+            // Узла с этим именем может не быть: третьим шагом — контракт
+            // операции родителя, которая его создаёт (#1354).
+            if let Some(creator) = descriptor.creator() {
+                let parent = QualifiedAddress {
+                    source_set: redirect.at.source_set().to_string(),
+                    segments: owner.to_vec(),
+                };
+                refusal.next.push(json!({
+                    "tool": "unica.view",
+                    "args": {"at": format!("{parent}.Can.{creator}")},
+                    "reason": format!("отсутствующий узел создаёт `{creator}` на родителе"),
+                }));
+            }
             return Err(Box::new(refusal));
         }
-        if descriptor.applies_at(&site) {
+        // Роль элемента формы — фильтр поверх места: в поле элемент не
+        // добавить, автоматическую панель отдельно не удалить.
+        if descriptor.applies_at(&site)
+            && admits_form_item_at(descriptor, operation.at(), form_item)
+        {
             continue;
+        }
+        // Прежний псевдоним запроса `Template.T.Query.D` снят (#1353): отказ
+        // называет адрес набора, где операция исполнима.
+        if let Some(target) = descriptor.retired_query_alias_target(&site, members) {
+            return Err(Box::new(with_operation_dictionary(
+                error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::BadValue,
+                    format!(
+                        "a query is addressed through its dataset: `{}` applies at `{target}`",
+                        operation.name()
+                    ),
+                ),
+                &target.to_string(),
+                descriptor,
+            )));
         }
         let refused = format!(
             "apply operation `{}` does not apply to {} `{}`",
@@ -4066,7 +4396,9 @@ pub(super) fn preflight_apply_operations(
             target_kind.as_str(),
             operation.at()
         );
-        let refusal = match descriptor.nearest_applicable_ancestor(&site, template_format) {
+        let nearest =
+            descriptor.nearest_applicable_ancestor_with(&site, template_format, form_item);
+        let refusal = match nearest {
             Some(target) => with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),
@@ -4103,6 +4435,19 @@ pub(super) fn preflight_apply_operations(
         return Err(Box::new(refusal));
     }
     Ok(())
+}
+
+/// Принимает ли роль элемента формы по адресу `at` операцию; адрес не
+/// элемента формы фильтр не проходит.
+fn admits_form_item_at(
+    descriptor: crate::domain::apply::OperationDescriptor,
+    at: &QualifiedAddress,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+) -> bool {
+    at.segments()
+        .last()
+        .is_none_or(|segment| segment.kind() != NodeKind::Item)
+        || descriptor.admits_form_item(form_item(at))
 }
 
 /// `next` к словарю узла, где операция исполнима. Подробный контракт
@@ -4346,9 +4691,7 @@ fn view_error_result(
     // Маршрут переносится вместе с кодом и уточнением: иначе два пути наружу
     // расходятся, и отказ теряет альтернативу в зависимости от того, каким
     // из них он вышел.
-    if let Some(next) = error.next() {
-        result.next.push(next.clone());
-    }
+    result.next.extend(error.next().iter().cloned());
     result
 }
 
@@ -5289,7 +5632,7 @@ mod tests {
         ] {
             for (suffix, kind, from, to) in [
                 (".Method.Ping", "Method", 3, 65),
-                (".Method.Ping.Body", "Body", 4, 64),
+                (".Method.Ping.Body", "Body", 3, 65),
                 (".Body", "Body", 1, 72),
                 (".Region.A.Region.Inner", "Region", 2, 66),
                 (".Region.B.Region.Inner", "Region", 69, 71),
@@ -5378,6 +5721,76 @@ mod tests {
         }
     }
 
+    /// Resolving a metadata object by its own place answers exactly what the
+    /// full layout directory answers, for every object shape it handles (#1457).
+    #[test]
+    fn resolve_metadata_point_matches_the_full_layout_directory() {
+        use crate::application::invocation_store::ToolIdentity;
+        use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
+        use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
+        let workspace = resolve_exact_workspace();
+        let source = std::fs::canonicalize(workspace.path().join("src")).unwrap();
+        std::fs::create_dir_all(source.join("Catalogs/Items/Commands/Refresh/Ext")).unwrap();
+        std::fs::write(
+            source.join("Catalogs/Items/Commands/Refresh/Ext/CommandModule.bsl"),
+            "",
+        )
+        .unwrap();
+        let root = RetainedDirectoryCapability::open(&source).unwrap();
+        let directory = WorkspaceFindDirectoryBuilder::default()
+            .build(
+                &[LayoutFindSource::new(
+                    "main",
+                    crate::domain::project_sources::SourceSetKind::Configuration,
+                    &root,
+                )],
+                ProviderDeadline::no_deadline(),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        for at in [
+            "main:Configuration",
+            "main:CommonModule.Probe",
+            "main:Catalog.Items",
+            "main:Catalog.Items.Form.Main",
+            "main:Catalog.Items.Command.Refresh",
+            "main:CommonForm.Main",
+        ] {
+            let expected = directory
+                .locate_address(at)
+                .unwrap_or_else(|| panic!("the directory places {at}"));
+            let result =
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+            assert!(result.ok, "{at}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["kind"], expected.kind(), "{at}");
+            assert_eq!(data["path"], expected.placed_path().unwrap(), "{at}");
+        }
+        for at in ["main:Catalog.Missing", "main:Catalog.Items.Command.Missing"] {
+            assert!(directory.locate_address(at).is_none());
+            let result =
+                invoke_exact_read(workspace.path(), ToolIdentity::Resolve, json!({"at":at}));
+            assert!(!result.ok, "{at}: {result:?}");
+            assert_eq!(result.diagnostics[0]["code"], "not_found", "{at}");
+        }
+        std::fs::remove_file(source.join("Catalogs/Items.xml")).unwrap();
+        let orphan = invoke_exact_read(
+            workspace.path(),
+            ToolIdentity::Resolve,
+            json!({"at":"main:Catalog.Items.Form.Main"}),
+        );
+        assert!(!orphan.ok);
+        assert_eq!(orphan.diagnostics[0]["code"], "invalid_source");
+        assert!(
+            orphan.diagnostics[0]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("`Catalogs/Items.xml`")
+                    && message.contains("missing")),
+            "the refusal names the missing owner descriptor: {:?}",
+            orphan.diagnostics[0]["message"]
+        );
+    }
+
     #[test]
     fn resolve_exact_tree_children_use_their_containing_xml() {
         use crate::application::invocation_store::ToolIdentity;
@@ -5458,7 +5871,8 @@ mod tests {
     fn resolve_exact_method_spans_annotations_through_its_closing_line() {
         use crate::application::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
-        // Документация и пустая строка выше аннотаций методу не принадлежат.
+        // Документация, отделённая пустой строкой, методу не принадлежит;
+        // прилегающая входит в диапазон `Body` — тот же, что текст `view`.
         let module = concat!(
             "// Документация.\n\n&НаСервере\n&Перед(\"Ping\")\nПроцедура Annotated(\n",
             "    Value) Экспорт\n    Сообщить(Value);\nКонецПроцедуры\n\n",
@@ -5484,7 +5898,7 @@ mod tests {
                 (
                     ".Method.Annotated.Body",
                     "Body",
-                    json!({"state":"range","from":7,"to":7}),
+                    json!({"state":"range","from":3,"to":8}),
                 ),
                 (
                     ".Method.Empty",
@@ -5494,7 +5908,7 @@ mod tests {
                 (
                     ".Method.Empty.Body",
                     "Body",
-                    json!({"state":"notLineBased"}),
+                    json!({"state":"range","from":10,"to":11}),
                 ),
                 (
                     ".Method.Inline",
@@ -5516,6 +5930,11 @@ mod tests {
                     "Method",
                     json!({"state":"range","from":21,"to":24}),
                 ),
+                (
+                    ".Method.Documented.Body",
+                    "Body",
+                    json!({"state":"range","from":19,"to":24}),
+                ),
                 (".Body", "Body", json!({"state":"range","from":1,"to":24})),
             ] {
                 let at = format!("main:{prefix}{suffix}");
@@ -5527,7 +5946,7 @@ mod tests {
                 assert_eq!(data["path"], path, "{at}: {result:?}");
                 assert_eq!(data["lines"], lines, "{at}: {result:?}");
             }
-            // View keeps naming the body lines of the method.
+            // View names the same lines as the method text and its resolve.
             let view = invoke_exact_read(
                 workspace.path(),
                 ToolIdentity::View,
@@ -5535,7 +5954,7 @@ mod tests {
             );
             assert!(view.ok, "{view:?}");
             let props = &view.data.as_ref().unwrap()["props"];
-            assert_eq!((&props["line"], &props["endLine"]), (&json!(7), &json!(7)));
+            assert_eq!((&props["line"], &props["endLine"]), (&json!(3), &json!(8)));
         }
     }
 
@@ -5558,14 +5977,18 @@ mod tests {
             std::fs::write(&file, source).unwrap();
             let view = invoke_exact_read(workspace.path(), ToolIdentity::View, at.clone());
             assert!(view.ok, "{source:?}: {view:?}");
-            let items = view.data.as_ref().unwrap()["items"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let viewed = items.last().map_or(
-                json!({"state":"notLineBased"}),
-                |last| json!({"state":"range","from":1,"to":last["line"]}),
-            );
+            // Строки текста `Body` агент считает сам — так же, как `str::lines`.
+            let lines = view
+                .source_text
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .count();
+            let viewed = if lines == 0 {
+                json!({"state":"notLineBased"})
+            } else {
+                json!({"state":"range","from":1,"to":lines})
+            };
             assert_eq!(viewed, expected, "view numbering of {source:?}");
             let resolved = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, at.clone());
             assert!(resolved.ok, "{source:?}: {resolved:?}");

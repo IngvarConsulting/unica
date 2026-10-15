@@ -21,4 +21,6 @@ entries = [
   # дым MCP через `cargo run` и реестр поверхности инструментов через `cargo build`
   "test_unica_mcp_smoke.UnicaMcpSmokeTests",
   "test_tool_surface_ledger.ToolSurfaceLedgerTests",
+  # наблюдатель адресов: процесс продукта и страница на 127.0.0.1
+  "test_unica_observer.UnicaObserverTests",
 ]

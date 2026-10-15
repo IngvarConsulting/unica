@@ -406,7 +406,7 @@ fn mltext_update(
         let only_default = items
             .iter()
             .all(|item| text(*item, V, "lang").trim() == lang);
-        if !items.is_empty() && !(new_text.is_empty() && only_default) {
+        if !(items.is_empty() || new_text.is_empty() && only_default) {
             return Ok(super::meta::meta_mltext_property_replacement(
                 xml_text, existing, "", lang, new_text,
             ));
@@ -587,18 +587,14 @@ fn remove_ranges(xml_text: &mut String, mut ranges: Vec<Range<usize>>) {
 pub(crate) struct Target {
     pub(crate) datasets: Vec<String>,
     pub(crate) variant: String,
+    /// Цепочка имён элементов структуры варианта: `Setting.V.Item.A.Item.B`
+    /// даёт `["A", "B"]` (#1357).
+    pub(crate) structure: Vec<String>,
     pub(crate) terminal: Option<String>,
 }
-fn dataset<'a, 'i>(
-    root: Node<'a, 'i>,
-    target: &Target,
-    values: &Map<String, Value>,
-) -> Result<Node<'a, 'i>, String> {
-    let path = if let Some(Value::String(name)) = values.get("dataSet") {
-        vec![name.clone()]
-    } else {
-        target.datasets.clone()
-    };
+/// Набор данных, который называет адрес: `DataSet.D[.DataSet.M]`.
+fn dataset<'a, 'i>(root: Node<'a, 'i>, target: &Target) -> Result<Node<'a, 'i>, String> {
+    let path = &target.datasets;
     let mut parent = root;
     if path.is_empty() {
         return Err("address an existing DataSet".to_string());
@@ -614,16 +610,12 @@ fn dataset<'a, 'i>(
     }
     Ok(parent)
 }
-fn settings<'a, 'i>(
-    root: Node<'a, 'i>,
-    target: &Target,
-    values: &Map<String, Value>,
-) -> Result<Node<'a, 'i>, String> {
-    let name = values
-        .get("variant")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&target.variant);
+/// Контейнер настроек, который называет адрес: сами настройки варианта
+/// `Setting.V` или элемент его структуры `Setting.V.Item.A[.Item.B…]`.
+/// Элемент находится так же, как его адресует чтение: безымянные элементы
+/// прозрачны, имя единственно в своей области.
+fn settings<'a, 'i>(root: Node<'a, 'i>, target: &Target) -> Result<Node<'a, 'i>, String> {
+    let name = target.variant.as_str();
     if name.is_empty() {
         return Err("address an existing Setting".to_string());
     }
@@ -633,20 +625,25 @@ fn settings<'a, 'i>(
         name,
     )?;
     let settings = child(variant, T, "settings").ok_or("variant has no settings")?;
-    let group = string(values, "group");
-    if group.is_empty() {
+    if target.structure.is_empty() {
         return Ok(settings);
     }
-    unique(
-        settings.descendants().filter(|node| {
-            (is(*node, T, "item")
-                || ["row", "column", "point", "series"]
-                    .iter()
-                    .any(|tag| is(*node, T, tag)))
-                && text(*node, T, "name") == group
-        }),
-        group,
-    )
+    let rows = super::dcs::dcs_structure_rows(settings);
+    let nodes = super::dcs::dcs_structure_nodes(settings);
+    let mut scope = None;
+    for item in &target.structure {
+        scope = Some(
+            crate::infrastructure::v13_read_projection::dcs_structure_child(&rows, scope, item)
+                .ok_or_else(|| {
+                    format!(
+                        "structure item `{item}` was not found uniquely; read the Item collection of its parent"
+                    )
+                })?,
+        );
+    }
+    scope
+        .and_then(|index| nodes.get(index).copied())
+        .ok_or_else(|| "the addressed structure item was not found".to_string())
 }
 const UI_NS: &str = "http://v8.1c.ru/8.1/data/ui";
 const CFG_NS: &str = "http://v8.1c.ru/8.1/data/enterprise/current-config";
@@ -1213,18 +1210,6 @@ fn structure_order(node: Node<'_, '_>) -> &'static [&'static str] {
         GROUP_ORDER
     }
 }
-fn named_structure<'a, 'i>(setting: Node<'a, 'i>, name: &str) -> Result<Node<'a, 'i>, String> {
-    unique(
-        setting.descendants().filter(|node| {
-            (is(*node, T, "item")
-                || ["row", "column", "point", "series"]
-                    .iter()
-                    .any(|tag| is(*node, T, tag)))
-                && text(*node, T, "name") == name
-        }),
-        name,
-    )
-}
 fn structure_property(
     tag: &str,
     value: &Value,
@@ -1424,7 +1409,11 @@ fn apply_item(
             )
         }
         "dataSource.set" | "dataSource.remove" => {
-            let source = named(root, S, "dataSource", "name", string(values, "name"))?;
+            let name = target
+                .terminal
+                .as_deref()
+                .ok_or("address a named DataSource")?;
+            let source = named(root, S, "dataSource", "name", name)?;
             if operation.ends_with("remove") {
                 if root.descendants().any(|node| {
                     is(node, S, "dataSource")
@@ -1434,7 +1423,7 @@ fn apply_item(
                             .filter(Node::is_text)
                             .filter_map(|node| node.text())
                             .collect::<String>()
-                            == string(values, "name")
+                            == name
                 }) {
                     return Err("dataSource is still referenced by a dataset".to_string());
                 }
@@ -1456,7 +1445,7 @@ fn apply_item(
             let parent = if target.datasets.is_empty() {
                 root
             } else {
-                dataset(root, target, &Map::new())?
+                dataset(root, target)?
             };
             let tag = if target.datasets.is_empty() {
                 "dataSet"
@@ -1530,12 +1519,12 @@ fn apply_item(
             )
         }
         "dataSet.set" => {
-            dataset(root, target, values)?;
+            dataset(root, target)?;
             for key in ["dataSource", "objectName", "autoFillFields"] {
                 if let Some(value) = values.get(key) {
                     let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
                     let root = document.root_element();
-                    let ds = dataset(root, target, values)?;
+                    let ds = dataset(root, target)?;
                     let query = qtype(ds, S, "DataSetQuery");
                     let object = qtype(ds, S, "DataSetObject");
                     if key == "dataSource" {
@@ -1560,12 +1549,12 @@ fn apply_item(
             Ok(())
         }
         "dataSet.remove" => {
-            let range = dataset(root, target, values)?.range();
+            let range = dataset(root, target)?.range();
             xml_text.replace_range(range, "");
             Ok(())
         }
         "field.add" => {
-            let ds = dataset(root, target, values)?;
+            let ds = dataset(root, target)?;
             let name = string(values, "dataPath");
             if ds
                 .children()
@@ -1580,8 +1569,8 @@ fn apply_item(
             if !string(values, "type").is_empty() {
                 super::dcs_xml::parse_value_type(string(values, "type"))?;
             }
-            let name = string(values, "field");
-            named(dataset(root, target, values)?, S, "field", "dataPath", name)?;
+            let name = target.terminal.as_deref().ok_or("address a named Field")?;
+            named(dataset(root, target)?, S, "field", "dataPath", name)?;
             for key in [
                 "sourceField",
                 "title",
@@ -1594,7 +1583,7 @@ fn apply_item(
                     continue;
                 };
                 let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let ds = dataset(document.root_element(), target, values)?;
+                let ds = dataset(document.root_element(), target)?;
                 let field = named(ds, S, "field", "dataPath", name)?;
                 let tag = match key {
                     "type" => "valueType",
@@ -1621,7 +1610,7 @@ fn apply_item(
                 }
             }
             let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-            let ds = dataset(document.root_element(), target, values)?;
+            let ds = dataset(document.root_element(), target)?;
             if qtype(ds, S, "DataSetQuery") {
                 let field = named(ds, S, "field", "dataPath", name)?;
                 let ranges = field
@@ -1634,15 +1623,16 @@ fn apply_item(
             Ok(())
         }
         "field.remove" => {
-            let ds = dataset(root, target, values)?;
+            let ds = dataset(root, target)?;
             let name = target.terminal.as_deref().ok_or("address a named Field")?;
             let range = named(ds, S, "field", "dataPath", name)?.range();
             xml_text.replace_range(range, "");
             Ok(())
         }
         "fieldRole.set" => {
-            let ds = dataset(root, target, values)?;
-            let field = named(ds, S, "field", "dataPath", string(values, "field"))?;
+            let ds = dataset(root, target)?;
+            let name = target.terminal.as_deref().ok_or("address a named Field")?;
+            let field = named(ds, S, "field", "dataPath", name)?;
             let role = values
                 .get("role")
                 .and_then(Value::as_object)
@@ -1679,7 +1669,7 @@ fn apply_item(
             )
         }
         "query.set" | "query.patch" => {
-            let ds = dataset(root, target, values)?;
+            let ds = dataset(root, target)?;
             if !qtype(ds, S, "DataSetQuery") {
                 return Err("only a Query dataset has query text".to_string());
             }
@@ -1774,7 +1764,11 @@ fn apply_item(
             )
         }
         "parameter.set" => {
-            named(root, S, "parameter", "name", string(values, "name"))?;
+            let name = target
+                .terminal
+                .as_deref()
+                .ok_or("address a named Parameter")?;
+            named(root, S, "parameter", "name", name)?;
             for key in [
                 "title",
                 "type",
@@ -1792,13 +1786,7 @@ fn apply_item(
                     continue;
                 };
                 let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let parameter = named(
-                    document.root_element(),
-                    S,
-                    "parameter",
-                    "name",
-                    string(values, "name"),
-                )?;
+                let parameter = named(document.root_element(), S, "parameter", "name", name)?;
                 let tag = match key {
                     "type" => "valueType",
                     "values" => "value",
@@ -1869,13 +1857,8 @@ fn apply_item(
                     if !fragment.is_empty() {
                         let document =
                             Document::parse(xml_text).map_err(|error| error.to_string())?;
-                        let parameter = named(
-                            document.root_element(),
-                            S,
-                            "parameter",
-                            "name",
-                            string(values, "name"),
-                        )?;
+                        let parameter =
+                            named(document.root_element(), S, "parameter", "name", name)?;
                         insert(
                             xml_text,
                             parameter.range(),
@@ -1910,7 +1893,10 @@ fn apply_item(
             Ok(())
         }
         "parameter.rename" => {
-            let name = string(values, "name");
+            let name = target
+                .terminal
+                .as_deref()
+                .ok_or("address a named Parameter")?;
             let new = string(values, "newName");
             if root
                 .children()
@@ -1934,11 +1920,10 @@ fn apply_item(
                 "total.remove" => ("totalField", "dataPath"),
                 _ => ("calculatedField", "dataPath"),
             };
-            let name = values
-                .get("name")
-                .and_then(Value::as_str)
-                .or(target.terminal.as_deref())
-                .ok_or("supply a name or address a named parameter/calculation")?;
+            let name = target
+                .terminal
+                .as_deref()
+                .ok_or("address a named Parameter, CalculatedField or Total")?;
             let range = named(root, S, tag, key, name)?.range();
             xml_text.replace_range(range, "");
             Ok(())
@@ -1968,11 +1953,10 @@ fn apply_item(
             )
         }
         "variant.set" | "variant.remove" => {
-            let name = if string(values, "name").is_empty() {
-                &target.variant
-            } else {
-                string(values, "name")
-            };
+            let name = target.variant.as_str();
+            if name.is_empty() {
+                return Err("address an existing Setting".to_string());
+            }
             let variant = unique(
                 root.children().filter(|node| {
                     is(*node, S, "settingsVariant") && text(*node, T, "name") == name
@@ -2002,25 +1986,20 @@ fn apply_item(
             }
         }
         "structure.add" | "structure.set" | "structure.patch" | "structure.remove" => {
-            let setting = settings(root, target, values)?;
+            let setting = settings(root, target)?;
             if operation == "structure.remove" {
-                let group = unique(
-                    setting.descendants().filter(|node| {
-                        (is(*node, T, "item")
-                            || ["row", "column", "point", "series"]
-                                .iter()
-                                .any(|tag| is(*node, T, tag)))
-                            && text(*node, T, "name") == string(values, "name")
-                    }),
-                    string(values, "name"),
-                )?;
-                let range = group.range();
+                if target.structure.is_empty() {
+                    return Err("address a named structure item: Setting.V.Item.I".to_string());
+                }
+                let range = setting.range();
                 xml_text.replace_range(range, "");
                 return Ok(());
             }
             if operation == "structure.patch" {
-                let name = string(values, "name");
-                let group = named_structure(setting, name)?;
+                if target.structure.is_empty() {
+                    return Err("address a named structure item: Setting.V.Item.I".to_string());
+                }
+                let group = setting;
                 let kind = if qtype(group, T, "StructureItemTable") {
                     "table"
                 } else if qtype(group, T, "StructureItemChart") {
@@ -2062,8 +2041,7 @@ fn apply_item(
                     if let Some(value) = values.get(*key) {
                         let document =
                             Document::parse(xml_text).map_err(|error| error.to_string())?;
-                        let setting = settings(document.root_element(), target, values)?;
-                        let group = named_structure(setting, name)?;
+                        let group = settings(document.root_element(), target)?;
                         let fragment = if *key == "userSettingPresentation" {
                             mltext_update(xml_text, child(group, T, key), key, value, T, lang)?
                         } else {
@@ -2089,7 +2067,7 @@ fn apply_item(
                     .collect();
                 remove_ranges(xml_text, ranges);
                 let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let setting = settings(document.root_element(), target, values)?;
+                let setting = settings(document.root_element(), target)?;
                 let fields = values
                     .get("groupBy")
                     .and_then(Value::as_array)
@@ -2115,20 +2093,18 @@ fn apply_item(
                     structure_order(setting),
                 );
             }
-            let mut parent = setting;
-            if !string(values, "parent").is_empty() {
-                parent = unique(
-                    setting.descendants().filter(|node| {
-                        (is(*node, T, "item")
-                            || ["row", "column", "point", "series"]
-                                .iter()
-                                .any(|tag| is(*node, T, tag)))
-                            && text(*node, T, "name") == string(values, "parent")
-                    }),
-                    string(values, "parent"),
-                )?;
-            }
-            if setting.descendants().any(|node| {
+            // Контейнер нового элемента — адрес: вариант или элемент его
+            // структуры. Имя проверяется по всему варианту, чтобы новый
+            // элемент получил однозначный адрес.
+            let parent = setting;
+            let variant_settings = {
+                let mut node = setting;
+                while !is(node, T, "settings") {
+                    node = node.parent_element().ok_or("variant has no settings")?;
+                }
+                node
+            };
+            if variant_settings.descendants().any(|node| {
                 (is(node, T, "item")
                     || ["row", "column", "point", "series"]
                         .iter()
@@ -2183,7 +2159,7 @@ fn apply_item(
         | "dataParameter.set"
         | "conditionalAppearance.add"
         | "outputParameter.set" => {
-            let setting = settings(root, target, values)?;
+            let setting = settings(root, target)?;
             if matches!(operation, "dataParameter.set" | "outputParameter.set") {
                 let container = if operation == "dataParameter.set" {
                     "dataParameters"
@@ -2440,7 +2416,7 @@ fn apply_item(
         }
         "filter.set" | "filter.remove" => {
             let field = string(values, "field");
-            let setting = settings(root, target, values)?;
+            let setting = settings(root, target)?;
             let filter = child(setting, T, "filter").ok_or("filter section missing")?;
             let item = unique(
                 filter
@@ -2467,7 +2443,7 @@ fn apply_item(
                     continue;
                 };
                 let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-                let setting = settings(document.root_element(), target, values)?;
+                let setting = settings(document.root_element(), target)?;
                 let filter = child(setting, T, "filter").ok_or("filter section missing")?;
                 let item = unique(
                     filter
@@ -2513,7 +2489,7 @@ fn apply_item(
             Ok(())
         }
         "selection.clear" | "filter.clear" | "order.clear" | "conditionalAppearance.clear" => {
-            let setting = settings(root, target, values)?;
+            let setting = settings(root, target)?;
             let tag = operation.split('.').next().ok_or("operation missing")?;
             if let Some(container) = child(setting, T, tag) {
                 let ranges = container
@@ -2526,24 +2502,22 @@ fn apply_item(
             Ok(())
         }
         "calculatedField.set" | "total.set" => {
-            let (tag, key) = if operation == "total.set" {
-                ("totalField", "field")
+            let tag = if operation == "total.set" {
+                "totalField"
             } else {
-                ("calculatedField", "name")
+                "calculatedField"
             };
-            named(root, S, tag, "dataPath", string(values, key))?;
+            let path = target
+                .terminal
+                .as_deref()
+                .ok_or("address a named CalculatedField or Total")?;
+            named(root, S, tag, "dataPath", path)?;
             for property in ["expression", "title", "type", "useRestriction", "group"] {
                 let Some(value) = values.get(property) else {
                     continue;
                 };
                 let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-                let node = named(
-                    document.root_element(),
-                    S,
-                    tag,
-                    "dataPath",
-                    string(values, key),
-                )?;
+                let node = named(document.root_element(), S, tag, "dataPath", path)?;
                 let tag = match property {
                     "type" => "valueType",
                     "group" => "group",
@@ -2583,13 +2557,7 @@ fn apply_item(
                         .collect();
                     remove_ranges(xml_text, ranges);
                     let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-                    let node = named(
-                        document.root_element(),
-                        S,
-                        "totalField",
-                        "dataPath",
-                        string(values, key),
-                    )?;
+                    let node = named(document.root_element(), S, "totalField", "dataPath", path)?;
                     insert(
                         xml_text,
                         node.range(),
@@ -2624,7 +2592,7 @@ fn apply_item(
         | "dataParameter.remove"
         | "outputParameter.remove"
         | "conditionalAppearance.remove" => {
-            let setting = settings(root, target, values)?;
+            let setting = settings(root, target)?;
             let family = operation.split('.').next().ok_or("operation missing")?;
             if matches!(family, "selection" | "order")
                 && values.contains_key("field") == values.contains_key("index")
@@ -2680,7 +2648,7 @@ fn apply_item(
                 if let Some(value) = values.get(key) {
                     let tag = if key == "direction" { "orderType" } else { key };
                     let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-                    let setting = settings(document.root_element(), target, values)?;
+                    let setting = settings(document.root_element(), target)?;
                     let container = if family == "selection" {
                         selection_container(setting, values)?
                     } else {
@@ -2868,7 +2836,7 @@ fn patch_settings_parameter(
 ) -> Result<(), String> {
     {
         let document = Document::parse(xml_text).map_err(|error| error.to_string())?;
-        let setting = settings(document.root_element(), target, values)?;
+        let setting = settings(document.root_element(), target)?;
         let collection = child(setting, T, container).ok_or("parameter collection missing")?;
         unique(
             collection.children().filter(|node| {
@@ -2888,7 +2856,7 @@ fn patch_settings_parameter(
             continue;
         };
         let document = Document::parse(xml_text).map_err(|e| e.to_string())?;
-        let setting = settings(document.root_element(), target, values)?;
+        let setting = settings(document.root_element(), target)?;
         let container = child(setting, T, container).ok_or("parameter collection missing")?;
         let item = unique(
             container.children().filter(|node| {

@@ -224,7 +224,7 @@ pub(crate) mod tests {
     use crate::infrastructure::native_operations::single_file_publisher::with_before_commit_hook;
     use serde_json::{json, Map};
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     /// Designer keeps a managed form's module one level below the rest of
@@ -647,10 +647,10 @@ pub(crate) mod tests {
                 declarations: crate::domain::metadata::MetaInfoDeclarations::default(),
                 predefined_code_type: Some("String".to_string()),
                 relations: crate::domain::metadata::MetaRelationsData {
-                    owners: Vec::new(),
-                    register_records: Vec::new(),
-                    based_on: Vec::new(),
-                    input_by_string: Vec::new(),
+                    owners: Some(Some(Vec::new())),
+                    register_records: Some(Some(Vec::new())),
+                    based_on: Some(Some(Vec::new())),
+                    input_by_string: Some(Some(Vec::new())),
                     data_lock_fields: None,
                     source: Vec::new(),
                     source_type_ids: Vec::new(),
@@ -894,6 +894,175 @@ pub(crate) mod tests {
             "{:?}",
             validation.diagnostics
         );
+    }
+
+    fn copy_fixture_tree(from: &std::path::Path, to: &std::path::Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_fixture_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    /// #1381: платформа 8.3.27 выгружает заимствованные форму и макеты
+    /// заимствованной обработки без `Form.xml` и `Template.xml`. Валидатор
+    /// описания принимает такой след, только когда заимствование доказывают
+    /// оба описания — владельца и ребёнка, и рядом нет лишних каталогов.
+    #[test]
+    fn borrowed_children_of_a_borrowed_owner_validate_without_payload() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-borrowed");
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DataProcessor.Обработка")
+                .unwrap();
+        let read = |mutate: &dyn Fn(&Path)| {
+            let root = tempfile::tempdir().unwrap();
+            copy_fixture_tree(&fixture, root.path());
+            mutate(&root.path().join("src/ext/DataProcessors"));
+            let context = WorkspaceContext {
+                cwd: root.path().to_path_buf(),
+                workspace_root: root.path().to_path_buf(),
+                cache_root: root.path().join(".build/unica"),
+                workspace_epoch: 0,
+            };
+            let cancellation = CancellationToken::new();
+            let read = MetadataOperations::read_local(
+                &MetaInfoRequest {
+                    source_set: "ext".into(),
+                    metadata_path: target.clone(),
+                    sections: Vec::new(),
+                    limit: 20,
+                },
+                &context,
+                &cancellation,
+                &crate::infrastructure::support_state::WorkspaceSupportStateReader::new(&context),
+            )
+            .unwrap();
+            (
+                read.validation_subject,
+                read.local.diagnostics,
+                context,
+                root,
+            )
+        };
+        let validate = |mutate: &dyn Fn(&Path)| {
+            let (subject, observed, context, _root) = read(mutate);
+            (
+                MetadataOperations::validate(&subject, &context, &CancellationToken::new()),
+                observed,
+            )
+        };
+        let unborrow = |path: &Path| {
+            let text = fs::read_to_string(path).unwrap();
+            let start = text.find("<ExtendedConfigurationObject>").unwrap();
+            let end = text.find("</ExtendedConfigurationObject>").unwrap()
+                + "</ExtendedConfigurationObject>".len();
+            fs::write(path, format!("{}{}", &text[..start], &text[end..])).unwrap();
+        };
+
+        let (platform, _) = validate(&|_| {});
+        assert_eq!(
+            platform.status,
+            MetaValidationStatus::Passed,
+            "the platform export must validate"
+        );
+        for (label, own_child, mutate) in [
+            (
+                "own owner",
+                None,
+                &(|root: &Path| unborrow(&root.join("Обработка.xml"))) as &dyn Fn(&Path),
+            ),
+            (
+                "own form",
+                Some("DataProcessor.Обработка.Form.Форма"),
+                &|root: &Path| unborrow(&root.join("Обработка/Forms/Форма.xml")),
+            ),
+            (
+                "own template",
+                Some("DataProcessor.Обработка.Template.СхемаКомпоновки"),
+                &|root: &Path| unborrow(&root.join("Обработка/Templates/СхемаКомпоновки.xml")),
+            ),
+            ("stray payload directory", None, &|root: &Path| {
+                fs::create_dir_all(root.join("Обработка/Templates/Макет/Ext")).unwrap()
+            }),
+        ] {
+            let (validation, observed) = validate(mutate);
+            // An own child without payload keeps the precise observation
+            // diagnostic: its content is missing, not inherited.
+            if let Some(child) = own_child {
+                assert!(
+                    observed.iter().any(|diagnostic| {
+                        diagnostic.field.as_deref() == Some("resources.child.payload")
+                            && diagnostic.message.contains(child)
+                    }),
+                    "{label}: an own child names its missing payload"
+                );
+            }
+            assert_eq!(
+                validation.status,
+                MetaValidationStatus::Failed,
+                "{label}: a child without payload passes only as a borrowed child of a borrowed owner"
+            );
+        }
+
+        // The validator re-derives the borrowing from the descriptors instead
+        // of trusting the observed footprint: the same empty footprint beside
+        // an own child descriptor or an own owner descriptor is refused.
+        let (mut subject, _, context, _root) = read(&|_| {});
+        let footprint = subject
+            .child_footprints
+            .iter_mut()
+            .find(|footprint| footprint.child.as_str() == "DataProcessor.Обработка.Form.Форма")
+            .unwrap();
+        assert!(footprint.directories.is_empty() && footprint.retained.is_empty());
+        footprint
+            .directories
+            .push(MetadataChildDirectoryKind::Extension);
+        let validation =
+            MetadataOperations::validate(&subject, &context, &CancellationToken::new());
+        assert_eq!(
+            validation.status,
+            MetaValidationStatus::Failed,
+            "an inherited child footprint holds no directory"
+        );
+
+        for role in ["owner", "child", "registration"] {
+            let (mut subject, _, context, _root) = read(&|_| {});
+            let resource = subject
+                .resources
+                .iter_mut()
+                .find(|resource| match (role, &resource.role) {
+                    ("owner", MetadataResourceRole::Descriptor) => true,
+                    ("child", MetadataResourceRole::Form { name, .. }) => name == "Форма",
+                    ("registration", MetadataResourceRole::Registration) => true,
+                    _ => false,
+                })
+                .unwrap();
+            let text = String::from_utf8(resource.bytes.clone()).unwrap();
+            // The registration loses its extension purpose; the descriptors
+            // lose their parent.
+            let element = if role == "registration" {
+                "ConfigurationExtensionPurpose"
+            } else {
+                "ExtendedConfigurationObject"
+            };
+            let start = text.find(&format!("<{element}>")).unwrap();
+            let end = text.find(&format!("</{element}>")).unwrap() + element.len() + 3;
+            resource.bytes = format!("{}{}", &text[..start], &text[end..]).into_bytes();
+            let validation =
+                MetadataOperations::validate(&subject, &context, &CancellationToken::new());
+            assert!(
+                validation.diagnostics.iter().any(|diagnostic| diagnostic
+                    .message
+                    .contains("DataProcessor.Обработка.Form.Форма")),
+                "{role}: an empty footprint needs an extension root and both descriptors to prove the borrowing"
+            );
+        }
     }
 
     fn replace_defined_type_members(root: &std::path::Path, name: &str, members: &[&str]) {

@@ -4,10 +4,13 @@ The common corpus has source, pinned-analyzer delivery and real-agent drivers.
 Runtime drivers are implemented with their surface tasks;
 a profile without an executable driver is rejected.
 
-Every scenario in tests/fixtures/acceptance/scenario-corpus.json is a real
-configuration-development task expressed as a wire of canonical unica.* calls
-against the acceptance fixture workspace.  The corpus freezes, per step, the
-class of answer the surface gives today:
+Every scenario of the corpus (the closed block S001-S440 in
+tests/fixtures/acceptance/scenario-corpus.json and one file per later scenario
+in tests/fixtures/acceptance/scenarios/, both loaded by
+scripts/ci/acceptance_corpus.py) is a real configuration-development task
+expressed as a wire of canonical unica.* calls against the acceptance fixture
+workspace.  The corpus freezes, per step, the class of answer the surface
+gives today:
 
   ok          ok:true result without a task receipt
   task        ok:true queued/working Task receipt
@@ -48,22 +51,24 @@ from pathlib import Path
 from tests.ci.acceptance_controls import (
     capture_values,
     content_mismatches,
+    corpus_storage,
     file_value,
-    load_corpus,
+    load_acceptance_corpus,
     matches_step,
     substitute_capture,
+    tool_result,
     validate_controls,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CORPUS = REPO_ROOT / "tests/fixtures/acceptance/scenario-corpus.json"
 BINARY = (
     (REPO_ROOT / Path(os.environ.get("CARGO_TARGET_DIR", "target"))).resolve()
     / "debug"
     / ("unica.exe" if os.name == "nt" else "unica")
 )
 from tests.ci.acceptance_profiles import (
-    DIAGNOSTICS_WORKSPACE, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment, select_profile,
+    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
+    select_profile,
 )
 
 REFUSAL_DICTIONARY = REPO_ROOT / "crates/unica-coder/src/domain/refusal.rs"
@@ -181,7 +186,7 @@ def classify(response, context):
         if "deadline expired" in message:
             return "provider", message[:160]
         return "error", json.dumps(response, ensure_ascii=False)[:200]
-    structured = response.get("result", {}).get("structuredContent")
+    structured = tool_result(response)
     if structured is None:
         return "error", "no structuredContent"
     if structured.get("rev"):
@@ -480,7 +485,7 @@ class ExternalLinkFixtureTests(unittest.TestCase):
 
 
     def test_link_refusal_cannot_pass_as_wrong_descriptor_identity(self):
-        corpus = load_corpus(CORPUS)
+        corpus = load_acceptance_corpus()
         case = next(s for s in corpus["scenarios"] if s.get("name") == "external-linked-payload-refusal")
         link = {"assertions": case["wire"][0]["assertions"]}
         foreign = case["wire"][1]["assertions"][1]["eq"]
@@ -520,29 +525,41 @@ class SavedPlanWireTests(unittest.TestCase):
 class AcceptanceCorpusShapeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.corpus = load_corpus(CORPUS)
+        cls.corpus = load_acceptance_corpus()
 
-    def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
+    def test_corpus_ids_are_stable_and_the_manifest_freezes_every_step(self) -> None:
+        storage = corpus_storage()
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 406)
-        # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1005,
-            "a wire step went missing: the corpus freezes 1005 steps",
-        )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 407)])
+        self.assertEqual(len(identifiers), len(set(identifiers)), "scenario ids are unique")
+        # The historical block keeps its numbers and is closed: links to S###
+        # still find their scenario, and nothing takes the next number.
+        legacy = [identifier for identifier in identifiers if storage.LEGACY_ID.fullmatch(identifier)]
+        self.assertEqual(legacy, [f"S{index:03d}" for index in range(1, storage.LEGACY_LAST + 1)])
+        for identifier in identifiers[len(legacy):]:
+            storage.stable_order(identifier)
+        # A dropped scenario or step is caught per scenario, not by a total
+        # every addition would have to edit.
+        self.assertEqual(
+            storage.manifest_problems(self.corpus, storage.read_manifest()), [],
+            "the corpus differs from tests/fixtures/acceptance/scenario-manifest/",
+        )
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
         delivery = {s["id"] for s in select_profile(self.corpus, "delivery")["scenarios"]}
         agent = {s["id"] for s in select_profile(self.corpus, "agent-evaluation")["scenarios"]}
         fault = {s["id"] for s in select_profile(self.corpus, "fault-injection")["scenarios"]}
-        self.assertEqual(fault, {"S344", "S345", "S346", "S389", "S390", "S396", "S398"})
         self.assertFalse(fault & (source | delivery | agent))
         self.assertFalse(source & delivery or source & agent or delivery & agent)
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in self.corpus["scenarios"]})
-        self.assertEqual(agent, {"S328", "S335"})
-        self.assertEqual(delivery, {'S324', 'S339', 'S340', 'S341', 'S342', 'S343', 'S359'})
+        # The closed S### block keeps its profiles; a per-file scenario
+        # declares its own and is admitted by select_profile, so two added
+        # scenarios never edit these sets.
+        legacy = corpus_storage().LEGACY_ID.fullmatch
+        self.assertEqual({i for i in fault if legacy(i)}, {"S344", "S345", "S346", "S389", "S390", "S396", "S398"})
+        self.assertEqual({i for i in agent if legacy(i)}, {"S328", "S335"})
+        self.assertEqual({i for i in delivery if legacy(i)}, {'S324', 'S339', 'S340', 'S341', 'S342', 'S343', 'S359'})
 
     def test_every_step_freezes_known_classes_and_documents_gaps(self) -> None:
         for scenario in self.corpus["scenarios"]:
@@ -550,7 +567,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], "tests/fixtures/acceptance/workspace-predefined", FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing", "tests/fixtures/acceptance/workspace-docs-8.3.26", "tests/fixtures/acceptance/workspace-docs-8.3.27", "tests/fixtures/acceptance/workspace-resolve", "tests/fixtures/acceptance/workspace-english", "tests/fixtures/acceptance/workspace-borrowed"},
+                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):
@@ -659,8 +676,9 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
 
 class AcceptanceRegistryDocumentTests(unittest.TestCase):
-    """`docs/acceptance-scenarios.md` is the rendered view of the corpus for
-    contributors; it must never drift from the JSON it is generated from."""
+    """The scenario registry is rendered from the corpus when the site is
+    built; it is not committed, so two added scenarios never edit its counts
+    and coverage lists in the same lines."""
 
     def test_registry_document_is_rendered_from_the_corpus(self) -> None:
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
@@ -670,14 +688,14 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         rendered = module.render_document()
-        document = REPO_ROOT / "docs" / "acceptance-scenarios.md"
-        self.assertEqual(
-            document.read_text(encoding="utf-8"),
-            rendered,
-            "docs/acceptance-scenarios.md is stale; run "
-            "`python scripts/ci/render-acceptance-registry.py --write`",
-        )
         self.assertIn("## Покрытие реестра `apply`", rendered)
+        corpus = load_acceptance_corpus()
+        self.assertIn(f"**{len(corpus['scenarios'])} сценариев**", rendered)
+        for scenario in corpus["scenarios"]:
+            self.assertIn(f"\n| {scenario['id']} | ", rendered)
+        page = module.render_html(rendered)
+        self.assertIn('id="S047"', page)
+        self.assertIn("описан в <code>tests/fixtures/acceptance/README.md</code>", page)
 
 
 class AcceptanceCorpusRunTests(unittest.TestCase):
@@ -690,7 +708,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             cwd=REPO_ROOT,
             check=True,
         )
-        cls.corpus = load_corpus(CORPUS)
+        cls.corpus = load_acceptance_corpus()
         for scenario in cls.corpus["scenarios"]:
             declared = set()
             for step in scenario["wire"]:
@@ -875,7 +893,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                     # node proves the verdict it froze; without these two
                     # checks a typo in an address or a failing validator
                     # would pass as the intended outcome.
-                    structured = response.get("result", {}).get("structuredContent") or {}
+                    structured = tool_result(response) or {}
                     verification.append({"tool": step["tool"], "args": arguments, "result": structured})
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
                     if not failures:
@@ -921,7 +939,7 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
     def setUpClass(cls):
         subprocess.run(["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"],
                        cwd=REPO_ROOT, check=True)
-        cls.corpus = load_corpus(CORPUS)
+        cls.corpus = load_acceptance_corpus()
         for scenario in cls.corpus["scenarios"]:
             declared = set()
             for step in scenario["wire"]:
@@ -965,7 +983,7 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
     def setUpClass(cls):
         subprocess.run(["cargo", "build", "--quiet", "--locked", "--package", "unica-coder", "--bin", "unica"],
                        cwd=REPO_ROOT, check=True)
-        cls.corpus = load_corpus(CORPUS)
+        cls.corpus = load_acceptance_corpus()
 
     def test_controlled_jsonl_faults_preserve_public_reason_without_provider_input(self):
         from tests.ci.acceptance_faults import stage_fault_producer, fault_driver

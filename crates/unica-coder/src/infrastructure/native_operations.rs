@@ -27,6 +27,7 @@ pub(crate) mod interface;
 pub(crate) mod logical_selector;
 pub(crate) mod meta;
 pub(crate) mod mxl;
+pub(crate) mod mxl_cells;
 pub(crate) mod registry;
 pub(crate) mod role;
 pub(crate) mod single_file_publisher;
@@ -81,7 +82,7 @@ impl NativeOperationAdapter {
             if operation == "form-edit" && form::has_edit_payload(args) {
                 return Ok(form::preview_form_edit(args, context));
             }
-            let mut fallback = AdapterOutcome {
+            let fallback = AdapterOutcome {
                 ok: true,
                 summary: format!("dry run: {tool_name} would execute native XML/DSL operation"),
                 changes: if mutating {
@@ -98,12 +99,6 @@ impl NativeOperationAdapter {
             };
             if let Some(preview) = registry::invoke_preview(operation, args, context) {
                 return match preview {
-                    registry::PreviewInvocation::Unavailable(error) => {
-                        fallback.warnings.push(format!(
-                            "detailed compile preview is unavailable; using safe placeholder: {error}"
-                        ));
-                        Ok(fallback)
-                    }
                     registry::PreviewInvocation::Planned(Ok(outcome)) => Ok(outcome),
                     registry::PreviewInvocation::Planned(Err(error)) => Ok(AdapterOutcome {
                         ok: false,

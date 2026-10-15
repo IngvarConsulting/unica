@@ -3,19 +3,22 @@ use crate::domain::apply::OperationRegistry;
 use crate::domain::module_projection::{
     BindingFact, BodyLine, CommonModuleProperties, CompilationFacts, CompilationProjection,
     EventProjection, EventState, ExtensionKind, ExtensionProjection, HandleProjection,
-    InterfaceKind, InterfaceProjection, MethodKind, MethodProjection, ModuleIdentity,
-    ModuleProjectionSet, ModuleProperties, RegionProjection,
+    InterfaceKind, InterfaceProjection, MethodKind, MethodParameter, MethodProjection,
+    ModuleIdentity, ModuleProjectionSet, ModuleProperties, RegionProjection,
 };
 use crate::domain::platform_profile::{ModuleCapability, ModuleRole, PlatformProfile};
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::bsl_outline::parse_bsl_syntax;
 use crate::infrastructure::native_operations::form_event_registry::{
-    form_event_catalog_8_3_27, module_event_catalog_8_3_27, validate_property_event_binding,
-    FormElementKind, FormEventBinding, FormEventContext, FormEventOwnerKind, FormEventTarget,
-    PlatformEventSpec,
+    foreign_handler_signature_8_3_27, form_event_catalog_8_3_27,
+    form_event_handler_signature_8_3_27, form_owner_event_parameters_8_3_27,
+    module_event_catalog_8_3_27, validate_property_event_binding, FormElementKind,
+    FormEventBinding, FormEventContext, FormEventOwnerKind, FormEventParameterForms,
+    FormEventTarget, PlatformEventSpec,
 };
 use bsl_syntax::ast::{Annotation, AstNode, FunctionDef, PreIfDir, PreRegionDir, ProcedureDef};
 use bsl_syntax::{SyntaxKind, SyntaxNode};
+use std::cell::OnceCell;
 use std::collections::HashMap;
 
 const PLATFORM_CONTEXTS: &[&str] = &[
@@ -128,7 +131,7 @@ impl FormEventOwnerInput {
 pub(crate) struct FormMethodFact<'a> {
     pub(crate) name: &'a str,
     pub(crate) method_kind: MethodKind,
-    pub(crate) signature: &'a str,
+    pub(crate) parameters: &'a [MethodParameter],
     pub(crate) directive: Option<&'a str>,
     pub(crate) contexts: Vec<&'a str>,
 }
@@ -137,13 +140,13 @@ impl<'a> FormMethodFact<'a> {
     pub(crate) fn new(
         name: &'a str,
         method_kind: MethodKind,
-        signature: &'a str,
+        parameters: &'a [MethodParameter],
         contexts: Vec<&'a str>,
     ) -> Self {
         Self {
             name,
             method_kind,
-            signature,
+            parameters,
             directive: None,
             contexts,
         }
@@ -375,7 +378,7 @@ fn project_module_with_specs(
         request.extension_targets,
     )?;
     let regions = region_projections(&root, &lines, request.at, &methods);
-    let interfaces = interface_projections(request.at, &methods, &regions);
+    let interfaces = interface_projections(&methods, &regions);
     let events = project_module_events(
         request.at,
         request.capability,
@@ -400,7 +403,8 @@ fn project_module_with_specs(
         events,
         compilation,
         body,
-    ))
+    )
+    .with_source(source.to_string()))
 }
 
 fn available_module_event(
@@ -540,6 +544,13 @@ fn method_projections(
             .children()
             .find(|child| child.kind() == SyntaxKind::PARAM_LIST)
             .ok_or_else(|| format!("BSL method `{name}` has no parser-proven parameter list"))?;
+        let parameters = crate::infrastructure::bsl_outline::parameters(&node)?
+            .into_iter()
+            .map(|parameter| MethodParameter {
+                name: parameter.name,
+                optional: parameter.default_value.is_some(),
+            })
+            .collect();
         let declaration_end = node
             .descendants_with_tokens()
             .filter_map(|element| element.into_token())
@@ -599,6 +610,7 @@ fn method_projections(
             .chain([header_line])
             .min()
             .unwrap_or(header_line);
+        let text_from_line = documentation_comment_start(lines, from_line);
         let body_from_line = signature_end_line.saturating_add(1);
         let body_to_line = closing_line.saturating_sub(1);
         let compilation_count = compilation
@@ -636,6 +648,7 @@ fn method_projections(
                 at: method_at,
                 name,
                 signature,
+                parameters,
                 doc: documentation_block(lines, header_line),
                 method_kind,
                 export,
@@ -653,6 +666,7 @@ fn method_projections(
                 compilation_count,
                 from_line,
                 to_line: closing_line,
+                text_from_line,
                 body_from_line,
                 body_to_line,
             },
@@ -708,6 +722,22 @@ fn extension_projection(
         directive,
         target_at,
     })
+}
+
+/// Первая строка документирующего комментария метода для его `Body`:
+/// подряд идущие строки `//` непосредственно над первой строкой метода
+/// (директивой, аннотацией или объявлением). Пустая строка и инструкция
+/// препроцессора обрывают комментарий; без комментария текст начинается
+/// с самого метода.
+fn documentation_comment_start(lines: &LineIndex<'_>, from_line: usize) -> usize {
+    let mut start = from_line;
+    while start > 1 {
+        match lines.text(start - 1) {
+            Some(text) if text.trim_start().starts_with("//") => start -= 1,
+            _ => break,
+        }
+    }
+    start
 }
 
 fn documentation_block(lines: &LineIndex<'_>, header_line: usize) -> Option<String> {
@@ -843,7 +873,6 @@ fn region_projections(
 }
 
 fn interface_projections(
-    at: &QualifiedAddress,
     methods: &[MethodProjection],
     regions: &[RegionProjection],
 ) -> Vec<InterfaceProjection> {
@@ -872,7 +901,6 @@ fn interface_projections(
                 .map(|method| method.at.clone())
                 .collect();
             InterfaceProjection {
-                at: format!("{at}.Interface.{}", interface.as_str()),
                 kind: "Interface",
                 interface: *interface,
                 methods: selected,
@@ -1286,32 +1314,30 @@ fn method_matches_event(
             .is_ok_and(|required| event_directive_matches(directive, required))
 }
 
-fn parameter_shape(signature: &str) -> String {
-    signature
-        .split_once('(')
-        .map(|(_, tail)| format!("({tail}"))
-        .map(|shape| normalized_declaration(&shape))
-        .unwrap_or_default()
-}
-
+/// A form handler is compatible with its event when the method kind, the
+/// contexts and the directive fit, and the parameters give no finding of the
+/// form check (#791): a shorter earlier signature and renamed parameters are
+/// compatible, a signature of another event of the owner or more required
+/// parameters than the platform passes are not. The parameters are compared
+/// with the current signature, `Элемент` included (#1390).
 fn form_method_matches_event(
     method: &FormMethodFact<'_>,
     spec: &PlatformEventSpec,
-    owner: FormBindingOwner,
+    owner: &FormEventOwnerInput,
+    owner_events: &[FormEventParameterForms],
 ) -> bool {
     let kind = match method.method_kind {
         MethodKind::Procedure => "procedure",
         MethodKind::Function => "function",
     };
-    let actual = parameter_shape(method.signature);
     kind == spec.method_kind
-        && (actual == parameter_shape(&spec.signature_ru)
-            || actual == parameter_shape(&spec.signature_en))
+        && foreign_handler_signature_8_3_27(owner_events, &spec.event_id, method.parameters)
+            .is_none()
         && spec
             .contexts
             .iter()
             .all(|expected| method.contexts.contains(&expected.as_str()))
-        && required_event_directive(EventDirectiveOwner::Property(owner), spec)
+        && required_event_directive(EventDirectiveOwner::Property(owner.owner), spec)
             .is_ok_and(|required| event_directive_matches(method.directive, required))
 }
 
@@ -1423,7 +1449,14 @@ pub(crate) fn project_form_owner_event_record(
     catalog.into_iter().find_map(|spec| {
         let at = format!("{}.Event.{}", owner.at, spec.event_id);
         (at == event_at).then(|| FormEventProjectionRecord {
-            projection: project_known_form_event(context, owner, bindings, methods, spec),
+            projection: project_known_form_event(
+                context,
+                owner,
+                bindings,
+                methods,
+                spec,
+                &OnceCell::new(),
+            ),
             spec,
             owner: owner.owner,
         })
@@ -1448,9 +1481,17 @@ pub(crate) fn project_form_owner_events(
             owner.owner.catalog_owner(),
             owner.data_path.as_deref(),
         );
+        // Parameter lists of the owner are built once, and only when a bound
+        // handler has to be compared with them.
+        let owner_events = OnceCell::new();
         for spec in &catalog {
             events.push(project_known_form_event(
-                context, owner, bindings, methods, spec,
+                context,
+                owner,
+                bindings,
+                methods,
+                spec,
+                &owner_events,
             ));
         }
         let known = catalog
@@ -1504,6 +1545,7 @@ fn project_known_form_event(
     bindings: &[FormEventBindingInput],
     methods: &[FormMethodFact<'_>],
     spec: &PlatformEventSpec,
+    owner_events: &OnceCell<Vec<FormEventParameterForms>>,
 ) -> EventProjection {
     let owner_prefix = owner.at.as_str();
     let at = format!("{owner_prefix}.Event.{}", spec.event_id);
@@ -1540,6 +1582,7 @@ fn project_known_form_event(
                 name: binding.event.as_str(),
                 handler: binding.handler.as_str(),
                 call_type: binding.call_type.as_deref(),
+                data_path: None,
             },
         )
         .is_ok()
@@ -1555,7 +1598,18 @@ fn project_known_form_event(
         (false, Some(_), _, false) => EventState::Invalid,
         (false, Some(_), None, true) => EventState::Missing,
         (false, Some(_), Some(method), true)
-            if form_method_matches_event(method, spec, owner.owner) =>
+            if form_method_matches_event(
+                method,
+                spec,
+                owner,
+                owner_events.get_or_init(|| {
+                    form_owner_event_parameters_8_3_27(
+                        context,
+                        owner.owner.catalog_owner(),
+                        owner.data_path.as_deref(),
+                    )
+                }),
+            ) =>
         {
             EventState::Implemented
         }
@@ -1567,7 +1621,7 @@ fn project_known_form_event(
             |binding| format!("Процедура {}(Команда)", binding.handler),
         )
     } else {
-        spec.signature_ru.clone()
+        form_event_handler_signature_8_3_27(owner.owner.catalog_owner(), spec)
     };
     let can = match state {
         EventState::Available if context.direct_part_writable => {
@@ -1696,6 +1750,19 @@ mod tests {
     use bsl_syntax::ast::{AstNode, PreIfDir};
     use serde::Deserialize;
     use serde_json::json;
+
+    /// Declared parameters of a test handler, all required. The slice lives
+    /// for the test process, like the handler facts that borrow it.
+    fn params(names: &[&str]) -> &'static [crate::domain::module_projection::MethodParameter] {
+        names
+            .iter()
+            .map(|name| crate::domain::module_projection::MethodParameter {
+                name: (*name).to_string(),
+                optional: false,
+            })
+            .collect::<Vec<_>>()
+            .leak()
+    }
 
     const COMPLEX: &str = include_str!("../../../../tests/fixtures/v013/modules/complex.bsl");
     const EXTENSION: &str = include_str!("../../../../tests/fixtures/v013/modules/extension.bsl");
@@ -2006,15 +2073,13 @@ mod tests {
             multiline.doc.as_deref(),
             Some("Exact multiline declaration.\nThe body starts after the complete signature.")
         );
-        let body = projection
-            .method_body(&multiline.at, None, 20, None)
-            .unwrap();
+        assert_eq!(multiline.text_from_line, 1);
         assert_eq!(
-            body.lines
-                .iter()
-                .map(|line| (line.line, line.text.as_str()))
-                .collect::<Vec<_>>(),
-            vec![(7, "    Сообщить(\"body\");")]
+            projection.method_text(multiline),
+            SYNTAX_BOUNDARIES
+                .split_inclusive('\n')
+                .take(8)
+                .collect::<String>()
         );
 
         let empty = projection
@@ -2022,13 +2087,12 @@ mod tests {
             .iter()
             .find(|method| method.name == "Пустая")
             .unwrap();
-        assert!(projection
-            .method_body(&empty.at, None, 20, None)
-            .unwrap()
-            .lines
-            .is_empty());
+        assert_eq!(
+            projection.method_text(empty),
+            "Процедура Пустая(\n)\nКонецПроцедуры\n"
+        );
         let serialized = serde_json::to_value(empty).unwrap();
-        assert_eq!(serialized["branches"][1]["count"], 0);
+        assert_eq!(serialized["branches"][1]["count"], 3);
     }
 
     #[test]
@@ -2060,7 +2124,7 @@ mod tests {
     }
 
     #[test]
-    fn crlf_projection_preserves_source_signature_but_body_lines_drop_record_terminators() {
+    fn crlf_method_text_keeps_the_source_line_endings() {
         let source = SYNTAX_BOUNDARIES.replace('\n', "\r\n");
         let projection = project("main:CommonModule.ЗаказыСервер", Some(&source));
         let multiline = projection
@@ -2072,15 +2136,10 @@ mod tests {
             multiline.signature.contains("\r\n"),
             "source-proven signatures retain the source EOL profile"
         );
-        let body = projection
-            .method_body(&multiline.at, None, 100, None)
-            .unwrap();
-        assert!(
-            body.lines
-                .iter()
-                .all(|line| !line.text.contains(['\r', '\n'])),
-            "BodyLine.text must not expose record terminators: {:?}",
-            body.lines
+        assert_eq!(projection.source_text(), source);
+        assert_eq!(
+            projection.method_text(multiline),
+            source.split_inclusive('\n').take(8).collect::<String>()
         );
     }
 
@@ -2106,7 +2165,7 @@ mod tests {
             FormMethodFact::new(
                 "ПолеПриИзменении",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Процедура ПолеПриИзменении()",
+                params(&[]),
                 vec![
                     "thinClient",
                     "webClient",
@@ -2119,7 +2178,7 @@ mod tests {
             FormMethodFact::new(
                 "ПолеНачалоВыбора",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Процедура ПолеНачалоВыбора(ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка)",
+                params(&["ДанныеВыбора", "ВыборДобавлением", "СтандартнаяОбработка"]),
                 vec![
                     "thinClient",
                     "webClient",
@@ -2148,7 +2207,7 @@ mod tests {
     }
 
     #[test]
-    fn form_event_state_requires_exact_method_kind_and_parameter_shape() {
+    fn form_event_state_requires_the_method_kind_and_accepts_an_earlier_shorter_signature() {
         let binding = FormEventBindingInput::property(
             FormBindingOwner::Element(FormElementKind::InputField),
             "main:CommonForm.Тест.Item.Поле.Event.OnChange",
@@ -2166,7 +2225,7 @@ mod tests {
         let procedure = [FormMethodFact::new(
             "ПолеПриИзменении",
             crate::domain::module_projection::MethodKind::Procedure,
-            "Процедура ПолеПриИзменении()",
+            params(&[]),
             contexts.clone(),
         )
         .with_directive(Some("&НаКлиенте"))];
@@ -2181,7 +2240,7 @@ mod tests {
         let function = [FormMethodFact::new(
             "ПолеПриИзменении",
             crate::domain::module_projection::MethodKind::Function,
-            "Функция ПолеПриИзменении()",
+            params(&[]),
             contexts,
         )];
         assert_eq!(
@@ -2192,6 +2251,140 @@ mod tests {
                 .state,
             EventState::Invalid
         );
+    }
+
+    #[test]
+    fn method_parameters_keep_names_without_by_value_and_mark_defaults() {
+        let module = project(
+            "main:Catalog.Products.Form.Main.Module.Form",
+            Some(
+                "&НаКлиенте\nПроцедура Поле(Знач Элемент, Режим = Неопределено)\nКонецПроцедуры\n",
+            ),
+        );
+        let parameters = &module.methods()[0].parameters;
+        assert_eq!(
+            parameters
+                .iter()
+                .map(|parameter| (parameter.name.as_str(), parameter.optional))
+                .collect::<Vec<_>>(),
+            [("Элемент", false), ("Режим", true)]
+        );
+    }
+
+    #[test]
+    fn form_handler_parameters_are_compared_with_the_item_and_the_form_check_rule() {
+        let client = vec![
+            "thinClient",
+            "webClient",
+            "thickClientManaged",
+            "mobileClient",
+            "mobileAppClient",
+        ];
+        let input = FormBindingOwner::Element(FormElementKind::InputField);
+        let item_event = |event: &str, handler: &str, parameters: &[&str]| {
+            let at = format!("main:CommonForm.Тест.Item.Поле.Event.{event}");
+            let binding = FormEventBindingInput::property(input, &at, event, handler, None);
+            let methods = [FormMethodFact::new(
+                handler,
+                crate::domain::module_projection::MethodKind::Procedure,
+                params(parameters),
+                client.clone(),
+            )
+            .with_directive(Some("&НаКлиенте"))];
+            project_form_events(&[binding], &methods)
+                .into_iter()
+                .find(|projected| projected.at == at)
+                .unwrap()
+        };
+        // The current signature with the item, a renamed item and an
+        // earlier shorter signature are all handlers the platform calls.
+        for parameters in [&["Элемент"][..], &["Поле"][..], &[][..]] {
+            assert_eq!(
+                item_event("OnChange", "ПолеПриИзменении", parameters).state,
+                EventState::Implemented,
+                "{parameters:?}"
+            );
+        }
+        let on_change = item_event("OnChange", "ПолеПриИзменении", &["Элемент"]);
+        assert_eq!(on_change.signature, "Процедура ПриИзменении(Элемент)");
+        assert_eq!(
+            item_event(
+                "StartChoice",
+                "ПолеНачалоВыбора",
+                &[
+                    "Элемент",
+                    "ДанныеВыбора",
+                    "ВыборДобавлением",
+                    "СтандартнаяОбработка"
+                ]
+            )
+            .state,
+            EventState::Implemented
+        );
+        // The signature of another event of the item and more required
+        // parameters than the platform passes are not this event's handler.
+        for parameters in [
+            &["Элемент", "Текст", "СтандартнаяОбработка"][..],
+            &["Элемент", "Лишний"][..],
+        ] {
+            assert_eq!(
+                item_event("OnChange", "ПолеПриИзменении", parameters).state,
+                EventState::Invalid,
+                "{parameters:?}"
+            );
+        }
+        // A form event handler does not receive the item.
+        let open_at = "main:CommonForm.Тест.Event.OnOpen";
+        let open = FormEventBindingInput::property(
+            FormBindingOwner::Form,
+            open_at,
+            "OnOpen",
+            "ПриОткрытии",
+            None,
+        );
+        let open_event = |parameters: &[&str]| {
+            let methods = [FormMethodFact::new(
+                "ПриОткрытии",
+                crate::domain::module_projection::MethodKind::Procedure,
+                params(parameters),
+                client.clone(),
+            )
+            .with_directive(Some("&НаКлиенте"))];
+            project_form_events(std::slice::from_ref(&open), &methods)
+                .into_iter()
+                .find(|projected| projected.at == open_at)
+                .unwrap()
+        };
+        let implemented = open_event(&["Отказ"]);
+        assert_eq!(implemented.state, EventState::Implemented);
+        assert_eq!(implemented.signature, "Процедура ПриОткрытии(Отказ)");
+        assert_eq!(open_event(&["Элемент", "Отказ"]).state, EventState::Invalid);
+        // A command action follows the same rule with its own `(Команда)`.
+        let action_at = "main:CommonForm.Тест.Command.Обновить.Event.Execute";
+        let action = FormEventBindingInput::property(
+            FormBindingOwner::Command,
+            action_at,
+            "Execute",
+            "Обновить",
+            None,
+        );
+        let action_state = |parameters: &[&str]| {
+            let methods = [FormMethodFact::new(
+                "Обновить",
+                crate::domain::module_projection::MethodKind::Procedure,
+                params(parameters),
+                client.clone(),
+            )
+            .with_directive(Some("&НаКлиенте"))];
+            project_form_events(std::slice::from_ref(&action), &methods)
+                .into_iter()
+                .find(|projected| projected.at == action_at)
+                .unwrap()
+                .state
+        };
+        assert_eq!(action_state(&["Команда"]), EventState::Implemented);
+        assert_eq!(action_state(&[]), EventState::Implemented);
+        assert_eq!(action_state(&["Команда", "Лишний"]), EventState::Invalid);
     }
 
     #[test]
@@ -2234,14 +2427,14 @@ mod tests {
             FormMethodFact::new(
                 "FieldOnChange",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Procedure FieldOnChange()",
+                params(&[]),
                 contexts.clone(),
             )
             .with_directive(Some("&AtClient")),
             FormMethodFact::new(
                 "fieldonchange",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Procedure fieldonchange()",
+                params(&[]),
                 contexts,
             )
             .with_directive(Some("&AtClient")),
@@ -2491,7 +2684,7 @@ mod tests {
         let method = [FormMethodFact::new(
             "RefreshAction",
             crate::domain::module_projection::MethodKind::Procedure,
-            "Процедура RefreshAction(Команда)",
+            params(&["Команда"]),
             vec![
                 "thinClient",
                 "webClient",
@@ -2534,7 +2727,7 @@ mod tests {
             let methods = [FormMethodFact::new(
                 "FormOnOpen",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Procedure FormOnOpen(Cancel)",
+                params(&["Cancel"]),
                 client_contexts.clone(),
             )
             .with_directive(directive)];
@@ -2554,7 +2747,7 @@ mod tests {
             let methods = [FormMethodFact::new(
                 "FormOnOpen",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Procedure FormOnOpen(Cancel)",
+                params(&["Cancel"]),
                 client_contexts.clone(),
             )
             .with_directive(Some(directive))];
@@ -2579,7 +2772,7 @@ mod tests {
         let server = [FormMethodFact::new(
             "OnCreateAtServer",
             crate::domain::module_projection::MethodKind::Procedure,
-            "Procedure OnCreateAtServer(Cancel, StandardProcessing)",
+            params(&["Cancel", "StandardProcessing"]),
             vec!["server"],
         )
         .with_directive(Some(" &AtServer "))];
@@ -2797,7 +2990,7 @@ mod tests {
         let methods = [FormMethodFact::new(
             "FormOnOpen",
             crate::domain::module_projection::MethodKind::Procedure,
-            "Procedure FormOnOpen(Cancel)",
+            params(&["Cancel"]),
             vec![
                 "thinClient",
                 "webClient",
@@ -2882,14 +3075,8 @@ mod tests {
             .unwrap();
         assert_eq!(method.signature, "Процедура ОбработатьGET(Запрос, Ответ)");
         assert_eq!(
-            projection
-                .method_body(&method.at, None, 20, None)
-                .unwrap()
-                .lines
-                .iter()
-                .map(|line| line.text.as_str())
-                .collect::<Vec<_>>(),
-            vec!["    Ответ.КодСостояния = 200;"]
+            projection.method_text(method),
+            "Процедура ОбработатьGET(Запрос, Ответ)\n    Ответ.КодСостояния = 200;\nКонецПроцедуры\n"
         );
         assert!(declarative_source(&case.owner).contains(&method.signature));
     }
@@ -2960,6 +3147,50 @@ mod tests {
                 "{source}"
             );
         }
+    }
+
+    /// #1381 (по PR #1364): без любого из четырёх флагов среды контексты
+    /// методов и областей неизвестны, тело без фильтра доступно; все флаги
+    /// `false` дают известный пустой список.
+    #[test]
+    fn unknown_execution_flags_do_not_become_empty_or_universal_contexts() {
+        use crate::domain::module_projection::CommonModuleProperties;
+        let known = CommonModuleProperties {
+            global: None,
+            server_call: None,
+            privileged: None,
+            return_values_reuse: None,
+            client_managed_application: Some(false),
+            client_ordinary_application: Some(false),
+            server: Some(true),
+            external_connection: Some(false),
+        };
+        let at = QualifiedAddress::parse("ext:CommonModule.Probe").unwrap();
+        let capability = PlatformProfile::v8_3_27().module_capability(&at).unwrap();
+        for missing in 0..5 {
+            let mut props = known.clone();
+            match missing {
+                0 => props.server = None,
+                1 => props.client_managed_application = None,
+                2 => props.client_ordinary_application = None,
+                3 => props.external_connection = None,
+                _ => {}
+            }
+            let projection = project_module(ModuleProjectionRequest {
+                at: &at, capability, title: "Probe".into(), rev: "fixture", source: Some("#Если Сервер Тогда\nПроцедура Test() Экспорт\nСообщить(1);\nКонецПроцедуры\n#КонецЕсли"),
+                common_module: Some(props), handles: &[], declarative_bindings: &[], extension_targets: &[], platform_event_write: PlatformEventWriteCapability::Unproved,
+            }).unwrap();
+            let method = &projection.methods()[0];
+            assert_eq!(method.compile.contexts.is_none(), missing < 4);
+            assert_eq!(projection.compilation()[0].contexts.is_none(), missing < 4);
+            assert!(projection.method_text(method).contains("Сообщить(1);"));
+        }
+        let mut no_execution = known;
+        no_execution.server = Some(false);
+        assert_eq!(
+            super::base_contexts(capability, Some(&no_execution)),
+            Some(Vec::new())
+        );
     }
 
     #[test]
@@ -3049,40 +3280,56 @@ mod tests {
     }
 
     #[test]
-    fn explicit_body_preserves_lines_paginates_and_filters_without_method_duplication() {
-        let projection = project(
-            "main:Document.Заказ.Form.ФормаДокумента.Module.Form",
-            Some(COMPLEX),
+    fn method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor() {
+        let source = concat!(
+            "// Отделён пустой строкой: не входит.\n",
+            "\n",
+            "// Документирует метод.\n",
+            "//\tВторая строка.\n",
+            "&НаСервере\n",
+            "Процедура Документированная() Экспорт\n",
+            "    Сообщить(1);\n",
+            "КонецПроцедуры\n",
+            "\n",
+            "// Комментарий над препроцессором не относится к методу.\n",
+            "#Если Сервер Тогда\n",
+            "Функция ВнутриУсловия()\n",
+            "    Возврат 1;\n",
+            "КонецФункции\n",
+            "#КонецЕсли\n",
+            "// Висящий комментарий.\n",
+            "\n",
+            "Процедура БезКомментария()\n",
+            "КонецПроцедуры",
         );
-        let method = projection
-            .methods()
-            .iter()
-            .find(|method| method.name == "ОбщийОбработчик")
-            .unwrap();
-        let all = projection.method_body(&method.at, None, 2, None).unwrap();
-        assert_eq!(all.lines.len(), 2);
-        assert!(all.next.is_some());
-        let next = projection
-            .method_body(&method.at, None, 100, all.next.as_deref())
-            .unwrap();
-        assert!(next.lines.first().unwrap().line > all.lines.last().unwrap().line);
-        let client = projection
-            .method_body(&method.at, Some("webClient"), 100, None)
-            .unwrap();
-        let server = projection
-            .method_body(&method.at, Some("server"), 100, None)
-            .unwrap();
-        assert!(client.lines.iter().any(|line| line.text.contains("web")));
-        assert!(!client
-            .lines
-            .iter()
-            .any(|line| line.text.contains("other client")));
-        assert!(server.lines.is_empty());
+        let projection = project("main:CommonModule.ЗаказыСервер", Some(source));
+        let text = |name: &str| {
+            let method = projection
+                .methods()
+                .iter()
+                .find(|method| method.name == name)
+                .unwrap();
+            projection.method_text(method)
+        };
+        assert_eq!(
+            text("Документированная"),
+            "// Документирует метод.\n//\tВторая строка.\n&НаСервере\nПроцедура Документированная() Экспорт\n    Сообщить(1);\nКонецПроцедуры\n"
+        );
+        assert_eq!(
+            text("ВнутриУсловия"),
+            "Функция ВнутриУсловия()\n    Возврат 1;\nКонецФункции\n"
+        );
+        // Последняя строка файла без разделителя остаётся без него.
+        assert_eq!(
+            text("БезКомментария"),
+            "Процедура БезКомментария()\nКонецПроцедуры"
+        );
+        assert_eq!(projection.source_text(), source);
         assert_eq!(
             projection
                 .methods()
                 .iter()
-                .filter(|candidate| candidate.name == method.name)
+                .filter(|candidate| candidate.name == "Документированная")
                 .count(),
             1
         );
@@ -3276,7 +3523,7 @@ mod tests {
             FormMethodFact::new(
                 "ОбщийОбработчик",
                 crate::domain::module_projection::MethodKind::Procedure,
-                "Процедура ОбщийОбработчик()",
+                params(&[]),
                 vec![
                     "thinClient",
                     "webClient",
@@ -3290,7 +3537,7 @@ mod tests {
             FormMethodFact::new(
                 "Неверный",
                 crate::domain::module_projection::MethodKind::Function,
-                "Функция Неверный(Элемент)",
+                params(&["Элемент"]),
                 vec!["server"],
             ),
         ];

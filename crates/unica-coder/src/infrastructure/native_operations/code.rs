@@ -284,7 +284,9 @@ pub(crate) struct CodeInsertArgs {
 pub(crate) struct CodeReplaceArgs {
     pub(crate) at: crate::domain::address::QualifiedAddress,
     pub(crate) text: String,
-    pub(crate) selector: Option<CodeSelector>,
+    /// Текстовый якорь внутри модуля. Метод целиком задаётся адресом
+    /// `…Method.M`, а не селектором (#1353).
+    pub(crate) anchor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,22 +343,43 @@ pub(crate) fn parse_code_plan_operation(
 
     match operation {
         "code.insert" => {
-            if addressed
-                .as_ref()
-                .is_some_and(|(_, site)| !matches!(site, CodeProjection::ModuleBody))
-            {
-                return Err(bad_code_arg(
-                    &at_path,
-                    "code.insert requires a module or its Body",
-                ));
-            }
-            let selector = object
+            // Метод задаётся адресом `…Method.M`, место — `position`
+            // относительно него (#1354).
+            let method = match addressed.as_ref().map(|(_, site)| site) {
+                None | Some(CodeProjection::ModuleBody) => None,
+                Some(CodeProjection::Method(name)) => Some(CodeSelector::Method(name.clone())),
+                Some(CodeProjection::MethodBody(_)) => {
+                    return Err(bad_code_arg(
+                        &at_path,
+                        "code.insert requires a module, its Body or a Method",
+                    ))
+                }
+            };
+            let addressed_method = method.is_some();
+            let selector = match object
                 .get("selector")
                 .map(|value| parse_code_selector(value, &format!("{base}.selector")))
-                .transpose()?;
+                .transpose()?
+            {
+                Some(CodeSelector::Method(name)) => {
+                    return Err(bad_code_arg(
+                        format!("{base}.selector.method"),
+                        format!(
+                            "code.insert addresses a method: `{at}.Method.{name}` with `position`"
+                        ),
+                    ))
+                }
+                selector => selector.or(method),
+            };
             let position_path = format!("{base}.position");
             let position = match (selector.is_some(), object.get("position")) {
                 (true, Some(value)) => Some(parse_code_position(value, &position_path)?),
+                (true, None) if addressed_method => {
+                    return Err(bad_code_arg(
+                        position_path,
+                        "code.insert at a method needs `position`: before or after it",
+                    ))
+                }
                 (true, None) => {
                     return Err(bad_code_arg(
                         position_path,
@@ -380,17 +403,27 @@ pub(crate) fn parse_code_plan_operation(
         }
         "code.replace" => {
             let selector_path = format!("{base}.selector");
-            let selector = object
+            let anchor = match object
                 .get("selector")
                 .map(|value| parse_code_selector(value, &selector_path))
-                .transpose()?;
-            if selector.is_none() && addressed.is_none() {
-                return Err(bad_code_arg(&selector_path, "selector is required for a module address; address its Body or a Method instead"));
+                .transpose()?
+            {
+                Some(CodeSelector::Method(name)) => {
+                    return Err(bad_code_arg(
+                        format!("{selector_path}.method"),
+                        format!("code.replace addresses a whole method: `{at}.Method.{name}`"),
+                    ))
+                }
+                Some(CodeSelector::Anchor(anchor)) => Some(anchor),
+                None => None,
+            };
+            if anchor.is_none() && addressed.is_none() {
+                return Err(bad_code_arg(&selector_path, "selector.anchor is required for a module address; address its Body or a Method instead"));
             }
             Ok(CodePlanOperation::Replace(CodeReplaceArgs {
                 at,
                 text,
-                selector,
+                anchor,
             }))
         }
         _ => unreachable!("closed operation checked above"),
@@ -453,7 +486,7 @@ fn parse_code_selector(value: &Value, path: &str) -> Result<CodeSelector, ApplyP
     if object.len() != 1 {
         return Err(bad_code_arg(
             path,
-            "selector must contain exactly one method or anchor",
+            "selector must contain exactly one anchor; address a method by `…Method.<Name>`",
         ));
     }
     let (name, value) = object.iter().next().expect("one selector field");
@@ -467,7 +500,7 @@ fn parse_code_selector(value: &Value, path: &str) -> Result<CodeSelector, ApplyP
         "anchor" => Ok(CodeSelector::Anchor(canonicalize_eol(value))),
         _ => Err(bad_code_arg(
             field_path,
-            "selector accepts only method or anchor",
+            "selector accepts only anchor; address a method by `…Method.<Name>`",
         )),
     }
 }
@@ -815,12 +848,24 @@ fn plan_code_postimage(
         )
         .at_path(&at_path));
     }
+    // Адрес и охват замены разбирают текст замены; он один на весь план.
+    let replace_target = match operation {
+        CodePlanOperation::Replace(args) => {
+            Some(replacement_target(&args.at, &args.text, &text_path)?)
+        }
+        CodePlanOperation::Insert(_) => None,
+    };
     let (selector, content, site, no_op, after) = match operation {
         CodePlanOperation::Insert(args) => {
             if args.text.is_empty() {
                 return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
             }
             let selector = args.selector.as_ref().map(legacy_selector);
+            // Метод, названный адресом, ищется так же, но отказ называет `at`.
+            let addressed_method = matches!(
+                code_projection(&args.at),
+                Some((_, CodeProjection::Method(_)))
+            );
             let site = match (&selector, args.position) {
                 (Some(selector), Some(position)) => locate_selector_typed(
                     &snapshot,
@@ -828,7 +873,13 @@ fn plan_code_postimage(
                     selector,
                     &indexed.methods,
                 )
-                .map_err(|error| code_selector_error(error, op_index, selector))?,
+                .map_err(|error| {
+                    if addressed_method {
+                        addressed_selector_error(error, &at_path)
+                    } else {
+                        code_selector_error(error, op_index, selector)
+                    }
+                })?,
                 (Some(_), None) => {
                     return Err(bad_code_arg(
                         format!("ops[{op_index}].args.position"),
@@ -867,20 +918,23 @@ fn plan_code_postimage(
             if args.text.is_empty() {
                 return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
             }
-            let selector = args.selector.as_ref().map(legacy_selector);
+            let selector = args.anchor.clone().map(Selector::Anchor);
+            let target = replace_target
+                .as_ref()
+                .expect("a replacement resolves its target above");
             let site = match &selector {
                 Some(selector) => {
                     locate_replacement_typed(&snapshot, selector, &indexed.methods)
                         .map_err(|error| code_selector_error(error, op_index, selector))?
                 }
                 None => {
-                    locate_addressed_replacement(&snapshot, &args.at, &indexed.methods, &at_path)?
+                    locate_addressed_replacement(&snapshot, target, &indexed.methods, &at_path)?
                 }
             };
             let replacement = site.replacement(&args.text);
             let no_op =
                 replacement_is_present(snapshot.raw(), site, &replacement, |found, methods| {
-                    relocate_replaced_method(found, methods, selector.as_ref(), &args.at)
+                    relocate_replaced_method(found, methods, target)
                 });
             let mut after = snapshot.raw().to_vec();
             if !no_op {
@@ -917,7 +971,10 @@ fn plan_code_postimage(
         .at_path(&text_path));
     }
     if let CodePlanOperation::Replace(args) = operation {
-        if replaces_whole_method(selector.as_ref(), &args.at) {
+        if replace_target
+            .as_ref()
+            .is_some_and(|target| replaces_whole_method(&target.at))
+        {
             reject_redeclared_methods(&args.text, &indexed.methods, &post.methods).map_err(
                 |message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&text_path)
@@ -926,11 +983,13 @@ fn plan_code_postimage(
         }
     }
     let repeat = match operation {
-        CodePlanOperation::Replace(args) if args.selector.is_none() => {
+        CodePlanOperation::Replace(args) if args.anchor.is_none() => {
             let repeat_snapshot = SourceTextSnapshot::from_bytes(&after)
                 .map_err(|_| bad_code_arg(&text_path, "invalid patched snapshot"))?;
-            match locate_addressed_replacement(&repeat_snapshot, &args.at, &post.methods, &at_path)
-            {
+            let target = replace_target
+                .as_ref()
+                .expect("a replacement resolves its target above");
+            match locate_addressed_replacement(&repeat_snapshot, target, &post.methods, &at_path) {
                 Err(error) if error.kind() == ApplyPlanErrorKind::NotFound => Ok(()),
                 Err(_) => Err("patched BSL address became ambiguous or invalid".to_string()),
                 Ok(repeated) => {
@@ -939,7 +998,7 @@ fn plan_code_postimage(
                         repeat_snapshot.raw(),
                         repeated,
                         &bytes,
-                        |found, methods| relocate_replaced_method(found, methods, None, &args.at),
+                        |found, methods| relocate_replaced_method(found, methods, target),
                     ) {
                         Ok(())
                     } else {
@@ -960,12 +1019,160 @@ fn plan_code_postimage(
     Ok(StagedCodePostimage { after, no_op })
 }
 
+/// Адрес замены и её охват.
+struct ReplacementTarget {
+    at: QualifiedAddress,
+    /// Замена начинается с документирующего комментария над методом.
+    with_doc_comment: bool,
+}
+
+/// `…Method.<Имя>.Body` с текстом, который сам объявляет метод, — это текст,
+/// показанный `view` по тому же адресу: документирующий комментарий,
+/// директива, объявление, тело и окончание. Он заменяет метод вместе с
+/// комментарием над ним. Текст без объявления по-прежнему заменяет только
+/// строки между объявлением и окончанием: тело метода в BSL не может
+/// объявить другой метод, поэтому формы не смешиваются. Текст с объявлением,
+/// который не разбирается, отклоняется с указанием на сам текст: иначе он
+/// ушёл бы в тело метода и отказ назвал бы испорченный модуль.
+fn replacement_target(
+    at: &QualifiedAddress,
+    text: &str,
+    text_path: &str,
+) -> Result<ReplacementTarget, ApplyPlanError> {
+    let unchanged = || ReplacementTarget {
+        at: at.clone(),
+        with_doc_comment: false,
+    };
+    if !matches!(
+        code_projection(at),
+        Some((_, CodeProjection::MethodBody(_)))
+    ) {
+        return Ok(unchanged());
+    }
+    // Условие препроцессора вокруг метода в его текст не входит; обёртка
+    // в тексте замены удвоила бы ту, что уже стоит в модуле.
+    if method_head(text).is_some_and(|head| head.after_preprocessor) {
+        return Err(bad_code_arg(
+            text_path,
+            "Method Body text does not include the preprocessor around the method; pass the method text without #If/#Region lines, or change the wrapper with code.insert or code.replace on the module address with selector.anchor",
+        ));
+    }
+    if !declares_method(text) {
+        return Ok(unchanged());
+    }
+    let parsed = analyze_module(text)
+        .is_ok_and(|analysis| analysis.diagnostics.is_empty() && !analysis.methods.is_empty());
+    if !parsed {
+        return Err(bad_code_arg(
+            text_path,
+            "text declares a method but is not valid BSL; pass the method text as view returned it, with the edit applied",
+        ));
+    }
+    let method_at = at
+        .to_string()
+        .strip_suffix(".Body")
+        .and_then(|method| QualifiedAddress::parse(method).ok());
+    Ok(method_at.map_or_else(unchanged, |at| ReplacementTarget {
+        at,
+        with_doc_comment: true,
+    }))
+}
+
+/// Объявление метода в тексте: первая значащая строка после комментариев,
+/// аннотаций, пустых строк и инструкций препроцессора.
+struct MethodHead {
+    /// Перед объявлением стоят инструкции препроцессора.
+    after_preprocessor: bool,
+}
+
+fn method_head(text: &str) -> Option<MethodHead> {
+    const KEYWORDS: &[&str] = &[
+        "процедура",
+        "функция",
+        "procedure",
+        "function",
+        "асинх",
+        "async",
+    ];
+    let mut after_preprocessor = false;
+    let line = text.lines().map(str::trim).find(|line| {
+        if line.starts_with('#') {
+            after_preprocessor = true;
+            return false;
+        }
+        !line.is_empty() && !line.starts_with("//") && !line.starts_with('&')
+    })?;
+    let lower = line.to_lowercase();
+    KEYWORDS
+        .iter()
+        .any(|keyword| {
+            lower
+                .strip_prefix(keyword)
+                .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace()))
+        })
+        .then_some(MethodHead { after_preprocessor })
+}
+
+/// Текст начинается объявлением метода (без препроцессора перед ним).
+fn declares_method(text: &str) -> bool {
+    method_head(text).is_some_and(|head| !head.after_preprocessor)
+}
+
+/// Начало документирующего комментария: подряд идущие строки `//`
+/// непосредственно над строкой `line_start`; пустая строка его обрывает.
+fn doc_comment_start(text: &str, line_start: usize) -> usize {
+    let mut start = line_start;
+    while start > 0 {
+        let previous = safe_line_start(text, start - 1);
+        if previous >= start || !text[previous..start].trim_start().starts_with("//") {
+            break;
+        }
+        start = previous;
+    }
+    start
+}
+
+/// Участок метода, рядом с которым встаёт новый код: документирующий
+/// комментарий, аннотации и директивы, сам метод и условие препроцессора,
+/// которое обрамляет только этот метод. Условие, где есть и другой код,
+/// не охватывается: вставка встаёт внутрь него, рядом с методом, иначе
+/// новый код вышел бы из своего контекста компиляции или изменил бы чужой.
+fn method_unit(text: &str, method: &Method) -> (usize, usize) {
+    let mut start = doc_comment_start(text, safe_line_start(text, method.start));
+    let mut end = line_end(text, method.end);
+    loop {
+        if start == 0 || end >= text.len() {
+            break;
+        }
+        let above = safe_line_start(text, start - 1);
+        let below = line_end(text, end);
+        if above >= start
+            || !preprocessor_line(&text[above..start], &["#если", "#if"])
+            || !preprocessor_line(&text[end..below], &["#конецесли", "#endif"])
+        {
+            break;
+        }
+        start = doc_comment_start(text, above);
+        end = below;
+    }
+    (start, end)
+}
+
+fn preprocessor_line(line: &str, keywords: &[&str]) -> bool {
+    let line = line.trim().to_lowercase();
+    keywords.iter().any(|keyword| {
+        line.strip_prefix(keyword)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(|c: char| !c.is_alphanumeric()))
+    })
+}
+
 fn locate_addressed_replacement(
     snapshot: &SourceTextSnapshot,
-    at: &QualifiedAddress,
+    target: &ReplacementTarget,
     methods: &[Method],
     path: &str,
 ) -> Result<ReplacementSite, ApplyPlanError> {
+    let at = &target.at;
     let (_, projection) = code_projection(at)
         .ok_or_else(|| bad_code_arg(path, "at does not select a writable BSL node"))?;
     reject_lone_cr_line_endings(snapshot).map_err(|_| {
@@ -985,7 +1192,11 @@ fn locate_addressed_replacement(
             let line_start = safe_line_start(text, method.start);
             let line_end = line_end(text, method.end);
             let start = if text[line_start..method.start].trim().is_empty() {
-                line_start
+                if target.with_doc_comment {
+                    doc_comment_start(text, line_start)
+                } else {
+                    line_start
+                }
             } else {
                 method.start
             };
@@ -1159,6 +1370,11 @@ impl PatchSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct InsertionSite {
     offset: usize,
+    /// Конец головы метода, перед которым вставка `before`: строки
+    /// комментария, вставленные над методом, становятся его документирующим
+    /// комментарием, и голова растёт вверх. Повтор ищет вставку на любой
+    /// границе строк от `offset` до этой точки.
+    head_end: usize,
     position: Position,
     eol: LineEnding,
     leading_separator: LeadingSeparator,
@@ -1560,6 +1776,7 @@ fn locate_selector_typed(
 ) -> Result<InsertionSite, SelectorResolutionError> {
     reject_lone_cr_line_endings(snapshot).map_err(SelectorResolutionError::invalid_source)?;
     let text = snapshot.decoded_text();
+    let mut head_end = None;
     let offset = match selector {
         Selector::Method(name) => {
             let folded_name = name.to_lowercase();
@@ -1577,9 +1794,13 @@ fn locate_selector_typed(
                     ))
                 }
             };
+            let (start, end) = method_unit(text, method);
             match position {
-                Position::Before => safe_line_start(text, method.start),
-                Position::After => line_end(text, method.end),
+                Position::Before => {
+                    head_end = Some(safe_line_start(text, method.start));
+                    start
+                }
+                Position::After => end,
             }
         }
         Selector::Anchor(anchor) => {
@@ -1615,6 +1836,7 @@ fn locate_selector_typed(
     };
     Ok(InsertionSite {
         offset,
+        head_end: head_end.unwrap_or(offset),
         position,
         eol,
         leading_separator,
@@ -1658,6 +1880,7 @@ fn locate_module_tail(snapshot: &SourceTextSnapshot) -> Result<InsertionSite, St
     };
     Ok(InsertionSite {
         offset,
+        head_end: offset,
         position: Position::Before,
         eol,
         leading_separator,
@@ -1939,20 +2162,16 @@ fn replacement_lead(
     (starts_line && ends_line).then_some(site.start)
 }
 
-/// Finds the whole method a staged replacement addresses, by a method
-/// selector or by a `…Method.<Имя>` address, in any module text.
+/// Finds the whole method a staged replacement addresses by its
+/// `…Method.<Имя>` address, in any module text.
 fn relocate_replaced_method(
     snapshot: &SourceTextSnapshot,
     methods: &[Method],
-    selector: Option<&Selector>,
-    at: &QualifiedAddress,
+    target: &ReplacementTarget,
 ) -> Option<ReplacementSite> {
-    if let Some(selector) = selector {
-        return relocate_selected_method(snapshot, methods, selector);
-    }
-    match code_projection(at) {
+    match code_projection(&target.at) {
         Some((_, CodeProjection::Method(_))) => {
-            locate_addressed_replacement(snapshot, at, methods, "").ok()
+            locate_addressed_replacement(snapshot, target, methods, "").ok()
         }
         Some((_, CodeProjection::ModuleBody | CodeProjection::MethodBody(_))) | None => None,
     }
@@ -1960,11 +2179,8 @@ fn relocate_replaced_method(
 
 /// Whether a staged replacement targets a whole method, the only target that
 /// can carry methods besides itself.
-fn replaces_whole_method(selector: Option<&Selector>, at: &QualifiedAddress) -> bool {
-    match selector {
-        Some(selector) => matches!(selector, Selector::Method(_)),
-        None => matches!(code_projection(at), Some((_, CodeProjection::Method(_)))),
-    }
+fn replaces_whole_method(at: &QualifiedAddress) -> bool {
+    matches!(code_projection(at), Some((_, CodeProjection::Method(_))))
 }
 
 fn relocate_selected_method(
@@ -2244,9 +2460,12 @@ fn normalized_content(
 
 fn insertion_is_present(text: &[u8], site: InsertionSite, insertion: &[u8]) -> bool {
     match site.position {
-        Position::Before => text
-            .get(..site.offset)
-            .is_some_and(|head| head.ends_with(insertion)),
+        Position::Before => (site.offset..=site.head_end.max(site.offset))
+            .filter(|&boundary| boundary == site.offset || text.get(boundary - 1) == Some(&b'\n'))
+            .any(|boundary| {
+                text.get(..boundary)
+                    .is_some_and(|head| head.ends_with(insertion))
+            }),
         Position::After => text
             .get(site.offset..)
             .is_some_and(|tail| tail.starts_with(insertion)),
@@ -2485,6 +2704,7 @@ pub(super) mod tests {
         let before = b"// marker\nProcedure First()";
         let before_site = super::InsertionSite {
             offset: 10,
+            head_end: 10,
             position: Position::Before,
             eol: LineEnding::Lf,
             leading_separator: LeadingSeparator::None,
@@ -2494,6 +2714,7 @@ pub(super) mod tests {
         let after = b"Procedure First()\n// marker\n";
         let after_site = super::InsertionSite {
             offset: after.len() - b"// marker\n".len(),
+            head_end: after.len() - b"// marker\n".len(),
             position: Position::After,
             eol: LineEnding::Lf,
             leading_separator: LeadingSeparator::None,
@@ -4043,9 +4264,9 @@ pub(super) mod tests {
                 Some(CodePosition::After),
             ),
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Added",
                 "Procedure Final()\nEndProcedure",
-                CodeSelector::Method("Added".to_string()),
+                None,
             ),
         ];
         let admitted = staged_code_admission(&fixture, true);
@@ -4082,14 +4303,9 @@ pub(super) mod tests {
                 if dry_run { "poison-dry" } else { "poison-real" },
                 b"Procedure Base()\nEndProcedure\n",
             );
-            let service = fixture
-                .actor
-                .source_revision_service(&fixture.binding)
-                .unwrap();
             let source_before = snapshot_staged_code_tree(&fixture.source);
             let cache = fixture.root.join(".build/unica");
             let cache_before = snapshot_staged_code_tree(&cache);
-            let machine_before = service.machine_state_for_test();
             let admitted = fixture
                 .actor
                 .admit_apply(
@@ -4110,9 +4326,9 @@ pub(super) mod tests {
                     None,
                 ),
                 staged_replace(
-                    "main:CommonModule.Sample",
+                    "main:CommonModule.Sample.Method.Missing",
                     "Procedure Never()\nEndProcedure",
-                    CodeSelector::Method("Missing".to_string()),
+                    None,
                 ),
             ];
 
@@ -4122,7 +4338,6 @@ pub(super) mod tests {
             assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
             assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
             assert_eq!(snapshot_staged_code_tree(&cache), cache_before);
-            assert_eq!(service.machine_state_for_test(), machine_before);
             assert!(!cache.join("state.json").exists());
             fixture.cleanup();
         }
@@ -4341,6 +4556,157 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop() {
+        // `view …Method.Base.Body` отдаёт комментарий, директиву, объявление,
+        // тело и окончание; тот же текст с правкой заменяет ровно этот участок.
+        let before = concat!(
+            "// Отдельный комментарий модуля.\r\n",
+            "\r\n",
+            "// Документирует Base.\r\n",
+            "&НаСервере\r\n",
+            "Procedure Base() Export\r\n",
+            "    Value = 1;\r\n",
+            "EndProcedure\r\n",
+            "\r\n",
+            "Function Neighbor() Export\r\n    Return 7;\r\nEndFunction\r\n"
+        );
+        let read = "// Документирует Base.\r\n&НаСервере\r\nProcedure Base() Export\r\n    Value = 1;\r\nEndProcedure\r\n";
+        assert!(before.contains(read));
+        let edited = read.replace("Value = 1;", "Value = 2;");
+        let fixture = staged_code_fixture("view-roundtrip", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at": "main:CommonModule.Sample.Method.Base.Body", "text": edited}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let (mut state, effects) = plan_admitted_code(
+            &admission,
+            &fixture.binding,
+            std::slice::from_ref(&operation),
+        )
+        .unwrap();
+        let expected = before.replace(read, &edited);
+        let relative = Path::new("CommonModules/Sample/Ext/Module.bsl");
+        assert_eq!(state.read(relative).unwrap().unwrap(), expected.as_bytes());
+        fixture
+            .actor
+            .publish_prepared_apply(admission.prepare_with_effects(state, effects).unwrap())
+            .unwrap();
+        let repeated = staged_code_admission(&fixture, true);
+        let (state, effects) =
+            plan_admitted_code(&repeated, &fixture.binding, &[operation]).unwrap();
+        assert!(state.planned_changes().is_empty());
+        assert!(effects.events().is_empty());
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
+        let before = "Procedure Base()\n    Value = 1;\nEndProcedure\n";
+        let fixture = staged_code_fixture("broken-method-text", before.as_bytes());
+        let operation = parse_code_plan_operation(
+            "code.replace",
+            &json!({
+                "at": "main:CommonModule.Sample.Method.Base.Body",
+                "text": "// Комментарий.\nProcedure Base(\n    Value = 2;\nEndProcedure\n"
+            }),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+            .expect_err("a broken method text must not reach the module");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert!(
+            error.to_string().contains("text declares a method"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("patched BSL module"), "{error}");
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn method_body_text_with_a_preprocessor_wrapper_is_refused_in_wrapped_and_plain_modules() {
+        for (before, name) in [
+            ("Procedure Base()\n    Value = 1;\nEndProcedure\n", "plain"),
+            (
+                "#Если Сервер Тогда\nProcedure Base()\n    Value = 1;\nEndProcedure\n#КонецЕсли\n",
+                "wrapped",
+            ),
+        ] {
+            let fixture = staged_code_fixture(&format!("wrapper-{name}"), before.as_bytes());
+            for text in [
+                "#Если Сервер Тогда\nProcedure Base()\n    Value = 2;\nEndProcedure\n#КонецЕсли\n",
+                "#Область Основная\n// Комментарий.\nProcedure Base()\n    Value = 2;\nEndProcedure\n#КонецОбласти\n",
+            ] {
+                let operation = parse_code_plan_operation(
+                    "code.replace",
+                    &json!({"at": "main:CommonModule.Sample.Method.Base.Body", "text": text}),
+                    0,
+                    &fixture.binding,
+                )
+                .unwrap();
+                let admission = staged_code_admission(&fixture, false);
+                let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+                    .expect_err("a wrapper is not part of the method text");
+                assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{name}");
+                assert!(error.to_string().contains("preprocessor"), "{name}: {error}");
+            }
+            // Условие внутри тела метода — обычное тело, а не обёртка.
+            let operation = parse_code_plan_operation(
+                "code.replace",
+                &json!({
+                    "at": "main:CommonModule.Sample.Method.Base.Body",
+                    "text": "#Если Сервер Тогда\n    Value = 2;\n#КонецЕсли"
+                }),
+                0,
+                &fixture.binding,
+            )
+            .unwrap();
+            let admission = staged_code_admission(&fixture, false);
+            assert!(
+                plan_admitted_code(&admission, &fixture.binding, &[operation]).is_ok(),
+                "{name}"
+            );
+            fixture.cleanup();
+        }
+    }
+
+    #[test]
+    fn a_comment_inserted_before_a_method_joins_its_head_and_repeats_as_noop() {
+        let fixture = staged_code_fixture("comment-head", b"Procedure Base()\nEndProcedure\n");
+        let before = "Procedure Other()\nEndProcedure\n\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n";
+        for (text, expected) in [
+            (
+                "// TODO\n",
+                "Procedure Other()\nEndProcedure\n\n// TODO\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+            ),
+            (
+                "Procedure Added()\nEndProcedure\n// Описание Target.\n",
+                "Procedure Other()\nEndProcedure\n\nProcedure Added()\nEndProcedure\n// Описание Target.\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+            ),
+        ] {
+            let operation = parse_code_plan_operation(
+                "code.insert",
+                &json!({"at": "main:CommonModule.Sample.Method.Target", "text": text, "position": "before"}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap();
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0)
+                .unwrap_or_else(|error| panic!("{text:?}: {error}"));
+            assert_eq!(std::str::from_utf8(&post.after).unwrap(), expected);
+            let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+            assert!(repeated.no_op, "{text:?}");
+        }
+        fixture.cleanup();
+    }
+
+    #[test]
     fn addressed_replacement_handles_empty_inline_and_whole_module_bodies() {
         for (before, at, text, expected) in [
             (
@@ -4453,6 +4819,45 @@ pub(super) mod tests {
         duplicate.cleanup();
     }
 
+    /// Метод целиком задаёт адрес `…Method.M`: селектор метода у замены снят
+    /// и отказывает в своём поле, называя адрес (#1353). Якорь остаётся.
+    #[test]
+    fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
+        let fixture = staged_code_fixture(
+            "retired-method-selector",
+            b"Procedure Base()\nEndProcedure\n",
+        );
+        let error = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample", "selector":{"method":"Base"}, "text":"Procedure Base()\nEndProcedure"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[0].args.selector.method"));
+        let message = error.to_string();
+        assert!(
+            message.contains("`main:CommonModule.Sample.Method.Base`"),
+            "{message}"
+        );
+        let anchored = parse_code_plan_operation(
+            "code.replace",
+            &json!({"at":"main:CommonModule.Sample", "selector":{"anchor":"EndProcedure"}, "text":"EndProcedure"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        assert!(matches!(
+            anchored,
+            CodePlanOperation::Replace(CodeReplaceArgs {
+                anchor: Some(_),
+                ..
+            })
+        ));
+        fixture.cleanup();
+    }
+
     #[test]
     fn whole_method_replacement_extracts_helpers_and_repeats_as_noop() {
         // #895: the "extract method" refactor replaces a method with itself
@@ -4473,14 +4878,6 @@ pub(super) mod tests {
             ),
             (
                 json!({"at":"main:CommonModule.Sample.Method.Target", "text":commented}),
-                commented.clone(),
-            ),
-            (
-                json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":extracted}),
-                extracted.to_owned(),
-            ),
-            (
-                json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":commented}),
                 commented.clone(),
             ),
         ] {
@@ -4522,24 +4919,20 @@ pub(super) mod tests {
     fn whole_method_replacement_refuses_a_helper_the_module_already_defines() {
         let before = "Function Target()\n    Return 1;\nEndFunction\n\nFunction One()\n    Return 1;\nEndFunction\n";
         let text = "Function Target()\n    Return One();\nEndFunction\n\nFunction one()\n    Return 1;\nEndFunction";
-        for args in [
-            json!({"at":"main:CommonModule.Sample.Method.Target", "text":text}),
-            json!({"at":"main:CommonModule.Sample", "selector":{"method":"Target"}, "text":text}),
-        ] {
-            let fixture = staged_code_fixture("extract-duplicate", before.as_bytes());
-            let operation =
-                parse_code_plan_operation("code.replace", &args, 0, &fixture.binding).unwrap();
-            let admission = staged_code_admission(&fixture, false);
-            let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
-                .expect_err("a second `One` must not be written");
-            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{args}");
-            assert_eq!(error.path(), Some("ops[0].args.text"), "{args}");
-            assert_eq!(
-                fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
-                before.as_bytes()
-            );
-            fixture.cleanup();
-        }
+        let args = json!({"at":"main:CommonModule.Sample.Method.Target", "text":text});
+        let fixture = staged_code_fixture("extract-duplicate", before.as_bytes());
+        let operation =
+            parse_code_plan_operation("code.replace", &args, 0, &fixture.binding).unwrap();
+        let admission = staged_code_admission(&fixture, false);
+        let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+            .expect_err("a second `One` must not be written");
+        assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+        assert_eq!(error.path(), Some("ops[0].args.text"));
+        assert_eq!(
+            fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+            before.as_bytes()
+        );
+        fixture.cleanup();
     }
 
     #[test]
@@ -4691,7 +5084,7 @@ pub(super) mod tests {
                 )
                 .unwrap(),
                 text: "    Value = 2;".to_owned(),
-                selector: None,
+                anchor: None,
             });
             let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
             assert_eq!(
@@ -4702,6 +5095,162 @@ pub(super) mod tests {
             assert!(repeated.no_op);
             assert_eq!(repeated.after, post.after);
         }
+    }
+
+    /// Метод, названный адресом, — место вставки до или после него (#1354):
+    /// текст встаёт рядом с методом, повтор ничего не меняет, а
+    /// отсутствующий метод отвечает `not_found` по адресу.
+    #[test]
+    fn insertion_around_an_addressed_method_needs_a_position_and_the_method() {
+        let before = "Procedure First()\nEndProcedure\n\nProcedure Second()\nEndProcedure\n";
+        let fixture = staged_code_fixture("around", before.as_bytes());
+        let insert = |at: &str, position: &str| {
+            parse_code_plan_operation(
+                "code.insert",
+                &json!({"at": at, "text": "Procedure Added()\nEndProcedure\n", "position": position}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap()
+        };
+        for (method, position, earlier, later) in [
+            (
+                "Second",
+                "before",
+                "Procedure Added()",
+                "Procedure Second()",
+            ),
+            ("First", "after", "Procedure First()", "Procedure Added()"),
+        ] {
+            let operation = insert(
+                &format!("main:CommonModule.Sample.Method.{method}"),
+                position,
+            );
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+            let text = std::str::from_utf8(&post.after).unwrap();
+            let start = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
+            assert!(start(earlier) < start(later), "{position} {method}");
+            assert_eq!(text.matches("Procedure Added()").count(), 1);
+            let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+            assert!(repeated.no_op, "{position} {method}");
+        }
+        // Без `position` метод не место: отказ называет именно её.
+        let error = parse_code_plan_operation(
+            "code.insert",
+            &json!({"at": "main:CommonModule.Sample.Method.First", "text": "x"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap_err();
+        assert_eq!(error.path(), Some("ops[0].args.position"));
+        assert!(error.to_string().contains("at a method needs `position`"));
+        let missing = insert("main:CommonModule.Sample.Method.Third", "after");
+        let Err(error) = plan_code_postimage(before.as_bytes(), &missing, 0) else {
+            panic!("a missing method is not a place to insert");
+        };
+        assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
+        assert_eq!(error.path(), Some("ops[0].args.at"));
+    }
+
+    #[test]
+    fn insertion_around_a_method_keeps_its_head_together_and_respects_its_preprocessor() {
+        let fixture = staged_code_fixture("around-head", b"Procedure Base()\nEndProcedure\n");
+        let added = "Procedure Added()\nEndProcedure\n";
+        let insert = |method: &str, position: &str| {
+            parse_code_plan_operation(
+                "code.insert",
+                &json!({
+                    "at": format!("main:CommonModule.Sample.Method.{method}"),
+                    "text": added,
+                    "position": position
+                }),
+                0,
+                &fixture.binding,
+            )
+            .unwrap()
+        };
+        let cases: [(&str, &str, &str, &str); 10] = [
+            // Вложенные условия только вокруг метода обходятся все, а
+            // комментарий над внешним условием идёт вместе с ним.
+            (
+                "// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
+                "Target",
+                "before",
+                "Procedure Added()\nEndProcedure\n// О блоке.\n#Если Сервер Тогда\n#Если НЕ ВебКлиент Тогда\nProcedure Target()\nEndProcedure\n#КонецЕсли\n#КонецЕсли\n",
+            ),
+            // Пустая строка между условием и головой оставляет вставку внутри.
+            (
+                "#Если Сервер Тогда\n\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "Target",
+                "before",
+                "#Если Сервер Тогда\n\nProcedure Added()\nEndProcedure\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+            ),
+            // Комментарий и директива остаются со своим методом.
+            (
+                "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+                "Target",
+                "before",
+                "Procedure Added()\nEndProcedure\n// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+            ),
+            (
+                "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\n",
+                "Target",
+                "after",
+                "// Документ.\n&НаСервере\nProcedure Target()\nEndProcedure\nProcedure Added()\nEndProcedure\n",
+            ),
+            // Аннотация расширения — тоже голова метода.
+            (
+                "&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
+                "Target",
+                "before",
+                "Procedure Added()\nEndProcedure\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
+            ),
+            (
+                "Procedure Other()\nEndProcedure\n// Документ.\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
+                "Target",
+                "before",
+                "Procedure Other()\nEndProcedure\nProcedure Added()\nEndProcedure\n// Документ.\n&Перед(\"Base\")\nProcedure Target()\nEndProcedure\n",
+            ),
+            // Условие только вокруг метода обходится целиком.
+            (
+                "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "Target",
+                "before",
+                "Procedure Added()\nEndProcedure\n#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+            ),
+            (
+                "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "Target",
+                "after",
+                "#Если Сервер Тогда\n// Документ.\nProcedure Target()\nEndProcedure\n#КонецЕсли\nProcedure Added()\nEndProcedure\n",
+            ),
+            // В условии с другим методом вставка остаётся внутри него.
+            (
+                "#Если Сервер Тогда\nProcedure Target()\nEndProcedure\nProcedure Other()\nEndProcedure\n#КонецЕсли\n",
+                "Target",
+                "before",
+                "#Если Сервер Тогда\nProcedure Added()\nEndProcedure\nProcedure Target()\nEndProcedure\nProcedure Other()\nEndProcedure\n#КонецЕсли\n",
+            ),
+            (
+                "#Если Сервер Тогда\nProcedure Other()\nEndProcedure\nProcedure Target()\nEndProcedure\n#КонецЕсли\n",
+                "Target",
+                "after",
+                "#Если Сервер Тогда\nProcedure Other()\nEndProcedure\nProcedure Target()\nEndProcedure\nProcedure Added()\nEndProcedure\n#КонецЕсли\n",
+            ),
+        ];
+        for (before, method, position, expected) in cases {
+            let operation = insert(method, position);
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0)
+                .unwrap_or_else(|error| panic!("{position} {before:?}: {error}"));
+            assert_eq!(
+                std::str::from_utf8(&post.after).unwrap(),
+                expected,
+                "{position} {before:?}"
+            );
+            let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+            assert!(repeated.no_op, "{position} {before:?}");
+        }
+        fixture.cleanup();
     }
 
     #[test]
@@ -4718,6 +5267,26 @@ pub(super) mod tests {
         )
         .expect("placeholder parser rejected the valid closed code.insert shape");
         assert!(matches!(valid, CodePlanOperation::Insert(_)));
+        // Метод, названный адресом, становится местом вставки до или после.
+        let addressed = parse_code_plan_operation(
+            "code.insert",
+            &json!({
+                "at": "main:CommonModule.Sample.Method.Base",
+                "text": "Procedure Added()\nEndProcedure",
+                "position": "before"
+            }),
+            0,
+            &fixture.binding,
+        )
+        .expect("a method address with a position is a place to insert");
+        let CodePlanOperation::Insert(addressed) = addressed else {
+            panic!("code.insert parses as an insertion");
+        };
+        assert_eq!(
+            addressed.selector,
+            Some(CodeSelector::Method("Base".to_string()))
+        );
+        assert_eq!(addressed.position, Some(CodePosition::Before));
 
         let cases = [
             ("code.insert", json!(null), "ops[1].args"),
@@ -4779,8 +5348,30 @@ pub(super) mod tests {
             ),
             (
                 "code.insert",
-                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}}),
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"anchor": "Run"}}),
                 "ops[1].args.position",
+            ),
+            // Метод называет адрес (#1354): селектор метода снят, а у
+            // адресованного метода место — обязательная `position`.
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": "after"}),
+                "ops[1].args.selector.method",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample.Method.Run", "text": "x"}),
+                "ops[1].args.position",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample.Method.Run", "text": "x", "selector": {"anchor": "Run"}, "position": "after"}),
+                "ops[1].args.selector",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample.Method.Run.Body", "text": "x"}),
+                "ops[1].args.at",
             ),
             (
                 "code.insert",
@@ -4789,12 +5380,12 @@ pub(super) mod tests {
             ),
             (
                 "code.insert",
-                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": 1}),
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"anchor": "Run"}, "position": 1}),
                 "ops[1].args.position",
             ),
             (
                 "code.insert",
-                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": "middle"}),
+                json!({"at": "main:CommonModule.Sample.Method.Run", "text": "x", "position": "middle"}),
                 "ops[1].args.position",
             ),
             (
@@ -5172,11 +5763,19 @@ pub(super) mod tests {
                         Some(selector.clone()),
                         Some(CodePosition::After),
                     ),
-                    "replace" => staged_replace(
-                        "main:CommonModule.Sample",
-                        "Procedure Added()\nEndProcedure",
-                        selector.clone(),
-                    ),
+                    // Метод целиком заменяется по адресу, якорь — селектором.
+                    "replace" => match &selector {
+                        CodeSelector::Method(name) => staged_replace(
+                            &format!("main:CommonModule.Sample.Method.{name}"),
+                            "Procedure Added()\nEndProcedure",
+                            None,
+                        ),
+                        CodeSelector::Anchor(anchor) => staged_replace(
+                            "main:CommonModule.Sample",
+                            "Procedure Added()\nEndProcedure",
+                            Some(anchor),
+                        ),
+                    },
                     _ => unreachable!(),
                 }];
                 let failure = format!("{operation_kind} {name}");
@@ -5600,9 +6199,9 @@ pub(super) mod tests {
                 "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
             ),
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Base",
                 "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
-                CodeSelector::Method("Base".to_string()),
+                None,
             ),
             true,
         );
@@ -5617,7 +6216,7 @@ pub(super) mod tests {
             staged_replace(
                 "main:CommonModule.Sample",
                 "Значение = 2;",
-                CodeSelector::Anchor("Значение = 1;".to_string()),
+                Some("Значение = 1;"),
             ),
             false,
         );
@@ -5772,9 +6371,9 @@ pub(super) mod tests {
         let poisoned_ops = [
             operations[0].clone(),
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Missing",
                 "Procedure Never()\nEndProcedure",
-                CodeSelector::Method("Missing".to_string()),
+                None,
             ),
         ];
         assert!(plan_admitted_code(&poisoned, &fixture.binding, &poisoned_ops).is_err());
@@ -5790,14 +6389,14 @@ pub(super) mod tests {
         let admission = staged_code_admission(&fixture, true);
         let operations = [
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Base",
                 "Procedure Base()\n    Message(\"changed\");\nEndProcedure",
-                CodeSelector::Method("Base".to_string()),
+                None,
             ),
             staged_replace(
-                "main:CommonModule.Sample",
+                "main:CommonModule.Sample.Method.Base",
                 "Procedure Base()\nEndProcedure",
-                CodeSelector::Method("Base".to_string()),
+                None,
             ),
         ];
 
@@ -5823,16 +6422,16 @@ pub(super) mod tests {
         );
 
         let missing = [staged_replace(
-            "main:CommonModule.Sample",
+            "main:CommonModule.Sample.Method.Missing",
             "Procedure Added()\nEndProcedure",
-            CodeSelector::Method("Missing".to_string()),
+            None,
         )];
         let admission = staged_code_admission(&fixture, true);
         let not_found = plan_admitted_code(&admission, &fixture.binding, &missing).unwrap_err();
         assert_closed_code_error(
             &not_found,
             ApplyPlanErrorKind::NotFound,
-            Some("ops[0].args.selector.method"),
+            Some("ops[0].args.at"),
             &fixture.root,
         );
 
@@ -6253,11 +6852,11 @@ pub(super) mod tests {
         })
     }
 
-    fn staged_replace(at: &str, text: &str, selector: CodeSelector) -> CodePlanOperation {
+    fn staged_replace(at: &str, text: &str, anchor: Option<&str>) -> CodePlanOperation {
         CodePlanOperation::Replace(CodeReplaceArgs {
             at: crate::domain::address::QualifiedAddress::parse(at).unwrap(),
             text: text.to_string(),
-            selector: Some(selector),
+            anchor: anchor.map(str::to_string),
         })
     }
 

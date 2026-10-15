@@ -141,41 +141,73 @@ pub(crate) fn validate_form_purpose(object_type: &str, purpose: &str) -> Result<
     Ok(())
 }
 
+/// Registers `<Form>form_name</Form>` in the owner's top-level `ChildObjects`
+/// in the platform slot of forms (#1385): before the first entry of a kind the
+/// export writes after forms, else after the last entry. An owner without a
+/// known platform order keeps forms before its first template.
 pub(crate) fn register_form_in_object_text(text: &str, form_name: &str) -> String {
-    let form_tag = format!("<Form>{form_name}</Form>");
-    if let Some(child_start) = text.find("<ChildObjects>") {
-        if let Some(relative_end) = text[child_start..].find("</ChildObjects>") {
-            let child_end = child_start + relative_end;
-            let section = &text[child_start..child_end];
-            let template_idx = section.find("\n\t\t\t<Template");
-            let tabular_idx = section.find("\n\t\t\t<TabularSection");
-            let insert_text = format!("\t\t\t{form_tag}\n");
-            if let Some(insert_idx) = template_idx.or(tabular_idx).map(|idx| idx + 1) {
-                let absolute_insert = child_start + insert_idx;
-                return format!(
-                    "{}{}{}",
-                    &text[..absolute_insert],
-                    insert_text,
-                    &text[absolute_insert..]
-                );
-            }
-            return format!(
-                "{}\t\t\t{}\n\t\t{}",
-                &text[..child_end],
-                form_tag,
-                &text[child_end..]
-            );
-        }
+    let entry = format!("\t\t\t<Form>{form_name}</Form>\n");
+    if let Some(offset) = platform_child_object_insertion_offset(text, "Form").or_else(|| {
+        platform_child_object_order(&top_object_kind(text)?)
+            .is_none()
+            .then(|| first_top_child_object_offset(text, "Template"))
+            .flatten()
+    }) {
+        let mut updated = text.to_string();
+        updated.insert_str(offset, &entry);
+        return updated;
     }
-
+    if let Some(close) = top_child_objects_close(text) {
+        let line_start = text[..close].rfind('\n').map_or(0, |index| index + 1);
+        let mut updated = text.to_string();
+        if text[line_start..close]
+            .chars()
+            .all(|ch| ch == '\t' || ch == ' ')
+        {
+            updated.insert_str(line_start, &entry);
+        } else {
+            updated.insert_str(close, &format!("\n{entry}\t\t"));
+        }
+        return updated;
+    }
     if text.contains("<ChildObjects/>") {
         return text.replacen(
             "<ChildObjects/>",
-            &format!("<ChildObjects>\n\t\t\t{form_tag}\n\t\t</ChildObjects>"),
+            &format!("<ChildObjects>\n{entry}\t\t</ChildObjects>"),
             1,
         );
     }
     text.to_string()
+}
+
+fn top_object_kind(text: &str) -> Option<String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}')).ok()?;
+    let object = doc
+        .root_element()
+        .children()
+        .find(|node| node.is_element())?;
+    Some(object.tag_name().name().to_string())
+}
+
+/// Byte offset of the closing tag of the metadata object's own
+/// `ChildObjects`; a nested tabular-section block is not it.
+fn top_child_objects_close(text: &str) -> Option<usize> {
+    let body = text.trim_start_matches('\u{feff}');
+    let shift = text.len() - body.len();
+    let doc = Document::parse(body).ok()?;
+    let object = doc
+        .root_element()
+        .children()
+        .find(|node| node.is_element())?;
+    let child_objects = object
+        .children()
+        .find(|node| node.is_element() && node.tag_name().name() == "ChildObjects")?;
+    let range = child_objects.range();
+    let block = &body[range.clone()];
+    if block.ends_with("/>") {
+        return None;
+    }
+    Some(shift + range.start + block.rfind("</")?)
 }
 
 #[derive(Clone)]
@@ -3411,22 +3443,6 @@ pub(crate) fn extract_xml_attr(text: &str, element: &str, attr: &str) -> Option<
     let value_rest = &tag[attr_start..];
     let attr_end = value_rest.find('"')?;
     Some(value_rest[..attr_end].to_string())
-}
-
-pub(crate) fn emit_mltext(lines: &mut Vec<String>, indent: &str, tag: &str, text: &str) {
-    if text.is_empty() {
-        lines.push(format!("{indent}<{tag}/>"));
-        return;
-    }
-    lines.push(format!("{indent}<{tag}>"));
-    lines.push(format!("{indent}\t<v8:item>"));
-    lines.push(format!("{indent}\t\t<v8:lang>ru</v8:lang>"));
-    lines.push(format!(
-        "{indent}\t\t<v8:content>{}</v8:content>",
-        escape_xml(text)
-    ));
-    lines.push(format!("{indent}\t</v8:item>"));
-    lines.push(format!("{indent}</{tag}>"));
 }
 
 pub(crate) fn split_camel_case(name: &str) -> String {

@@ -893,6 +893,7 @@ class ProductContractTests(unittest.TestCase):
                         "source_set": "main",
                         "mode": {"partial": {"file_count": 1}},
                         "ok": False,
+                        "applied": False,
                         "message": f"platform error: {message}",
                         "duration_ms": 0,
                     }
@@ -932,6 +933,18 @@ class ProductContractTests(unittest.TestCase):
                 "provider_dispatched" in error
                 for error in validator(undispatched, 4, "main")
             )
+        )
+        # С 0.15.1 шаг обязан назвать `applied`; отказавшая загрузка ничего
+        # не применила.
+        pre_0_15_1 = copy.deepcopy(envelope)
+        del pre_0_15_1["data"]["steps"][0]["applied"]
+        self.assertTrue(
+            any("closed" in error for error in validator(pre_0_15_1, 4, "main"))
+        )
+        applied = copy.deepcopy(envelope)
+        applied["data"]["steps"][0]["applied"] = True
+        self.assertTrue(
+            any("applied=false" in error for error in validator(applied, 4, "main"))
         )
         pre_0_9_0 = copy.deepcopy(envelope)
         del pre_0_9_0["data"]["provider_dispatched"]

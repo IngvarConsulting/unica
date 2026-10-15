@@ -1,5 +1,7 @@
 mod entrypoint;
 mod filesystem;
+#[cfg(windows)]
+mod job_object;
 #[cfg(test)]
 mod network_trust_tests;
 mod process;

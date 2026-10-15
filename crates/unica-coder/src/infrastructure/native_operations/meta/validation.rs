@@ -1514,6 +1514,23 @@ fn validate_one_child_footprint(
             Vec::new()
         };
 
+    // A borrowed child of a borrowed owner that the extension does not change
+    // carries no payload: platform 8.3.27 exports it without `Form.xml` or
+    // `Template.xml`. Both descriptors prove the borrowing independently of
+    // the plan, and nothing else may then stand in the footprint.
+    if resources.is_empty()
+        && footprint.retained.is_empty()
+        && borrowed_child_of_borrowed_owner(subject, &expected.child)
+    {
+        if !footprint.directories.is_empty() {
+            diagnostics.push(template_resource_set_diagnostic(
+                &expected.child,
+                "child footprint does not contain its exact required directory set",
+            ));
+        }
+        return;
+    }
+
     // Re-derive the payload from the child's own profile rather than trusting
     // the plan: the retained members must still be shapes the closed contract
     // recognises, and the directory topology must be exactly their closure.
@@ -1593,6 +1610,38 @@ fn validate_one_child_footprint(
             "child payload does not contain its exact canonical resource and ordinal set",
         ));
     }
+}
+
+/// The registering root is an extension, and the owner descriptor and the
+/// child's own descriptor both name a parent object through
+/// `ExtendedConfigurationObject`.
+fn borrowed_child_of_borrowed_owner(
+    subject: &MetadataValidationSubject,
+    child: &MetadataAddress,
+) -> bool {
+    let extension = subject
+        .resources
+        .iter()
+        .find(|resource| matches!(resource.role, MetadataResourceRole::Registration))
+        .is_some_and(|root| super::configuration_is_extension(&root.bytes));
+    let owner_borrowed = extension
+        && subject
+            .resources
+            .iter()
+            .find(|resource| matches!(resource.role, MetadataResourceRole::Descriptor))
+            .is_some_and(|owner| super::descriptor_extends_parent(&owner.bytes));
+    owner_borrowed
+        && subject.resources.iter().any(|resource| {
+            matches!(
+                resource.role,
+                MetadataResourceRole::Form { .. }
+                    | MetadataResourceRole::Template { .. }
+                    | MetadataResourceRole::Command { .. }
+            ) && matches!(
+                parse_child_descriptor(&resource.bytes, &subject.target, MetadataAdmission::Read),
+                Ok(Some(actual)) if &actual.child == child
+            ) && super::descriptor_extends_parent(&resource.bytes)
+        })
 }
 
 fn multiset_eq<T: Ord + Copy>(left: &[T], right: &[T]) -> bool {

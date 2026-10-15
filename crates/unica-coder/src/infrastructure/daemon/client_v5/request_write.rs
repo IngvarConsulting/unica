@@ -1,4 +1,5 @@
 use super::V5TransportError;
+use crate::infrastructure::daemon::protocol_v5::MAX_V5_REQUEST_LINE_BYTES;
 use std::io::Write;
 
 pub(super) fn write_request<W: Write, T: serde::Serialize>(
@@ -8,9 +9,36 @@ pub(super) fn write_request<W: Write, T: serde::Serialize>(
     configure: impl FnOnce(&mut W) -> Result<(), String>,
     after_write: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), V5TransportError> {
+    write_request_bounded(
+        writer,
+        value,
+        stage,
+        MAX_V5_REQUEST_LINE_BYTES,
+        configure,
+        after_write,
+    )
+}
+
+fn write_request_bounded<W: Write, T: serde::Serialize>(
+    writer: &mut W,
+    value: &T,
+    stage: &'static str,
+    limit_bytes: usize,
+    configure: impl FnOnce(&mut W) -> Result<(), String>,
+    after_write: impl FnOnce() -> Result<(), String>,
+) -> Result<(), V5TransportError> {
     let mut bytes = serde_json::to_vec(value)
         .map_err(|_| V5TransportError::RequestNotSent(format!("serialize protocol-v5 {stage}")))?;
     bytes.push(b'\n');
+    // The daemon would read no further than its bound and answer a bare
+    // `invalid_request`; refusing here names both numbers, and no byte of
+    // the frame leaves the frontend.
+    if bytes.len() > limit_bytes {
+        return Err(V5TransportError::RequestTooLarge {
+            frame_bytes: bytes.len(),
+            limit_bytes,
+        });
+    }
     configure(writer).map_err(V5TransportError::RequestNotSent)?;
     // Once writing starts, conservatively recover by receipt: an I/O failure
     // or an expired post-write checkpoint must never authorize a resubmission.
@@ -78,6 +106,43 @@ mod tests {
         );
         assert!(matches!(result, Err(V5TransportError::RequestNotSent(_))));
         assert!(writer.bytes.is_empty());
+    }
+
+    #[test]
+    fn a_frame_above_the_request_bound_is_refused_with_both_sizes_before_writing() {
+        let value = serde_json::json!({"text": "x".repeat(64)});
+        let frame_bytes = serde_json::to_vec(&value).unwrap().len() + 1;
+        let mut writer = ControlledWriter::default();
+        let error = write_request_bounded(
+            &mut writer,
+            &value,
+            "test",
+            frame_bytes - 1,
+            |_| panic!("an oversized frame must not configure the connection"),
+            || panic!("an oversized frame must not reach the post-write checkpoint"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            V5TransportError::RequestTooLarge {
+                frame_bytes,
+                limit_bytes: frame_bytes - 1,
+            }
+        );
+        assert!(writer.bytes.is_empty());
+
+        // The bound counts the terminating newline and admits a frame that
+        // fills it exactly.
+        write_request_bounded(
+            &mut writer,
+            &value,
+            "test",
+            frame_bytes,
+            |_| Ok(()),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(writer.bytes.len(), frame_bytes);
     }
 
     #[test]

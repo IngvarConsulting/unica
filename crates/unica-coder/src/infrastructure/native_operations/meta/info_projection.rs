@@ -981,10 +981,10 @@ fn schedule_field_matches(register: &str, field: &str, expected_kind: &str) -> b
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ProjectionError {
-    pub(super) field: String,
-    pub(super) message: String,
-    pub(super) code: MetaDiagnosticCode,
+pub(crate) struct ProjectionError {
+    pub(crate) field: String,
+    pub(crate) message: String,
+    pub(crate) code: MetaDiagnosticCode,
 }
 
 impl ProjectionError {
@@ -1064,13 +1064,9 @@ pub(super) fn meta_info_profile_errors(
                 ));
                 continue;
             }
-            if let Some(spec) = META_INFO_PROPERTY_PROFILE.resolve(kind, name) {
-                let malformed = !meta_info_property_value_is_valid(child, spec.value_kind);
-                if malformed {
-                    errors.push(ProjectionError::malformed(
-                        format!("properties.{name}"),
-                        format!("{} contains a malformed property `{name}`", kind.as_str()),
-                    ));
+            if META_INFO_PROPERTY_PROFILE.resolve(kind, name).is_some() {
+                if let Err(error) = observe_meta_info_property(properties, kind, name) {
+                    errors.push(error);
                 }
             } else {
                 match MetaInfoKindProfile::new(kind).property_route(name) {
@@ -1084,6 +1080,14 @@ pub(super) fn meta_info_profile_errors(
                                 kind.as_str()
                             ),
                         ))
+                    }
+                    Some(MetaInfoPropertyRoute::Identity)
+                        if matches!(name, "ObjectBelonging" | "ExtendedConfigurationObject") =>
+                    {
+                        if let Err(error) = observe_meta_borrowing_property(properties, kind, name)
+                        {
+                            errors.push(error);
+                        }
                     }
                     Some(MetaInfoPropertyRoute::Identity)
                     | Some(MetaInfoPropertyRoute::Details)
@@ -1329,6 +1333,120 @@ pub(super) fn meta_info_property_value_is_valid(
     }
 }
 
+fn direct_meta_info_property<'a, 'input>(
+    properties: roxmltree::Node<'a, 'input>,
+    kind: MetadataKind,
+    name: &str,
+) -> Result<Option<roxmltree::Node<'a, 'input>>, ProjectionError> {
+    let field = format!("properties.{name}");
+    let nodes = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == name)
+        .collect::<Vec<_>>();
+    let node = match nodes.as_slice() {
+        [] => return Ok(None),
+        [node] if node.tag_name().namespace() == Some(MD_CLASSES_NAMESPACE) => *node,
+        _ => {
+            return Err(ProjectionError::unsupported(
+                field,
+                format!(
+                    "{} contains a duplicate or foreign property `{name}`",
+                    kind.as_str()
+                ),
+            ))
+        }
+    };
+    Ok(Some(node))
+}
+
+pub(crate) fn observe_meta_borrowing_property(
+    properties: roxmltree::Node<'_, '_>,
+    kind: MetadataKind,
+    name: &str,
+) -> Result<Option<String>, ProjectionError> {
+    let Some(node) = direct_meta_info_property(properties, kind, name)? else {
+        return Ok(None);
+    };
+    let value = direct_text_content(node);
+    let valid = strict_text_leaf_is_valid(node)
+        && match name {
+            "ObjectBelonging" => matches!(value.as_str(), "Own" | "Adopted"),
+            "ExtendedConfigurationObject" => uuid::Uuid::parse_str(&value).is_ok(),
+            _ => false,
+        };
+    if !valid {
+        return Err(ProjectionError::malformed(
+            format!("properties.{name}"),
+            format!(
+                "{} contains malformed borrowing identity `{name}`",
+                kind.as_str()
+            ),
+        ));
+    }
+    Ok(Some(value))
+}
+
+/// Observes one direct property without converting missing or damaged XML into a value.
+pub(crate) fn observe_meta_info_property(
+    properties: roxmltree::Node<'_, '_>,
+    kind: MetadataKind,
+    name: &str,
+) -> Result<Option<crate::domain::metadata::MetaInfoPropertyValue>, ProjectionError> {
+    use crate::domain::metadata::MetaInfoPropertyValue;
+    let field = format!("properties.{name}");
+    let Some(node) = direct_meta_info_property(properties, kind, name)? else {
+        return Ok(None);
+    };
+    let spec = META_INFO_PROPERTY_PROFILE
+        .resolve(kind, name)
+        .ok_or_else(|| {
+            ProjectionError::unsupported(
+                &field,
+                format!(
+                    "{} contains an unclassified property `{name}`",
+                    kind.as_str()
+                ),
+            )
+        })?;
+    if !meta_info_property_value_is_valid(node, spec.value_kind) {
+        return Err(ProjectionError::malformed(
+            field,
+            format!("{} contains a malformed property `{name}`", kind.as_str()),
+        ));
+    }
+    if let Some(values) = META_INFO_PROPERTY_PROFILE.text_values(kind, name) {
+        if !values.contains(&direct_text_content(node).trim()) {
+            return Err(ProjectionError::malformed(
+                field,
+                format!("{} contains an invalid value for `{name}`", kind.as_str()),
+            ));
+        }
+    }
+    let value = match spec.value_kind {
+        MetaInfoPropertyValueKind::String => {
+            MetaInfoPropertyValue::String(direct_text_content(node))
+        }
+        MetaInfoPropertyValueKind::LegacyLocalizedString => {
+            MetaInfoPropertyValue::String(super::xml_model::meta_info_ml_text(node))
+        }
+        MetaInfoPropertyValueKind::LocalizedString => {
+            MetaInfoPropertyValue::Structured(parsed_localized_meta_info_property_value(node))
+        }
+        MetaInfoPropertyValueKind::Boolean => {
+            MetaInfoPropertyValue::Boolean(direct_text_content(node) == "true")
+        }
+        MetaInfoPropertyValueKind::UnsignedInteger => MetaInfoPropertyValue::UnsignedInteger(
+            direct_text_content(node)
+                .parse()
+                .expect("validated integer"),
+        ),
+        MetaInfoPropertyValueKind::TypedValue => MetaInfoPropertyValue::Structured(
+            parsed_typed_meta_info_property_value(node).expect("validated typed value"),
+        ),
+    };
+    Ok(Some(value))
+}
+
 pub(super) fn parsed_typed_meta_info_property_value(
     node: roxmltree::Node<'_, '_>,
 ) -> Option<MetaObservedPropertyValue> {
@@ -1519,7 +1637,25 @@ const FORM_OWNERS: &[MetadataKind] = &[
     MetadataKind::DocumentJournal,
 ];
 
+const BORROWED_DESCRIPTOR_KINDS: &[MetadataKind] = &[
+    MetadataKind::CommonModule,
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::InformationRegister,
+    MetadataKind::ChartOfCalculationTypes,
+];
+
 static META_INFO_PROPERTY_ROUTES: &[MetaInfoPropertyRouteSpec] = &[
+    MetaInfoPropertyRouteSpec {
+        name: "ObjectBelonging",
+        route: MetaInfoPropertyRoute::Identity,
+        kinds: BORROWED_DESCRIPTOR_KINDS,
+    },
+    MetaInfoPropertyRouteSpec {
+        name: "ExtendedConfigurationObject",
+        route: MetaInfoPropertyRoute::Identity,
+        kinds: BORROWED_DESCRIPTOR_KINDS,
+    },
     MetaInfoPropertyRouteSpec {
         name: "Name",
         route: MetaInfoPropertyRoute::Identity,

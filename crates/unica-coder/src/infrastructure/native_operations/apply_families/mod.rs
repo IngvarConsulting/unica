@@ -484,7 +484,60 @@ fn parse_apply_operation(
         return Err(hidden_apply_family_unimplemented(op_index));
     }
     refuse_misplaced_operation(op_index, operation, binding)?;
+    refuse_inherited_content(op_index, operation, binding)?;
     parse_family_operation(op_index, operation, binding)
+}
+
+/// Содержимое заимствованного объекта, которого расширение не несёт
+/// (`Rights.xml`, `Form.xml` с модулем формы, `Template.xml`, `Package.bin`),
+/// принадлежит родителю: запись туда платформа не сохранит или прочитать
+/// нечего. Решение о наследовании — то же, что у чтения
+/// (`v13_read_port::inherited_companion`); предметный отказ называет родителя
+/// через `props.extends` объекта расширения.
+fn refuse_inherited_content(
+    op_index: usize,
+    operation: &crate::domain::apply::ApplyOp,
+    binding: &ProviderRootBinding,
+) -> Result<(), ApplyPlanError> {
+    use crate::infrastructure::v13_read_port::{companion_owner, inherited_companion};
+    let Some(resource) = crate::domain::apply::OperationRegistry::closed()
+        .lookup(operation.name())
+        .and_then(|descriptor| descriptor.content_resource())
+    else {
+        return Ok(());
+    };
+    let Some(target) = companion_owner(operation.at(), resource) else {
+        return Ok(());
+    };
+    let inherited = inherited_companion(
+        &binding.retained_root(),
+        binding.source_kind(),
+        &target,
+        resource,
+    )
+    .map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::ProviderUnavailable, error)
+            .at_path(format!("ops[{op_index}].args.at"))
+    })?;
+    if inherited.is_none() {
+        return Ok(());
+    }
+    let owner = crate::infrastructure::v13_read::extension_object(operation.at());
+    Err(ApplyPlanError::new(
+        ApplyPlanErrorKind::NotFound,
+        format!(
+            "apply operation `{}` writes content of `{}:{}` that is inherited from the parent: the extension does not hold its `{resource}`; read the parent named by props.extends of `{owner}`",
+            operation.name(),
+            operation.at().source_set(),
+            target.as_str(),
+        ),
+    )
+    .at_path(format!("ops[{op_index}].args.at"))
+    .with_next(serde_json::json!({
+        "tool": "unica.view",
+        "args": {"at": owner},
+        "reason": "props.extends names the parent that holds this content",
+    })))
 }
 
 /// Разбор операции семейством: извлечение частей адреса и аргументов. О
@@ -635,6 +688,123 @@ pub(crate) fn staged_template_format(
     dcs_mxl::template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw))
 }
 
+/// Поиск узла схемы по имени в стадированном макете: владелец — адрес
+/// макета (набор данных, в том числе член объединения, #1353) или его
+/// варианта настроек (именованный элемент структуры, #1357). Схемы нет —
+/// `Missing`.
+fn staged_schema_lookup(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    owner: &crate::domain::address::QualifiedAddress,
+    name: &str,
+) -> crate::domain::apply::NamedLookup {
+    use crate::domain::address::NodeKind;
+    use crate::domain::apply::NamedLookup;
+    let segments = owner.segments();
+    let (template, variant) = match segments.last() {
+        Some(last) if last.kind() == NodeKind::Template => (owner.clone(), None),
+        Some(last) if last.kind() == NodeKind::Setting && segments.len() > 1 => (
+            crate::domain::address::QualifiedAddress {
+                source_set: owner.source_set().to_string(),
+                segments: segments[..segments.len() - 1].to_vec(),
+            },
+            last.name(),
+        ),
+        _ => return NamedLookup::Missing,
+    };
+    let Some((address, covered)) = descriptor_node(&template) else {
+        return NamedLookup::Missing;
+    };
+    if covered != template.segments().len() {
+        return NamedLookup::Missing;
+    }
+    let Some(bytes) = crate::infrastructure::logical_event_source::attached_resource_relative(
+        &address,
+        "Template.xml",
+        binding.source_kind(),
+    )
+    .ok()
+    .and_then(|relative| admission.staged_state().ok()?.read(&relative).ok()?) else {
+        return NamedLookup::Missing;
+    };
+    match variant {
+        Some(variant) => dcs_mxl::structure_item_path_in_schema(&bytes, variant, name),
+        None => dcs_mxl::data_set_path_in_schema(&bytes, name),
+    }
+}
+
+/// Путь узла с именем `name` под контейнером в стадированном состоянии:
+/// набора схемы под макетом, элемента структуры под вариантом настроек или
+/// элемента под формой. Им снятый аргумент, называвший узел по имени, ведёт
+/// к его настоящему адресу (#1353, #1355, #1357).
+pub(crate) fn staged_member_path(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    container: &crate::domain::address::QualifiedAddress,
+    name: &str,
+) -> crate::domain::apply::NamedLookup {
+    match container.segments().last().map(|segment| segment.kind()) {
+        Some(crate::domain::address::NodeKind::Form) => {
+            match staged_form_items(admission, binding, container) {
+                Some(items) => form_resource::form_item_path(&items, name),
+                None => crate::domain::apply::NamedLookup::Missing,
+            }
+        }
+        _ => staged_schema_lookup(admission, binding, container, name),
+    }
+}
+
+/// Роль элемента стадированной формы по его адресу
+/// `Owner.X.Form.F.Item.A[.Item.B…]`. `None` — элемента или формы нет.
+pub(crate) fn staged_form_item_role(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    item: &crate::domain::address::QualifiedAddress,
+) -> Option<crate::domain::apply::FormItemRole> {
+    use crate::domain::address::NodeKind;
+    let segments = item.segments();
+    if segments.len() < 3
+        || segments[1].kind() != NodeKind::Form
+        || !segments[2..]
+            .iter()
+            .all(|segment| segment.kind() == NodeKind::Item && segment.name().is_some())
+    {
+        return None;
+    }
+    let form = crate::domain::address::QualifiedAddress {
+        source_set: item.source_set().to_string(),
+        segments: segments[..2].to_vec(),
+    };
+    let items = staged_form_items(admission, binding, &form)?;
+    let chain = segments[2..]
+        .iter()
+        .filter_map(|segment| segment.name().map(str::to_string))
+        .collect::<Vec<_>>();
+    form_resource::form_item_at(&items, &chain)
+        .map(|element| crate::domain::apply::FormItemRole::from_tag(&element.tag))
+}
+
+/// Дерево элементов стадированной формы `Owner.X.Form.F`, как его читает
+/// `view`. `None` — формы или её `Form.xml` нет.
+fn staged_form_items(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    form: &crate::domain::address::QualifiedAddress,
+) -> Option<Vec<crate::infrastructure::native_operations::form::FormInfoElement>> {
+    let (address, covered) = descriptor_node(form)?;
+    if covered != 2 {
+        return None;
+    }
+    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+        &address,
+        "Form.xml",
+        binding.source_kind(),
+    )
+    .ok()?;
+    let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
+    form_resource::form_items_of(std::str::from_utf8(&bytes).ok()?).ok()
+}
+
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
 /// описанием есть, когда есть его файл; член объекта метаданных (реквизит,
 /// табличная часть) при существующем описании владельца считается
@@ -672,7 +842,60 @@ pub(crate) fn staged_node_existence(
             .platform_profile()
             .unwrap_or_else(crate::domain::platform_profile::PlatformProfile::v8_3_27),
     )?;
-    (route == crate::domain::logical_route::RouteClass::Metadata).then_some(false)
+    // Запись прав роли и область макета живут в присоединённом файле: их
+    // создаёт операция родителя (`right.add`, `area.add`, #1354).
+    use crate::domain::address::NodeKind;
+    use crate::domain::logical_route::RouteClass;
+    let terminal = at.segments().last()?;
+    let resource = |name: &str| -> Option<Vec<u8>> {
+        let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+            &address,
+            name,
+            binding.source_kind(),
+        )
+        .ok()?;
+        admission.staged_state().ok()?.read(&relative).ok()?
+    };
+    match (route, terminal.kind(), at.segments().len() - covered) {
+        (RouteClass::Metadata, _, _) => Some(false),
+        (RouteClass::Role, NodeKind::Right, 1) => {
+            let (kind, name) = terminal.name()?.split_once('_')?;
+            form_resource::staged_rights_entry_exists(
+                &resource("Rights.xml")?,
+                &format!("{kind}.{name}"),
+            )
+        }
+        (RouteClass::Mxl, NodeKind::Area, 1) => {
+            dcs_mxl::spreadsheet_area_exists(&resource("Template.xml")?, terminal.name()?)
+        }
+        // Элемент формы и его событие: есть, когда цепочка `Item` ведёт к
+        // элементу формы; имя события проверяет матрица событий.
+        (RouteClass::Form, NodeKind::Item | NodeKind::Event, _) if covered == 2 => {
+            let tail = &at.segments()[covered..];
+            let chain = match tail {
+                [items @ .., last] if last.kind() == NodeKind::Event => items,
+                items => items,
+            };
+            if chain.is_empty()
+                || !chain
+                    .iter()
+                    .all(|segment| segment.kind() == NodeKind::Item && segment.name().is_some())
+            {
+                return None;
+            }
+            let form = crate::domain::address::QualifiedAddress {
+                source_set: at.source_set().to_string(),
+                segments: at.segments()[..covered].to_vec(),
+            };
+            let items = staged_form_items(admission, binding, &form)?;
+            let chain = chain
+                .iter()
+                .filter_map(|segment| segment.name().map(str::to_string))
+                .collect::<Vec<_>>();
+            Some(form_resource::form_item_at(&items, &chain).is_some())
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn plan_hidden_v13_apply(
@@ -843,6 +1066,9 @@ pub(crate) fn plan_hidden_v13_apply(
 }
 
 #[cfg(test)]
+mod inherited_content_tests;
+
+#[cfg(test)]
 mod tests {
     use super::plan_hidden_v13_apply;
     use super::request::{reconcile_effects, ProvisionalApplyEffect};
@@ -980,7 +1206,7 @@ mod tests {
 
     /// Формат макета — фильтр реестра, и планировщик применяет его к
     /// промежуточному состоянию пакета: макет, добавленный раньше в том же
-    /// вызове, уже имеет формат, и `mxl.set` принимается только для
+    /// вызове, уже имеет формат, и `area.add` принимается только для
     /// табличного документа.
     #[test]
     fn template_format_filter_reads_the_template_added_in_the_same_request() {
@@ -992,7 +1218,7 @@ mod tests {
                     "at": "main:Document.First",
                     "ops": [
                         {"op": "template.add", "args": {"items": [{"name": "Print", "templateType": template_type}]}},
-                        {"op": "mxl.set", "args": {"at": "main:Document.First.Template.Print", "values": {"area": "Header", "cells": {"R1C1": "Total"}}}}
+                        {"op": "area.add", "args": {"at": "main:Document.First.Template.Print", "items": [{"name": "Header", "cells": {"R1C1": "Total"}}]}}
                     ],
                     "dryRun": true,
                 })
@@ -1023,6 +1249,158 @@ mod tests {
         );
     }
 
+    /// Область создаёт только `area.add` на макете, а `mxl.set` пишет только
+    /// в существующую область по её адресу (#1354): опечатка в имени области
+    /// не заводит новую, повтор имени в `area.add` не перекрывает ячейки.
+    #[test]
+    fn an_area_is_written_only_where_it_exists_and_created_only_by_area_add() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let template = "main:Document.First.Template.Print";
+        let request = |ops: serde_json::Value| {
+            let mut all = vec![
+                serde_json::json!({"op": "template.add", "args": {"items": [{"name": "Print", "templateType": "SpreadsheetDocument"}]}}),
+            ];
+            all.extend(ops.as_array().unwrap().iter().cloned());
+            ApplyRequest::parse(
+                serde_json::json!({"at": "main:Document.First", "ops": all, "dryRun": true})
+                    .as_object()
+                    .unwrap(),
+                &["main"],
+            )
+            .unwrap()
+        };
+        let area = |name: &str| serde_json::json!({"op": "area.add", "args": {"at": template, "items": [{"name": name, "cells": {"R1C1": "Total"}}]}});
+        let set = |name: &str| serde_json::json!({"op": "mxl.set", "args": {"at": format!("{template}.Area.{name}"), "values": {"cells": {"R1C2": "Sum"}}}});
+        let (staged, _) = plan_hidden_v13_apply(
+            &request(serde_json::json!([area("Header"), set("Header")])),
+            &fixture.binding,
+            &admission,
+        )
+        .unwrap_or_else(|error| panic!("an added area accepts cells: {error}"));
+        let written = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path.ends_with("Print/Ext/Template.xml"))
+            .expect("the spreadsheet body is staged");
+        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
+            written.current
+        else {
+            panic!("the spreadsheet keeps bytes");
+        };
+        assert_eq!(
+            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Header"),
+            Some(true)
+        );
+        assert_eq!(
+            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Headr"),
+            Some(false)
+        );
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("Total") && text.contains("Sum"),
+            "both cells are written"
+        );
+        // Точка в имени области экранируется в адресе: созданную область
+        // `mxl.set` находит по `Area.Head\.er`.
+        let (staged, _) = plan_hidden_v13_apply(
+            &request(serde_json::json!([area("Head.er"), set("Head\\.er")])),
+            &fixture.binding,
+            &admission,
+        )
+        .unwrap_or_else(|error| panic!("an area with a dot is addressable: {error}"));
+        let written = staged
+            .planned_changes()
+            .into_iter()
+            .find(|change| change.relative_path.ends_with("Print/Ext/Template.xml"))
+            .expect("the spreadsheet body is staged");
+        let crate::infrastructure::native_operations::apply::StagedFileState::Bytes(bytes) =
+            written.current
+        else {
+            panic!("the spreadsheet keeps bytes");
+        };
+        assert_eq!(
+            super::dcs_mxl::spreadsheet_area_exists(&bytes, "Head.er"),
+            Some(true)
+        );
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("Sum"),
+            "the cell is written"
+        );
+        for (ops, kind, path) in [
+            (
+                serde_json::json!([area("Header"), set("Headr")]),
+                ApplyPlanErrorKind::NotFound,
+                "ops[2].args.at",
+            ),
+            (
+                serde_json::json!([area("Header"), area("Header")]),
+                ApplyPlanErrorKind::BadValue,
+                "ops[2].args.items[0].name",
+            ),
+            (
+                serde_json::json!([area("1Header")]),
+                ApplyPlanErrorKind::BadValue,
+                "ops[1].args.items[0].name",
+            ),
+        ] {
+            let Err(error) = plan_hidden_v13_apply(&request(ops), &fixture.binding, &admission)
+            else {
+                panic!("the area's existence decides at {path}");
+            };
+            assert_eq!(error.kind(), kind, "{path}");
+            assert_eq!(error.path(), Some(path));
+        }
+    }
+
+    /// Запись прав и область макета живут в присоединённом файле: их
+    /// существование читается из него, и `not_found` по адресу такого узла
+    /// ведёт к родителю, где их создаёт `right.add` или `area.add` (#1354).
+    #[test]
+    fn a_missing_rights_entry_or_area_routes_next_to_the_parent() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        std::fs::create_dir_all(source.join("Roles/Reader/Ext")).unwrap();
+        std::fs::write(
+            source.join("Roles/Reader.xml"),
+            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Role uuid=\"33333333-3333-4333-8333-333333333333\"><Properties><Name>Reader</Name></Properties></Role></MetaDataObject>",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("Roles/Reader/Ext/Rights.xml"),
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Rights xmlns=\"http://v8.1c.ru/8.2/roles\" version=\"2.20\"><setForNewObjects>false</setForNewObjects><setForAttributesByDefault>true</setForAttributesByDefault><independentRightsOfChildObjects>false</independentRightsOfChildObjects><object><name>Document.First</name><right><name>Read</name><value>true</value></right></object></Rights>\n",
+        )
+        .unwrap();
+        let templates = source.join("Documents/First/Templates");
+        std::fs::create_dir_all(templates.join("Print/Ext")).unwrap();
+        let mxl = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates",
+        );
+        std::fs::copy(mxl.join("F06Template.xml"), templates.join("Print.xml")).unwrap();
+        std::fs::copy(
+            mxl.join("F06Template/Ext/Template.xml"),
+            templates.join("Print/Ext/Template.xml"),
+        )
+        .unwrap();
+        let admission = fixture.admission();
+        let exists = |raw: &str| {
+            super::staged_node_existence(
+                &admission,
+                &fixture.binding,
+                &crate::domain::address::QualifiedAddress::parse(raw).unwrap(),
+            )
+        };
+        for (raw, expected) in [
+            ("main:Role.Reader.Right.Document_First", Some(true)),
+            ("main:Role.Reader.Right.Document_Second", Some(false)),
+            ("main:Document.First.Template.Print.Area.A", Some(true)),
+            ("main:Document.First.Template.Print.Area.Z", Some(false)),
+            ("main:Role.Missing.Right.Document_First", Some(false)),
+        ] {
+            assert_eq!(exists(raw), expected, "{raw}");
+        }
+    }
+
     /// Операция, исполнимая не на своём узле, отказывает в разборе цели,
     /// а не пишет молча в форму или во владельца.
     #[test]
@@ -1030,9 +1408,19 @@ mod tests {
         let fixture = ApplySeamFixture::new();
         for (at, op, args) in [
             (
-                "main:Document.First.Form.Main.Item.Header",
+                "main:Document.First.Form.Main.Item.Header.Event.OnChange",
                 "element.add",
                 serde_json::json!({"items": [{"name": "Comment"}]}),
+            ),
+            (
+                "main:Document.First.Form.Main",
+                "element.remove",
+                serde_json::json!({}),
+            ),
+            (
+                "main:Document.First.Form.Main.Item.Header",
+                "event.bind",
+                serde_json::json!({"values": {"handler": "H"}}),
             ),
             (
                 "main:Document.First.Form.Main.Item.Header",
@@ -1067,29 +1455,38 @@ mod tests {
             .err()
             .expect("an unknown element property refuses");
         assert_eq!(error.path(), Some("ops[0].args.items[0].titel"), "{error}");
-        // Путь привязки, который генератор знает, проходит разбор: его
-        // предметный отказ (`headerDataPath` у обычной группы) даёт генератор.
+        // Путь привязки, которого писатель вида не пишет (`headerDataPath`
+        // у обычной группы), отказывает по контракту вида до записи (#1447).
         let request = seam_request(
             "main:Document.First.Form.Main",
             "element.add",
             serde_json::json!({"items": [{"name": "Header", "type": "Group", "headerDataPath": "Object.Ref"}]}),
         );
-        assert!(super::parse_apply_operation(0, &request.ops()[0], &fixture.binding).is_ok());
-        // Элемент назван адресом: перенаправить событие или удаление на другой
-        // элемент аргументом нельзя.
-        for (op, args, path) in [
+        let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
+            .err()
+            .expect("a binding path the group writer does not write refuses");
+        assert_eq!(
+            error.path(),
+            Some("ops[0].args.items[0].headerDataPath"),
+            "{error}"
+        );
+        // Элемент и событие названы адресом: перенаправить событие или
+        // удаление на другой узел аргументом нельзя (#1355).
+        for (at, op, args, path) in [
             (
+                "main:Document.First.Form.Main.Item.Header.Event.OnChange",
                 "event.bind",
-                serde_json::json!({"values": {"event": "OnChange", "handler": "H", "element": "Other"}}),
+                serde_json::json!({"values": {"handler": "H", "element": "Other"}}),
                 "ops[0].args.values.element",
             ),
             (
+                "main:Document.First.Form.Main.Item.Header",
                 "element.remove",
                 serde_json::json!({"items": ["Other"]}),
                 "ops[0].args.items",
             ),
         ] {
-            let request = seam_request("main:Document.First.Form.Main.Item.Header", op, args);
+            let request = seam_request(at, op, args);
             let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
                 .err()
                 .unwrap_or_else(|| panic!("{op} must not redirect to another element"));
@@ -1175,8 +1572,8 @@ mod tests {
             ),
             (
                 "main:Role.Reader",
-                "right.set",
-                serde_json::json!({"values": {"object": "Document.First", "right": "Read", "value": true}}),
+                "right.add",
+                serde_json::json!({"items": [{"object": "Document.First", "rights": {"Read": true}}]}),
             ),
             (
                 "main:Document.First.Template.Schema.DataSet.Main",
@@ -1185,8 +1582,8 @@ mod tests {
             ),
             (
                 "main:Document.First.Template.Print",
-                "mxl.set",
-                serde_json::json!({"values": {"area": "Header", "cells": {"R1C1": "Total"}}}),
+                "area.add",
+                serde_json::json!({"items": [{"name": "Header", "cells": {"R1C1": "Total"}}]}),
             ),
             (
                 "main:XDTOPackage.Types",

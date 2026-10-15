@@ -1,10 +1,10 @@
 use super::identity::{CoreIdentity, DaemonStateDirectory, ReceiptAuthorityLock};
 use super::protocol_v5::{
-    decode_v5_request_frame, read_bounded_v5_request_frame_before, DecodedV5Request,
-    V5AcknowledgedReceipt, V5ClientRequest, V5ClientRequestKind, V5DaemonErrorCode,
-    V5EndpointRecord, V5HandshakeServerResponse, V5InvocationPhase, V5InvocationRequest,
-    V5InvocationResponse, V5ProbeServerResponse, V5RequestFrameError, V5ServerResponse,
-    DAEMON_PROTOCOL_VERSION, MAX_V5_RESPONSE_LINE_BYTES,
+    decode_v5_request_frame, read_bounded_v5_handshake_frame_before,
+    read_bounded_v5_request_frame_before, DecodedV5Request, V5AcknowledgedReceipt, V5ClientRequest,
+    V5ClientRequestKind, V5DaemonErrorCode, V5EndpointRecord, V5HandshakeServerResponse,
+    V5InvocationPhase, V5InvocationRequest, V5InvocationResponse, V5ProbeServerResponse,
+    V5RequestFrameError, V5ServerResponse, DAEMON_PROTOCOL_VERSION, MAX_V5_RESPONSE_LINE_BYTES,
 };
 use super::server::{
     CanonicalInvocationService, DaemonServerConfig, V5ActorBoundCanonicalInvocation,
@@ -16,8 +16,8 @@ use crate::application::invocation_store::{EpochMillisClock, ToolIdentity};
 use crate::application::invocation_store_v5::{
     InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
     V5DeleteTerminalOutcome, V5SafeFailureReason, V5StartWorkingOutcome, V5StoredInvocationRecord,
-    V5StoredInvocationSchemaVersion, V5StoredTask, V5TaskIdentity, V5TaskRetirement,
-    V5TaskStoreError, V5TerminalPublication,
+    V5StoredInvocationSchemaVersion, V5StoredTask, V5TaskIdentity, V5TaskMismatch,
+    V5TaskRetirement, V5TaskStoreError, V5TerminalPublication,
 };
 use crate::application::invocation_v5::{
     decide_cancel_reserved_submit, decide_cancel_resolution, CancelInvocationDecision,
@@ -80,6 +80,10 @@ const AUTHORITY_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 const STARTUP_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(30);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(2);
+/// A session frame must arrive whole within this long of its first byte. No
+/// frontend waits longer: its whole call budget is at most 7 s.
+const SESSION_FRAME_READ_TIMEOUT: Duration =
+    Duration::from_millis(crate::application::receipt_ledger::MAX_ORIGINAL_RESPONSE_BUDGET_MS);
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const TASK_TERMINAL_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// The session handler owning an inline invocation re-reads its cutoff at
@@ -141,6 +145,53 @@ pub(crate) struct V5ReceiptRuntime {
     /// Lost-submit frames this process must never run (#1376); memory only,
     /// like the frames themselves.
     submit_fences: SubmitFences,
+    /// Task ids whose attempt runs in this process, while its pipeline
+    /// worker runs: such a Task is ended by its attempt, not
+    /// by a cancel that names it (#1399).
+    live_attempts: V5LiveAttempts,
+}
+
+/// The Task ids of the attempts this process is running.
+#[derive(Default)]
+struct V5LiveAttempts {
+    attempts: Mutex<HashMap<crate::domain::invocation::TaskId, usize>>,
+}
+
+impl V5LiveAttempts {
+    fn lock(&self) -> MutexGuard<'_, HashMap<crate::domain::invocation::TaskId, usize>> {
+        self.attempts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn enter(&self, task_id: crate::domain::invocation::TaskId) -> V5LiveAttemptGuard<'_> {
+        *self.lock().entry(task_id).or_default() += 1;
+        V5LiveAttemptGuard {
+            attempts: self,
+            task_id,
+        }
+    }
+
+    fn contains(&self, task_id: crate::domain::invocation::TaskId) -> bool {
+        self.lock().contains_key(&task_id)
+    }
+}
+
+struct V5LiveAttemptGuard<'a> {
+    attempts: &'a V5LiveAttempts,
+    task_id: crate::domain::invocation::TaskId,
+}
+
+impl Drop for V5LiveAttemptGuard<'_> {
+    fn drop(&mut self) {
+        let mut attempts = self.attempts.lock();
+        if let Some(count) = attempts.get_mut(&self.task_id) {
+            *count -= 1;
+            if *count == 0 {
+                attempts.remove(&self.task_id);
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -249,6 +300,16 @@ struct PipelineSlotState {
     owner_materialized: Option<(V5StoredInvocationRecord, TaskBoundReceipt)>,
 }
 
+/// What the worker's drive learns when it claims the cutoff.
+#[allow(clippy::large_enum_variant)]
+enum CutoffClaim {
+    /// The drive owns the cutoff from here.
+    Claimed,
+    /// The handler promoted the begun receipt first, with the Task it
+    /// materialized for this attempt, if it got that far.
+    Promoted(Option<(V5StoredInvocationRecord, TaskBoundReceipt)>),
+}
+
 /// One attempt shared between the session handler that owns the reply and
 /// the pre-`Begun` cutoff and the worker that runs the pipeline.
 struct PipelineSlot {
@@ -276,10 +337,13 @@ impl PipelineSlot {
     }
 
     /// The worker's inline drive claims the cutoff before it starts timing:
-    /// from here the drive answers the seventh second. `false` when the
-    /// handler already promoted the receipt — the drive then hands off at
-    /// once into that intent.
-    fn claim_cutoff(&self) -> bool {
+    /// from here the drive answers the seventh second. When the handler
+    /// already promoted the receipt the drive continues that promotion
+    /// instead, and takes the Task the handler materialized in the same
+    /// step: the handler stores it before it publishes the promotion, so a
+    /// worker that looked for it earlier, while the handler was still
+    /// materializing, finds it here (#1399).
+    fn claim_cutoff(&self) -> CutoffClaim {
         let mut state = self.lock();
         while matches!(state.decision, PipelineDecision::HandoffInProgress) {
             state = self
@@ -288,11 +352,11 @@ impl PipelineSlot {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         if matches!(state.decision, PipelineDecision::PromotedByOwner) {
-            return false;
+            return CutoffClaim::Promoted(state.owner_materialized.take());
         }
         state.begun = true;
         self.changed.notify_all();
-        true
+        CutoffClaim::Claimed
     }
 
     /// The session handler records the Task it materialized at the begun
@@ -455,6 +519,24 @@ enum InlineSettlement {
 enum CutoffCommit {
     Bound(TaskBoundReceipt, V5StoredInvocationRecord),
     Terminal(V5RuntimeReply),
+}
+
+/// What a committed handoff became once its key moved to the Task link.
+#[allow(clippy::large_enum_variant)]
+enum HandoffCompletion {
+    /// The Task is bound; the attempt continues into it.
+    Bound(V5StoredInvocationRecord, TaskBoundReceipt),
+    /// The handoff carried a staged terminal, which the Task now holds.
+    Terminal(V5StoredInvocationRecord),
+}
+
+/// The reply that names a Task by its current projection.
+fn task_reply(record: &V5StoredInvocationRecord) -> V5RuntimeReply {
+    V5RuntimeReply::Json(V5ServerResponse::Invocation {
+        outcome: V5InvocationResponse::Task {
+            snapshot: task_store_snapshot(record),
+        },
+    })
 }
 
 /// How the session handler continues after the inline worker settled or the
@@ -1203,6 +1285,7 @@ impl V5TaskProjection {
         V5TaskProjectionFailure::fail_stop(ReceiptLedgerError::Corrupt(message))
     }
 
+    #[cfg(any(test, feature = "receipt-ledger-test-support"))]
     fn materialize_bound_handoff(
         &self,
         handoff: &TaskHandoffActorBoundReceipt,
@@ -1954,41 +2037,70 @@ impl V5TaskProjection {
         &self,
         task_id: crate::domain::invocation::TaskId,
         deadline: Instant,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<Option<V5StoredInvocationRecord>, V5TaskProjectionFailure> {
-        let Some(record) = self.read_bound_task(task_id, deadline)? else {
-            return Ok(None);
-        };
-        if record.task.is_terminal() || record.cancel_requested {
-            return Ok(Some(record));
-        }
-        let identity = record.identity();
-        let receipt_key_digest = record.receipt_key_digest.clone();
-        let cancelled = self
-            .task_store
-            .request_cancel_exact(
+        loop {
+            let Some(record) = self.read_bound_task(task_id, deadline)? else {
+                return Ok(None);
+            };
+            if record.task.is_terminal() || record.cancel_requested {
+                return Ok(Some(record));
+            }
+            hooks
+                .pause(V5PausePoint::BeforeTaskCancelWrite, deadline)
+                .map_err(|error| V5TaskProjectionFailure {
+                    error,
+                    fail_stop: false,
+                })?;
+            let identity = record.identity();
+            match self.task_store.request_cancel_exact(
                 &identity,
                 record.version,
                 crate::domain::code_intelligence::ProviderDeadline::new(deadline),
-            )
-            .map_err(|error| {
-                V5TaskProjectionFailure::from_task_store(error, receipt_key_digest, true)
-            })?;
-        Ok(Some(cancelled))
+            ) {
+                Ok(cancelled) => return Ok(Some(cancelled)),
+                // The attempt moved its Task between the read and the cancel,
+                // as when it starts right after its handoff (#1395): read the
+                // Task again. Each retry follows another committed transition.
+                Err(V5TaskStoreError::Mismatch {
+                    reason: V5TaskMismatch::Version { .. },
+                    ..
+                }) => {}
+                Err(error) => {
+                    return Err(V5TaskProjectionFailure::from_task_store(
+                        error,
+                        record.receipt_key_digest,
+                        true,
+                    ))
+                }
+            }
+        }
+    }
+
+    /// The lifecycle link of a Task id, if it has one.
+    fn read_link(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<Option<TaskLifecycleLinkRecord>, V5TaskProjectionFailure> {
+        match self.lifecycle_links.read_by_task_id(
+            task_id,
+            crate::domain::code_intelligence::ProviderDeadline::new(deadline),
+        ) {
+            Ok(link) => Ok(Some(link)),
+            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => Ok(None),
+            Err(error) => Err(V5TaskProjectionFailure::from_link_store(error)),
+        }
     }
 
     fn cancel_exact_bound_task(
         &self,
         key: &ReceiptKey,
         deadline: Instant,
+        hooks: &dyn V5RuntimeHooks,
     ) -> Result<Option<V5StoredInvocationRecord>, V5TaskProjectionFailure> {
-        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
-        let link = match self
-            .lifecycle_links
-            .read_by_task_id(key.reserved_task_id(), provider_deadline)
-        {
-            Ok(link) => link,
-            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(None),
-            Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
+        let Some(link) = self.read_link(key.reserved_task_id(), deadline)? else {
+            return Ok(None);
         };
         if link.key() != key {
             // Another call naming this Task id: the caller's identity is
@@ -1998,7 +2110,7 @@ impl V5TaskProjection {
                 fail_stop: false,
             });
         }
-        self.cancel_bound_task(key.reserved_task_id(), deadline)
+        self.cancel_bound_task(key.reserved_task_id(), deadline, hooks)
     }
 
     /// The Task an exact key passed into, read by its link. A link of the
@@ -2008,14 +2120,8 @@ impl V5TaskProjection {
         key: &ReceiptKey,
         deadline: Instant,
     ) -> Result<ExactBoundTask, V5TaskProjectionFailure> {
-        let provider_deadline = crate::domain::code_intelligence::ProviderDeadline::new(deadline);
-        let link = match self
-            .lifecycle_links
-            .read_by_task_id(key.reserved_task_id(), provider_deadline)
-        {
-            Ok(link) => link,
-            Err(TaskLifecycleLinkStoreError::NotFound { .. }) => return Ok(ExactBoundTask::Absent),
-            Err(error) => return Err(V5TaskProjectionFailure::from_link_store(error)),
+        let Some(link) = self.read_link(key.reserved_task_id(), deadline)? else {
+            return Ok(ExactBoundTask::Absent);
         };
         if link.key() != key {
             return Err(V5TaskProjectionFailure {
@@ -2592,6 +2698,7 @@ impl V5ReceiptRuntime {
             joins: JoinRegistry::default(),
             receipt_handles: ReceiptHandles::default(),
             submit_fences: SubmitFences::default(),
+            live_attempts: V5LiveAttempts::default(),
         };
         if !config.skips_v5_startup_reconciliation() {
             let bound_handoffs =
@@ -3064,6 +3171,151 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// Materializes the Task of a committed handoff and moves the key from
+    /// the ledger to the Task link. The key's lock is held from the re-read
+    /// of the handoff to the completion: a cancel of the exact key either
+    /// marked the handoff before (and the Task is materialized with that
+    /// cancel) or waits and then finds the link (#1384, #1395). The lock is
+    /// released before the Task starts, so from then on a cancel reaches the
+    /// Task through its link. The handoff is already committed: neither the
+    /// wait for the lock nor an earlier step that spent `deadline` may fail
+    /// the steps that carry it out.
+    fn complete_handoff_into_task(
+        &self,
+        handoff: TaskHandoffActorBoundReceipt,
+        link_reservation: Option<TaskLinkReservation>,
+        epoch_ms: u64,
+        deadline: Instant,
+        on_bound: impl FnOnce(&TaskBoundReceipt),
+    ) -> Result<HandoffCompletion, ReceiptLedgerError> {
+        let key_lock =
+            self.submit_fences
+                .stripe(&crate::application::receipt_ledger::receipt_key_digest(
+                    handoff.key(),
+                ));
+        let deadline = committed_decision_step_deadline(deadline);
+        let handoff = self.reread_handoff_under_lock(&key_lock, handoff, deadline)?;
+        let link_reservation = match link_reservation {
+            Some(reservation) => reservation,
+            None => self
+                .task_projection
+                .reserve_bound_handoff_link(&handoff, epoch_ms, deadline, self.hooks.as_ref())
+                .map_err(|failure| self.project_task_failure(failure))?,
+        };
+        let (task_record, bound) = self
+            .task_projection
+            .materialize_staged_bound_handoff(
+                &handoff,
+                &link_reservation,
+                epoch_ms,
+                deadline,
+                self.hooks.as_ref(),
+            )
+            .map_err(|failure| self.project_task_failure(failure))?;
+        on_bound(&bound);
+        if !matches!(
+            handoff.terminal_stage(),
+            HandoffTerminalStage::Staged { .. }
+        ) {
+            self.complete_bound_task_handoff_holding(
+                &key_lock,
+                handoff.key().clone(),
+                handoff.record_version(),
+                bound.clone(),
+                deadline,
+            )?;
+            return Ok(HandoffCompletion::Bound(task_record, bound));
+        }
+        let (terminal_record, terminal_link) = self
+            .task_projection
+            .publish_staged_bound_task_terminal(
+                &handoff,
+                &bound,
+                &task_record,
+                deadline,
+                self.hooks.as_ref(),
+            )
+            .map_err(|failure| self.project_task_failure(failure))?;
+        self.hooks.event(
+            V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
+            epoch_ms,
+        );
+        self.hooks.event(
+            V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
+            epoch_ms,
+        );
+        let terminal_link = self.complete_staged_task_handoff_holding(
+            &key_lock,
+            handoff.key().clone(),
+            handoff.record_version(),
+            terminal_link,
+            deadline,
+        )?;
+        drop(key_lock);
+        self.hooks.staged_terminal_publication(
+            &handoff,
+            &task_record,
+            &terminal_record,
+            &terminal_link,
+        )?;
+        self.hooks
+            .terminal_bound_task(&terminal_record, &terminal_link);
+        self.hooks.event(
+            V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
+            epoch_ms,
+        );
+        Ok(HandoffCompletion::Terminal(terminal_record))
+    }
+
+    /// Registers the cancellation token of a bound Task whose attempt is
+    /// about to run, then reads the Task again. A cancel that reached the
+    /// Task through its link before the token existed cancels the token at
+    /// once instead of being lost (#1395). `true` when the Task carries a
+    /// cancel: its attempt must not start.
+    fn register_bound_task_cancellation(
+        &self,
+        task_record: &V5StoredInvocationRecord,
+        deadline: Instant,
+    ) -> Result<(CancellationToken, V5ActiveTaskCancellationGuard, bool), ReceiptLedgerError> {
+        let (cancellation, guard) = self
+            .active_task_cancellations
+            .register(task_record.task_id)?;
+        let cancel_requested = task_record.cancel_requested
+            || self
+                .task_projection
+                .read_bound_task(
+                    task_record.task_id,
+                    committed_decision_step_deadline(deadline),
+                )
+                .map_err(|failure| self.project_task_failure(failure))?
+                .is_some_and(|current| current.cancel_requested);
+        if cancel_requested {
+            cancellation.cancel();
+        }
+        Ok((cancellation, guard, cancel_requested))
+    }
+
+    /// Ends a bound Task whose cancel arrived before its attempt started:
+    /// the attempt never runs, the Task publishes its cancelled terminal.
+    fn cancel_unstarted_bound_task(
+        &self,
+        bound: &TaskBoundReceipt,
+        task_id: crate::domain::invocation::TaskId,
+        cancellation_guard: V5ActiveTaskCancellationGuard,
+        deadline: Instant,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let snapshot = self.publish_task_execution_outcome(
+            bound,
+            task_id,
+            ReceiptTerminalOutcome::Cancelled,
+            committed_decision_step_deadline(deadline),
+        )?;
+        drop(cancellation_guard);
+        Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+            outcome: V5InvocationResponse::Task { snapshot },
+        }))
+    }
+
     /// An exact repeat of a call whose receipt already passed into its Task
     /// reads that Task and runs nothing (#1384). A Task already being retired
     /// has no answer left to read.
@@ -3163,126 +3415,152 @@ impl V5ReceiptRuntime {
                 outcome: V5InvocationResponse::Task { snapshot },
             }));
         }
-        // The key's lock orders the Task link lookup and every ledger write
-        // below against the handoff completion that moves the key from the
-        // ledger to the link: without it a cancel could miss both and leave a
-        // stray cancel row beside the running Task, or lose the handoff row
-        // it is about to mark (#1384). Held to the end of the cancel; always
-        // taken before the terminal gate, never inside it.
-        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
-        let _stripe = self.submit_fences.stripe(&digest);
-        {
-            let _task_terminal_gate = self
-                .task_terminal_coordinator
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(record) = self
-                .task_projection
-                .cancel_exact_bound_task(&key, deadline)
-                .map_err(|failure| self.project_task_failure(failure))?
-            {
-                // Исполнитель, который не ответит на отмену, держит только
-                // свою задачу: демон и соседние задачи продолжают работать.
-                self.active_task_cancellations.cancel(record.task_id);
-                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Task {
-                        snapshot: task_store_snapshot(&record),
-                    },
-                }));
-            }
+        /// What the cancel does once the key's lock is released.
+        enum CancelStep {
+            Reply(V5RuntimeReply),
+            Existing(ReceiptState),
+            ResolveTask(crate::domain::invocation::TaskId),
+            Marked(TaskCancellationReceipt),
         }
-        self.hooks
-            .pause(V5PausePoint::BeforeCancelReservation, deadline)?;
-        let resolution = self
-            .receipt_ledger
-            .request_cancel_or_reserve(key, epoch_ms, deadline)?;
-        match decide_cancel_resolution(resolution) {
-            CancelInvocationDecision::Accepted { receipt, .. } => {
-                Ok(V5RuntimeReply::Json(pending_cancel_response(&receipt)))
+        // The key's lock orders the Task link lookup and the ledger writes
+        // that reserve or mark the cancel against the handoff completion,
+        // which moves the key from the ledger to the link under the same
+        // lock: without it a cancel could miss both and leave a stray cancel
+        // row beside the running Task, or lose the handoff row it is about to
+        // mark (#1384). Only the replies, which read what the lock already
+        // ordered, follow after it (#1395). Always taken before the terminal
+        // gate, never inside it.
+        let digest = crate::application::receipt_ledger::receipt_key_digest(&key);
+        let step = {
+            let _stripe = self.submit_fences.stripe(&digest);
+            {
+                let _task_terminal_gate = self
+                    .task_terminal_coordinator
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(record) = self
+                    .task_projection
+                    .cancel_exact_bound_task(&key, deadline, self.hooks.as_ref())
+                    .map_err(|failure| self.project_task_failure(failure))?
+                {
+                    // Исполнитель, который не ответит на отмену, держит только
+                    // свою задачу: демон и соседние задачи продолжают работать.
+                    self.active_task_cancellations.cancel(record.task_id);
+                    return Ok(task_reply(&record));
+                }
             }
-            CancelInvocationDecision::ExistingDirectTerminal(receipt) => self
-                .reply_for_existing_state(ReceiptState::DirectTerminalUnacked(receipt), deadline),
-            CancelInvocationDecision::Rejected(rejection) => {
-                let state = rejection.into_state();
-                let expected = match state {
-                    ReceiptState::TaskPromisedUnbound(receipt) => {
-                        let task_id = receipt.task().task_id();
-                        let reserved_task_id = receipt.key().reserved_task_id();
-                        let cancelled = self.receipt_ledger.request_task_cancel(
-                            receipt.key().clone(),
-                            TaskCancellationReceipt::PromisedUnbound(receipt),
-                            deadline,
-                        )?;
-                        let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
-                            .map_err(|_| {
-                                ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
-                            })?;
-                        let committed = self.receipt_ledger.publish_receipt_backed_task_terminal(
-                            cancelled.key().clone(),
-                            cancelled,
-                            epoch_ms,
-                            terminal,
-                            deadline,
-                        )?;
-                        // The admission of this promised Task may still be
-                        // running: once the terminal is durable its
-                        // checkpoint observes this token and stops before
-                        // the actor bind (#1251).
-                        self.active_task_cancellations.cancel(reserved_task_id);
-                        self.hooks.receipt_backed_terminal(&committed)?;
-                        self.hooks.release_pre_actor_pauses();
-                        self.hooks.event(
-                            V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
-                            epoch_ms,
-                        );
-                        let snapshot = self.resolve_task(task_id, deadline)?;
-                        return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                            outcome: V5InvocationResponse::Task { snapshot },
-                        }));
+            self.hooks
+                .pause(V5PausePoint::BeforeCancelReservation, deadline)?;
+            let resolution = self
+                .receipt_ledger
+                .request_cancel_or_reserve(key, epoch_ms, deadline)?;
+            match decide_cancel_resolution(resolution) {
+                CancelInvocationDecision::Accepted { receipt, .. } => {
+                    CancelStep::Reply(V5RuntimeReply::Json(pending_cancel_response(&receipt)))
+                }
+                CancelInvocationDecision::ExistingDirectTerminal(receipt) => {
+                    CancelStep::Existing(ReceiptState::DirectTerminalUnacked(receipt))
+                }
+                CancelInvocationDecision::Rejected(rejection) => {
+                    let expected = match rejection.into_state() {
+                        ReceiptState::TaskPromisedUnbound(receipt) => {
+                            Ok(TaskCancellationReceipt::PromisedUnbound(receipt))
+                        }
+                        ReceiptState::TaskPromisedActorBound(receipt) => {
+                            Ok(TaskCancellationReceipt::PromisedActorBound(receipt))
+                        }
+                        ReceiptState::TaskHandoffActorBound(receipt) => {
+                            Ok(TaskCancellationReceipt::HandoffActorBound(receipt))
+                        }
+                        ReceiptState::TaskReceiptOwnedActorBound(receipt) => {
+                            Ok(TaskCancellationReceipt::ReceiptOwnedActorBound(receipt))
+                        }
+                        ReceiptState::TaskTerminalReceiptBacked(receipt) => {
+                            Err(CancelStep::ResolveTask(receipt.task().task_id()))
+                        }
+                        ReceiptState::Reserved(reserved)
+                            if matches!(
+                                reserved.phase(),
+                                ReservedPhase::Begun { .. } | ReservedPhase::Unbound
+                            ) =>
+                        {
+                            // A running inline attempt, or one still in
+                            // validation or admission: signal its token. One
+                            // that ignores it keeps only its own attempt; an
+                            // attempt before its actor bind publishes its own
+                            // cancelled terminal (#1251).
+                            self.active_task_cancellations
+                                .cancel(reserved.key().reserved_task_id());
+                            Err(CancelStep::Existing(ReceiptState::Reserved(reserved)))
+                        }
+                        other => Err(CancelStep::Existing(other)),
+                    };
+                    match expected {
+                        Err(step) => step,
+                        Ok(expected) => {
+                            let promised_unbound =
+                                matches!(expected, TaskCancellationReceipt::PromisedUnbound(_));
+                            let cancelled = self.receipt_ledger.request_task_cancel(
+                                expected.key().clone(),
+                                expected,
+                                deadline,
+                            )?;
+                            if promised_unbound {
+                                // Published under the lock as well: a second
+                                // exact cancel finds the terminal, not a mark
+                                // whose terminal epoch it would contest.
+                                let task_id = cancelled.task().task_id();
+                                let reserved_task_id = cancelled.key().reserved_task_id();
+                                let terminal =
+                                    canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
+                                        .map_err(|_| {
+                                            ReceiptLedgerError::Corrupt(
+                                                "canonical v5 terminal failed",
+                                            )
+                                        })?;
+                                let committed =
+                                    self.receipt_ledger.publish_receipt_backed_task_terminal(
+                                        cancelled.key().clone(),
+                                        cancelled,
+                                        epoch_ms,
+                                        terminal,
+                                        deadline,
+                                    )?;
+                                // The admission of this promised Task may
+                                // still be running: once the terminal is
+                                // durable its checkpoint observes this token
+                                // and stops before the actor bind (#1251).
+                                self.active_task_cancellations.cancel(reserved_task_id);
+                                self.hooks.receipt_backed_terminal(&committed)?;
+                                self.hooks.release_pre_actor_pauses();
+                                self.hooks.event(
+                                    V5ReceiptRuntimeEventKind::ReceiptTerminalCommitted,
+                                    epoch_ms,
+                                );
+                                CancelStep::ResolveTask(task_id)
+                            } else {
+                                // An attempt already running toward this
+                                // handoff learns of the cancel now; its Task
+                                // is materialized with it (#1395).
+                                self.active_task_cancellations
+                                    .cancel(cancelled.key().reserved_task_id());
+                                CancelStep::Marked(cancelled)
+                            }
+                        }
                     }
-                    ReceiptState::TaskPromisedActorBound(receipt) => {
-                        TaskCancellationReceipt::PromisedActorBound(receipt)
-                    }
-                    ReceiptState::TaskHandoffActorBound(receipt) => {
-                        TaskCancellationReceipt::HandoffActorBound(receipt)
-                    }
-                    ReceiptState::TaskReceiptOwnedActorBound(receipt) => {
-                        TaskCancellationReceipt::ReceiptOwnedActorBound(receipt)
-                    }
-                    ReceiptState::TaskTerminalReceiptBacked(receipt) => {
-                        let snapshot = self.resolve_task(receipt.task().task_id(), deadline)?;
-                        return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                            outcome: V5InvocationResponse::Task { snapshot },
-                        }));
-                    }
-                    ReceiptState::Reserved(reserved)
-                        if matches!(reserved.phase(), ReservedPhase::Begun { .. }) =>
-                    {
-                        // A running inline attempt: signal its token. One that
-                        // ignores it keeps only its own attempt (#1251).
-                        self.active_task_cancellations
-                            .cancel(reserved.key().reserved_task_id());
-                        return self
-                            .reply_for_existing_state(ReceiptState::Reserved(reserved), deadline);
-                    }
-                    ReceiptState::Reserved(reserved)
-                        if matches!(reserved.phase(), ReservedPhase::Unbound) =>
-                    {
-                        // An inline attempt still in validation or admission:
-                        // without a deadline only this token ends it. The
-                        // attempt publishes its own cancelled terminal (#1251).
-                        self.active_task_cancellations
-                            .cancel(reserved.key().reserved_task_id());
-                        return self
-                            .reply_for_existing_state(ReceiptState::Reserved(reserved), deadline);
-                    }
-                    other => return self.reply_for_existing_state(other, deadline),
-                };
-                let cancelled = self.receipt_ledger.request_task_cancel(
-                    expected.key().clone(),
-                    expected,
-                    deadline,
-                )?;
+                }
+            }
+        };
+        match step {
+            CancelStep::Reply(reply) => Ok(reply),
+            CancelStep::Existing(state) => self.reply_for_existing_state(state, deadline),
+            CancelStep::ResolveTask(task_id) => {
+                let snapshot = self.resolve_task(task_id, deadline)?;
+                Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
+                    outcome: V5InvocationResponse::Task { snapshot },
+                }))
+            }
+            CancelStep::Marked(cancelled) => {
                 let snapshot = queued_receipt_task_snapshot(
                     cancelled.task(),
                     crate::application::receipt_ledger::receipt_key_digest(cancelled.key()),
@@ -3342,8 +3620,8 @@ impl V5ReceiptRuntime {
         // is what remembers it. Looked up under the key's lock, which the
         // handoff completion also takes, so the row cannot leave between this
         // lookup and the reservation. The lock is one of 64 stripes: while it
-        // is held (one link read and one ledger write), a handoff completion
-        // or a submit of any key on the same stripe waits for it.
+        // is held — here one link read and one ledger write, by a handoff the
+        // materialization of its Task — any key on the same stripe waits.
         if let Some(reply) = self.exact_bound_task_reply(&key, deadline)? {
             return Ok(reply);
         }
@@ -3427,6 +3705,10 @@ impl V5ReceiptRuntime {
             thread::Builder::new()
                 .name("unica-v5-invocation-pipeline".to_owned())
                 .spawn(move || {
+                    // Until this attempt returns, it ends its Task itself.
+                    let _live_attempt = runtime
+                        .live_attempts
+                        .enter(reservation.key().reserved_task_id());
                     let outcome = runtime.run_reserved_pipeline(
                         reservation.clone(),
                         invocation,
@@ -3648,21 +3930,18 @@ impl V5ReceiptRuntime {
                 }
                 // Materialize the Task now so a client polling at the cutoff
                 // sees a working Task; the paused worker executes into it.
-                let (task_record, task_bound) = self
-                    .task_projection
-                    .materialize_bound_handoff(
-                        &handoff,
-                        cutoff_epoch_ms,
-                        deadline,
-                        self.hooks.as_ref(),
-                    )
-                    .map_err(|failure| self.project_task_failure(failure))?;
-                self.complete_bound_task_handoff(
-                    handoff.key().clone(),
-                    handoff.record_version(),
-                    task_bound.clone(),
+                let (task_record, task_bound) = match self.complete_handoff_into_task(
+                    handoff,
+                    None,
+                    cutoff_epoch_ms,
                     deadline,
-                )?;
+                    |_| {},
+                )? {
+                    HandoffCompletion::Bound(task_record, task_bound) => (task_record, task_bound),
+                    HandoffCompletion::Terminal(terminal_record) => {
+                        return Ok(Some(task_reply(&terminal_record)))
+                    }
+                };
                 let (task_record, task_bound) = self
                     .task_projection
                     .start_bound_task(&task_bound, task_record, deadline)
@@ -3681,6 +3960,40 @@ impl V5ReceiptRuntime {
                 Ok(Some(reply))
             }
         }
+    }
+
+    /// Executes the Task the session handler materialized when it promoted
+    /// this begun attempt: nobody else runs it. A cancel that reached the
+    /// Task before the attempt prepared ends it unstarted (#1395).
+    fn execute_owner_materialized_task(
+        self: &Arc<Self>,
+        actor_bound: super::server::V5ActorBoundCanonicalInvocation,
+        task_record: V5StoredInvocationRecord,
+        bound: TaskBoundReceipt,
+        invocation_id: crate::domain::invocation::InvocationId,
+        epoch_ms: u64,
+    ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
+        let deadline = Self::continuation_deadline();
+        let (cancellation, cancellation_guard, cancel_requested) =
+            self.register_bound_task_cancellation(&task_record, deadline)?;
+        if cancel_requested {
+            return self.cancel_unstarted_bound_task(
+                &bound,
+                task_record.task_id,
+                cancellation_guard,
+                deadline,
+            );
+        }
+        self.drive_prepared_bound_task(
+            actor_bound,
+            task_record,
+            bound,
+            invocation_id,
+            cancellation,
+            cancellation_guard,
+            epoch_ms,
+            deadline,
+        )
     }
 
     /// A promoted attempt failed after the handler answered with its Task:
@@ -4004,20 +4317,15 @@ impl V5ReceiptRuntime {
         // The session handler may have materialized this Task at the begun
         // cutoff while the attempt was between `Begun` and the drive. Nobody
         // else executes it, so this attempt does — with or without an observer.
+        // Looked for here before the observer re-reads the receipt; a Task the
+        // handler stores only after this look is taken with the cutoff claim.
         if let Some((task_record, bound)) = slot.take_owner_materialized() {
-            let deadline = Self::continuation_deadline();
-            let (cancellation, cancellation_guard) = self
-                .active_task_cancellations
-                .register(task_record.task_id)?;
-            return self.drive_prepared_bound_task(
+            return self.execute_owner_materialized_task(
                 actor_bound,
                 task_record,
                 bound,
                 reservation.key().invocation_id(),
-                cancellation,
-                cancellation_guard,
                 epoch_ms,
-                deadline,
             );
         }
         if self.hooks.observing() {
@@ -4042,16 +4350,33 @@ impl V5ReceiptRuntime {
                 return self.publish_direct_terminal(begun, epoch_ms, terminal, deadline);
             }
         }
-        if !slot.claim_cutoff() {
-            // The handler promoted this begun attempt at the cutoff before the
-            // drive claimed it: continue the handoff the handler committed.
-            let deadline = Self::continuation_deadline();
-            return match self.receipt_ledger.recover(begun.key().clone(), deadline)? {
-                ReceiptState::TaskHandoffActorBound(handoff) => {
-                    self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline)
-                }
-                other => self.reply_for_existing_state(other, deadline),
-            };
+        self.hooks
+            .pause(V5PausePoint::BeforeCutoffClaim, deadline)?;
+        match slot.claim_cutoff() {
+            CutoffClaim::Claimed => {}
+            CutoffClaim::Promoted(Some((task_record, bound))) => {
+                // The handler materialized the Task after the early look:
+                // this attempt executes it, as if it had found it there.
+                return self.execute_owner_materialized_task(
+                    actor_bound,
+                    task_record,
+                    bound,
+                    reservation.key().invocation_id(),
+                    epoch_ms,
+                );
+            }
+            CutoffClaim::Promoted(None) => {
+                // The handler promoted this begun attempt at the cutoff before
+                // the drive claimed it and left the Task to it: continue the
+                // handoff the handler committed.
+                let deadline = Self::continuation_deadline();
+                return match self.receipt_ledger.recover(begun.key().clone(), deadline)? {
+                    ReceiptState::TaskHandoffActorBound(handoff) => {
+                        self.continue_promoted_begun_handoff(handoff, epoch_ms, deadline)
+                    }
+                    other => self.reply_for_existing_state(other, deadline),
+                };
+            }
         }
         let (prepared, direct_outcome) = match self.drive_inline_invocation(actor_bound, &begun)? {
             InlineDrive::Rejected(result) => {
@@ -4091,83 +4416,22 @@ impl V5ReceiptRuntime {
                 .hooks
                 .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
             // Another owner may have staged a terminal, or a cancel marked
-            // this receipt, while the pause held: re-read it under the key's
-            // lock, held until the key moves to its Task link, so the Task is
-            // materialized from the committed state.
-            let key_lock =
-                self.submit_fences
-                    .stripe(&crate::application::receipt_ledger::receipt_key_digest(
-                        handoff.key(),
-                    ));
-            let handoff = self.reread_handoff_under_lock(&key_lock, handoff, deadline)?;
-            let (task_record, bound) = self
-                .task_projection
-                .materialize_staged_bound_handoff(
-                    &handoff,
-                    &link_reservation,
-                    epoch_ms,
-                    deadline,
-                    self.hooks.as_ref(),
-                )
-                .map_err(|failure| self.project_task_failure(failure))?;
-            if matches!(
-                handoff.terminal_stage(),
-                HandoffTerminalStage::Staged { .. }
-            ) {
-                let (terminal_record, terminal_link) = self
-                    .task_projection
-                    .publish_staged_bound_task_terminal(
-                        &handoff,
-                        &bound,
-                        &task_record,
-                        deadline,
-                        self.hooks.as_ref(),
-                    )
-                    .map_err(|failure| self.project_task_failure(failure))?;
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                    epoch_ms,
-                );
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                    epoch_ms,
-                );
-                let terminal_link = self.complete_staged_task_handoff_holding(
-                    &key_lock,
-                    handoff.key().clone(),
-                    handoff.record_version(),
-                    terminal_link,
-                    deadline,
-                )?;
-                self.hooks.staged_terminal_publication(
-                    &handoff,
-                    &task_record,
-                    &terminal_record,
-                    &terminal_link,
-                )?;
-                self.hooks
-                    .terminal_bound_task(&terminal_record, &terminal_link);
-                self.hooks.event(
-                    V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                    epoch_ms,
-                );
-                return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                    outcome: V5InvocationResponse::Task {
-                        snapshot: task_store_snapshot(&terminal_record),
-                    },
-                }));
-            }
-            self.complete_bound_task_handoff_holding(
-                &key_lock,
-                handoff.key().clone(),
-                handoff.record_version(),
-                bound.clone(),
+            // this receipt, while the pause held: the Task is materialized
+            // from the state committed under the key's lock.
+            let (task_record, bound) = match self.complete_handoff_into_task(
+                handoff,
+                Some(link_reservation),
+                epoch_ms,
                 deadline,
-            )?;
-            drop(key_lock);
-            let (cancellation, cancellation_guard) = self
-                .active_task_cancellations
-                .register(task_record.task_id)?;
+                |_| {},
+            )? {
+                HandoffCompletion::Bound(task_record, bound) => (task_record, bound),
+                HandoffCompletion::Terminal(terminal_record) => {
+                    return Ok(task_reply(&terminal_record))
+                }
+            };
+            let (cancellation, cancellation_guard, cancel_requested) =
+                self.register_bound_task_cancellation(&task_record, deadline)?;
             let (task_record, bound) = self
                 .task_projection
                 .start_bound_task(&bound, task_record, deadline)
@@ -4175,6 +4439,14 @@ impl V5ReceiptRuntime {
             self.hooks.bound_task(&task_record, &bound);
             self.hooks
                 .event(V5ReceiptRuntimeEventKind::TaskBoundCommitted, epoch_ms);
+            if cancel_requested {
+                return self.cancel_unstarted_bound_task(
+                    &bound,
+                    task_record.task_id,
+                    cancellation_guard,
+                    deadline,
+                );
+            }
             if self.hooks.holds(V5PausePoint::BeforeTaskTerminalReceipt)
                 || self
                     .hooks
@@ -4631,22 +4903,18 @@ impl V5ReceiptRuntime {
         let deadline = self
             .hooks
             .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
-        let (task_record, bound) = self
-            .task_projection
-            .materialize_staged_bound_handoff(
-                &handoff,
-                &link_reservation,
-                epoch_ms,
-                deadline,
-                self.hooks.as_ref(),
-            )
-            .map_err(|failure| self.project_task_failure(failure))?;
-        self.complete_bound_task_handoff(
-            handoff.key().clone(),
-            handoff.record_version(),
-            bound.clone(),
+        let (task_record, bound) = match self.complete_handoff_into_task(
+            handoff,
+            Some(link_reservation),
+            epoch_ms,
             deadline,
-        )?;
+            |_| {},
+        )? {
+            HandoffCompletion::Bound(task_record, bound) => (task_record, bound),
+            HandoffCompletion::Terminal(terminal_record) => {
+                return Ok(CutoffCommit::Terminal(task_reply(&terminal_record)))
+            }
+        };
         let (task_record, bound) = self
             .task_projection
             .start_bound_task(&bound, task_record, deadline)
@@ -4704,81 +4972,23 @@ impl V5ReceiptRuntime {
             .hooks
             .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline);
         // Another owner may have staged a terminal, or a cancel marked this
-        // receipt, while the pause held: re-read it under the key's lock,
-        // held until the key moves to its Task link.
-        let key_lock =
-            self.submit_fences
-                .stripe(&crate::application::receipt_ledger::receipt_key_digest(
-                    handoff.key(),
-                ));
-        let handoff = self.reread_handoff_under_lock(&key_lock, handoff, deadline)?;
-        let (task_record, bound) = self
-            .task_projection
-            .materialize_staged_bound_handoff(
-                &handoff,
-                &link_reservation,
-                epoch_ms,
-                deadline,
-                self.hooks.as_ref(),
-            )
-            .map_err(|failure| self.project_task_failure(failure))?;
-        self.hooks
-            .promised_actor_binding(&promised, &actor_promised, &bound);
-        if matches!(
-            handoff.terminal_stage(),
-            HandoffTerminalStage::Staged { .. }
-        ) {
-            let (terminal_record, terminal_link) = self
-                .task_projection
-                .publish_staged_bound_task_terminal(
-                    &handoff,
-                    &bound,
-                    &task_record,
-                    deadline,
-                    self.hooks.as_ref(),
-                )
-                .map_err(|failure| self.project_task_failure(failure))?;
-            self.hooks.event(
-                V5ReceiptRuntimeEventKind::TaskStoreTerminalCommitted,
-                epoch_ms,
-            );
-            self.hooks.event(
-                V5ReceiptRuntimeEventKind::TaskStoreTerminalReadback,
-                epoch_ms,
-            );
-            let terminal_link = self.complete_staged_task_handoff_holding(
-                &key_lock,
-                handoff.key().clone(),
-                handoff.record_version(),
-                terminal_link,
-                deadline,
-            )?;
-            self.hooks.staged_terminal_publication(
-                &handoff,
-                &task_record,
-                &terminal_record,
-                &terminal_link,
-            )?;
-            self.hooks
-                .terminal_bound_task(&terminal_record, &terminal_link);
-            self.hooks.event(
-                V5ReceiptRuntimeEventKind::TaskTerminalBoundCommitted,
-                epoch_ms,
-            );
-            return Ok(V5RuntimeReply::Json(V5ServerResponse::Invocation {
-                outcome: V5InvocationResponse::Task {
-                    snapshot: task_store_snapshot(&terminal_record),
-                },
-            }));
-        }
-        self.complete_bound_task_handoff_holding(
-            &key_lock,
-            handoff.key().clone(),
-            handoff.record_version(),
-            bound.clone(),
+        // receipt, while the pause held: the Task is materialized from the
+        // state committed under the key's lock.
+        let (task_record, bound) = match self.complete_handoff_into_task(
+            handoff,
+            Some(link_reservation),
+            epoch_ms,
             deadline,
-        )?;
-        drop(key_lock);
+            |bound| {
+                self.hooks
+                    .promised_actor_binding(&promised, &actor_promised, bound)
+            },
+        )? {
+            HandoffCompletion::Bound(task_record, bound) => (task_record, bound),
+            HandoffCompletion::Terminal(terminal_record) => {
+                return Ok(task_reply(&terminal_record))
+            }
+        };
         self.continue_into_bound_task(
             actor_bound,
             task_record,
@@ -4801,16 +5011,13 @@ impl V5ReceiptRuntime {
         deadline: Instant,
     ) -> Result<V5RuntimeReply, ReceiptLedgerError> {
         let epoch_ms = self.continuation_epoch_ms(epoch_ms, handoff.task());
-        let (task_record, task_bound) = self
-            .task_projection
-            .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
-            .map_err(|failure| self.project_task_failure(failure))?;
-        self.complete_bound_task_handoff(
-            handoff.key().clone(),
-            handoff.record_version(),
-            task_bound.clone(),
-            deadline,
-        )?;
+        let (task_record, task_bound) =
+            match self.complete_handoff_into_task(handoff, None, epoch_ms, deadline, |_| {})? {
+                HandoffCompletion::Bound(task_record, task_bound) => (task_record, task_bound),
+                HandoffCompletion::Terminal(terminal_record) => {
+                    return Ok(task_reply(&terminal_record))
+                }
+            };
         self.continue_into_bound_task(
             actor_bound,
             task_record,
@@ -4907,7 +5114,7 @@ impl V5ReceiptRuntime {
             self.hooks.wait_for_gate_cancel(deadline)?;
             if let Some(cancelled) = self
                 .task_projection
-                .cancel_exact_bound_task(bound.key(), deadline)
+                .cancel_exact_bound_task(bound.key(), deadline, self.hooks.as_ref())
                 .map_err(|failure| self.project_task_failure(failure))?
             {
                 task_record = cancelled;
@@ -4917,13 +5124,19 @@ impl V5ReceiptRuntime {
         if task_record.cancel_requested {
             let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
                 .map_err(|_| ReceiptLedgerError::Corrupt("canonical v5 terminal failed"))?;
+            // The cancel may have reached the Task after this continuation
+            // took its epoch: the terminal never precedes it (#1395).
+            let terminal_epoch_ms = self
+                .epoch_ms()
+                .max(epoch_ms)
+                .max(task_record.updated_at_epoch_ms);
             let (terminal_record, terminal_link) = self
                 .task_projection
                 .publish_bound_task_terminal(
                     &bound,
                     &task_record,
                     &terminal,
-                    epoch_ms,
+                    terminal_epoch_ms,
                     deadline,
                     self.hooks.as_ref(),
                 )
@@ -4948,9 +5161,18 @@ impl V5ReceiptRuntime {
                 },
             }));
         }
-        let (cancellation, cancellation_guard) = self
-            .active_task_cancellations
-            .register(task_record.task_id)?;
+        let (cancellation, cancellation_guard, cancel_requested) =
+            self.register_bound_task_cancellation(&task_record, deadline)?;
+        if cancel_requested {
+            // A cancel reached the Task through its link after it started
+            // and before this token existed: the attempt does not run (#1395).
+            return self.cancel_unstarted_bound_task(
+                &bound,
+                task_record.task_id,
+                cancellation_guard,
+                deadline,
+            );
+        }
         self.hooks.pause(V5PausePoint::BeforePrepare, deadline)?;
         self.hooks.stage_entered(V5Stage::Prepare);
         self.hooks
@@ -5474,33 +5696,18 @@ impl V5ReceiptRuntime {
             self.hooks
                 .commit_deadline_at(V5PausePoint::BeforeTaskStoreCreate, deadline),
         )?;
-        let (task_record, task_bound) = self
-            .task_projection
-            .materialize_staged_bound_handoff(
-                &staged,
-                &reservation,
-                epoch_ms,
-                deadline,
-                self.hooks.as_ref(),
-            )
-            .map_err(|failure| self.project_task_failure(failure))?;
-        let (terminal_record, terminal_link) = self
-            .task_projection
-            .publish_staged_bound_task_terminal(
-                &staged,
-                &task_bound,
-                &task_record,
-                deadline,
-                self.hooks.as_ref(),
-            )
-            .map_err(|failure| self.project_task_failure(failure))?;
-        self.complete_staged_handoff_reply(
+        match self.complete_handoff_into_task(
             staged,
-            Some(&task_record),
-            terminal_record,
-            terminal_link,
+            Some(reservation),
+            epoch_ms,
             deadline,
-        )
+            |_| {},
+        )? {
+            HandoffCompletion::Terminal(terminal_record) => Ok(task_reply(&terminal_record)),
+            HandoffCompletion::Bound(..) => Err(ReceiptLedgerError::Corrupt(
+                "a staged handoff completed without its terminal",
+            )),
+        }
     }
 
     fn complete_staged_handoff_reply(
@@ -5590,16 +5797,13 @@ impl V5ReceiptRuntime {
             return self
                 .publish_staged_handoff_terminal_reply(handoff, terminal, epoch_ms, deadline);
         }
-        let (task_record, task_bound) = self
-            .task_projection
-            .materialize_bound_handoff(&handoff, epoch_ms, deadline, self.hooks.as_ref())
-            .map_err(|failure| self.project_task_failure(failure))?;
-        self.complete_bound_task_handoff(
-            handoff.key().clone(),
-            handoff.record_version(),
-            task_bound.clone(),
-            deadline,
-        )?;
+        let (task_record, task_bound) =
+            match self.complete_handoff_into_task(handoff, None, epoch_ms, deadline, |_| {})? {
+                HandoffCompletion::Bound(task_record, task_bound) => (task_record, task_bound),
+                HandoffCompletion::Terminal(terminal_record) => {
+                    return Ok(task_reply(&terminal_record))
+                }
+            };
         let (task_record, task_bound) = self
             .task_projection
             .start_bound_task(&task_bound, task_record, deadline)
@@ -6098,6 +6302,61 @@ impl V5ReceiptRuntime {
         }
     }
 
+    /// The digest of the receipt key a Task id belongs to, read from its
+    /// Task link or, before the handoff completion moved the key there, from
+    /// the receipt ledger. The key leaves the ledger only once its link
+    /// stands, so a key missed by both reads moved in between: the link is
+    /// read once more. A receipt still inline is found by the handle its
+    /// reservation left in this process; a handle evicted from the full
+    /// handle table leaves such a cancel without the key's lock, as before
+    /// #1399. `None` when nothing knows the Task.
+    fn stored_task_key_digest(
+        &self,
+        task_id: crate::domain::invocation::TaskId,
+        deadline: Instant,
+    ) -> Result<Option<crate::application::receipt_ledger::ReceiptKeyDigest>, ReceiptLedgerError>
+    {
+        let link_digest = || {
+            self.task_projection
+                .read_link(task_id, deadline)
+                .map(|link| {
+                    link.map(|link| {
+                        crate::application::receipt_ledger::receipt_key_digest(link.key())
+                    })
+                })
+                .map_err(|failure| self.project_task_failure(failure))
+        };
+        if let Some(digest) = link_digest()? {
+            return Ok(Some(digest));
+        }
+        let key = match self.receipt_ledger.resolve_task(task_id, deadline) {
+            Ok(ReceiptState::TaskPromisedUnbound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskPromisedActorBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskHandoffActorBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskReceiptOwnedActorBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskTerminalReceiptBacked(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskTerminalBound(receipt)) => receipt.key().clone(),
+            Ok(ReceiptState::TaskRetirementPending(receipt)) => receipt.key().clone(),
+            Ok(_) | Err(ReceiptLedgerError::ReceiptNotFound) => {
+                if let Some(digest) = link_digest()? {
+                    return Ok(Some(digest));
+                }
+                // A receipt this process reserved and still runs inline is
+                // not a Task for the ledger yet, but its handler may hand it
+                // off at any moment: its key is known here.
+                match self.receipt_handles.get(task_id) {
+                    Some(key) => key,
+                    None => return Ok(None),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Some(
+            crate::application::receipt_ledger::receipt_key_digest(&key),
+        ))
+    }
+
     fn cancel_stored_task(
         &self,
         task_id: crate::domain::invocation::TaskId,
@@ -6106,6 +6365,21 @@ impl V5ReceiptRuntime {
         self.task_projection
             .retire_expired_terminal_tasks(deadline, self.hooks.as_ref())
             .map_err(|failure| self.project_task_failure(failure))?;
+        // A cancel by Task id takes the key's lock like the exact-key cancel:
+        // the handoff completion materializes the Task, publishes its link,
+        // stages its terminal and moves the key under that lock, so this
+        // cancel either marks the ledger row before it or reaches the Task
+        // through its link after it, never a half-published Task (#1399).
+        // Taken before the terminal gate, never inside it.
+        let digest = self.stored_task_key_digest(task_id, deadline)?;
+        let _key_lock = digest
+            .as_ref()
+            .map(|digest| self.submit_fences.stripe(digest));
+        // An attempt still running in this process ends a Task that has not
+        // begun itself once it hears the cancel, as after an exact-key cancel:
+        // a terminal published here would move the Task under it. Only a Task
+        // no attempt runs any more is ended here.
+        let attempt_live = self.live_attempts.contains(task_id);
         {
             let _task_terminal_gate = self
                 .task_terminal_coordinator
@@ -6113,7 +6387,7 @@ impl V5ReceiptRuntime {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(record) = self
                 .task_projection
-                .cancel_bound_task(task_id, deadline)
+                .cancel_bound_task(task_id, deadline, self.hooks.as_ref())
                 .map_err(|failure| self.project_task_failure(failure))?
             {
                 self.active_task_cancellations.cancel(task_id);
@@ -6127,7 +6401,10 @@ impl V5ReceiptRuntime {
                         self.project_task_failure(V5TaskProjectionFailure::from_link_store(error))
                     })?;
                 if let TaskLifecycleLinkRecord::TaskBound(bound) = link {
-                    if bound.phase() == AttemptPhase::NotBegun && record.cancel_requested {
+                    if !attempt_live
+                        && bound.phase() == AttemptPhase::NotBegun
+                        && record.cancel_requested
+                    {
                         let terminal = canonical_v5_terminal(&ReceiptTerminalOutcome::Cancelled)
                             .map_err(|_| {
                                 ReceiptLedgerError::Corrupt("canonical v5 terminal failed")
@@ -6168,11 +6445,12 @@ impl V5ReceiptRuntime {
             ReceiptState::TaskPromisedUnbound(receipt) => {
                 (TaskCancellationReceipt::PromisedUnbound(receipt), true)
             }
-            ReceiptState::TaskPromisedActorBound(receipt) => {
-                (TaskCancellationReceipt::PromisedActorBound(receipt), true)
-            }
+            ReceiptState::TaskPromisedActorBound(receipt) => (
+                TaskCancellationReceipt::PromisedActorBound(receipt),
+                !attempt_live,
+            ),
             ReceiptState::TaskHandoffActorBound(receipt) => {
-                let terminalize = receipt.phase() == AttemptPhase::NotBegun;
+                let terminalize = receipt.phase() == AttemptPhase::NotBegun && !attempt_live;
                 (
                     TaskCancellationReceipt::HandoffActorBound(receipt),
                     terminalize,
@@ -6212,6 +6490,10 @@ impl V5ReceiptRuntime {
             );
             return self.resolve_task(task_id, deadline);
         }
+        // An attempt already running toward this handoff learns of the
+        // cancel now; its Task is materialized with it, as for the exact-key
+        // cancel (#1395, #1399).
+        self.active_task_cancellations.cancel(task_id);
         Ok(queued_receipt_task_snapshot(
             cancelled.task(),
             crate::application::receipt_ledger::receipt_key_digest(cancelled.key()),
@@ -7247,7 +7529,7 @@ fn handle_probe_connection(
         .try_clone()
         .map_err(|error| daemon_io_error("clone protocol-v5 client stream", error))?;
     let mut reader = BufReader::new(reader_stream);
-    let decoded = match read_v5_request_before(&mut reader, handshake_deadline) {
+    let decoded = match read_v5_handshake_before(&mut reader, handshake_deadline) {
         Ok((decoded, _)) => decoded,
         Err(V5RequestFrameError::InvalidRequest(_)) => {
             write_runtime_probe_error_before(
@@ -7331,14 +7613,14 @@ fn handle_probe_connection(
     while !shutting_down.load(Ordering::Acquire) {
         let session_read_deadline = Instant::now() + SESSION_READ_TIMEOUT;
         let (decoded, request_received_at) =
-            match read_v5_request_before(&mut reader, session_read_deadline) {
+            match read_v5_session_request(&mut reader, session_read_deadline) {
                 Ok(observation) => observation,
                 Err(V5RequestFrameError::InvalidRequest(_)) => {
                     write_runtime_probe_error_before(
                         &mut stream,
                         runtime,
                         V5DaemonErrorCode::InvalidRequest,
-                        session_read_deadline,
+                        Instant::now() + SESSION_READ_TIMEOUT,
                     )?;
                     break;
                 }
@@ -7349,7 +7631,7 @@ fn handle_probe_connection(
                         &mut stream,
                         runtime,
                         V5DaemonErrorCode::InvalidRequest,
-                        session_read_deadline,
+                        Instant::now() + SESSION_READ_TIMEOUT,
                     )?;
                     break;
                 }
@@ -7662,11 +7944,85 @@ fn v5_request_deadlines(
     })
 }
 
+type V5FrameRead = fn(
+    &mut BufReader<TcpStream>,
+    &mut dyn FnMut(&mut BufReader<TcpStream>) -> io::Result<()>,
+) -> io::Result<Vec<u8>>;
+
+/// The first frame of a connection comes before its token is checked and is
+/// held to the small handshake bound.
+fn read_v5_handshake_before(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+) -> Result<(DecodedV5Request, Instant), V5RequestFrameError> {
+    read_v5_frame_before(reader, deadline, |reader, before_fill| {
+        read_bounded_v5_handshake_frame_before(reader, before_fill)
+    })
+}
+
 fn read_v5_request_before(
     reader: &mut BufReader<TcpStream>,
     deadline: Instant,
 ) -> Result<(DecodedV5Request, Instant), V5RequestFrameError> {
-    let raw_frame = read_bounded_v5_request_frame_before(reader, |reader| {
+    read_v5_frame_before(reader, deadline, |reader, before_fill| {
+        read_bounded_v5_request_frame_before(reader, before_fill)
+    })
+}
+
+/// An idle session waits for the first byte of a frame until `idle_deadline`
+/// and is then polled again. Once that byte arrived, the frame gets its own
+/// absolute deadline, which later bytes do not extend. A frame that began just
+/// before the idle poll ended would otherwise lose its consumed prefix and
+/// have its tail read as a new request; a large frame made that likely (#1309).
+/// A frame that misses its own deadline ends the session: its tail is never
+/// parsed as another request.
+fn read_v5_session_request(
+    reader: &mut BufReader<TcpStream>,
+    idle_deadline: Instant,
+) -> Result<(DecodedV5Request, Instant), V5RequestFrameError> {
+    while reader.buffer().is_empty() {
+        let remaining = idle_deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| V5RequestFrameError::Read(io::Error::from(io::ErrorKind::TimedOut)))?;
+        reader
+            .get_ref()
+            .set_read_timeout(Some(remaining))
+            .map_err(V5RequestFrameError::Read)?;
+        match std::io::BufRead::fill_buf(reader) {
+            Ok([]) => {
+                return Err(V5RequestFrameError::Read(io::Error::from(
+                    io::ErrorKind::UnexpectedEof,
+                )))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(V5RequestFrameError::Read(error)),
+        }
+    }
+    read_v5_request_before(reader, Instant::now() + SESSION_FRAME_READ_TIMEOUT).map_err(|error| {
+        match error {
+            V5RequestFrameError::Read(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                V5RequestFrameError::Read(io::Error::other(
+                    "protocol-v5 session frame missed its read deadline",
+                ))
+            }
+            other => other,
+        }
+    })
+}
+
+fn read_v5_frame_before(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+    read_frame: V5FrameRead,
+) -> Result<(DecodedV5Request, Instant), V5RequestFrameError> {
+    let raw_frame = read_frame(reader, &mut |reader| {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .filter(|remaining| !remaining.is_zero())
