@@ -1574,7 +1574,6 @@ fn validate_metadata_event_source(source: &MetaEventSource) -> Result<(), MetaDi
 
 fn validate_relation_edit_shape(
     relation: MetaRelation,
-    mode: RelationEditMode,
     targets: &[MetaRelationTarget],
 ) -> Result<(), MetaDiagnostic> {
     if relation != MetaRelation::Source {
@@ -1586,12 +1585,6 @@ fn validate_relation_edit_shape(
         } else {
             Ok(())
         };
-    }
-    if mode != RelationEditMode::Replace {
-        return Err(invalid_operation(
-            "mode",
-            "source relation supports replace mode only",
-        ));
     }
     if targets.is_empty() {
         return Err(invalid_operation(
@@ -1705,11 +1698,9 @@ pub(crate) fn validate_metadata_operation_capabilities(
             validate_metadata_kind_collection(owner_kind, *collection)
         }
         MetaEditOperation::EditRelations {
-            relation,
-            mode,
-            targets,
+            relation, targets, ..
         } => {
-            validate_relation_edit_shape(*relation, *mode, targets)?;
+            validate_relation_edit_shape(*relation, targets)?;
             // Validate availability even before inspecting targets so an empty
             // or forged operation cannot turn an absent Platform XML node into
             // a provider concern.
@@ -2030,7 +2021,7 @@ impl MetaEditOperation {
         mode: RelationEditMode,
         targets: Vec<MetaRelationTarget>,
     ) -> Result<Self, MetaDiagnostic> {
-        validate_relation_edit_shape(relation, mode, &targets)?;
+        validate_relation_edit_shape(relation, &targets)?;
         Ok(Self::EditRelations {
             relation,
             mode,
@@ -2649,21 +2640,23 @@ mod tests {
     }
 
     #[test]
-    fn event_source_relation_is_replace_only_and_nonempty() {
-        assert!(MetaEditOperation::edit_relation_targets(
-            MetaRelation::Source,
-            RelationEditMode::Replace,
-            Vec::new(),
-        )
-        .is_err());
-        assert!(MetaEditOperation::edit_relation_targets(
-            MetaRelation::Source,
-            RelationEditMode::Add,
-            vec![MetaRelationTarget::EventSource(MetaEventSource::Family {
-                source_class: EventSourceClass::CatalogObject,
-            })],
-        )
-        .is_err());
+    fn event_source_relation_accepts_nonempty_add_remove_and_replace() {
+        for mode in RelationEditMode::ALL {
+            assert!(MetaEditOperation::edit_relation_targets(
+                MetaRelation::Source,
+                *mode,
+                Vec::new()
+            )
+            .is_err());
+            assert!(MetaEditOperation::edit_relation_targets(
+                MetaRelation::Source,
+                *mode,
+                vec![MetaRelationTarget::EventSource(MetaEventSource::Family {
+                    source_class: EventSourceClass::CatalogObject,
+                })],
+            )
+            .is_ok());
+        }
         assert!(MetaEditOperation::edit_relation_targets(
             MetaRelation::Owners,
             RelationEditMode::Replace,

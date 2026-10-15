@@ -10110,13 +10110,13 @@ struct ActorLogicalReadLease {"#,
         apply_pair(
             at,
             serde_json::json!([
-                {"op": "formAttribute.add", "args": {"items": [
+                {"op": "attribute.add", "args": {"items": [
                     {"name": "HtmlSource", "type": "String"}
                 ]}},
-                {"op": "element.add", "args": {"items": [
+                {"op": "item.add", "args": {"items": [
                     {"name": "Content", "type": "Group"}
                 ]}},
-                {"op": "element.add", "args": {"at": "main:Document.Order.Form.Main.Item.Content", "items": [{
+                {"op": "item.add", "args": {"at": "main:Document.Order.Form.Main.Item.Content", "items": [{
                     "name": "Html", "type": "HTMLDocumentField", "path": "HtmlSource",
                     "titleLocation": "None", "width": 1, "height": 1,
                     "autoMaxWidth": false, "skipOnInput": true
@@ -10148,7 +10148,7 @@ struct ActorLogicalReadLease {"#,
             .find(|node| {
                 node.has_tag_name("HTMLDocumentField") && node.attribute("name") == Some("Html")
             })
-            .expect("typed element.add creates the platform HTML element");
+            .expect("typed item.add creates the platform HTML element");
         let group = html.parent().unwrap().parent().unwrap();
         assert!(group.has_tag_name("UsualGroup"), "{xml}");
         assert_eq!(group.attribute("name"), Some("Content"));
@@ -10219,7 +10219,7 @@ struct ActorLogicalReadLease {"#,
         // A later operation must not discard an HTML field it did not create.
         apply_pair(
             "main:Document.Order.Form.Main.Item.Content",
-            serde_json::json!([{"op": "element.add", "args": {"items": [
+            serde_json::json!([{"op": "item.add", "args": {"items": [
                 {"name": "Neighbor", "type": "InputField", "path": "HtmlSource", "after": "Html"}
             ]}}]),
         );
@@ -10258,7 +10258,7 @@ struct ActorLogicalReadLease {"#,
                 serde_json::json!({
                     "at": at,
                     "ops": [
-                        {"op": "element.add", "args": {"items": [{"name": "MustNotAppear", "type": "InputField", "path": "HtmlSource"}]}},
+                        {"op": "item.add", "args": {"items": [{"name": "MustNotAppear", "type": "InputField", "path": "HtmlSource"}]}},
                         {"op": "event.bind", "args": {"at": format!("{item_at}.Event.OnChange"), "values": {"handler": "InvalidHandler"}}}
                     ]
                 }),
@@ -10294,7 +10294,7 @@ struct ActorLogicalReadLease {"#,
                     ToolIdentity::Apply,
                     serde_json::json!({
                         "at": at,
-                        "ops": [{"op": "element.add", "args": {"items": [invalid_item]}}]
+                        "ops": [{"op": "item.add", "args": {"items": [invalid_item]}}]
                     }),
                 );
                 assert!(
@@ -10328,7 +10328,7 @@ struct ActorLogicalReadLease {"#,
                 ToolIdentity::Apply,
                 serde_json::json!({
                     "at": at,
-                    "ops": [{"op": "element.add", "args": {"items": [{
+                    "ops": [{"op": "item.add", "args": {"items": [{
                         "name": "OverflowHtml", "type": "HTMLDocumentField", "path": "HtmlSource"
                     }]}}]
                 }),

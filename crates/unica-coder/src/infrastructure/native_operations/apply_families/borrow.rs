@@ -5,6 +5,10 @@ use crate::domain::project_sources::SourceSetKind;
 use crate::infrastructure::native_operations::apply::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyStagedState,
 };
+use crate::infrastructure::native_operations::cfe_borrow_enum_value::{
+    enum_value_properties, enum_value_source_uuid, plan_borrow_enum_value, EnumValueLookupError,
+    EnumValueLookupErrorKind,
+};
 use crate::infrastructure::workspace_actor::{ApplyAdmission, ProviderRootBinding};
 use std::path::{Path, PathBuf};
 
@@ -53,12 +57,14 @@ pub(super) fn parse(
             .unwrap_or_default(),
     )
     .map_err(|error| fail(&error.to_string()))?;
-    if parent.source_set() == binding.source_set_name()
-        || parent.segments().len() != 1
-        || parent.segments()[0].name().is_none()
-    {
+    if !crate::domain::apply::valid_borrow_source(&parent, binding.source_set_name()) {
         return Err(fail(
-            "from must name a top-level object in a distinct parent source set",
+            "from must name a top-level object or Enum.EnumValue in a distinct parent source set",
+        ));
+    }
+    if parent.segments().len() == 2 && args.contains_key("overrides") {
+        return Err(fail(
+            "overrides are not supported when borrowing an EnumValue",
         ));
     }
     let overrides = args
@@ -136,6 +142,17 @@ fn registered(owner: &[u8], kind: &str, name: &str) -> Result<bool, ApplyPlanErr
         ));
     }
     Ok(count == 1)
+}
+
+fn enum_value_lookup_error(
+    error: EnumValueLookupError,
+    parent: &QualifiedAddress,
+) -> ApplyPlanError {
+    let kind = match error.kind {
+        EnumValueLookupErrorKind::NotFound => ApplyPlanErrorKind::NotFound,
+        EnumValueLookupErrorKind::InvalidSource => ApplyPlanErrorKind::InvalidSource,
+    };
+    ApplyPlanError::new(kind, error.to_string()).at_path(parent.to_string())
 }
 
 pub(super) fn plan(
@@ -239,7 +256,7 @@ pub(super) fn plan(
     let identity = crate::infrastructure::native_operations::cfe::CfeBorrowIdentity::for_plan(
         seed.finalize().into(),
     );
-    let borrowed = crate::infrastructure::native_operations::cfe_borrow_object::plan_borrow_object_with_identity(
+    let mut borrowed = crate::infrastructure::native_operations::cfe_borrow_object::plan_borrow_object_with_identity(
         &parent_bytes,
         existing.as_deref(),
         operation.overrides.as_deref(),
@@ -257,6 +274,33 @@ pub(super) fn plan(
             ApplyPlanErrorKind::InvalidSource,
             "registered parent address and descriptor identity disagree",
         ));
+    }
+    let value_name = parent.segments().get(1).and_then(|value| value.name());
+    let mut result_at = format!("{}:{kind}.{name}", binding.source_set_name());
+    let mut result_parent_uuid = borrowed.parent_uuid.clone();
+    let mut created = existing.is_none();
+    let mut previous_value_properties = None;
+    if let Some(value_name) = value_name {
+        result_parent_uuid = enum_value_source_uuid(&parent_bytes, value_name)
+            .map_err(|error| enum_value_lookup_error(error, parent))?;
+        previous_value_properties = existing
+            .as_deref()
+            .map(|bytes| enum_value_properties(bytes, value_name))
+            .transpose()
+            .map_err(|error| enum_value_lookup_error(error, parent))?
+            .flatten();
+        created = previous_value_properties.is_none();
+        borrowed.bytes = plan_borrow_enum_value(
+            &parent_bytes,
+            &borrowed.bytes,
+            value_name,
+            &identity.new_uuid("enum-value", &parent.to_string()),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error)
+                .at_path(parent.to_string())
+        })?;
+        result_at.push_str(&format!(".EnumValue.{value_name}"));
     }
     let properties =
         |bytes: &[u8]| -> Result<std::collections::BTreeMap<String, String>, ApplyPlanError> {
@@ -291,12 +335,28 @@ pub(super) fn plan(
                 })
                 .collect())
         };
-    let previous_properties = existing
-        .as_deref()
-        .map(properties)
-        .transpose()?
-        .unwrap_or_default();
-    let next_properties = properties(&borrowed.bytes)?;
+    let previous_properties = if value_name.is_some() {
+        previous_value_properties.unwrap_or_default()
+    } else {
+        existing
+            .as_deref()
+            .map(properties)
+            .transpose()?
+            .unwrap_or_default()
+    };
+    let next_properties = if let Some(value_name) = value_name {
+        enum_value_properties(&borrowed.bytes, value_name)
+            .map_err(|error| enum_value_lookup_error(error, parent))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::InvalidSource,
+                    "planned EnumValue is missing from the borrowed descriptor",
+                )
+                .at_path(parent.to_string())
+            })?
+    } else {
+        properties(&borrowed.bytes)?
+    };
     let changed_properties = previous_properties
         .keys()
         .chain(next_properties.keys())
@@ -307,16 +367,18 @@ pub(super) fn plan(
         .collect();
     let detail = crate::infrastructure::native_operations::apply::BorrowPlanDetail {
         index,
-        at: format!("{}:{kind}.{name}", binding.source_set_name()),
+        at: result_at,
         from: parent.to_string(),
-        parent_uuid: borrowed.parent_uuid.clone(),
-        created: existing.is_none(),
+        parent_uuid: result_parent_uuid,
+        created,
         changed_properties,
-        protected_overrides: crate::infrastructure::native_operations::meta::parse_meta_borrowing(
-            &borrowed.bytes,
-        )
-        .map_err(|error| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error))?
-        .overrides,
+        protected_overrides: if value_name.is_some() {
+            Vec::new()
+        } else {
+            crate::infrastructure::native_operations::meta::parse_meta_borrowing(&borrowed.bytes)
+                .map_err(|error| ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error))?
+                .overrides
+        },
     };
     let mut effects = Vec::new();
     if existing.as_deref() != Some(borrowed.bytes.as_slice()) {
@@ -438,7 +500,17 @@ mod tests {
             overrides: Option<serde_json::Value>,
         ) -> Result<crate::infrastructure::workspace_actor::ApplyPublicationResult, String>
         {
-            let mut args = serde_json::json!({"from":"main:Catalog.Orders"});
+            self.run_from("main:Catalog.Orders", dry, rev, overrides)
+        }
+        fn run_from(
+            &self,
+            from: &str,
+            dry: bool,
+            rev: Option<&str>,
+            overrides: Option<serde_json::Value>,
+        ) -> Result<crate::infrastructure::workspace_actor::ApplyPublicationResult, String>
+        {
+            let mut args = serde_json::json!({"from":from});
             if let Some(overrides) = overrides {
                 args["overrides"] = overrides;
             }
@@ -469,6 +541,170 @@ mod tests {
                 .publish_prepared_apply(prepared)
                 .map_err(|e| e.to_string())
         }
+
+        fn plan_from(&self, from: &str) -> Result<(), ApplyPlanError> {
+            let input = serde_json::json!({"at":"extension:Configuration","dryRun":true,"ops":[{"op":"object.borrow","args":{"from":from}}]});
+            let request = ApplyRequest::parse(input.as_object().unwrap(), &["main", "extension"])
+                .expect("test address must pass domain validation");
+            let admission = self
+                .actor
+                .admit_apply_with_dependencies(
+                    &self.destination,
+                    std::slice::from_ref(&self.parent),
+                    request.if_rev(),
+                    request.dry_run(),
+                    ProviderDeadline::from_budget(Duration::from_secs(10)),
+                    &CancellationToken::new(),
+                )
+                .expect("test workspace must admit planning");
+            super::super::plan_hidden_v13_apply(&request, &self.destination, &admission).map(|_| ())
+        }
+    }
+
+    fn enum_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        std::fs::create_dir_all(fixture.src.join("Enums")).unwrap();
+        let owner = fixture.src.join("Configuration.xml");
+        let text = std::fs::read_to_string(&owner).unwrap();
+        std::fs::write(
+            owner,
+            text.replace(
+                "<Catalog>Orders</Catalog>",
+                "<Catalog>Orders</Catalog><Enum>Operations</Enum>",
+            ),
+        )
+        .unwrap();
+        std::fs::write(fixture.src.join("Enums/Operations.xml"), r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Enum uuid="10000000-0000-4000-8000-000000000011"><Properties><Name>Operations</Name></Properties><ChildObjects><EnumValue uuid="10000000-0000-4000-8000-000000000012"><Properties><Name>Costs</Name><Comment>parent comment</Comment></Properties></EnumValue><EnumValue uuid="10000000-0000-4000-8000-000000000013"><Properties><Name>Other</Name></Properties></EnumValue></ChildObjects></Enum></MetaDataObject>"#).unwrap();
+        fixture
+    }
+
+    #[test]
+    fn canonical_enum_value_preview_refresh_and_noop_preserve_local_siblings() {
+        let fixture = enum_fixture();
+        let from = "main:Enum.Operations.EnumValue.Costs";
+        let preview = fixture.run_from(from, true, None, None).unwrap();
+        assert!(!fixture.dst.join("Enums/Operations.xml").exists());
+        let committed = fixture
+            .run_from(from, false, Some(preview.rev()), None)
+            .unwrap();
+        assert_eq!(committed.rev(), preview.rev());
+        let path = fixture.dst.join("Enums/Operations.xml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let borrowed_uuid = roxmltree::Document::parse(&text)
+            .unwrap()
+            .descendants()
+            .find(|node| {
+                node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "EnumValue"))
+                    && node.descendants().any(|child| {
+                        child.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Name"))
+                            && child.text() == Some("Costs")
+                    })
+            })
+            .unwrap()
+            .attribute("uuid")
+            .unwrap()
+            .to_string();
+        assert!(text.contains("<Name>Costs</Name>"));
+        assert!(!text.contains("<Name>Other</Name>"));
+        assert!(text.contains("<ExtendedConfigurationObject>10000000-0000-4000-8000-000000000012</ExtendedConfigurationObject>"));
+        let own = r#"<EnumValue uuid="10000000-0000-4000-8000-000000000019"><Properties><Name>Local</Name><Comment>keep local</Comment></Properties></EnumValue>"#;
+        let local = text
+            .replace(
+                "<Comment/>\n\t\t\t\t\t<ExtendedConfigurationObject>10000000-0000-4000-8000-000000000012</ExtendedConfigurationObject>",
+                "<Comment>local borrowed comment</Comment>\n\t\t\t\t\t<ExtendedConfigurationObject>10000000-0000-4000-8000-000000000012</ExtendedConfigurationObject>",
+            )
+            .replace("</ChildObjects>", &format!("{own}</ChildObjects>"));
+        assert!(local.contains("local borrowed comment"));
+        std::fs::write(&path, &local).unwrap();
+        let parent = fixture.src.join("Enums/Operations.xml");
+        std::fs::write(
+            &parent,
+            std::fs::read_to_string(&parent)
+                .unwrap()
+                .replace("parent comment", "updated parent comment"),
+        )
+        .unwrap();
+        let refresh = fixture.run_from(from, true, None, None).unwrap();
+        assert!(refresh.effects().events().is_empty());
+        fixture
+            .run_from(from, false, Some(refresh.rev()), None)
+            .unwrap();
+        let refreshed = std::fs::read_to_string(&path).unwrap();
+        assert!(refreshed.contains("local borrowed comment"));
+        assert!(!refreshed.contains("updated parent comment"));
+        assert!(refreshed.contains(&format!("uuid=\"{borrowed_uuid}\"")));
+        assert!(refreshed.contains("<Name>Local</Name>"));
+        assert!(refreshed.contains("keep local"));
+        let noop = fixture.run_from(from, true, None, None).unwrap();
+        assert!(noop.effects().events().is_empty());
+        fixture
+            .run_from(from, false, Some(noop.rev()), None)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), refreshed);
+    }
+
+    #[test]
+    fn canonical_enum_value_missing_collision_and_overrides_refuse_without_writes() {
+        let fixture = enum_fixture();
+        let before = crate::test_support::tree_snapshot(&fixture.dst);
+        let missing = fixture
+            .plan_from("main:Enum.Operations.EnumValue.Missing")
+            .unwrap_err();
+        assert_eq!(missing.kind(), ApplyPlanErrorKind::NotFound);
+        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
+        assert!(fixture
+            .run_from(
+                "main:Enum.Operations.EnumValue.Costs",
+                true,
+                None,
+                Some(serde_json::json!([]))
+            )
+            .unwrap_err()
+            .contains("overrides"));
+        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
+        let owner = fixture
+            .run_from("main:Enum.Operations", true, None, None)
+            .unwrap();
+        fixture
+            .run_from("main:Enum.Operations", false, Some(owner.rev()), None)
+            .unwrap();
+        let path = fixture.dst.join("Enums/Operations.xml");
+        let text = std::fs::read_to_string(&path).unwrap().replace("<ChildObjects/>", r#"<ChildObjects><EnumValue uuid="10000000-0000-4000-8000-000000000019"><Properties><Name>Costs</Name></Properties></EnumValue></ChildObjects>"#);
+        assert!(
+            text.contains("<Name>Costs</Name>"),
+            "collision fixture must contain the extension-owned value"
+        );
+        std::fs::write(&path, &text).unwrap();
+        let before = crate::test_support::tree_snapshot(&fixture.dst);
+        assert!(fixture
+            .run_from("main:Enum.Operations.EnumValue.Costs", true, None, None)
+            .is_err());
+        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
+    }
+
+    #[test]
+    fn canonical_enum_value_owner_without_child_objects_refuses_without_panicking_or_writing() {
+        let fixture = enum_fixture();
+        let owner = fixture
+            .run_from("main:Enum.Operations", true, None, None)
+            .unwrap();
+        fixture
+            .run_from("main:Enum.Operations", false, Some(owner.rev()), None)
+            .unwrap();
+        let path = fixture.dst.join("Enums/Operations.xml");
+        let damaged = std::fs::read_to_string(&path)
+            .unwrap()
+            .replace("\n\t\t<ChildObjects/>", "");
+        std::fs::write(&path, damaged).unwrap();
+        let before = crate::test_support::tree_snapshot(&fixture.dst);
+
+        let error = fixture
+            .plan_from("main:Enum.Operations.EnumValue.Costs")
+            .expect_err("damaged owner must produce a typed refusal");
+
+        assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+        assert!(error.to_string().contains("ChildObjects"), "{error}");
+        assert_eq!(crate::test_support::tree_snapshot(&fixture.dst), before);
     }
 
     #[test]

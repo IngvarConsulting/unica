@@ -3897,7 +3897,12 @@ mod tests {
         let mut site_dependent = std::collections::BTreeSet::new();
         for descriptor in registry.descriptors() {
             let op = descriptor.name();
-            if op == "template.add" || descriptor.argument_contract().is_none() {
+            // Реквизит и команда формы носят то же имя (#1465): здесь сверяются
+            // члены метаданных.
+            if op == "template.add"
+                || descriptor.argument_contract().is_none()
+                || descriptor.family() != crate::domain::apply::OperationFamily::Metadata
+            {
                 continue;
             }
             let (family, verb) = op.split_once('.').unwrap();

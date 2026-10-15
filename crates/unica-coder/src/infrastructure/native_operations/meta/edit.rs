@@ -884,7 +884,6 @@ pub(super) fn build_typed_operation_post_image(
                 operation,
                 MetaEditOperation::EditRelations {
                     relation: MetaRelation::Source,
-                    mode: RelationEditMode::Replace,
                     ..
                 }
             )
@@ -3830,8 +3829,55 @@ where
             after,
         });
     }
+    validate_typed_event_source_final_state(&working, operations)?;
     *xml_text = working;
     Ok(counts)
+}
+
+fn validate_typed_event_source_final_state(
+    xml: &str,
+    operations: &[MetaEditOperation],
+) -> Result<(), MetaFailure> {
+    if !operations.iter().any(|operation| {
+        matches!(
+            operation,
+            MetaEditOperation::EditRelations {
+                relation: MetaRelation::Source,
+                ..
+            }
+        )
+    }) {
+        return Ok(());
+    }
+    let document = Document::parse(xml.trim_start_matches('\u{feff}')).map_err(|_| {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "EventSubscription post-image is not valid XML",
+            Some("relations.source"),
+        ))
+    })?;
+    let source = meta_event_subscription_source_node(&document).map_err(|message| {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            message,
+            Some("relations.source"),
+        ))
+    })?;
+    let observed = parse_meta_event_subscription_source(source).map_err(|message| {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            message,
+            Some("relations.source"),
+        ))
+    })?;
+    if observed.sources.is_empty() {
+        return Err(MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "EventSubscription Source must retain at least one logical event source",
+            Some("relations.source"),
+        )));
+    }
+    Ok(())
 }
 
 fn typed_operation_name(operation: &MetaEditOperation) -> &'static str {
@@ -5674,13 +5720,6 @@ fn apply_typed_event_subscription_source(
     mode: RelationEditMode,
     targets: &[crate::domain::metadata::MetaRelationTarget],
 ) -> Result<(), MetaDiagnostic> {
-    if mode != RelationEditMode::Replace {
-        return Err(typed_diagnostic(
-            MetaDiagnosticCode::InvalidArguments,
-            "EventSubscription Source supports replace mode only",
-            Some("mode"),
-        ));
-    }
     let requested = targets
         .iter()
         .enumerate()
@@ -5709,6 +5748,28 @@ fn apply_typed_event_subscription_source(
             Some("relation"),
         )
     })?;
+    if mode != RelationEditMode::Replace {
+        let range = source_node.range();
+        let indent = meta_edit_line_indent(source_text, range.start);
+        let replacement = super::xml_model::edit_meta_event_subscription_members(
+            source_text,
+            source_node,
+            mode,
+            &requested,
+            &indent,
+        )
+        .map_err(|message| {
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                message,
+                Some("relation"),
+            )
+        })?;
+        let range = range.start + source_offset..range.end + source_offset;
+        drop(document);
+        xml_text.replace_range(range, &replacement);
+        return Ok(());
+    }
     // A replace operation is also the repair path for a syntactically readable
     // legacy TypeDescription source. Failure to project the old wire value into
     // the logical algebra must not prevent replacing it with a valid target.
@@ -7791,6 +7852,198 @@ pub(crate) mod tests {
         assert!(document.contains("<RegisterRecords/>"));
         assert!(document.contains("<BasedOn/>"));
         assert!(document.contains("<InputByString/>"));
+    }
+
+    fn source_edit(mode: RelationEditMode, paths: &[&str]) -> MetaEditOperation {
+        MetaEditOperation::EditRelations {
+            relation: MetaRelation::Source,
+            mode,
+            targets: paths
+                .iter()
+                .map(|path| {
+                    MetaRelationTarget::EventSource(MetaEventSource::Object {
+                        metadata_path: MetadataAddress::parse(
+                            PLATFORM_XML_8_3_27_FORMAT_2_20,
+                            path,
+                        )
+                        .unwrap(),
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn typed_event_source_add_remove_preserve_old_order_bytes_and_repeat_as_noop() {
+        let first = "<v8:Type>cfg:CatalogObject.ПримерВ</v8:Type>";
+        let second = "<v8:Type>cfg:CatalogObject.ПримерА</v8:Type>";
+        let mut xml = event_subscription_xml(&format!("<Source>{first}  {second}</Source>"));
+        let before = xml.clone();
+        let add = source_edit(RelationEditMode::Add, &["Catalog.ПримерБ"]);
+        apply_typed_operations(&mut xml, std::slice::from_ref(&add)).unwrap();
+        let after = xml.clone();
+        assert!(after.contains(&format!("{first}  {second}")));
+        assert!(
+            after.find("CatalogObject.ПримерА").unwrap()
+                < after.find("CatalogObject.ПримерБ").unwrap()
+        );
+        apply_typed_operations(&mut xml, &[add]).unwrap();
+        assert_eq!(xml, after);
+        apply_typed_operations(
+            &mut xml,
+            &[source_edit(RelationEditMode::Remove, &["Catalog.ПримерА"])],
+        )
+        .unwrap();
+        assert_eq!(xml, after.replace(&format!("  {second}"), ""));
+        let removed = xml.clone();
+        apply_typed_operations(
+            &mut xml,
+            &[source_edit(RelationEditMode::Remove, &["Catalog.ПримерА"])],
+        )
+        .unwrap();
+        assert_eq!(xml, removed);
+        assert_ne!(xml, before);
+    }
+
+    #[test]
+    fn typed_event_source_incremental_edits_keep_aliases_type_ids_and_distinct_manager_classes() {
+        let retained = "<d:Type>c:ConstantManager.Setting</d:Type>";
+        let removed = "<d:Type>c:ConstantValueManager.Setting</d:Type>";
+        let family = "<d:TypeSet>c:CatalogObject</d:TypeSet>";
+        let type_id = "<d:TypeId>97a5ab75-0974-4551-8659-72579c7cef1e</d:TypeId>";
+        let mut xml = event_subscription_alias_xml(&format!(
+            "<Source>{retained}{removed}{type_id}{family}</Source>"
+        ));
+        let original = xml.clone();
+        let remove = MetaEditOperation::EditRelations {
+            relation: MetaRelation::Source,
+            mode: RelationEditMode::Remove,
+            targets: vec![MetaRelationTarget::EventSource(MetaEventSource::Manager {
+                metadata_path: MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "Constant.setting",
+                )
+                .unwrap(),
+                source_class: Some(crate::domain::metadata::EventSourceClass::ConstantValueManager),
+            })],
+        };
+        apply_typed_operations(&mut xml, &[remove]).unwrap();
+        assert_eq!(xml, original.replace(removed, ""));
+        apply_typed_operations(
+            &mut xml,
+            &[source_edit(
+                RelationEditMode::Add,
+                &["Catalog.Z", "Catalog.A"],
+            )],
+        )
+        .unwrap();
+        assert!(xml.contains(&format!("{type_id}{family}")));
+        assert!(xml.find("CatalogObject.A").unwrap() < xml.find("CatalogObject.Z").unwrap());
+        assert!(xml.find("CatalogObject.Z").unwrap() < xml.find(type_id).unwrap());
+        let before = xml.clone();
+        apply_typed_operations(
+            &mut xml,
+            &[source_edit(
+                RelationEditMode::Add,
+                &["Catalog.z", "Catalog.a"],
+            )],
+        )
+        .unwrap();
+        assert_eq!(xml, before);
+        let family_add = MetaEditOperation::EditRelations {
+            relation: MetaRelation::Source,
+            mode: RelationEditMode::Add,
+            targets: vec![MetaRelationTarget::EventSource(MetaEventSource::Family {
+                source_class: crate::domain::metadata::EventSourceClass::DocumentObject,
+            })],
+        };
+        apply_typed_operations(&mut xml, &[family_add]).unwrap();
+        let appended = "\n\t\t\t\t<d:TypeSet>c:DocumentObject</d:TypeSet>";
+        assert_eq!(xml, before.replace(family, &format!("{family}{appended}")));
+    }
+
+    #[test]
+    fn typed_event_source_incremental_add_declares_namespaces_and_preserves_bom_eol() {
+        for eol in ["\n", "\r\n", "\r"] {
+            let source = "<m:Source xmlns:m='http://v8.1c.ru/8.3/MDClasses'/>";
+            let mut xml = format!("\u{feff}{}", event_subscription_xml(source))
+                .replace(
+                    "xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"",
+                    "xmlns:v8=\"foreign-data\"",
+                )
+                .replace(
+                    "xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\"",
+                    "xmlns:cfg=\"foreign-config\"",
+                )
+                .replace('\n', eol);
+            let before = xml.clone();
+            apply_typed_operations(
+                &mut xml,
+                &[source_edit(RelationEditMode::Add, &["Catalog.New"])],
+            )
+            .unwrap();
+            assert!(xml.contains("</m:Source>"));
+            assert!(xml.starts_with('\u{feff}'));
+            let (prefix, suffix) = before.split_once(source).unwrap();
+            assert!(xml.starts_with(prefix));
+            assert!(xml.ends_with(suffix));
+            let doc = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+            let node = meta_event_subscription_source_node(&doc).unwrap();
+            let observed = parse_meta_event_subscription_source(node).unwrap();
+            assert_eq!(
+                observed.sources[0].metadata_path().unwrap().as_str(),
+                "Catalog.New"
+            );
+            if eol == "\r\n" {
+                assert!(!xml.replace("\r\n", "").contains('\n'));
+            }
+            if eol == "\r" {
+                assert!(!xml.contains('\n'));
+            }
+        }
+    }
+
+    #[test]
+    fn typed_event_source_incremental_edits_refuse_invalid_and_empty_results_without_writes() {
+        for source in [
+            "<Source><v8:Type>cfg:CatalogObject.Items</v8:Type></Source>",
+            "<Source><v8:Type>cfg:CatalogObject.Items</v8:Type><v8:TypeId>97a5ab75-0974-4551-8659-72579c7cef1e</v8:TypeId></Source>",
+        ] {
+            let mut xml = event_subscription_xml(source);
+            let before = xml.clone();
+            assert!(apply_typed_operations(&mut xml, &[source_edit(RelationEditMode::Remove, &["Catalog.Items"])]).is_err());
+            assert_eq!(xml, before);
+        }
+        for mode in [RelationEditMode::Add, RelationEditMode::Remove] {
+            let mut xml = event_subscription_xml(
+                "<Source><v8:Type>cfg:CatalogObject.Items</v8:Type><Unknown/></Source>",
+            );
+            let before = xml.clone();
+            assert!(
+                apply_typed_operations(&mut xml, &[source_edit(mode, &["Catalog.Items"])]).is_err()
+            );
+            assert_eq!(xml, before);
+        }
+
+        for operations in [
+            [
+                source_edit(RelationEditMode::Remove, &["Catalog.Items"]),
+                source_edit(RelationEditMode::Add, &["Catalog.Replacement"]),
+            ],
+            [
+                source_edit(RelationEditMode::Add, &["Catalog.Replacement"]),
+                source_edit(RelationEditMode::Remove, &["Catalog.Items"]),
+            ],
+        ] {
+            let mut xml = event_subscription_xml(
+                "<Source><v8:Type>cfg:CatalogObject.Items</v8:Type></Source>",
+            );
+
+            apply_typed_operations(&mut xml, &operations).unwrap();
+
+            assert!(!xml.contains("CatalogObject.Items"), "{xml}");
+            assert!(xml.contains("CatalogObject.Replacement"), "{xml}");
+        }
     }
 
     #[test]
