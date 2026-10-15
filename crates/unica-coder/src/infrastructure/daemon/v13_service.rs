@@ -10,7 +10,7 @@ use super::v13_call_graph::{
     declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
-use super::v13_read_modes::{attach_can, operation_node, search_scope_prefix, source_backed};
+use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::{
@@ -739,23 +739,38 @@ impl CanonicalV13ReadService {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    operation_node(&data, op, &owner_at, can_context).map_err(|error| {
-                        let mut refused = ViewError::new(error.code(), error.to_string());
-                        // Снятая операция ведёт к контракту заменившей (#1465).
-                        refused.set_next(match error.next() {
-                            Some(contract) => json!({
-                                "tool": "unica.view",
-                                "args": {"at": contract},
-                                "reason": "контракт операции, заменившей снятую",
-                            }),
-                            None => json!({
-                                "tool": "unica.view",
-                                "args": {"at": owner_at},
-                                "reason": "операции, применимые к этому узлу",
-                            }),
-                        });
-                        refused
-                    })
+                    // Роль элемента-предка читается его узлом: маршрут снятой
+                    // операции не ведёт в поле, куда элемент не добавить.
+                    let ancestor_role = |item: &QualifiedAddress| {
+                        if item.segments().last()?.kind() != NodeKind::Item {
+                            return None;
+                        }
+                        let read = service.view(ViewRequest::new(&item.to_string()).ok()?);
+                        read.data?
+                            .get("props")?
+                            .get("tag")?
+                            .as_str()
+                            .map(crate::domain::apply::FormItemRole::from_tag)
+                    };
+                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role).map_err(
+                        |error| {
+                            let mut refused = ViewError::new(error.code(), error.to_string());
+                            // Снятая операция ведёт к контракту заменившей (#1465).
+                            refused.set_next(match error.next() {
+                                Some(contract) => json!({
+                                    "tool": "unica.view",
+                                    "args": {"at": contract},
+                                    "reason": "контракт операции, заменившей снятую",
+                                }),
+                                None => json!({
+                                    "tool": "unica.view",
+                                    "args": {"at": owner_at},
+                                    "reason": "операции, применимые к этому узлу",
+                                }),
+                            });
+                            refused
+                        },
+                    )
                 }
                 None => {
                     attach_can(&mut data, can_context);
