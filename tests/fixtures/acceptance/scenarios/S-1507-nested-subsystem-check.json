@@ -7,6 +7,17 @@
   "workspace": "tests/fixtures/acceptance/workspace-nested-check",
   "wire": [
     {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    },
+    {
       "tool": "unica.view",
       "args": {
         "at": "main:Subsystem.Parent"
