@@ -1692,6 +1692,8 @@ mod tests {
         set_unix_mode_for_test, unix_mode_for_test, FileLinkFixtureOutcome,
     };
     use std::fs;
+    #[cfg(windows)]
+    use std::io::Read;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2197,6 +2199,38 @@ mod tests {
             1
         );
         assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn single_file_cleanup_unlinks_stage_while_another_handle_is_open() {
+        let root = unique_temp_root("single-file-posix-cleanup");
+        let target = root.join("created.bin");
+        let report = with_publish_failpoints(&[PublishCheckpoint::Cleanup], || {
+            publish(PublishRequest {
+                target: &target,
+                replacement: b"committed bytes",
+                mode: PublishMode::CreateOnly,
+            })
+        })
+        .expect("публикация должна оставить токен очистки в заданной точке");
+        let warning = report
+            .cleanup_warnings
+            .first()
+            .expect("точка отказа очистки должна удержать временный файл");
+        let stage = warning.artifact.path().to_path_buf();
+        let mut foreign = fs::File::open(&stage).unwrap();
+
+        cleanup_publication_artifact(&warning.artifact)
+            .expect("POSIX-очистка должна убрать имя проверенного файла");
+
+        assert!(!stage.exists(), "имя временного файла должно исчезнуть");
+        assert!(!publication_debris(&root).contains(&stage));
+        let mut bytes = Vec::new();
+        foreign.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"committed bytes");
+        drop(foreign);
         fs::remove_dir_all(root).unwrap();
     }
 
