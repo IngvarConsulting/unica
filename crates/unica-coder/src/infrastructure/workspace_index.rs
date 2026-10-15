@@ -1,4 +1,5 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken, CANCELLED_PREFIX};
+use crate::domain::code_intelligence::IndexMaintenanceEvidence;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::filesystem::{
@@ -243,14 +244,100 @@ pub enum IndexReadiness {
     Missing,
     Stale { status: String },
     Building,
+    Queued,
     Incomplete,
+    MaintenanceUnavailable(IndexMaintenanceEvidence),
     Failed(String),
     Unavailable(String),
+}
+
+impl IndexReadiness {
+    pub(crate) fn maintenance_evidence(&self) -> Option<IndexMaintenanceEvidence> {
+        match self {
+            Self::Queued => Some(IndexMaintenanceEvidence::Queued),
+            Self::Building => Some(IndexMaintenanceEvidence::Running),
+            Self::MaintenanceUnavailable(evidence) => Some(*evidence),
+            _ => None,
+        }
+    }
+}
+
+/// Observed work, independent of the persisted index's readiness.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "reason", rename_all = "snake_case")]
+pub(crate) enum IndexMaintenanceStatus {
+    #[default]
+    Unknown,
+    Queued,
+    Running,
+    Completed,
+    StartFailed(String),
+    Failed(String),
+    Cancelled(String),
+}
+
+impl IndexMaintenanceStatus {
+    pub(crate) fn summary(&self) -> String {
+        match self {
+            Self::Unknown => "RLM index maintenance state is unknown".to_string(),
+            Self::Queued => "RLM index maintenance is queued".to_string(),
+            Self::Running => "RLM index maintenance is running".to_string(),
+            Self::Completed => "RLM index maintenance completed".to_string(),
+            Self::StartFailed(error) => format!("RLM index maintenance start failed: {error}"),
+            Self::Failed(error) => format!("RLM index maintenance failed: {error}"),
+            Self::Cancelled(error) => error.clone(),
+        }
+    }
+
+    pub(crate) fn evidence(&self) -> IndexMaintenanceEvidence {
+        match self {
+            Self::Queued => IndexMaintenanceEvidence::Queued,
+            Self::Running => IndexMaintenanceEvidence::Running,
+            Self::StartFailed(_) => IndexMaintenanceEvidence::StartFailed,
+            Self::Failed(_) => IndexMaintenanceEvidence::ExecutionFailed,
+            Self::Unknown => IndexMaintenanceEvidence::Unknown,
+            Self::Completed => IndexMaintenanceEvidence::Completed,
+            Self::Cancelled(_) => IndexMaintenanceEvidence::Cancelled,
+        }
+    }
+
+    pub(crate) fn readiness(&self) -> IndexReadiness {
+        match self {
+            Self::Queued => IndexReadiness::Queued,
+            Self::Running => IndexReadiness::Building,
+            _ => IndexReadiness::MaintenanceUnavailable(self.evidence()),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum MaintenanceObservation {
+    Prepared,
+    Observed(IndexMaintenanceStatus),
+}
+
+type MaintenanceObserver = Arc<Mutex<MaintenanceObservation>>;
+
+fn observed_status(observer: &MaintenanceObserver) -> IndexMaintenanceStatus {
+    match &*observer.lock().unwrap_or_else(|error| error.into_inner()) {
+        MaintenanceObservation::Prepared => IndexMaintenanceStatus::Unknown,
+        MaintenanceObservation::Observed(status) => status.clone(),
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct IndexStartReport {
     pub warnings: Vec<String>,
+    pub(crate) maintenance: IndexMaintenanceStatus,
+}
+
+impl IndexStartReport {
+    pub(crate) fn observed(maintenance: IndexMaintenanceStatus) -> Self {
+        Self {
+            warnings: vec![maintenance.summary()],
+            maintenance,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,12 +431,21 @@ pub struct IndexBackgroundJob {
     pub lock_lease: IndexLockLease,
 }
 
+#[cfg(test)]
+impl IndexBackgroundJob {
+    pub(crate) fn run_with_for_test(
+        self,
+        run: impl FnMut(&IndexCommand, &mut IndexLockLease) -> Result<IndexOutput, String>,
+    ) {
+        run_background_job_with(self, run);
+    }
+}
+
 struct IndexStartSpec {
     action: &'static str,
     source_root: PathBuf,
     primary: IndexCommand,
     info: IndexCommand,
-    warning: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -415,6 +511,16 @@ impl<'a> WorkspaceIndexService<'a> {
         usable_index_build(&state_context, source_root)
     }
 
+    pub(crate) fn maintenance_status(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+    ) -> Option<IndexMaintenanceStatus> {
+        self.validate_bound_source_root(source_root).ok()?;
+        let context = self.state_context(context, source_root).ok()?;
+        observed_maintenance(&lock_path(&context, source_root).ok()?)
+    }
+
     /// Start a build in a new directory. The active marker is replaced only
     /// after the candidate reports a usable DB, so existing readers keep their
     /// own build while maintenance runs or fails.
@@ -436,6 +542,14 @@ impl<'a> WorkspaceIndexService<'a> {
             Ok(context) => context,
             Err(error) => return unavailable_start_report(error),
         };
+        if let Some(maintenance) =
+            observed_maintenance(&match lock_path(&state_context, source_root) {
+                Ok(path) => path,
+                Err(error) => return unavailable_start_report(error),
+            })
+        {
+            return IndexStartReport::observed(maintenance);
+        }
         let build_id = uuid::Uuid::new_v4().simple().to_string();
         let build_dir = match rlm_build_root(&state_context, source_root, &build_id) {
             Ok(directory) => directory,
@@ -464,7 +578,6 @@ impl<'a> WorkspaceIndexService<'a> {
                 source_root: source_root.to_path_buf(),
                 primary: commands.build,
                 info: commands.info,
-                warning: "rlm index build started",
             },
         )
     }
@@ -591,7 +704,6 @@ impl<'a> WorkspaceIndexService<'a> {
             source_root,
             primary,
             info,
-            warning,
         } = spec;
         let isolated_build = isolated_build_id(&primary).is_some();
         let lock = match lock_path(context, &source_root) {
@@ -618,9 +730,7 @@ impl<'a> WorkspaceIndexService<'a> {
         let lock_lease = match acquire_index_lock(&lock, action, &source_root) {
             Ok(Some(lock_lease)) => lock_lease,
             Ok(None) => {
-                return IndexStartReport {
-                    warnings: vec!["rlm index building".to_string()],
-                };
+                return IndexStartReport::observed(observed_maintenance(&lock).unwrap_or_default());
             }
             Err(error) => {
                 if !isolated_build {
@@ -644,6 +754,7 @@ impl<'a> WorkspaceIndexService<'a> {
             );
         }
 
+        let observation = Arc::clone(&lock_lease.observation);
         let error_source_root = source_root.clone();
         let job = IndexBackgroundJob {
             action: action.to_string(),
@@ -672,9 +783,15 @@ impl<'a> WorkspaceIndexService<'a> {
             return unavailable_start_report(error);
         }
 
-        IndexStartReport {
-            warnings: vec![warning.to_string()],
+        {
+            let mut state = observation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if matches!(*state, MaintenanceObservation::Prepared) {
+                *state = MaintenanceObservation::Observed(IndexMaintenanceStatus::Queued);
+            }
         }
+        IndexStartReport::observed(observed_status(&observation))
     }
 }
 
@@ -813,6 +930,7 @@ pub struct IndexLockLease {
     file: File,
     lock: BslIndexLock,
     released: bool,
+    observation: MaintenanceObserver,
 }
 
 impl IndexLockLease {
@@ -825,7 +943,7 @@ impl IndexLockLease {
             .lock()
             .ok()
             .and_then(|locks| locks.get(&self.path).cloned())
-            .is_some_and(|lock_id| lock_id == self.lock.lock_id)
+            .is_some_and(|entry| entry.lock_id == self.lock.lock_id)
     }
 
     fn refresh(&mut self, child_pid: u32) -> bool {
@@ -840,6 +958,21 @@ impl IndexLockLease {
     fn release(&mut self) {
         if self.released {
             return;
+        }
+        {
+            let mut observation = self
+                .observation
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if matches!(
+                *observation,
+                MaintenanceObservation::Prepared
+                    | MaintenanceObservation::Observed(
+                        IndexMaintenanceStatus::Queued | IndexMaintenanceStatus::Running
+                    )
+            ) {
+                *observation = MaintenanceObservation::Observed(IndexMaintenanceStatus::Unknown);
+            }
         }
         let still_owned = self.validate_ownership();
         unregister_active_lock(&self.path, self.lock_id());
@@ -869,22 +1002,46 @@ impl Drop for IndexLockLease {
     }
 }
 
-fn active_index_locks() -> &'static Mutex<HashMap<PathBuf, String>> {
-    static ACTIVE_INDEX_LOCKS: OnceLock<Mutex<HashMap<PathBuf, String>>> = OnceLock::new();
+#[derive(Clone)]
+struct RegisteredIndexLock {
+    lock_id: String,
+    observation: MaintenanceObserver,
+}
+
+fn active_index_locks() -> &'static Mutex<HashMap<PathBuf, RegisteredIndexLock>> {
+    static ACTIVE_INDEX_LOCKS: OnceLock<Mutex<HashMap<PathBuf, RegisteredIndexLock>>> =
+        OnceLock::new();
     ACTIVE_INDEX_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn register_active_lock(path: &Path, lock_id: &str) {
+fn register_active_lock(path: &Path, lock_id: &str) -> MaintenanceObserver {
+    let observation = Arc::new(Mutex::new(MaintenanceObservation::Prepared));
     if let Ok(mut locks) = active_index_locks().lock() {
-        locks.insert(path.to_path_buf(), lock_id.to_string());
+        locks.insert(
+            path.to_path_buf(),
+            RegisteredIndexLock {
+                lock_id: lock_id.to_string(),
+                observation: Arc::clone(&observation),
+            },
+        );
     }
+    observation
+}
+
+fn observed_maintenance(path: &Path) -> Option<IndexMaintenanceStatus> {
+    let entry = active_index_locks().lock().ok()?.get(path).cloned()?;
+    let lock = read_lock_path(path).ok()?;
+    if lock.lock_id != entry.lock_id || !lock.is_active() {
+        return None;
+    }
+    Some(observed_status(&entry.observation))
 }
 
 fn unregister_active_lock(path: &Path, lock_id: &str) {
     if let Ok(mut locks) = active_index_locks().lock() {
         if locks
             .get(path)
-            .map(|current| current == lock_id)
+            .map(|current| current.lock_id == lock_id)
             .unwrap_or(false)
         {
             locks.remove(path);
@@ -942,6 +1099,16 @@ where
     F: FnMut(&IndexCommand, &mut IndexLockLease) -> Result<IndexOutput, String>,
 {
     let mut job = job;
+    if !job.lock_lease.validate_ownership()
+        || !root_capability_is_current(job.root_capability.as_deref())
+    {
+        return;
+    }
+    *job.lock_lease
+        .observation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) =
+        MaintenanceObservation::Observed(IndexMaintenanceStatus::Running);
     let started_at = now_secs();
     let Some(primary) = run_background_command(
         &job.primary,
@@ -1052,7 +1219,9 @@ fn failed_status_from_readiness(
         IndexReadiness::Missing => "missing".to_string(),
         IndexReadiness::Stale { status } => status.clone(),
         IndexReadiness::Building => "building".to_string(),
+        IndexReadiness::Queued => "queued".to_string(),
         IndexReadiness::Incomplete => "incomplete".to_string(),
+        IndexReadiness::MaintenanceUnavailable(evidence) => evidence.summary().to_string(),
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error) => error.clone(),
         IndexReadiness::Ready { .. } => "fresh".to_string(),
     };
@@ -1128,12 +1297,40 @@ fn write_background_status(job: &IndexBackgroundJob, status: BslIndexStatus) -> 
     if !job.lock_lease.validate_ownership()
         || !root_capability_is_current(job.root_capability.as_deref())
     {
+        *job.lock_lease
+            .observation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            MaintenanceObservation::Observed(IndexMaintenanceStatus::Unknown);
         return false;
     }
-    if isolated_build_id(&job.info).is_none() || status.build_id.is_some() {
-        return write_status_path(&job.status_path, status).is_ok();
-    }
-    true
+    let published = if isolated_build_id(&job.info).is_none() || status.build_id.is_some() {
+        write_status_path(&job.status_path, status.clone()).is_ok()
+    } else {
+        true
+    };
+    let observed = match status.status.as_str() {
+        "ready" if published => IndexMaintenanceStatus::Completed,
+        "ready" => {
+            IndexMaintenanceStatus::Failed("could not publish the completed RLM index".to_string())
+        }
+        "failed" => {
+            let reason = status
+                .message
+                .unwrap_or_else(|| "index worker failed".to_string());
+            if reason.starts_with(CANCELLED_PREFIX) {
+                IndexMaintenanceStatus::Cancelled(reason)
+            } else {
+                IndexMaintenanceStatus::Failed(reason)
+            }
+        }
+        _ => IndexMaintenanceStatus::Unknown,
+    };
+    *job.lock_lease
+        .observation
+        .lock()
+        .unwrap_or_else(|error| error.into_inner()) = MaintenanceObservation::Observed(observed);
+    published
 }
 
 fn command_failure_message(action: &str, output: &IndexOutput) -> String {
@@ -1314,6 +1511,7 @@ pub fn bsl_index_is_ready(context: &WorkspaceContext) -> bool {
 fn unavailable_start_report(error: String) -> IndexStartReport {
     IndexStartReport {
         warnings: vec![format!("rlm index unavailable: {error}")],
+        maintenance: IndexMaintenanceStatus::StartFailed(error),
     }
 }
 
@@ -1460,12 +1658,13 @@ fn acquire_index_lock(
     }
     let index_lock = BslIndexLock::new(action, source_root);
     write_lock_file_to_open(&mut file, &index_lock)?;
-    register_active_lock(path, index_lock.lock_id.as_str());
+    let observation = register_active_lock(path, index_lock.lock_id.as_str());
     Ok(Some(IndexLockLease {
         path: path.to_path_buf(),
         file,
         lock: index_lock,
         released: false,
+        observation,
     }))
 }
 
@@ -2071,6 +2270,124 @@ mod tests {
     }
 
     #[test]
+    fn worker_terminal_observation_tracks_real_failure_cancellation_and_publication() {
+        for case in [
+            "failure",
+            "cancelled",
+            "timeout",
+            "completed",
+            "publication-failed",
+        ] {
+            let context = test_context(&format!("maintenance-terminal-{case}"));
+            let source_root = context.workspace_root.join("src");
+            fs::create_dir_all(&source_root).unwrap();
+            let runner = RecordingIndexRunner::default();
+            let service = WorkspaceIndexService::with_runner(&runner);
+            let report =
+                service.start_isolated_build(&context, &source_root, &CancellationToken::new());
+            assert_eq!(report.maintenance, IndexMaintenanceStatus::Queued);
+            let job = runner.backgrounds.borrow_mut().pop().unwrap();
+            let observation = Arc::clone(&job.lock_lease.observation);
+            let status_path = job.status_path.clone();
+            run_background_job_with(job, |command, _| {
+                assert_eq!(
+                    observed_status(&observation),
+                    IndexMaintenanceStatus::Running
+                );
+                match case {
+                    "failure" => Err("controlled execution failure".to_string()),
+                    "cancelled" | "timeout" => {
+                        let mut output = IndexOutput::success("");
+                        output.cancelled = case == "cancelled";
+                        output.timed_out = case == "timeout";
+                        Ok(output)
+                    }
+                    _ if command.args.get(1).is_some_and(|arg| arg == "info") => {
+                        let db = PathBuf::from(index_command_env(command, "RLM_INDEX_DIR"))
+                            .join("bsl_index.db");
+                        fs::create_dir_all(db.parent().unwrap()).unwrap();
+                        fs::write(&db, b"usable candidate").unwrap();
+                        if case == "publication-failed" {
+                            fs::create_dir_all(&status_path).unwrap();
+                        }
+                        Ok(IndexOutput::success(format!(
+                            "Index: {}\nStatus: fresh",
+                            db.display()
+                        )))
+                    }
+                    _ => Ok(IndexOutput::success("build complete")),
+                }
+            });
+            let observed = observed_status(&observation);
+            match case {
+                "completed" => {
+                    assert_eq!(observed, IndexMaintenanceStatus::Completed);
+                    assert!(service
+                        .active_build(&context, &source_root)
+                        .unwrap()
+                        .is_some());
+                }
+                "cancelled" => assert!(
+                    matches!(observed, IndexMaintenanceStatus::Cancelled(_)),
+                    "{observed:?}"
+                ),
+                _ => assert!(
+                    matches!(observed, IndexMaintenanceStatus::Failed(_)),
+                    "{case}: {observed:?}"
+                ),
+            }
+            assert!(
+                service.maintenance_status(&context, &source_root).is_none(),
+                "a terminal job no longer advertises active work"
+            );
+            cleanup(&context);
+        }
+    }
+
+    #[test]
+    fn foreign_or_replaced_lock_never_proves_queued_or_running_maintenance() {
+        let context = test_context("maintenance-ownership");
+        let source_root = context.workspace_root.join("src");
+        fs::create_dir_all(&source_root).unwrap();
+        let runner = RecordingIndexRunner::default();
+        let service = WorkspaceIndexService::with_runner(&runner);
+        let path = super::lock_path(&context, &source_root).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_lock_path(&path, BslIndexLock::new("build", &source_root)).unwrap();
+        let foreign = File::options().read(true).write(true).open(&path).unwrap();
+        foreign.lock_exclusive().unwrap();
+        let before = fs::read(&path).unwrap();
+        let report =
+            service.start_isolated_build(&context, &source_root, &CancellationToken::new());
+        assert_eq!(report.maintenance, IndexMaintenanceStatus::Unknown);
+        assert!(runner.backgrounds.borrow().is_empty());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        foreign.unlock().unwrap();
+        drop(foreign);
+        assert_eq!(
+            service
+                .start_isolated_build(&context, &source_root, &CancellationToken::new())
+                .maintenance,
+            IndexMaintenanceStatus::Queued
+        );
+        let job = runner.backgrounds.borrow_mut().pop().unwrap();
+        let observation = Arc::clone(&job.lock_lease.observation);
+        write_lock_path(&path, BslIndexLock::new("build", &source_root)).unwrap();
+        let successor = fs::read(&path).unwrap();
+        assert!(service.maintenance_status(&context, &source_root).is_none());
+        let report =
+            service.start_isolated_build(&context, &source_root, &CancellationToken::new());
+        assert_eq!(report.maintenance, IndexMaintenanceStatus::Unknown);
+        run_background_job_with(job, |_, _| panic!("a replaced owner cannot execute"));
+        assert_eq!(
+            observed_status(&observation),
+            IndexMaintenanceStatus::Unknown
+        );
+        assert_eq!(fs::read(&path).unwrap(), successor);
+        cleanup(&context);
+    }
+
+    #[test]
     fn builder_17_uses_a_new_generation_and_leaves_older_generations_untouched() {
         let context = test_context("generation-cutover");
         let source_root = context.workspace_root.join("src");
@@ -2289,7 +2606,7 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(report.warnings, vec!["rlm index build started"]);
+        assert_eq!(report.maintenance, IndexMaintenanceStatus::Queued);
         assert_eq!(runner.backgrounds.borrow()[0].action, "build");
         let candidate = PathBuf::from(index_command_env(
             &runner.backgrounds.borrow()[0].primary,
@@ -2589,6 +2906,7 @@ mod tests {
         )
         .unwrap();
         let before = fs::read(&job.status_path).unwrap();
+        let observation = Arc::clone(&job.lock_lease.observation);
         let displaced = context.workspace_root.join("src-displaced");
         let replacement = source_root.clone();
 
@@ -2599,6 +2917,10 @@ mod tests {
         });
 
         assert_eq!(fs::read(status_path(&context)).unwrap(), before);
+        assert_eq!(
+            observed_status(&observation),
+            IndexMaintenanceStatus::Unknown
+        );
         cleanup(&context);
     }
 
@@ -2813,7 +3135,7 @@ mod tests {
             &CancellationToken::new(),
         );
 
-        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
+        assert_eq!(report.maintenance, IndexMaintenanceStatus::Queued);
         assert_eq!(
             runner.backgrounds.borrow()[0].primary.args[0..2],
             ["index", "build"]
@@ -3249,7 +3571,7 @@ mod tests {
 
         let report =
             service.start_isolated_build(&context, &source_root, &CancellationToken::new());
-        assert_eq!(report.warnings, vec!["rlm index build started"]);
+        assert_eq!(report.maintenance, IndexMaintenanceStatus::Queued);
         let failed_job = runner.backgrounds.borrow_mut().pop().unwrap();
         let failed_directory = PathBuf::from(index_command_env(&failed_job.info, "RLM_INDEX_DIR"));
         assert_ne!(failed_directory, old_directory);
@@ -3277,7 +3599,7 @@ mod tests {
 
         let report =
             service.start_isolated_build(&context, &source_root, &CancellationToken::new());
-        assert_eq!(report.warnings, vec!["rlm index build started"]);
+        assert_eq!(report.maintenance, IndexMaintenanceStatus::Queued);
         let ready_job = runner.backgrounds.borrow_mut().pop().unwrap();
         let candidate_directory =
             PathBuf::from(index_command_env(&ready_job.info, "RLM_INDEX_DIR"));
@@ -3336,7 +3658,7 @@ mod tests {
 
         let report =
             service.start_isolated_build(&context, &source_root, &CancellationToken::new());
-        assert_eq!(report.warnings, vec!["rlm index build started"]);
+        assert_eq!(report.maintenance, IndexMaintenanceStatus::Queued);
         let job = runner.backgrounds.borrow_mut().pop().unwrap();
         let candidate_directory = PathBuf::from(index_command_env(&job.info, "RLM_INDEX_DIR"));
         let candidate_id = isolated_build_id(&job.info).unwrap();

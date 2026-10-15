@@ -677,6 +677,33 @@ pub struct ProviderSearchHit {
     pub attributes: Map<String, Value>,
 }
 
+/// Public projection of observed index work; contains no provider messages or paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IndexMaintenanceEvidence {
+    Queued,
+    Running,
+    StartFailed,
+    ExecutionFailed,
+    Unknown,
+    Completed,
+    Cancelled,
+}
+
+impl IndexMaintenanceEvidence {
+    pub fn summary(self) -> &'static str {
+        match self {
+            Self::Queued => "RLM index maintenance is queued",
+            Self::Running => "RLM index maintenance is running",
+            Self::StartFailed => "RLM index maintenance could not be queued: start failed",
+            Self::ExecutionFailed => "RLM index maintenance execution failed",
+            Self::Unknown => "RLM index maintenance state is unknown",
+            Self::Completed => "RLM index maintenance completed",
+            Self::Cancelled => "RLM index maintenance was cancelled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSearchSection {
@@ -697,6 +724,8 @@ pub struct ProviderSearchSection {
     pub index_freshness: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_build_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_maintenance: Option<IndexMaintenanceEvidence>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<String>,
 }
@@ -809,6 +838,7 @@ impl ProviderSearchSection {
             diagnostics,
             index_freshness: None,
             index_build_id: None,
+            index_maintenance: None,
             artifacts: Vec::new(),
         })
     }

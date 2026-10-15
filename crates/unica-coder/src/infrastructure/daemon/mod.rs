@@ -21,6 +21,8 @@ mod v13_run_dictionary;
 mod v13_search_admission;
 #[allow(dead_code)]
 mod v13_service;
+#[cfg(test)]
+pub(crate) use v13_service::provider_search_page;
 mod v13_source_export;
 mod v13_source_import;
 mod v13_source_set_name;

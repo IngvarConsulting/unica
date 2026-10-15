@@ -1,6 +1,9 @@
 ---
 id: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
 check:
+  - crates/unica-coder/src/infrastructure/workspace_services.rs::real_index_queue_and_worker_state_reach_serialized_search_and_navigation
+  - crates/unica-coder/src/infrastructure/workspace_services.rs::maintenance_queue_execution_and_failure_keep_the_published_index_readable
+  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::maintenance_transition_invalidates_the_cursor_for_the_previous_answer
   - crates/unica-coder/src/application/code_intelligence.rs::coordinator_preserves_the_replaceable_provider_identity_for_a_role
   - crates/unica-coder/src/application/code_intelligence.rs::coordinator_preserves_provider_local_ranks_and_limit_claim
   - crates/unica-coder/src/domain/code_intelligence.rs::search_section_serializes_role_provenance_completeness_and_logical_location
@@ -53,8 +56,13 @@ check:
 занятость рабочих исполнителей допускает повтор без изменения запроса.
 Произвольные сообщения, пути и артефакты поставщика в данные отказа не входят.
 Уточнение ожидания индекса передаётся только для известных состояний
-`buildingIndex` и `updatingIndex`; неизвестное уточнение не отменяет
+`buildingIndex`, `updatingIndex` и `indexQueued`; неизвестное уточнение не отменяет
 типизированную причину ожидания и возможность повтора.
+Наблюдаемое обслуживание RLM передаётся отдельно в `indexMaintenance`:
+`queued`, `running`, `startFailed`, `executionFailed`, `unknown`, `completed`
+или `cancelled`. Поле содержит категорию без произвольного текста исполнителя.
+Оно сохраняется и при успешном чтении пригодного старого индекса; состояние
+обслуживания не подменяет причину завершения самого поиска.
 Сохранённый идентификатор сборки индекса не доказывает свежесть исходников:
 в отказе `indexFreshness` остаётся `unknown`.
 

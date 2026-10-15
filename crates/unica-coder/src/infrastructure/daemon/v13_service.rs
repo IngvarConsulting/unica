@@ -2928,7 +2928,10 @@ fn provider_search_failure(
     if let Some(reason) = &mut termination {
         reason.detail_code = reason.detail_code.take().filter(|detail| {
             reason.code == SearchTerminationCode::DependencyPending
-                && matches!(detail.as_str(), "buildingIndex" | "updatingIndex")
+                && matches!(
+                    detail.as_str(),
+                    "buildingIndex" | "updatingIndex" | "indexQueued"
+                )
         });
     }
     let mut evidence = json!({
@@ -2945,11 +2948,14 @@ fn provider_search_failure(
     if let Some(build_id) = section.index_build_id {
         evidence["indexBuildId"] = json!(build_id);
     }
+    if let Some(maintenance) = section.index_maintenance {
+        evidence["indexMaintenance"] = json!(maintenance);
+    }
     result.data = Some(json!({"mode": section.identity.role, "matches": [evidence]}));
     result
 }
 
-fn provider_search_page(
+pub(crate) fn provider_search_page(
     cursors: &SearchCursorStore,
     role: ProviderRole,
     execution: crate::application::code_intelligence::CodeSearchExecution,
@@ -5017,6 +5023,35 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_transition_invalidates_the_cursor_for_the_previous_answer() {
+        use crate::domain::code_intelligence::IndexMaintenanceEvidence;
+        let store = Default::default();
+        let mut queued = provider_search_test_execution(75, 8, false);
+        queued.result.sections[0].index_maintenance = Some(IndexMaintenanceEvidence::Queued);
+        let first = super::provider_search_page(
+            &store,
+            ProviderRole::Semantic,
+            queued,
+            provider_search_test_binding(ProviderRole::Semantic, 20),
+            None,
+            &CancellationToken::new(),
+        );
+        assert!(first.ok, "{first:?}");
+        let mut running = provider_search_test_execution(75, 8, false);
+        running.result.sections[0].index_maintenance = Some(IndexMaintenanceEvidence::Running);
+        let next = super::provider_search_page(
+            &store,
+            ProviderRole::Semantic,
+            running,
+            provider_search_test_binding(ProviderRole::Semantic, 20),
+            first.cursor.as_deref(),
+            &CancellationToken::new(),
+        );
+        assert!(!next.ok, "{next:?}");
+        assert_eq!(next.diagnostics[0]["code"], "stale_cursor");
+    }
+
+    #[test]
     fn provider_search_pages_all_received_hits_and_rejects_changed_answers() {
         let store = crate::application::result_store::SearchCursorStore::default();
         let cancellation = CancellationToken::new();
@@ -6404,7 +6439,7 @@ mod tests {
                 Some("dependency_pending"),
             ),
             (
-                pending("updatingIndex"),
+                pending("indexQueued"),
                 "provider_unavailable",
                 "retry",
                 Some("dependency_pending"),
@@ -6441,6 +6476,8 @@ mod tests {
             ),
         ] {
             section.index_freshness = Some("fresh".into());
+            section.index_maintenance =
+                Some(crate::domain::code_intelligence::IndexMaintenanceEvidence::StartFailed);
             section.index_build_id = Some("known-build".into());
             section.artifacts.push(private.into());
             let expected = serde_json::to_value(&section).unwrap();
@@ -6503,6 +6540,7 @@ mod tests {
                 "searchComplete",
                 "matches",
                 "indexBuildId",
+                "indexMaintenance",
             ] {
                 assert_eq!(data[field], expected[field], "{field}");
             }
@@ -6514,7 +6552,9 @@ mod tests {
             );
             let expected_detail = expected["termination"]["detailCode"]
                 .as_str()
-                .filter(|detail| matches!(*detail, "buildingIndex" | "updatingIndex"));
+                .filter(|detail| {
+                    matches!(*detail, "buildingIndex" | "updatingIndex" | "indexQueued")
+                });
             assert_eq!(
                 data["termination"]
                     .get("detailCode")

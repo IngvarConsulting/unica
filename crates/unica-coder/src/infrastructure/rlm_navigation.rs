@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use std::path::Path;
 use std::time::Duration;
 
-trait RlmNavigationClient: Send + Sync {
+pub(crate) trait RlmNavigationClient: Send + Sync {
     fn readiness(
         &self,
         context: &WorkspaceContext,
@@ -86,7 +86,7 @@ impl RlmNavigationAdapter<'static> {
 
 impl<'a> RlmNavigationAdapter<'a> {
     #[cfg(test)]
-    fn with_client(client: &'a (dyn RlmNavigationClient + Send + Sync)) -> Self {
+    pub(crate) fn with_client(client: &'a (dyn RlmNavigationClient + Send + Sync)) -> Self {
         Self { client }
     }
     pub(crate) fn invoke_resolved_cancellable(
@@ -186,6 +186,11 @@ impl<'a> RlmNavigationAdapter<'a> {
             outcome
                 .warnings
                 .push("RLM index freshness against current sources is unknown".to_string());
+        }
+        if let Some(maintenance) = &output.maintenance {
+            outcome
+                .warnings
+                .push(maintenance.evidence().summary().to_string());
         }
         let data;
         match request {
@@ -449,9 +454,15 @@ fn readiness_message(readiness: IndexReadiness) -> String {
         IndexReadiness::Building => {
             "index_pending: rlm index building; retry once index maintenance completes".to_string()
         }
-        IndexReadiness::Incomplete => {
-            "index_pending: rlm index recovery update is pending; retry once index maintenance completes"
+        IndexReadiness::Queued => {
+            "index_pending: rlm index maintenance is queued; execution has not been confirmed; retry after maintenance"
                 .to_string()
+        }
+        IndexReadiness::Incomplete => {
+            "index_unavailable: index is incomplete; maintenance state is unknown".to_string()
+        }
+        IndexReadiness::MaintenanceUnavailable(evidence) => {
+            format!("index_unavailable: {}", evidence.summary())
         }
         IndexReadiness::Failed(error) | IndexReadiness::Unavailable(error)
             if error.starts_with(CANCELLED_PREFIX) =>
@@ -765,6 +776,7 @@ mod tests {
         ) -> Result<WorkspaceServiceRlmCall, String> {
             self.timeouts.lock().unwrap().push(timeout);
             Ok(WorkspaceServiceRlmCall::Output(WorkspaceServiceRlmOutput {
+                maintenance: None,
                 result_text: json!({
                     "name": "Найти",
                     "definitions": [],
@@ -1089,11 +1101,30 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_or_unknown_maintenance_is_not_a_cancelled_read_or_a_wait_promise() {
+        use crate::domain::code_intelligence::IndexMaintenanceEvidence;
+        for evidence in [
+            IndexMaintenanceEvidence::Cancelled,
+            IndexMaintenanceEvidence::Unknown,
+        ] {
+            let result = unready_index_outcome(
+                &definition_request(),
+                IndexReadiness::MaintenanceUnavailable(evidence),
+            );
+            assert!(!result.outcome.ok);
+            assert!(result.outcome.errors[0].starts_with("index_unavailable:"));
+            assert!(!result.outcome.errors[0].contains("retry"));
+            assert!(result.outcome.errors[0].contains(evidence.summary()));
+        }
+    }
+
+    #[test]
     fn definition_readiness_matrix_never_reports_false_typed_success() {
         let request = definition_request();
         for (readiness, prefix, retryable) in [
             (IndexReadiness::Building, "index_pending:", true),
-            (IndexReadiness::Incomplete, "index_pending:", true),
+            (IndexReadiness::Incomplete, "index_unavailable:", false),
+            (IndexReadiness::Queued, "index_pending:", true),
             (IndexReadiness::Missing, "index_unavailable:", false),
             (
                 IndexReadiness::Stale {
@@ -1214,6 +1245,11 @@ mod tests {
         ) -> Result<WorkspaceServiceRlmCall, String> {
             self.operations.lock().unwrap().push(operation);
             Ok(WorkspaceServiceRlmCall::Output(WorkspaceServiceRlmOutput {
+                maintenance: Some(
+                    crate::infrastructure::workspace_index::IndexMaintenanceStatus::Failed(
+                        "worker failed; token=maintenance-secret".to_string(),
+                    ),
+                ),
                 result_text: json!({
                     "name": "Найти",
                     "definitions": [],
@@ -1268,6 +1304,14 @@ mod tests {
             .unwrap();
 
         assert!(outcome.outcome.ok);
+        assert!(outcome
+            .outcome
+            .warnings
+            .iter()
+            .any(|item| item.contains("execution failed")));
+        assert!(!serde_json::to_string(&outcome.outcome)
+            .unwrap()
+            .contains("maintenance-secret"));
         // ADR-0023: an empty answer is an empty list, not a sentence.
         assert!(outcome.outcome.stdout.is_none());
         let Some(CodeIntelligenceReadData::Definition(result)) = outcome.data else {
