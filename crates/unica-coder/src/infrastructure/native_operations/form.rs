@@ -10289,10 +10289,6 @@ fn emit_form_document_field(
     ));
     let inner = format!("{indent}\t");
     emit_form_binding_path_property(lines, element, "path", "DataPath", &inner);
-    if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title, lang)?;
-    }
-    emit_form_element_tooltip(lines, element, &inner, lang)?;
     for key in [
         "visible",
         "hidden",
@@ -10303,7 +10299,6 @@ fn emit_form_document_field(
     ] {
         form_compile_validate_element_boolean(element, key)?;
     }
-    emit_form_common_flags(lines, element, &inner);
     if field_tag == "TextDocumentField" && element.contains_key("skipOnInput") {
         return Err("TextDocumentField property skipOnInput is unsupported".to_string());
     }
@@ -10313,6 +10308,10 @@ fn emit_form_document_field(
             lines.push(format!("{inner}<SkipOnInput>{value}</SkipOnInput>"));
         }
     }
+    emit_form_common_flags(lines, element, &inner);
+    if let Some(title) = element.get("title").and_then(Value::as_str) {
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
+    }
     if let Some(value) = element.get("titleLocation").and_then(Value::as_str) {
         let location = form_compile_title_location(value).unwrap_or(value);
         lines.push(format!(
@@ -10320,6 +10319,7 @@ fn emit_form_document_field(
             escape_xml(location)
         ));
     }
+    emit_form_element_tooltip(lines, element, &inner, lang)?;
     for (key, tag, auto_key, auto_tag) in [
         ("width", "Width", "autoMaxWidth", "AutoMaxWidth"),
         ("height", "Height", "autoMaxHeight", "AutoMaxHeight"),
@@ -10327,7 +10327,9 @@ fn emit_form_document_field(
         if let Some(value) = element.get(key) {
             let number = value.as_u64().filter(|number| *number <= u32::MAX as u64)
                 .ok_or_else(|| format!("form document field property {key} must be an integer in 0..=4294967295 for 8.3.27"))?;
-            lines.push(format!("{inner}<{tag}>{number}</{tag}>"));
+            if key != "height" || number != 10 {
+                lines.push(format!("{inner}<{tag}>{number}</{tag}>"));
+            }
         }
         form_compile_validate_element_boolean(element, auto_key)?;
         if let Some(value) = element.get(auto_key).and_then(Value::as_bool) {
@@ -19530,6 +19532,7 @@ pub(crate) mod tests {
                 "attributes": [{"name": "АдресHTML", "type": "string"}],
                 "elements": [{"html": "ПолеHTML", "path": "АдресHTML",
                     "title": "Описание & детали", "titleLocation": "none",
+                    "tooltip": "Подсказка", "tooltipRepresentation": "Button",
                     "skipOnInput": true, "width": 1, "height": 2,
                     "autoMaxWidth": false, "autoMaxHeight": true,
                     "visible": false, "enabled": false, "readOnly": true,
@@ -19575,6 +19578,30 @@ pub(crate) mod tests {
             .filter(|node| node.is_element())
             .map(|node| node.tag_name().name())
             .collect::<Vec<_>>();
+        // Канон ревью #1389 задаёт общий порядок HTML- и TextDocumentField.
+        // Выгрузка HTML ниже отдельно подтверждает положение SkipOnInput,
+        // TitleLocation и companions относительно начала и конца поля.
+        assert_eq!(
+            child_names,
+            [
+                "DataPath",
+                "SkipOnInput",
+                "Visible",
+                "Enabled",
+                "ReadOnly",
+                "Title",
+                "TitleLocation",
+                "ToolTip",
+                "ToolTipRepresentation",
+                "Width",
+                "AutoMaxWidth",
+                "Height",
+                "AutoMaxHeight",
+                "ContextMenu",
+                "ExtendedTooltip",
+                "Events",
+            ]
+        );
         let binding_order = |node: roxmltree::Node<'_, '_>| {
             node.children()
                 .filter(|child| child.is_element())

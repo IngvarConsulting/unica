@@ -3915,13 +3915,30 @@ mod tests {
             operations.push(
                 parse(
                     "item.add",
-                    json!({"at":form,"items":[{
-                        "name":"ProtocolField",
-                        "type":"TextDocumentField",
-                        "path":"Protocol",
-                        "titleLocation":"None",
-                        "readOnly":true
-                    }]}),
+                    json!({"at":form,"items":[
+                        {
+                            "name":"Протокол1",
+                            "type":"TextDocumentField",
+                            "path":"Protocol",
+                            "titleLocation":"None"
+                        },
+                        {
+                            "name":"Протокол2",
+                            "type":"TextDocumentField",
+                            "path":"Protocol",
+                            "visible":false,
+                            "enabled":false,
+                            "readOnly":true,
+                            "title":"Протокол",
+                            "titleLocation":"Top",
+                            "tooltip":"Подсказка",
+                            "tooltipRepresentation":"Button",
+                            "width":35,
+                            "autoMaxWidth":false,
+                            "height":10,
+                            "autoMaxHeight":false
+                        }
+                    ]}),
                     item_index,
                 )
                 .unwrap(),
@@ -3950,53 +3967,39 @@ mod tests {
             .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
         let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
         let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let platform_export = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/platform_8_3_27/text-document-field/Form.xml"
+        ));
+        let platform = roxmltree::Document::parse(platform_export).unwrap();
+        for name in ["Протокол1", "Протокол2"] {
+            let child_tags = |root: roxmltree::Node<'_, '_>| {
+                root.descendants()
+                    .find(|node| {
+                        node.has_tag_name("TextDocumentField")
+                            && node.attribute("name") == Some(name)
+                    })
+                    .unwrap()
+                    .children()
+                    .filter(|node| node.is_element())
+                    .map(|node| node.tag_name().name().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                child_tags(document.root()),
+                child_tags(platform.root()),
+                "{name}"
+            );
+        }
+        assert_eq!(document.root_element().attribute("version"), Some("2.20"));
         let field = document
             .descendants()
             .find(|node| {
                 node.has_tag_name("TextDocumentField")
-                    && node.attribute("name") == Some("ProtocolField")
+                    && node.attribute("name") == Some("Протокол2")
             })
             .unwrap();
-        let actual_tags = field
-            .children()
-            .filter(|node| node.is_element())
-            .map(|node| node.tag_name().name())
-            .collect::<Vec<_>>();
-        let platform_fragment = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/text-document-field/platform-field.xml"
-        ));
-        let platform =
-            roxmltree::Document::parse(platform_fragment.trim_start_matches('\u{feff}')).unwrap();
-        let expected_tags = platform
-            .root_element()
-            .children()
-            .filter(|node| node.is_element())
-            .map(|node| node.tag_name().name())
-            .collect::<Vec<_>>();
-        let comparable_tags = actual_tags
-            .iter()
-            .copied()
-            .filter(|tag| expected_tags.contains(tag))
-            .collect::<Vec<_>>();
-        assert_eq!(comparable_tags, expected_tags);
-        assert_eq!(document.root_element().attribute("version"), Some("2.20"));
-        let platform_8_3_27 = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form.xml"
-        ));
-        let platform_8_3_27 =
-            roxmltree::Document::parse(platform_8_3_27.trim_start_matches('\u{feff}')).unwrap();
-        let html_tags = platform_8_3_27
-            .descendants()
-            .find(|node| node.has_tag_name("HTMLDocumentField"))
-            .unwrap()
-            .children()
-            .filter(|node| node.is_element())
-            .map(|node| node.tag_name().name())
-            .filter(|tag| expected_tags.contains(tag))
-            .collect::<Vec<_>>();
-        assert_eq!(html_tags, expected_tags);
+        assert!(field.children().all(|node| !node.has_tag_name("Height")));
         assert_eq!(
             field
                 .children()
@@ -4012,8 +4015,8 @@ mod tests {
             type_node.lookup_namespace_uri(Some("d5p1")),
             Some("http://v8.1c.ru/8.1/data/txtedt")
         );
-        assert!(!text.contains("<HTMLDocumentField name=\"ProtocolField\""));
-        assert!(!text.contains("<InputField name=\"ProtocolField\""));
+        assert!(!text.contains("<HTMLDocumentField name=\"Протокол2\""));
+        assert!(!text.contains("<InputField name=\"Протокол2\""));
     }
 
     /// Узел правки формы — ровно адрес (#1355): цепочка `Item` сверяется
