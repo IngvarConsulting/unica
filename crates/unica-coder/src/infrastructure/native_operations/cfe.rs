@@ -410,29 +410,11 @@ fn prepare_cfe_borrow_with_trace(
     let mut artifacts = Vec::<PathBuf>::new();
     for item in &items {
         let spec = cfe_borrow_parse_object_spec(item)?;
-        if let Some(value_name) = &spec.enum_value_name {
-            let artifact = cfe_borrow_enum_value_shell(
-                &cfg_dir,
-                &ext_dir,
-                &mut write_plan,
-                &spec.object_name,
-                value_name,
-                &mut ext_text,
-                &mut log,
-            )?;
-            borrowed.push(CfeBorrowedItem {
-                kind: spec.type_name.clone(),
-                name: spec.object_name.clone(),
-                form: None,
-                enum_value: Some(value_name.clone()),
-            });
-            artifacts.push(artifact);
-        } else if spec.form_name.is_some() {
+        if spec.form_name.is_some() {
             borrowed.push(CfeBorrowedItem {
                 kind: spec.type_name.clone(),
                 name: spec.object_name.clone(),
                 form: spec.form_name.clone(),
-                enum_value: None,
             });
             if !write_plan.exists(&cfe_borrow_target_object(
                 &ext_dir,
@@ -485,7 +467,6 @@ fn prepare_cfe_borrow_with_trace(
                 kind: spec.type_name.clone(),
                 name: spec.object_name.clone(),
                 form: None,
-                enum_value: None,
             });
             let artifact = cfe_borrow_object_shell(
                 &cfg_dir,
@@ -521,120 +502,6 @@ fn prepare_cfe_borrow_with_trace(
         artifacts,
         registered_format_dependencies,
     })
-}
-
-fn cfe_borrow_enum_value_shell(
-    cfg_dir: &Path,
-    ext_dir: &Path,
-    plan: &mut CfeBorrowWritePlan,
-    owner_name: &str,
-    value_name: &str,
-    ext_text: &mut String,
-    log: &mut CfeBorrowLog,
-) -> Result<PathBuf, String> {
-    let source = cfg_dir.join("Enums").join(format!("{owner_name}.xml"));
-    let target = ext_dir.join("Enums").join(format!("{owner_name}.xml"));
-    plan.read_dependency_utf8_sig(&source)?;
-    let parent = plan
-        .dependencies
-        .get(&source)
-        .expect("source tracked")
-        .clone();
-    let existing = if plan.exists(&target) {
-        plan.read_utf8_sig(&target)?;
-        Some(
-            plan.files
-                .get(&target)
-                .expect("destination tracked")
-                .updated
-                .clone(),
-        )
-    } else {
-        None
-    };
-    use sha2::{Digest, Sha256};
-    let mut seed = Sha256::new();
-    seed.update(b"unica-legacy-enum-borrow-v1\0");
-    let source_identity = source.to_string_lossy();
-    for bytes in [
-        source_identity.as_bytes(),
-        ext_text.as_bytes(),
-        parent.as_slice(),
-    ] {
-        seed.update((bytes.len() as u64).to_be_bytes());
-        seed.update(bytes);
-    }
-    let identity = CfeBorrowIdentity::for_plan(seed.finalize().into());
-    let owner = super::cfe_borrow_object::plan_borrow_object_with_identity(
-        &parent,
-        existing.as_deref(),
-        None,
-        &identity,
-    )
-    .map_err(|e| e.to_string())?;
-    if owner.kind != "Enum" || owner.name != owner_name {
-        return Err("Enum source descriptor identity mismatch".to_string());
-    }
-    let uuid = identity.new_uuid("enum-value", &format!("{owner_name}.{value_name}"));
-    let bytes = super::cfe_borrow_enum_value::plan_borrow_enum_value(
-        &parent,
-        &owner.bytes,
-        value_name,
-        &uuid,
-    )?;
-    if existing.is_none() {
-        log.auto_borrowed(format!("Enum.{owner_name}"));
-    }
-    if existing.as_deref() == Some(bytes.as_slice()) {
-        log.skipped(target.display().to_string(), "EnumValue already borrowed");
-    }
-    plan.write_utf8_bom(&target, "")?;
-    plan.files
-        .get_mut(&target)
-        .expect("tracked destination")
-        .updated = bytes;
-    cfe_borrow_add_to_child_objects(ext_text, "Enum", owner_name, log)?;
-    Ok(target)
-}
-
-pub(crate) fn preview_cfe_borrow(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> AdapterOutcome {
-    let result = prepare_cfe_borrow(args, context).and_then(|prepared| {
-        prepared.write_plan.validate_xml()?;
-        Ok(prepared
-            .write_plan
-            .files
-            .iter()
-            .filter(|(_, file)| file.original.as_deref() != Some(file.updated.as_slice()))
-            .map(|(path, _)| format!("would update {}", path.display()))
-            .collect::<Vec<_>>())
-    });
-    match result {
-        Ok(changes) => AdapterOutcome {
-            ok: true,
-            summary: "unica.cfe.borrow validated preview (no files written)".to_string(),
-            changes,
-            warnings: Vec::new(),
-            errors: Vec::new(),
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: None,
-            command: None,
-        },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.cfe.borrow preview failed".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(error),
-            command: None,
-        },
-    }
 }
 
 pub(crate) fn cfe_borrow_format_dependency_paths(
@@ -691,8 +558,6 @@ pub(crate) struct CfeBorrowedItem {
     pub(crate) name: String,
     /// The form that was borrowed; `null` when the whole object was.
     pub(crate) form: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) enum_value: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -895,7 +760,6 @@ pub(crate) struct CfeBorrowSpec {
     pub(crate) type_name: String,
     pub(crate) object_name: String,
     pub(crate) form_name: Option<String>,
-    pub(crate) enum_value_name: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -1241,20 +1105,6 @@ pub(crate) fn cfe_borrow_parse_object_spec(value: &str) -> Result<CfeBorrowSpec,
         ));
     }
     let remainder = &value[dot_idx + 1..];
-    if let Some((object_name, enum_value_name)) = remainder.split_once(".EnumValue.") {
-        if type_name != "Enum" || object_name.contains('.') || enum_value_name.contains('.') {
-            return Err("EnumValue borrowing requires Enum.Name.EnumValue.Value".to_string());
-        }
-        cfe_validate_metadata_name("ObjectName", object_name)?;
-        cfe_validate_metadata_name("EnumValueName", enum_value_name)?;
-        return Ok(CfeBorrowSpec {
-            type_name,
-            object_name: object_name.to_string(),
-            form_name: None,
-            enum_value_name: Some(enum_value_name.to_string()),
-        });
-    }
-
     let (object_name, form_name) = if let Some(form_idx) = remainder.find(".Form.") {
         (
             remainder[..form_idx].to_string(),
@@ -1271,7 +1121,6 @@ pub(crate) fn cfe_borrow_parse_object_spec(value: &str) -> Result<CfeBorrowSpec,
         type_name,
         object_name,
         form_name,
-        enum_value_name: None,
     })
 }
 
@@ -7416,75 +7265,6 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn legacy_enum_value_preview_validates_and_preserves_files_on_failure() {
-        let context = temp_context("enum-value-preview");
-        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
-        write_file(
-            &context.cwd.join("src/Enums/Kinds.xml"),
-            crate::infrastructure::native_operations::cfe_borrow_enum_value::tests::PARENT,
-        );
-        let mut args = Map::from_iter([
-            ("ConfigPath".to_string(), json!("src")),
-            ("ExtensionPath".to_string(), json!("ext")),
-            ("Object".to_string(), json!("Enum.Kinds.EnumValue.First")),
-        ]);
-        let before = crate::test_support::tree_snapshot(&context.cwd);
-        let preview = crate::infrastructure::native_operations::NativeOperationAdapter::invoke(
-            "cfe-borrow",
-            "unica.cfe.borrow",
-            &args,
-            &context,
-            true,
-            true,
-        )
-        .unwrap();
-        assert!(preview.ok, "{preview:?}");
-        assert!(!preview.changes.is_empty());
-        assert_eq!(crate::test_support::tree_snapshot(&context.cwd), before);
-        let prepared = prepare_cfe_borrow(&args, &context).unwrap();
-        let planned = prepared
-            .write_plan
-            .files
-            .get(&context.cwd.join("ext/Enums/Kinds.xml"))
-            .unwrap()
-            .updated
-            .clone();
-        let actual = borrow_cfe(&args, &context);
-        assert!(actual.ok, "{actual:?}");
-        assert_eq!(
-            fs::read(context.cwd.join("ext/Enums/Kinds.xml")).unwrap(),
-            planned
-        );
-        let after = crate::test_support::tree_snapshot(&context.cwd);
-        let again = borrow_cfe(&args, &context);
-        assert!(again.ok, "{again:?}");
-        assert_eq!(crate::test_support::tree_snapshot(&context.cwd), after);
-        args.insert(
-            "Object".to_string(),
-            json!("Enum.Kinds.EnumValue.Second;;Enum.Kinds.EnumValue.Missing"),
-        );
-        let refused = preview_cfe_borrow(&args, &context);
-        assert!(!refused.ok);
-        assert!(!borrow_cfe(&args, &context).ok);
-        assert_eq!(crate::test_support::tree_snapshot(&context.cwd), after);
-        fs::remove_dir_all(&context.cwd).unwrap();
-    }
-
-    #[test]
-    fn legacy_enum_value_parser_rejects_wrong_owner_and_extra_segments() {
-        let parsed = cfe_borrow_parse_object_spec("Enum.Kinds.EnumValue.First").unwrap();
-        assert_eq!(parsed.object_name, "Kinds");
-        assert_eq!(parsed.enum_value_name.as_deref(), Some("First"));
-        for request in [
-            "Catalog.Kinds.EnumValue.First",
-            "Enum.Kinds.EnumValue.First.More",
-            "Enum.Kinds.EnumValue.",
-        ] {
-            assert!(cfe_borrow_parse_object_spec(request).is_err(), "{request}");
-        }
-    }
-
     fn temp_context(name: &str) -> WorkspaceContext {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -8497,6 +8277,7 @@ pub(crate) mod tests {
             "Catalog.Items.Form.../Outside",
             "Catalog.Bad:Name",
             "Catalog.Items.Form.Bad:Name",
+            "Enum.Kinds.EnumValue.First",
             "Catalog.",
             "Catalog.Items.Form.",
         ] {
@@ -8511,6 +8292,21 @@ pub(crate) mod tests {
             .expect("Unicode metadata names must remain supported");
         assert_eq!(parsed.object_name, "Товары");
         assert_eq!(parsed.form_name.as_deref(), Some("ФормаЭлемента"));
+    }
+
+    #[test]
+    fn legacy_cfe_borrow_rejects_enum_value_without_writes() {
+        let context = temp_context("legacy-enum-value-rejected");
+        write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        let mut args = minimal_borrow_args();
+        args.insert("Object".to_string(), json!("Enum.Kinds.EnumValue.First"));
+        let before = crate::test_support::tree_snapshot(&context.cwd);
+
+        let outcome = borrow_cfe(&args, &context);
+
+        assert!(!outcome.ok, "{outcome:?}");
+        assert_eq!(crate::test_support::tree_snapshot(&context.cwd), before);
+        fs::remove_dir_all(&context.cwd).unwrap();
     }
 
     #[test]

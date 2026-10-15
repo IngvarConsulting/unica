@@ -431,7 +431,7 @@ fn closing_start(text: &str, node: Node<'_, '_>) -> usize {
 
 // Expanded names and values drive no-op detection; formatting and equivalent
 // namespace prefixes do not trigger a rewrite of the user's descriptor.
-fn equivalent(a: Node<'_, '_>, b: Node<'_, '_>) -> bool {
+pub(crate) fn equivalent(a: Node<'_, '_>, b: Node<'_, '_>) -> bool {
     if a.node_type() != b.node_type() {
         return false;
     }

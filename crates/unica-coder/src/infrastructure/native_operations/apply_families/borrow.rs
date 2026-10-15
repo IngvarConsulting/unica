@@ -284,7 +284,16 @@ pub(super) fn plan(
             let text = std::str::from_utf8(bytes).expect("owner planner validated UTF-8");
             let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
                 .expect("owner planner validated XML");
-            !document.descendants().any(|node| {
+            let owner = document
+                .root_element()
+                .children()
+                .find(|node| node.is_element())
+                .expect("owner planner validated descriptor");
+            let child_objects = owner
+                .children()
+                .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "ChildObjects")))
+                .expect("owner planner validated ChildObjects");
+            !child_objects.children().any(|node| {
                 node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "EnumValue"))
                     && node.children().any(|props| {
                         props.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Properties"))
@@ -572,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_enum_value_preview_publish_and_noop_preserve_local_siblings() {
+    fn canonical_enum_value_preview_refresh_and_noop_preserve_local_siblings() {
         let fixture = enum_fixture();
         let from = "main:Enum.Operations.EnumValue.Costs";
         let preview = fixture.run_from(from, true, None, None).unwrap();
@@ -583,18 +592,50 @@ mod tests {
         assert_eq!(committed.rev(), preview.rev());
         let path = fixture.dst.join("Enums/Operations.xml");
         let text = std::fs::read_to_string(&path).unwrap();
+        let borrowed_uuid = roxmltree::Document::parse(&text)
+            .unwrap()
+            .descendants()
+            .find(|node| {
+                node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "EnumValue"))
+                    && node.descendants().any(|child| {
+                        child.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Name"))
+                            && child.text() == Some("Costs")
+                    })
+            })
+            .unwrap()
+            .attribute("uuid")
+            .unwrap()
+            .to_string();
         assert!(text.contains("<Name>Costs</Name>"));
         assert!(!text.contains("<Name>Other</Name>"));
         assert!(text.contains("<ExtendedConfigurationObject>10000000-0000-4000-8000-000000000012</ExtendedConfigurationObject>"));
         let own = r#"<EnumValue uuid="10000000-0000-4000-8000-000000000019"><Properties><Name>Local</Name><Comment>keep local</Comment></Properties></EnumValue>"#;
         let local = text.replace("</ChildObjects>", &format!("{own}</ChildObjects>"));
         std::fs::write(&path, &local).unwrap();
+        let parent = fixture.src.join("Enums/Operations.xml");
+        std::fs::write(
+            &parent,
+            std::fs::read_to_string(&parent)
+                .unwrap()
+                .replace("parent comment", "updated parent comment"),
+        )
+        .unwrap();
+        let refresh = fixture.run_from(from, true, None, None).unwrap();
+        assert!(!refresh.effects().events().is_empty());
+        fixture
+            .run_from(from, false, Some(refresh.rev()), None)
+            .unwrap();
+        let refreshed = std::fs::read_to_string(&path).unwrap();
+        assert!(refreshed.contains("updated parent comment"));
+        assert!(refreshed.contains(&format!("uuid=\"{borrowed_uuid}\"")));
+        assert!(refreshed.contains("<Name>Local</Name>"));
+        assert!(refreshed.contains("keep local"));
         let noop = fixture.run_from(from, true, None, None).unwrap();
         assert!(noop.effects().events().is_empty());
         fixture
             .run_from(from, false, Some(noop.rev()), None)
             .unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), local);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), refreshed);
     }
 
     #[test]

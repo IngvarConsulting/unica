@@ -1,4 +1,4 @@
-//! Surgical borrowing of an EnumValue embedded in its owner's descriptor.
+//! Точечное заимствование EnumValue из описания перечисления-владельца.
 use super::common::escape_xml;
 use roxmltree::{Document, Node};
 
@@ -92,6 +92,79 @@ fn selected<'a, 'input>(owner: Node<'a, 'input>, name: &str) -> Result<Node<'a, 
     Ok(*value)
 }
 
+fn optional_property<'a, 'input>(
+    properties: Node<'a, 'input>,
+    tag: &str,
+) -> Result<Option<Node<'a, 'input>>, String> {
+    let nodes = properties
+        .children()
+        .filter(|n| n.has_tag_name((MD, tag)))
+        .collect::<Vec<_>>();
+    match nodes.as_slice() {
+        [] => Ok(None),
+        [node] => Ok(Some(*node)),
+        _ => Err(format!("Duplicate EnumValue property {tag}")),
+    }
+}
+
+fn desired_property(source: Option<Node<'_, '_>>, tag: &str) -> String {
+    source
+        .map(super::cfe_borrow_object::standalone_fragment)
+        .unwrap_or_else(|| format!("<{tag} xmlns=\"{MD}\"/>"))
+}
+
+fn update_transferred_properties(
+    existing_text: &str,
+    existing_value: Node<'_, '_>,
+    source_value: Node<'_, '_>,
+) -> Result<Option<String>, String> {
+    let existing_properties = child(existing_value, "Properties")?;
+    let source_properties = child(source_value, "Properties")?;
+    let mut edits = Vec::new();
+    let mut missing = Vec::new();
+
+    for tag in ["Synonym", "Comment"] {
+        let existing = optional_property(existing_properties, tag)?;
+        let desired = desired_property(optional_property(source_properties, tag)?, tag);
+        let desired_doc = Document::parse(&desired).map_err(|e| e.to_string())?;
+        if let Some(current) = existing {
+            if !super::cfe_borrow_object::equivalent(current, desired_doc.root_element()) {
+                edits.push((current.range(), desired));
+            }
+        } else {
+            missing.push(desired);
+        }
+    }
+    if edits.is_empty() && missing.is_empty() {
+        return Ok(None);
+    }
+
+    if !missing.is_empty() {
+        let properties_range = existing_properties.range();
+        let closing = properties_range.start
+            + existing_text[properties_range.clone()]
+                .rfind("</")
+                .ok_or("EnumValue Properties has no closing tag")?;
+        let newline = if existing_text.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        let insertion = missing
+            .into_iter()
+            .map(|property| format!("\t\t\t\t\t{property}{newline}"))
+            .collect::<String>();
+        edits.push((closing..closing, insertion));
+    }
+
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut result = existing_text.to_string();
+    for (range, replacement) in edits {
+        result.replace_range(range, &replacement);
+    }
+    Ok(Some(result))
+}
+
 pub(crate) fn enum_value_source_uuid(parent: &[u8], name: &str) -> Result<String, String> {
     let raw = std::str::from_utf8(parent)
         .map_err(|e| e.to_string())?
@@ -176,7 +249,19 @@ pub(crate) fn plan_borrow_enum_value(
         }
     }
     match same_name.len() {
-        1 => return Ok(existing_enum.to_vec()),
+        1 => {
+            let Some(result) = update_transferred_properties(existing_text, same_name[0], source)?
+            else {
+                return Ok(existing_enum.to_vec());
+            };
+            Document::parse(&result).map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            if existing_enum.starts_with(&[0xef, 0xbb, 0xbf]) {
+                bytes.extend_from_slice(&[0xef, 0xbb, 0xbf]);
+            }
+            bytes.extend_from_slice(result.as_bytes());
+            return Ok(bytes);
+        }
         0 => (),
         _ => return Err("Destination EnumValue name is ambiguous".to_string()),
     }
@@ -187,31 +272,27 @@ pub(crate) fn plan_borrow_enum_value(
         return Err("Borrowed EnumValue must have a distinct extension UUID".to_string());
     }
     let source_props = child(source, "Properties")?;
-    let synonym = source_props
-        .children()
-        .filter(|n| n.has_tag_name((MD, "Synonym")))
-        .collect::<Vec<_>>();
-    let comment = source_props
-        .children()
-        .filter(|n| n.has_tag_name((MD, "Comment")))
-        .collect::<Vec<_>>();
-    if synonym.len() > 1 || comment.len() > 1 {
-        return Err("Duplicate source EnumValue properties".to_string());
-    }
-    let synonym = synonym
-        .first()
-        .map(|n| super::cfe_borrow_object::standalone_fragment(*n))
-        .unwrap_or_else(|| "<Synonym/>".to_string());
-    let comment = comment
-        .first()
-        .map(|n| super::cfe_borrow_object::standalone_fragment(*n))
-        .unwrap_or_else(|| "<Comment/>".to_string());
+    let synonym = desired_property(optional_property(source_props, "Synonym")?, "Synonym");
+    let comment = desired_property(optional_property(source_props, "Comment")?, "Comment");
     let newline = if existing_text.contains("\r\n") {
         "\r\n"
     } else {
         "\n"
     };
     let fragment = format!("\t\t\t<EnumValue xmlns=\"{MD}\" uuid=\"{}\">{newline}\t\t\t\t<Properties>{newline}\t\t\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>{newline}\t\t\t\t\t<Name>{}</Name>{newline}\t\t\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>{newline}\t\t\t\t\t{synonym}{newline}\t\t\t\t\t{comment}{newline}\t\t\t\t</Properties>{newline}\t\t\t</EnumValue>", escape_xml(value_uuid),escape_xml(name),escape_xml(source_uuid));
+    if let Some(offset) =
+        super::meta::platform_child_object_insertion_offset(existing_text, "EnumValue")
+    {
+        let mut result = existing_text.to_string();
+        result.insert_str(offset, &format!("{fragment}{newline}"));
+        Document::parse(&result).map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        if existing_enum.starts_with(&[0xef, 0xbb, 0xbf]) {
+            bytes.extend_from_slice(&[0xef, 0xbb, 0xbf]);
+        }
+        bytes.extend_from_slice(result.as_bytes());
+        return Ok(bytes);
+    }
     let range = children.range();
     let raw = &existing_text[range.clone()];
     let replacement = if let Some(open) = raw.strip_suffix("/>") {
@@ -295,6 +376,81 @@ pub(crate) mod tests {
         assert!(values[0].descendants().any(|n| n
             .has_tag_name(("http://v8.1c.ru/8.1/data/core", "content"))
             && n.text() == Some("Первое & значение")));
+
+        let refreshed_parent = PARENT
+            .replace("Первое &amp; значение", "Обновлённое значение")
+            .replace(
+                "<Comment>Источник</Comment>",
+                "<Comment>Новый комментарий</Comment>",
+            );
+        let refreshed = plan_borrow_enum_value(
+            refreshed_parent.as_bytes(),
+            &second,
+            "First",
+            "77777777-7777-4777-8777-777777777777",
+        )
+        .unwrap();
+        let refreshed_text = std::str::from_utf8(&refreshed)
+            .unwrap()
+            .trim_start_matches('\u{feff}');
+        let refreshed_doc = Document::parse(refreshed_text).unwrap();
+        let refreshed_values = child(owner(&refreshed_doc).unwrap(), "ChildObjects")
+            .unwrap()
+            .children()
+            .filter(|n| n.has_tag_name((MD, "EnumValue")))
+            .collect::<Vec<_>>();
+        assert_eq!(refreshed_values.len(), 2);
+        assert_eq!(refreshed_values[0].attribute("uuid"), Some(VALUE_UUID));
+        assert_eq!(
+            text(child(refreshed_values[0], "Properties").unwrap(), "Comment").unwrap(),
+            "Новый комментарий"
+        );
+        assert!(refreshed_values[0].descendants().any(|n| n
+            .has_tag_name(("http://v8.1c.ru/8.1/data/core", "content"))
+            && n.text() == Some("Обновлённое значение")));
+        assert_eq!(
+            refreshed_values[1].attribute("uuid"),
+            Some("55555555-5555-4555-8555-555555555555")
+        );
+        assert_eq!(
+            plan_borrow_enum_value(
+                refreshed_parent.as_bytes(),
+                &refreshed,
+                "First",
+                "88888888-8888-4888-8888-888888888888",
+            )
+            .unwrap(),
+            refreshed
+        );
+    }
+
+    #[test]
+    fn enum_value_borrow_uses_the_platform_slot_before_later_child_kinds() {
+        let shell = String::from_utf8(shell()).unwrap();
+        let with_command = shell.replace(
+            "<ChildObjects/>",
+            "<ChildObjects>\n\t\t\t<Command>LocalCommand</Command>\n\t\t</ChildObjects>",
+        );
+
+        let borrowed = plan_borrow_enum_value(
+            PARENT.as_bytes(),
+            with_command.as_bytes(),
+            "First",
+            VALUE_UUID,
+        )
+        .unwrap();
+        let text = std::str::from_utf8(&borrowed)
+            .unwrap()
+            .trim_start_matches('\u{feff}');
+        let document = Document::parse(text).unwrap();
+        let tags = child(owner(&document).unwrap(), "ChildObjects")
+            .unwrap()
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name())
+            .collect::<Vec<_>>();
+        assert_eq!(tags, ["EnumValue", "Command"]);
+        assert!(text.contains("<Command>LocalCommand</Command>"));
     }
 
     #[test]

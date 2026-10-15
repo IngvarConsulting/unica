@@ -1,0 +1,33 @@
+{
+  "id": "S-1396-reject-missing-enum-value",
+  "area": "Расширения конфигурации",
+  "task": "Отсутствующее значение перечисления не создаёт оболочку владельца",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "nosupport:Enum.ВажностьПроблемыУчета.EnumValue.НесуществующееЗначение"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: EnumValue 'НесуществующееЗначение' is missing or ambiguous in parent Enum",
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src-ext/Enums/ВажностьПроблемыУчета.xml",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

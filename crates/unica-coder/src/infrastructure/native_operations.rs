@@ -73,9 +73,6 @@ impl NativeOperationAdapter {
             ));
         }
         if dry_run {
-            if operation == "cfe-borrow" {
-                return Ok(cfe::preview_cfe_borrow(args, context));
-            }
             if let Some(outcome) = external::preview(operation, tool_name, args, context) {
                 return Ok(outcome);
             }
