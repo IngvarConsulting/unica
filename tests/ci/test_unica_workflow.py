@@ -188,43 +188,26 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", text)
         self.assertIn("python scripts/ci/check-version-contract.py", text)
 
-    def test_every_pull_request_gets_a_stable_aggregate_gate(self) -> None:
+    def test_label_changes_cannot_replace_the_stable_pull_request_gate(self) -> None:
         on = triggers(self.release)
         gate = job(self.release, "unica-ci")
 
-        self.assertIn("labeled", on["pull_request"]["types"])
-        self.assertIn("unlabeled", on["pull_request"]["types"])
+        # Изменение метки не должно создавать новый suite этого workflow:
+        # ruleset смотрит на последний suite головы PR и перестаёт видеть
+        # обязательный `Unica CI`, если тот suite состоит из skipped-джоб.
+        self.assertEqual(on["pull_request"]["types"], ["opened", "synchronize", "reopened"])
         self.assertNotIn("paths", on["pull_request"])
         self.assertNotIn("paths", on["push"])
-        # Метка, кроме `ci:full`, ворота не меняет: прогон метки идёт своей
-        # группой (не отменяет настоящий), его корневые джобы и ворота
-        # пропускаются, а у ворот другое имя — пропуск засчитался бы успехом
-        # обязательной проверки `Unica CI` поверх красного вердикта.
-        ignored = (
-            "github.event_name == 'pull_request' && "
-            "(github.event.action == 'labeled' || github.event.action == 'unlabeled') && "
-            "github.event.label.name != 'ci:full'"
-        )
+        self.assertNotIn("label ignored", "\n".join(strings(self.release)))
+        self.assertEqual(gate["name"], "Unica CI")
+        self.assertEqual(condition(gate), "always()")
+        self.assertEqual(condition(job(self.release, "classify-changes")), "")
+        self.assertEqual(condition(job(self.release, "guards")), "")
         self.assertEqual(
-            normalized(gate["name"]),
-            "${{ (" + ignored + ") && 'Unica CI (label ignored)' || 'Unica CI' }}",
+            normalized(self.release["concurrency"]["group"]),
+            "${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}"
+            "${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', inputs.profile) || '' }}",
         )
-        self.assertEqual(normalized(condition(gate)), "${{ always() && !(" + ignored + ") }}")
-        for root in ("classify-changes", "guards"):
-            with self.subTest(root=root):
-                self.assertEqual(normalized(condition(job(self.release, root))), "${{ !(" + ignored + ") }}")
-        group = normalized(self.release["concurrency"]["group"])
-        self.assertTrue(group.endswith("${{ (" + ignored + ") && format('-label-{0}', github.run_id) || '' }}"), group)
-        # Остальные джобы ждут корневых: без `always()` или с требованием их
-        # успеха они пропускаются вслед за ними.
-        for job_id, found in jobs(self.release).items():
-            if job_id in ("classify-changes", "guards", "unica-ci"):
-                continue
-            with self.subTest(job=job_id):
-                self.assertTrue(needs(found), job_id)
-                text = normalized(condition(found) or "")
-                if "always()" in text:
-                    self.assertRegex(text, r"needs\.[a-z-]+\.result == 'success'")
         self.assertIn("python scripts/ci/evaluate-ci-gate.py", script(gate))
         for upstream in (
             "classify-changes",
@@ -301,6 +284,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(output=output):
                 self.assertIn(output, classifier["outputs"])
         scope = step_by_id(classifier, "scope")
+        # Выражение увидит `ci:full` в снимке pull request на следующем
+        # `synchronize`; контракт триггеров закреплён отдельным тестом.
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:full')", scope["env"]["FORCE_FULL"])
         self.assertIn("--force-full", script(classifier))
 
@@ -654,7 +639,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(classify["outputs"]["runners"], "${{ steps.runners.outputs.runners }}")
         self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', script(classify))
         # Две полосы: pull request — ubuntu, полная матрица — в очереди, на push
-        # и по кнопке; метка ci:full возвращает её на pull request.
+        # и по кнопке; ci:full возвращает её на следующем прогоне pull request.
         runners = step_by_id(classify, "runners")
         self.assertIn('runners=["ubuntu-latest"]', runners["run"])
         self.assertIn('runners=["ubuntu-latest", "macos-14"]', runners["run"])
