@@ -8770,3 +8770,39 @@ fn canonical_subsystem_check_refuses_replaced_root() {
         RefusalCode::ProviderUnavailable
     );
 }
+
+#[test]
+fn canonical_subsystem_check_preserves_bom_format_warning() {
+    for version in ["2.20", "2.21"] {
+        let fixture = nested_check_fixture();
+        let path = fixture
+            .source
+            .join("Subsystems/Sales/Subsystems/Orders.xml");
+        let text = fs::read_to_string(&path).unwrap().replace("2.20", version);
+        fs::write(&path, format!("\u{feff}{text}")).unwrap();
+        let address = QualifiedAddress::parse("main:Subsystem.Sales.Subsystem.Orders").unwrap();
+        let native = fixture
+            .read_authority()
+            .validate_subsystem(&address)
+            .unwrap();
+        let checked = crate::application::v13::check::normalize_native_outcome(
+            &address,
+            "Subsystem",
+            crate::application::v13::check::CheckValidator::Subsystem,
+            native,
+        )
+        .unwrap();
+        assert!(checked.ok());
+        assert!(!checked
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code() == "formatVersionInvalid"));
+        assert_eq!(
+            checked
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.code() == "platformVersionUnsupported"),
+            version == "2.21"
+        );
+    }
+}

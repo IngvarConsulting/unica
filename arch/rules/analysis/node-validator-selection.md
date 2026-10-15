@@ -1,6 +1,7 @@
 ---
 id: INV.SURFACE.CHECK-INFERS-VALIDATORS
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_check_preserves_bom_format_warning
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_check_validates_the_child_and_rejects_wrong_identity
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_check_refuses_linked_dependencies
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_check_refuses_replaced_root

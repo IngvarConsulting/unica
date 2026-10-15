@@ -265,7 +265,8 @@ fn evaluate_prepared_subsystem_format_guard(
                 document.path.display()
             ))
         })?;
-        let parsed = match Document::parse(source.trim_start_matches('\u{feff}')) {
+        let source = source.trim_start_matches('\u{feff}');
+        let parsed = match Document::parse(source) {
             Ok(parsed) => parsed,
             Err(error) => {
                 let warning = format!(
