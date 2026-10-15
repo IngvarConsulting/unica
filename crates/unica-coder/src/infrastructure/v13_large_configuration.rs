@@ -1459,8 +1459,8 @@ mod tests {
     /// as a tool that preserves timestamps would.
     fn rewrite_keeping_mtime(path: &std::path::Path, bytes: &[u8]) {
         let modified = std::fs::metadata(path).unwrap().modified().unwrap();
-        // NTFS обновляет время изменения с шагом системных часов (~15,6 мс):
-        // запись в тот же шаг оставила бы отпечаток прежним. В работе такой
+        // Время изменения файла идёт шагом часов ядра: NTFS ~15,6 мс, Linux
+        // 1–10 мс. Запись в тот же шаг оставила бы отпечаток прежним. В работе такой
         // отпечаток не кешируется окном оседания; тест окно обнуляет, поэтому
         // пишет заведомо в следующий шаг.
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1563,8 +1563,8 @@ mod tests {
     fn stamps_differ_by_every_identity_field() {
         use crate::infrastructure::platform::filesystem::FileStamp;
         let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
-        // Шаг времени файла на Windows — 100 нс (FILETIME): сдвиг меньше
-        // шага там неразличим, микросекунда видна на всех системах.
+        // SystemTime на Windows хранится в FILETIME с шагом 100 нс: сдвиг
+        // меньше шага там неразличим, микросекунда видна на всех системах.
         let later = time + std::time::Duration::from_micros(1);
         let base = FileStamp::for_test(7, 9, Some(time), Some(time));
         assert_eq!(base, FileStamp::for_test(7, 9, Some(time), Some(time)));
