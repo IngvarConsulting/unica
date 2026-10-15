@@ -4,7 +4,7 @@ The common corpus has source, pinned-analyzer delivery and real-agent drivers.
 Runtime drivers are implemented with their surface tasks;
 a profile without an executable driver is rejected.
 
-Every scenario of the corpus (the closed block S001-S436 in
+Every scenario of the corpus (the closed block S001-S440 in
 tests/fixtures/acceptance/scenario-corpus.json and one file per later scenario
 in tests/fixtures/acceptance/scenarios/, both loaded by
 scripts/ci/acceptance_corpus.py) is a real configuration-development task
@@ -56,6 +56,7 @@ from tests.ci.acceptance_controls import (
     load_acceptance_corpus,
     matches_step,
     substitute_capture,
+    tool_result,
     validate_controls,
 )
 
@@ -185,7 +186,7 @@ def classify(response, context):
         if "deadline expired" in message:
             return "provider", message[:160]
         return "error", json.dumps(response, ensure_ascii=False)[:200]
-    structured = response.get("result", {}).get("structuredContent")
+    structured = tool_result(response)
     if structured is None:
         return "error", "no structuredContent"
     if structured.get("rev"):
@@ -892,7 +893,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                     # node proves the verdict it froze; without these two
                     # checks a typo in an address or a failing validator
                     # would pass as the intended outcome.
-                    structured = response.get("result", {}).get("structuredContent") or {}
+                    structured = tool_result(response) or {}
                     verification.append({"tool": step["tool"], "args": arguments, "result": structured})
                     failures = content_mismatches(step, structured, actual, note, server.workspace, context)
                     if not failures:

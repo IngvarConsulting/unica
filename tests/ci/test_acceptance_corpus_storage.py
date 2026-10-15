@@ -105,7 +105,7 @@ class StableIdentifierTests(CorpusStorageTestCase):
             STORAGE.load(self.root)
 
     def test_new_identifier_and_file_name_are_checked(self) -> None:
-        for identifier in ["S437", "S-1489", "S-0-name", "S-12-name", "S-436-name", "S-1489-Name", "S-1489-name_x", "1489-name"]:
+        for identifier in ["S441", "S-1489", "S-0-name", "S-12-name", "S-440-name", "S-1489-Name", "S-1489-name_x", "1489-name"]:
             with self.subTest(identifier=identifier):
                 path = scenario_file(self.root, self.new_scenario(identifier, "Неверный идентификатор"))
                 with self.assertRaises(STORAGE.CorpusError):
@@ -174,7 +174,7 @@ class ParallelAdditionMergeTests(CorpusStorageTestCase):
         for branch, task in [("first", "Первая"), ("second", "Вторая")]:
             self.git("switch", "-q", "-c", branch, "main")
             corpus = self.legacy()
-            corpus["scenarios"].append({**corpus["scenarios"][0], "id": "S437", "task": task})
+            corpus["scenarios"].append({**corpus["scenarios"][0], "id": "S441", "task": task})
             self.write_legacy(corpus)
             self.commit_all(f"append {task}")
         self.git("switch", "-q", "main")

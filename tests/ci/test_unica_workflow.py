@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import fnmatch
-import os
 import re
 import subprocess
 import tempfile
@@ -339,8 +338,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         platforms = job(self.release, "test-rust-platforms")
 
         self.assertNotIn("cargo test", script(source))
-        agent_rust, = steps_using(source, "dtolnay/rust-toolchain")
-        self.assertEqual(condition(agent_rust), "matrix.suite == 'tests/agent_evaluation'")
+        self.assertEqual(steps_using(source, "dtolnay/rust-toolchain"), [])
         # Список раннеров считает classify-changes: Windows — только в ночном ярусе large.
         self.assertEqual(platforms["strategy"]["matrix"]["runner"], "${{ fromJSON(needs.classify-changes.outputs.runners) }}")
         for flag in ("rust_changed", "platform_changed", "toolchain_changed", "ci_changed"):
@@ -566,34 +564,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         run_index = next(index for index, step in enumerate(steps(python)) if "run-tests.py" in step.get("run", "") and "--plan-only" not in step["run"])
         self.assertLess(plan_index, run_index)
 
-    def test_agent_job_authenticates_after_saving_the_plan_and_refuses_missing_credentials(self):
-        python = job(self.release, "test-python")
-        sequence = steps(python)
-        authentication = step_named(python, "Authenticate the mandatory agent evaluation")
-        self.assertEqual(condition(authentication), "matrix.suite == 'tests/agent_evaluation'")
-        self.assertEqual(authentication["env"], {"CODEX_API_KEY": "${{ secrets.CODEX_API_KEY }}"})
-        plan_upload = next(i for i, step in enumerate(sequence) if step.get("with", {}).get("name") == "plan-python-${{ matrix.slug }}")
-        run_index = next(i for i, step in enumerate(sequence) if "run-tests.py" in step.get("run", "") and "--plan-only" not in step["run"])
-        self.assertLess(plan_upload, sequence.index(authentication))
-        self.assertLess(sequence.index(authentication), run_index)
-        node, = steps_using(python, "actions/setup-node")
-        self.assertEqual(condition(node), condition(authentication))
-        self.assertFalse(node["with"]["package-manager-cache"])
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            fake = root / "codex"
-            fake.write_text("#!/bin/sh\n[ \"$*\" = \"login --with-api-key\" ] || exit 42\ncat > \"$LOGIN_INPUT\"\n")
-            fake.chmod(0o755)
-            login_input = root / "login.input"
-            environment = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"], LOGIN_INPUT=str(login_input), CODEX_API_KEY="")
-            refused = subprocess.run(["bash", "-c", authentication["run"]], env=environment, capture_output=True, text=True)
-            self.assertNotEqual(refused.returncode, 0)
-            self.assertFalse(login_input.exists(), "missing credentials never invoke login")
-            environment["CODEX_API_KEY"] = "synthetic-test-key"
-            accepted = subprocess.run(["bash", "-c", authentication["run"]], env=environment, capture_output=True, text=True)
-            self.assertEqual(accepted.returncode, 0, accepted.stderr)
-            self.assertEqual(login_input.read_text(), "synthetic-test-key")
-            self.assertNotIn("synthetic-test-key", accepted.stdout + accepted.stderr)
+    def test_agent_evaluation_and_credential_are_absent_from_every_workflow(self) -> None:
+        for workflow in sorted((*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml"))):
+            values = list(strings(load(workflow)))
+            with self.subTest(workflow=workflow.name):
+                self.assertFalse(any("tests/agent_evaluation" in value for value in values))
+                self.assertFalse(any("CODEX_API_KEY" in value for value in values))
 
     def test_gate_profile_follows_the_event_not_the_job(self) -> None:
         """Ворота → профиль: pull request — `pr`, push в ветку — `main`, тег — `release`."""

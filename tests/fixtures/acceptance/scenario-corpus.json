@@ -14929,7 +14929,7 @@
    "name": "code-insert-method-and-anchor-line-boundaries",
    "pr": 1292,
    "area": "Код BSL",
-   "task": "Anchor before/after учитывает только методы; method before/after сохраняет аннотацию и соседей; точный post-image и повтор без записи",
+   "task": "Anchor before/after учитывает только методы; method before встаёт над документирующим комментарием и аннотацией метода, after — после его окончания, соседи сохраняются; точный post-image и повтор без записи",
    "workspace": "tests/fixtures/acceptance/workspace-code",
    "wire": [
     {
@@ -15695,7 +15695,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15776,7 +15776,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15852,7 +15852,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15933,7 +15933,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -16009,7 +16009,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -16090,7 +16090,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -16166,7 +16166,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -30600,8 +30600,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -30895,8 +30895,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31190,8 +31190,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31485,8 +31485,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31780,8 +31780,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -33336,7 +33336,7 @@
    "name": "text-search-hit-opens-its-module",
    "issue": 1298,
    "area": "Код BSL",
-   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку",
+   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и найти ту же строку в его исходном тексте",
    "workspace": "tests/fixtures/acceptance/workspace",
    "wire": [
     {
@@ -33403,12 +33403,20 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/items/12/line",
-       "eq": "$capture.hitLine"
+       "pointer": "/data/kind",
+       "eq": "Body"
       },
       {
-       "pointer": "/data/items/12/text",
-       "eq": "$capture.hitSnippet"
+       "pointer": "/data/items",
+       "absent": true
+      },
+      {
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "contains": "$capture.hitSnippet"
       }
      ]
     }
@@ -36066,24 +36074,11 @@
      "assertions": [
       {
        "pointer": "/data/items",
-       "eq": [
-        {
-         "line": 1,
-         "text": "#Если Сервер Тогда"
-        },
-        {
-         "line": 2,
-         "text": "Процедура Проверка() Экспорт"
-        },
-        {
-         "line": 3,
-         "text": "КонецПроцедуры"
-        },
-        {
-         "line": 4,
-         "text": "#КонецЕсли"
-        }
-       ]
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "eq": "#Если Сервер Тогда\nПроцедура Проверка() Экспорт\nКонецПроцедуры\n#КонецЕсли\n"
       }
      ]
     },
@@ -40414,6 +40409,319 @@
        "kind": "xml",
        "select": ".//{http://v8.1c.ru/8.3/xcf/logform}FillChecking",
        "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S437",
+   "name": "module-interface-slices-publish-only-routable-addresses",
+   "issue": 1467,
+   "area": "Навигация и чтение",
+   "task": "Прочитать и проверить ветвь Interface модуля: срезы Public/Library/Override приходят без адреса, который view отверг бы, check читает ветвь без валидатора командного интерфейса, а метод среза открывается своим адресом",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Interface"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/interface",
+       "eq": "Public"
+      },
+      {
+       "pointer": "/data/items/0/addressable",
+       "eq": false
+      },
+      {
+       "pointer": "/data/items/0/at",
+       "absent": true
+      },
+      {
+       "pointer": "/data/items/0/methods/0",
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Interface"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "readable",
+     "validators": []
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S438",
+   "name": "check-fails-a-module-variable-declared-after-methods",
+   "issue": 1460,
+   "area": "Код BSL",
+   "task": "Объявить переменную модуля после функций и проверить модуль: check проваливается находкой платформы о месте объявления, а не отвечает passed",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "Перем ПоследнийОтвет;",
+         "position": "after"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Body"
+     },
+     "expect": [
+      "ok",
+      "provider"
+     ],
+     "status": "failed",
+     "validators": [
+      "bsl"
+     ],
+     "diagnostic": "VariableDeclarationPlacement"
+    }
+   ]
+  },
+  {
+   "id": "S439",
+   "name": "resolve-metadata-object-by-its-own-place",
+   "issue": 1457,
+   "area": "Навигация и чтение",
+   "task": "Разрешить корень конфигурации, объект и его форму по адресу в их файлы; отсутствующий объект даёт not_found",
+   "wire": [
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Configuration"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Configuration"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Configuration.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Catalog"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Валюты.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Form"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Валюты/Forms/ФормаЭлемента.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.НетТакогоСправочника"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "not_found: the source layout does not place `main:Catalog.НетТакогоСправочника`"
+    }
+   ]
+  },
+  {
+   "id": "S440",
+   "name": "method-body-text-round-trips-through-code-replace",
+   "issue": 1458,
+   "area": "Код BSL",
+   "task": "Прочитать метод исходным текстом с документирующим комментарием, исправить строку в этом тексте и заменить им тот же адрес: метод меняется на месте без дублирования комментария",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/items",
+       "absent": true
+      },
+      {
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "eq": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = Неопределено;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body",
+         "text": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = 443;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/sourceText",
+       "eq": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = 443;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
       }
      ]
     }

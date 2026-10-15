@@ -19,10 +19,6 @@ pub fn execute_scenario_json(request: &str) -> Result<String, String> {
     run_supported_receipt_scenario_for_test(request)
 }
 
-pub fn receipt_writer_wall_load_supported_for_test() -> bool {
-    crate::infrastructure::platform::receipt_writer_wall_load_supported_for_test()
-}
-
 pub fn request_scope_hash_for_test(workspace_hint: &str) -> String {
     request_scope_hash(workspace_hint)
         .unwrap_or_else(|error| panic!("invalid request scope supplied by test: {error}"))
@@ -1080,7 +1076,6 @@ mod tests {
             public_functions,
             [
                 "execute_scenario_json",
-                "receipt_writer_wall_load_supported_for_test",
                 "request_scope_hash_for_test",
                 "receipt_key_digest_for_test",
                 "task_link_digest_for_test",

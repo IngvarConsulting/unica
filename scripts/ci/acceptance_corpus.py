@@ -5,7 +5,7 @@ The corpus is stored so that two changes, each adding its own scenario, never
 touch the same lines:
 
 * `tests/fixtures/acceptance/scenario-corpus.json` holds the header and the
-  closed historical block `S001`…`S436`; nothing is appended to it any more;
+  closed historical block `S001`…`S440`; nothing is appended to it any more;
 * every later scenario lives in its own file
   `tests/fixtures/acceptance/scenarios/<id>.json` with a stable identifier
   `S-<issue>-<slug>` that does not depend on the order of addition;
@@ -41,7 +41,7 @@ MANIFEST_SUFFIX = ".steps"
 # The historical block is closed: its numbers stay as they are, so links to
 # `S###` keep finding their scenario, and a new scenario never takes the next
 # number.
-LEGACY_LAST = 436
+LEGACY_LAST = 440
 LEGACY_ID = re.compile(r"S([0-9]{3})")
 STABLE_ID = re.compile(r"S-([1-9][0-9]*)-([a-z0-9]+(?:-[a-z0-9]+)*)")
 

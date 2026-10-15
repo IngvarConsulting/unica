@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import re
 from pathlib import Path, PurePosixPath
 import xml.etree.ElementTree as ET
@@ -31,6 +32,28 @@ def corpus_storage():
 
 
 _CORPUS_STORAGE = None
+
+
+def tool_result(response):
+    """Канонический результат вызова: `structuredContent`, а у ответа
+    с исходным текстом BSL — конверт из первого блока `content` и сам
+    текст второго блока под ключом `sourceText`."""
+    result = (response or {}).get("result") or {}
+    structured = result.get("structuredContent")
+    if structured is not None:
+        return structured
+    blocks = result.get("content") or []
+    if result.get("isError") is not False or len(blocks) != 2 or not all(
+            block.get("type") == "text" and isinstance(block.get("text"), str) for block in blocks):
+        return None
+    try:
+        envelope = json.loads(blocks[0]["text"])
+    except ValueError:
+        return None
+    if not isinstance(envelope, dict) or envelope.get("ok") is not True or "sourceText" in envelope:
+        return None
+    envelope["sourceText"] = blocks[1]["text"]
+    return envelope
 
 
 def load_corpus(path):

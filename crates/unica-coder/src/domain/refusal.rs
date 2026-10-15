@@ -328,6 +328,9 @@ pub enum RefusalDetail {
     /// Исходник на месте, но прочитать его нельзя: не UTF-8, разбор XML не
     /// удался, дескрипторов владельца нет.
     SourceUnreadable,
+    /// Имя корня исходников временно не открылось, но его подмена не доказана:
+    /// тот же вызов можно повторить, не перестраивая сохранённый план.
+    SourceTemporarilyUnavailable,
     /// Поставщика нет: справка не установлена, поставщик диагностик не
     /// стартовал.
     ProviderAbsent,
@@ -360,6 +363,7 @@ impl RefusalDetail {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SourceUnreadable => "source_unreadable",
+            Self::SourceTemporarilyUnavailable => "source_temporarily_unavailable",
             Self::ProviderAbsent => "provider_absent",
             Self::DeliveryInProgress => "delivery_in_progress",
             Self::DependencyPending => "dependency_pending",
@@ -377,6 +381,7 @@ impl RefusalDetail {
     pub const fn code(self) -> RefusalCode {
         match self {
             Self::SourceUnreadable
+            | Self::SourceTemporarilyUnavailable
             | Self::ProviderAbsent
             | Self::DeliveryInProgress
             | Self::DependencyPending
@@ -394,6 +399,7 @@ impl RefusalDetail {
     pub const fn outcome(self) -> Outcome {
         match self {
             Self::SourceUnreadable => Outcome::FixSource,
+            Self::SourceTemporarilyUnavailable => Outcome::RetryAsIs,
             Self::ProviderAbsent | Self::BackendIncompatible => Outcome::NeedsHuman,
             // Настройку подключения правит человек: ни повтор, ни правка
             // аргументов вызова её не меняют.
@@ -412,8 +418,9 @@ impl RefusalDetail {
     }
 
     /// Все уточнения — для проверок полноты.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::SourceUnreadable,
+        Self::SourceTemporarilyUnavailable,
         Self::ProviderAbsent,
         Self::DeliveryInProgress,
         Self::DependencyPending,
