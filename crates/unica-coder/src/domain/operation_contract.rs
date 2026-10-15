@@ -122,6 +122,17 @@ fn field_head(names: &[&str], required: &[&str]) -> Value {
 }
 
 impl OperationContract {
+    pub(crate) fn form_move() -> Self {
+        Self {
+            schema: object(&[("at", text(true)), ("values", object(&[("into", json!({"anyOf":[text(true), {"type":"null"}]})), ("after", text(true))], &["into"]))], &["values"]),
+            target: "The existing Item at its full current path: Owner.Name.Form.F.Item.A[.Item.B…]. The address alone selects the source.",
+            effect: "Move an existing XML subtree, preserving IDs, properties, events and contained companions. Incompatible placements are refused without conversion.",
+            notes: "Names are exact. into is required: use a container name, or null for the form root. Omit after for the end. after must be a direct child of the destination and cannot name the source. Exact placement is a no-op. A failure publishes nothing.",
+            example_args: json!({"values":{"into":"Destination"}}),
+            help: "skills/form-edit/SKILL.md",
+        }
+    }
+
     pub(crate) fn dcs(op: &str) -> Option<Self> {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
@@ -1219,6 +1230,37 @@ mod tests {
             .is_err());
         assert!(creation.normalize(&json!({"items":[]}), "args").is_err());
         assert_eq!(parse_mxl_cell_address("R01C+01"), Some((1, 1)));
+    }
+
+    #[test]
+    fn form_move_contract_selects_one_source_and_preserves_exact_names() {
+        for (args, accepted) in [
+            (
+                json!({"values":{"into":" Group ","after":" Previous "}}),
+                true,
+            ),
+            (json!({"values":{"into":null}}), true),
+            (json!({"values":{}}), false),
+            (json!({"values":{"into":false}}), false),
+            (json!({"values":{"into":""}}), false),
+            (json!({"values":{"into":"G","name":"A"}}), false),
+            (json!({"items":[{"name":"A","into":"G"}]}), false),
+            (json!({"values":{"into":"G","after":null}}), false),
+            (json!({"values":{"into":"G","before":"A"}}), false),
+        ] {
+            let contract = OperationContract::form_move();
+            let validator = jsonschema::validator_for(&contract.schema).unwrap();
+            assert_eq!(validator.is_valid(&args), accepted, "{args}");
+            let normalized = contract.normalize(&args, "ops[3].args");
+            assert_eq!(normalized.is_ok(), accepted, "{args}: {normalized:?}");
+            if accepted {
+                assert_eq!(normalized.unwrap(), args);
+            }
+        }
+        let error = OperationContract::form_move()
+            .normalize(&json!({"values":{"into":false}}), "ops[3].args")
+            .unwrap_err();
+        assert_eq!(error.path, "ops[3].args.values.into");
     }
 
     #[test]

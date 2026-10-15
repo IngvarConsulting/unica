@@ -1288,6 +1288,10 @@ impl DaemonServerConfig {
 }
 
 #[cfg(test)]
+#[path = "form_move_tests.rs"]
+mod form_move_tests;
+
+#[cfg(test)]
 pub(crate) mod actor_capacity_tests {
     use super::super::client_v5::V5DaemonProcessOwner;
     use super::super::identity::DaemonStateDirectory;
@@ -2754,7 +2758,7 @@ pub(crate) mod actor_capacity_tests {
     /// One canonical Direct call on the shared v5 runtime: bind, prepare and
     /// execute in the calling thread, exactly the path the daemon takes before
     /// its cutoff. A known-long class is a Task, never a Direct outcome.
-    fn direct_v5(
+    pub(super) fn direct_v5(
         runtime: &V5CanonicalInvocationRuntime,
         request: InvocationRequest,
     ) -> Result<DomainResult, V5CanonicalPrepareError> {
