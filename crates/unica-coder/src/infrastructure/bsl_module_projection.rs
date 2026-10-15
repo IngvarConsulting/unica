@@ -378,7 +378,7 @@ fn project_module_with_specs(
         request.extension_targets,
     )?;
     let regions = region_projections(&root, &lines, request.at, &methods);
-    let interfaces = interface_projections(request.at, &methods, &regions);
+    let interfaces = interface_projections(&methods, &regions);
     let events = project_module_events(
         request.at,
         request.capability,
@@ -854,7 +854,6 @@ fn region_projections(
 }
 
 fn interface_projections(
-    at: &QualifiedAddress,
     methods: &[MethodProjection],
     regions: &[RegionProjection],
 ) -> Vec<InterfaceProjection> {
@@ -883,7 +882,6 @@ fn interface_projections(
                 .map(|method| method.at.clone())
                 .collect();
             InterfaceProjection {
-                at: format!("{at}.Interface.{}", interface.as_str()),
                 kind: "Interface",
                 interface: *interface,
                 methods: selected,

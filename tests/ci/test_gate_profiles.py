@@ -184,7 +184,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         for replacement in [
             f"test(/^{name}/)",
             "test(/^infrastructure::source_selection_evidence::tests::/)",
-            "test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)",
+            "test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)",
             exact + " | " + exact,
         ]:
             with self.subTest(replacement=replacement):
@@ -252,22 +252,21 @@ class GateProfileCompositionTests(unittest.TestCase):
             with self.subTest(suite=suite):
                 self.assertIn(size, sizes)
                 self.assertTrue((REPO_ROOT / suite).is_dir())
-        self.assertEqual({size for _, size, _ in self.run_tests.PYTHON_SUITES}, {"small", "large"})
+        self.assertEqual({size for _, size, _ in self.run_tests.PYTHON_SUITES}, {"small"})
 
-    def test_real_agent_suite_is_required_by_complete_gates(self) -> None:
-        for gate in ("all", "release", "large"):
-            self.assertIn("tests/agent_evaluation", {entry["suite"] for entry in self.run_tests.python_matrix(gate)})
-            self.assertTrue(any("tests/agent_evaluation" in command for command in self.run_tests.python_commands(gate)))
-        for gate in ("pr", "queue", "main"):
-            self.assertNotIn("tests/agent_evaluation", {entry["suite"] for entry in self.run_tests.python_matrix(gate)})
-
-    def test_large_agent_gate_really_selects_the_case_without_allure(self) -> None:
-        import subprocess
-        command, = self.run_tests.python_commands("large", suite="tests/agent_evaluation")
-        result = subprocess.run([*command, "--plan-only"], cwd=REPO_ROOT, capture_output=True, text=True, check=True)
-        self.assertEqual(result.stdout.splitlines(), [
-            "test_dcs.DcsAgentAcceptanceTests.test_agent_uses_current_contract_without_retired_skills",
-            "test_mxl.MxlAgentAcceptanceTests.test_agent_uses_current_contract_without_retired_skills"])
+    def test_real_agent_suite_is_absent_from_every_gate(self) -> None:
+        self.assertNotIn("tests/agent_evaluation", self.run_tests.python_suite_names())
+        for gate in self.run_tests.PROFILES:
+            with self.subTest(gate=gate):
+                self.assertNotIn(
+                    "tests/agent_evaluation",
+                    {entry["suite"] for entry in self.run_tests.python_matrix(gate)},
+                )
+                self.assertFalse(
+                    any("tests/agent_evaluation" in command for command in self.run_tests.python_commands(gate))
+                )
+        with self.assertRaises(ValueError):
+            self.run_tests.python_commands("all", suite="tests/agent_evaluation")
 
 
 if __name__ == "__main__":

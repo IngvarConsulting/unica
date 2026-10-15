@@ -4,20 +4,20 @@
      tests/fixtures/acceptance/scenario-corpus.json. Не правьте вручную:
      измените корпус и выполните `python scripts/ci/render-acceptance-registry.py --write`. -->
 
-Корпус держит **432 сценариев** реальных задач разработчика конфигурации и **1162 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; агентные сценарии выбираются большим набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
+Корпус держит **439 сценариев** реальных задач разработчика конфигурации и **1203 шагов** канонических вызовов `unica.*`. Каждый шаг заморожен в одном из классов ответа. Исходный профиль `tests/ci/test_acceptance_scenarios.py` исполняется против собранного `target/debug/unica`; основное рабочее пространство — `tests/fixtures/acceptance/workspace/`; сценарии форматных проб (выгрузка 2.21, без версии, без файла поддержки) идут на выведенном из него пространстве `tests/fixtures/acceptance/workspace-format/`, а сценарии ответа до допуска наборов — на пустом `tests/fixtures/acceptance/workspace-bare/`. Профиль delivery использует отдельную `tests/fixtures/acceptance/workspace-symbol/` с контрольным методом. СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; неоднозначное имя командной панели формы — на `workspace-form-names/`; отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; агентные сценарии выбираются локальным набором `tests/agent_evaluation/`. Источник истины — JSON корпуса; этот документ — его рендер для людей, и проверка на расхождение входит в тот же тест.
 
-Профили исполнения: `source` — 416 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. Агентный профиль исполняется отдельным большим набором в release/all: реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
+Профили исполнения: `source` — 423 сценария; `delivery/bsl-analyzer` — 7; `agent-evaluation/codex` — 2; `fault-injection/analyzer-jsonl-fault` — 6; `fault-injection/analyzer-delivery-failure` — 1. Delivery-драйвер скачивает закреплённый движок с проверкой SHA256 и выполняет MCP на отдельной синтетической фикстуре. Ошибка доставки или незавершённая задача проваливает прогон. По решению владельца агентный профиль не входит в CI: его запускают локально при изменении проверяемых навыков или поверхности. Профиль использует реальный Codex, закрытый аудит инструментов, проверки итогового XML и независимый смысловой reviewer; отсутствие CLI или авторизации означает отказ прогона. Fault-injection исполняет управляемый нативный producer повреждённого JSONL и аварийного завершения через настоящий процесс и публичный check, а также убирает его или подменяет его контрольную сумму в манифесте, проверяя отказ об отсутствующем движке; это не проверка опубликованного анализатора. Драйвер analyzer-delivery-failure ставит пакет, который называет анализатор без его файла и без манифеста выпуска, и проверяет, что ветвь графа вызовов заказывает поставку и называет её провал типизированным отказом. Этот medium-профиль обязателен в очереди и не скачивает движок. Runtime добавляется с исполняемым драйвером; неизвестный профиль не пропускается.
 
 ## Классы ответа шага
 
 | Класс | Что означает | Шагов |
 | --- | --- | ---: |
-| `ok` | результат | 951 |
-| `refused` | умышленный типизированный отказ | 156 |
+| `ok` | результат | 994 |
+| `refused` | умышленный типизированный отказ | 153 |
 | `ok` / `provider` / `task` | любой из: результат; провайдер недоступен; длинная задача | 26 |
 | `provider` | провайдер недоступен | 21 |
+| `ok` / `provider` | любой из: результат; провайдер недоступен | 3 |
 | `unsupported` | закрытый список | 3 |
-| `ok` / `provider` | любой из: результат; провайдер недоступен | 2 |
 | `ok` / `provider` / `task` / `unsupported` | любой из: результат; провайдер недоступен; длинная задача; закрытый список | 2 |
 | `gap` / `unsupported` | любой из: задокументированный пробел; закрытый список | 1 |
 
@@ -127,11 +127,11 @@
 | `form.add` | `items` | да | S125, S126, S129, S136, S137, S138, S145, S273, S283, S312, S388, S412, S416 |
 | `form.set` | `values` | да | S127 |
 | `form.remove` | только `at` | да | S128, S295 |
-| `element.add` | `items` | да | S130, S139, S141, S142, S388, S393, S407, S408, S428 |
+| `element.add` | `items` | да | S130, S139, S141, S142, S388, S393, S407, S408, S428, S434, S435 |
 | `element.remove` | только `at` | да | S131, S430 |
-| `formAttribute.add` | `items` | да | S132, S388 |
+| `formAttribute.add` | `items` | да | S132, S388, S436 |
 | `formCommand.add` | `items` | да | S133, S135, S388, S432 |
-| `event.bind` | `values` | да | S134, S140, S143, S325, S404, S405, S429 |
+| `event.bind` | `values` | да | S134, S140, S143, S325, S404, S405, S429, S435 |
 
 ### Роли и права
 
@@ -203,8 +203,8 @@
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `mxl.set` | `values` | да | S332, S333, S334, S418 |
-| `area.add` | `items` | да | S199, S331, S332, S418 |
+| `mxl.set` | `values` | да | S332, S333, S334, S418, S433 |
+| `area.add` | `items` | да | S199, S331, S332, S418, S433 |
 
 ### Пакеты XDTO
 
@@ -247,7 +247,7 @@
 
 | Операция | Аргументы | Реализована | Сценарии |
 | --- | --- | --- | --- |
-| `code.insert` | `text` | да | S156, S159, S278, S314, S319, S325, S336, S337, S338, S397, S404, S405, S409, S419 |
+| `code.insert` | `text` | да | S156, S159, S278, S314, S319, S325, S336, S337, S338, S397, S404, S405, S409, S419, S438 |
 | `code.replace` | `text` | да | S157, S316, S338, S357, S413 |
 
 ### События
@@ -274,17 +274,17 @@
 
 | Инструмент | Сценариев |
 | --- | ---: |
-| `unica.apply` | 247 |
-| `unica.view` | 138 |
-| `unica.check` | 74 |
+| `unica.apply` | 252 |
+| `unica.view` | 143 |
+| `unica.check` | 76 |
 | `unica.search` | 36 |
 | `unica.docs` | 27 |
 | `unica.diff` | 17 |
-| `unica.resolve` | 7 |
+| `unica.resolve` | 8 |
 
 ## Каталог сценариев
 
-Области: Навигация и чтение (56) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (39) · Код BSL (46) · Роли и права (16) · СКД (45) · Макеты (15) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
+Области: Навигация и чтение (58) · Свойства объектов (29) · Реквизиты и состав (51) · Создание и удаление объектов (23) · Формы (42) · Код BSL (47) · Роли и права (16) · СКД (45) · Макеты (16) · Подсистемы и интерфейс (13) · XDTO и обмены (11) · Сборка, ИБ и выгрузка (2) · Проверки качества (20) · Тесты и запуск (1) · Документация и стандарты (20) · Поддержка поставщика (16) · Расширения конфигурации (10) · Объекты метаданных (3) · Рабочее пространство (4) · Метаданные (2) · Приёмочный корпус (8) · Известные пробелы (1) · Применение изменений (1)
 
 ### Навигация и чтение
 
@@ -346,6 +346,8 @@
 | S403 | Вызов view или diff с прежним filter получает отказ неизвестного аргумента и next к адресу, который его заменил; Can без операции и неприменимая операция отказывают с next к словарю узла; check, resolve, search и apply на адресе операции отказывают и ведут к его чтению через view | `source` | `view`<br>`diff`<br>`view`<br>`view`<br>`check`<br>`resolve`<br>`search`<br>`apply` `attribute.add` | `refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
 | S410 | Прочитать неполные заимствованные метаданные без родителя: сохранить локальные факты и исходник BSL, неизвестность контекстов и отказ зависимого фильтра без записи файлов | `source` | `view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view`<br>`view` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 | S411 | Отклонить чтение общего модуля и его методов при дубликате идентичности заимствования, сохранив исходные файлы | `source` | `view`<br>`view`<br>`view` | `provider`<br>`provider`<br>`provider` |
+| S437 | Прочитать и проверить ветвь Interface модуля: срезы Public/Library/Override приходят без адреса, который view отверг бы, check читает ветвь без валидатора командного интерфейса, а метод среза открывается своим адресом | `source` | `view`<br>`check`<br>`view` | `ok`<br>`ok`<br>`ok` |
+| S439 | Разрешить корень конфигурации, объект и его форму по адресу в их файлы; отсутствующий объект даёт not_found | `source` | `resolve`<br>`resolve`<br>`resolve`<br>`resolve` | `ok`<br>`ok`<br>`ok`<br>`refused` |
 
 ### Свойства объектов
 
@@ -508,6 +510,9 @@
 | S429 | Прежние values.element и values.event у event.bind отказывают без записи; next ведёт к узлу события элемента, его can содержит event.bind, и привязка на этом адресе применяется | `source` | `view`<br>`apply` `event.bind`<br>`view`<br>`apply` `event.bind`<br>`apply` | `ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
 | S430 | element.remove на форме с именем в items отказывает без записи; next ведёт к адресу элемента, а удаление по этому адресу строит предпросмотр | `source` | `view`<br>`apply` `element.remove`<br>`apply` `element.remove` | `ok`<br>`refused`<br>`ok` |
 | S432 | Добавить команду формы с подсказкой, сочетанием клавиш и отображением: ключ, который операция не пишет, отказывает до записи, а свойства исполненной команды видны в view | `source` | `view`<br>`apply` `formCommand.add`<br>`apply` `formCommand.add`<br>`apply`<br>`view` | `ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok` |
+| S434 | Подробный контракт element.add публикует ключи по виду элемента; backColor у поля ввода, которого писатель поля не пишет, отказывает bad_value по точному пути без записи, а тот же элемент без него строит предпросмотр | `source` | `view`<br>`view`<br>`apply` `element.add`<br>`apply` `element.add` | `ok`<br>`ok`<br>`refused`<br>`ok` |
+| S435 | element.add добавляет один элемент: вложенные children и событие on отказывают bad_value без записи, next ведёт к контракту element.add; группа и поле в ней добавляются двумя операциями, обработчик — event.bind на адресе события | `source` | `view`<br>`apply` `element.add`<br>`apply` `element.add`<br>`apply` `element.add` `element.add` `event.bind`<br>`apply` | `ok`<br>`refused`<br>`refused`<br>`ok`<br>`ok` |
+| S436 | formAttribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking | `source` | `view`<br>`apply` `formAttribute.add`<br>`apply` `formAttribute.add`<br>`apply` | `ok`<br>`refused`<br>`ok`<br>`ok` |
 
 ### Код BSL
 
@@ -559,6 +564,7 @@
 | S398 | Подменённый анализатор даёт отказ «нет движка» с полями поставки в data, а не сбой анализа | `fault-injection/analyzer-jsonl-fault` | `check` | `provider` |
 | S413 | Заменить функцию модуля текстом крупнее 16 КиБ одним вызовом, без нарезки | `source` | `apply` `code.replace`<br>`apply` | `ok`<br>`ok` |
 | S425 | Найти объявление функции по виду метаданных: совпадение называет адрес своего модуля, а не область запроса, совпадает с поиском по самому модулю и открывается через view | `source` | `search`<br>`search`<br>`view` | `ok`<br>`ok`<br>`ok` |
+| S438 | Объявить переменную модуля после функций и проверить модуль: check проваливается находкой платформы о месте объявления, а не отвечает passed | `source` | `apply` `code.insert`<br>`apply`<br>`check` валидаторы `bsl` | `ok`<br>`ok`<br>`ok` / `provider` |
 
 ### Роли и права
 
@@ -645,11 +651,12 @@
 | S203 | Добавить печатный макет документу | `source` | `apply` `template.add` | `ok` |
 | S277 | Добавить макет справочнику в выгрузке 2.21 — отказ по формату | `source` | `apply` `template.add` | `refused` |
 | S331 | Исходный сценарий #1301: создать макет, две адресованные cells читаются по порядку; check=mxl passed | `source` | `view`<br>`apply` `template.add`<br>`apply`<br>`view`<br>`apply` `area.add`<br>`apply`<br>`view`<br>`check` валидаторы `mxl` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S332 | Скалярные cells/null, замена параметра/шаблона, соседи, рост без уменьшения ширины, повтор без дубликата, новая область и stale token | `source` | `view`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`view`<br>`apply`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `area.add`<br>`apply`<br>`view`<br>`check` валидаторы `mxl` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
-| S333 | Чтение шире редактирования: соседние строки, пересечения и порядок областей, языки и наборы колонок не теряются при отказе | `source` | `view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set` | `ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused`<br>`ok`<br>`refused` |
+| S332 | Скалярные cells, null без новой ячейки, замена параметра/шаблона, соседи, рост без уменьшения ширины, повтор без дубликата, новая область и stale token | `source` | `view`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`view`<br>`apply`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `area.add`<br>`apply`<br>`view`<br>`check` валидаторы `mxl` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
+| S333 | Соседние строки, пересечения и порядок областей, языки, наборы колонок и рисунки больше не мешают правке: mxl.set меняет только текст адресованной ячейки, остальные байты совпадают (sha результата); область колонок и наложенные строки отказывают без записи | `source` | `view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`view`<br>`apply` `mxl.set`<br>`apply`<br>`view`<br>`apply` `mxl.set` | `ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`refused` |
 | S334 | Массив/пустые cells, координаты/типы, оформление, дробная ширина и область в аргументах вместо адреса Area отказывают без записи | `source` | `view`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply` `mxl.set` | `ok`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused`<br>`refused` |
 | S335 | Реальный агент по can/справке создаёт MXL и заполняет область, сохраняет исходный макет, проверяет содержимое и честно объясняет предел DSL | `agent-evaluation/codex` | `view`<br>`view`<br>`check` валидаторы `mxl` | `ok`<br>`ok`<br>`ok` |
 | S418 | Область в аргументах вместо адреса Area отказывает без записи; mxl.set правит только существующую область по её адресу, отсутствующая отвечает not_found с next к макету; новую область с начальными ячейками создаёт area.add на макете, повтор имени существующей области отказывает | `source` | `view`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply` `area.add`<br>`apply`<br>`view`<br>`apply` `area.add` | `ok`<br>`refused`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`refused` |
+| S433 | На выгрузке 8.3.27 mxl.set меняет текст одной ячейки, area.add дописывает строки, область и высоту; результат каждого шага совпадает с тем, что платформа выгружает после загрузки; повтор не меняет файл; ячейка внутри объединения отказывает без записи | `source` | `view`<br>`apply` `mxl.set`<br>`apply` `mxl.set`<br>`apply`<br>`apply` `area.add`<br>`apply`<br>`view`<br>`apply` `mxl.set`<br>`apply` | `ok`<br>`refused`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok`<br>`ok` |
 
 ### Подсистемы и интерфейс
 

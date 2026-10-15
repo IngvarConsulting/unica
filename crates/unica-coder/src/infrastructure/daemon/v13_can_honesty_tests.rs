@@ -358,17 +358,31 @@ fn invoke_on(
 
 /// Узлы набора исходников, которые показывает чтение: ветви и элементы от
 /// корня, в ширину, не больше `PER_SHAPE` на одну форму адреса.
-fn walk(workspace: &Path, root: &str) -> Vec<String> {
+///
+/// Каждый `at` из `branches` и `items`, до которого дошёл обход, обязан
+/// открываться тем же `view`: адрес, который сервер выдал и сам отверг,
+/// попадает в `unroutable` вместе с причиной отказа (#1467).
+struct Walk {
+    nodes: Vec<String>,
+    unroutable: Vec<String>,
+}
+
+fn walk(workspace: &Path, root: &str) -> Walk {
     let mut seen = BTreeSet::new();
     let mut shapes = BTreeMap::<String, usize>::new();
     let mut queue = VecDeque::from([root.to_string()]);
     let mut nodes = Vec::new();
+    let mut unroutable = Vec::new();
     while let Some(at) = queue.pop_front() {
         if nodes.len() >= NODE_BUDGET || !seen.insert(at.clone()) {
             continue;
         }
-        let Ok(address) = QualifiedAddress::parse(&at) else {
-            continue;
+        let address = match QualifiedAddress::parse(&at) {
+            Ok(address) => address,
+            Err(error) => {
+                unroutable.push(format!("{at}: {error}"));
+                continue;
+            }
         };
         // Ветви графа вызовов `Caller` и `Callee` — коллекция анализатора, а
         // не узлы набора исходников: словаря `can` и фильтра у них нет.
@@ -384,9 +398,26 @@ fn walk(workspace: &Path, root: &str) -> Vec<String> {
             continue;
         }
         let result = invoke(workspace, ToolIdentity::View, json!({"at": at}));
-        let Some(data) = result.data.filter(|_| result.ok) else {
+        if !result.ok {
+            if !dangling_reference(workspace, &address, &result) {
+                unroutable.push(format!("{at}: {}", result.summary));
+            }
+            continue;
+        }
+        let Some(data) = result.data else {
             continue;
         };
+        // Узел, который `view` прочитал, `check` тоже принимает: выбор
+        // валидатора по виду не должен отвечать `bad_value`/`fixCall` на
+        // адрес, который сервер сам выдал (#1467). Отказ поставщика или
+        // отсутствие движка — другой исход.
+        let checked = invoke(workspace, ToolIdentity::Check, json!({"at": at}));
+        if !checked.ok
+            && (refusal_field(&checked, "code") == Some("bad_value")
+                || refusal_field(&checked, "outcome") == Some("fixCall"))
+        {
+            unroutable.push(format!("{at}: check: {}", checked.summary));
+        }
         *count += 1;
         nodes.push(at);
         for slot in ["branches", "items"] {
@@ -397,7 +428,44 @@ fn walk(workspace: &Path, root: &str) -> Vec<String> {
             }
         }
     }
-    nodes
+    Walk { nodes, unroutable }
+}
+
+/// Код отказа ответа: первый диагноз несёт `code` и `outcome`.
+fn refusal_field<'a>(result: &'a DomainResult, field: &str) -> Option<&'a str> {
+    result
+        .diagnostics
+        .first()
+        .and_then(|diagnostic| diagnostic.get(field))
+        .and_then(Value::as_str)
+}
+
+/// Ссылка на объект, которого нет в исходниках: подсистема или командный
+/// интерфейс урезанной фикстуры называют объект, не вошедший в неё. Такой
+/// адрес разобран и маршрутизирован, а `not_found` отвечает отсутствием
+/// корневого объекта. Отсутствие доказывает файловая система фикстуры —
+/// нет файла описания корневого объекта, — а не проверяемый `view`.
+fn dangling_reference(
+    workspace: &Path,
+    address: &QualifiedAddress,
+    refusal: &DomainResult,
+) -> bool {
+    if refusal_field(refusal, "code") != Some("not_found") {
+        return false;
+    }
+    let Some(root) = address.segments().first() else {
+        return false;
+    };
+    let (Some(name), Some(layout)) = (
+        root.name(),
+        crate::infrastructure::metadata_kinds::metadata_kind(root.kind().as_str()),
+    ) else {
+        return false;
+    };
+    let descriptor = source_root(workspace, address.source_set())
+        .join(layout.directory)
+        .join(format!("{name}.xml"));
+    !descriptor.exists()
 }
 
 /// Форма адреса: маршрут и виды сегментов с признаком имени.
@@ -421,6 +489,22 @@ fn shape_key(address: &QualifiedAddress) -> String {
 /// Правдоподобные аргументы операции: разбор семейства проходит целиком,
 /// и отказ по цели не прячется за отказом по аргументам.
 fn sample_args(descriptor: OperationDescriptor) -> Value {
+    // Аргументы зависят только от операции, а контракт строится заново на
+    // каждый вызов: обход спрашивает их на каждом узле.
+    thread_local! {
+        static SAMPLES: std::cell::RefCell<BTreeMap<&'static str, Value>> =
+            const { std::cell::RefCell::new(BTreeMap::new()) };
+    }
+    SAMPLES.with(|samples| {
+        samples
+            .borrow_mut()
+            .entry(descriptor.name())
+            .or_insert_with(|| build_sample_args(descriptor))
+            .clone()
+    })
+}
+
+fn build_sample_args(descriptor: OperationDescriptor) -> Value {
     let op = descriptor.name();
     if let Some(contract) = descriptor.argument_contract() {
         return contract.example_args;
@@ -527,6 +611,7 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
     let mut routes = BTreeSet::new();
     let mut covered = BTreeSet::new();
     let mut mismatches = Vec::new();
+    let mut unroutable = Vec::new();
     let fixture = fixture(name);
     NARROWINGS_SEEN.with(|seen| seen.borrow_mut().clear());
     WRITES_CHECKED.with(|done| done.borrow_mut().clear());
@@ -544,7 +629,9 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
         };
         let mut representatives = BTreeMap::new();
         let mut pairs = BTreeMap::new();
-        for at in walk(&fixture.workspace, &format!("{set}:Configuration")) {
+        let walked = walk(&fixture.workspace, &format!("{set}:Configuration"));
+        unroutable.extend(walked.unroutable);
+        for at in walked.nodes {
             let address = QualifiedAddress::parse(&at).unwrap();
             let Some(route) = classify_route(&address, PlatformProfile::v8_3_27()) else {
                 continue;
@@ -591,6 +678,11 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
             check_node(&checked, at, plan_writes, &mut mismatches);
         }
     }
+    assert_eq!(
+        unroutable,
+        Vec::<String>::new(),
+        "{name}: view published addresses it refuses"
+    );
     assert_eq!(mismatches, Vec::<String>::new(), "{name}");
     // Проверка записи не пустая: план с правдоподобными аргументами
     // прошёл хотя бы для этих операций, и их файлы сверены с узлом.
@@ -1034,14 +1126,14 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
             "formAttribute.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main",
-            false,
+            true,
         ),
         (
             "cf:Catalog.Items.Form.Main.Item.Header.Event.OnChange",
             "element.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main.Item.Header",
-            false,
+            true,
         ),
         (
             "cf:Role.Reader",
@@ -1280,8 +1372,58 @@ fn honest_can_on_form_items_and_events() {
             // к ближайшему узлу, где `element.add` исполнима.
             if op == "element.add" && at.ends_with(".Item.ПолеНаименование") {
                 assert_eq!(result.at.as_deref(), Some("ops[0].at"), "{result:?}");
-                assert_eq!(result.next[0]["args"]["at"], form, "{result:?}");
+                assert_eq!(
+                    result.next[0]["args"]["at"],
+                    format!("{form}.Can.element.add"),
+                    "{result:?}"
+                );
             }
+        }
+        // Подробный контракт каждой операции узла читается её адресом, и его
+        // пример строит предпросмотр на этом узле: контракт и планировщик
+        // согласны (#1447).
+        for op in expected.iter() {
+            let detailed = invoke(
+                &fixture.workspace,
+                ToolIdentity::View,
+                json!({"at": format!("{at}.Can.{op}")}),
+            );
+            assert!(detailed.ok, "{op} at {at}: {detailed:?}");
+            let contract = detailed.data.unwrap()["props"]["contract"].clone();
+            assert!(
+                contract["argsSchema"].is_object(),
+                "{op} at {at}: {contract}"
+            );
+            // Командная панель принимает только кнопки: её контракт публикует
+            // один вид, а поле ввода в ней планировщик отвергает.
+            let command_bar = at.ends_with("КоманднаяПанель") || at.ends_with("ListCommandBar");
+            if *op == "element.add" {
+                let kinds = contract["argsSchema"]["properties"]["items"]["items"]["anyOf"]
+                    .as_array()
+                    .unwrap()
+                    .len();
+                assert_eq!(kinds == 1, command_bar, "{at}: {kinds} element kinds");
+                if command_bar {
+                    let field = invoke(
+                        &fixture.workspace,
+                        ToolIdentity::Apply,
+                        json!({"at": at, "ops": [{"op": op, "args":
+                            {"items": [{"name": "Проба", "type": "InputField"}]}}]}),
+                    );
+                    assert!(!field.ok, "{at}: a field in a command bar is refused");
+                }
+            }
+            let example = contract["exampleArgs"].clone();
+            let planned = invoke(
+                &fixture.workspace,
+                ToolIdentity::Apply,
+                json!({"at": at, "ops": [{"op": op, "args": example}]}),
+            );
+            assert!(
+                planned.ok,
+                "{op} at {at}: {}",
+                serde_json::to_value(&planned).unwrap()
+            );
         }
     }
 }
@@ -1354,7 +1496,11 @@ fn retired_form_arguments_route_next_to_the_item_or_event_address() {
             .iter()
             .map(|next| next["args"]["at"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(actual, vec![next.clone(), branch], "{case}: {value}");
+        assert_eq!(
+            actual,
+            vec![format!("{next}.Can.{op}"), branch],
+            "{case}: {value}"
+        );
         let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": next}));
         assert!(viewed.ok, "{case}: {viewed:?}");
         let can = &viewed.data.unwrap()["can"];
@@ -1999,4 +2145,51 @@ fn retired_member_arguments_route_next_to_the_member_address() {
             None => assert_eq!(refusal.next.len(), 1, "{value}"),
         }
     }
+}
+
+/// Срезы `Interface` модуля — элементы без адреса: `…Interface.Public`
+/// грамматика отвергает, и `view` его больше не выдаёт. Каждый `at` ответа
+/// открывается, а методы среза — адреса, которые `view` читает (#1467).
+#[test]
+fn interface_slices_publish_only_addresses_view_opens() {
+    let fixture = fixture("workspace");
+    let at = "main:Catalog.Валюты.Module.Manager.Interface";
+    let result = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": at}));
+    assert!(result.ok, "{}", result.summary);
+    let data = result.data.expect("interface collection");
+    let items = data["items"].as_array().expect("interface items");
+    let names = items
+        .iter()
+        .map(|item| item["interface"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Public", "Library", "Override"]);
+    let mut opened = Vec::new();
+    for item in items {
+        assert_eq!(item["addressable"], json!(false), "{item}");
+        if let Some(at) = item.get("at").and_then(Value::as_str) {
+            opened.push(at.to_string());
+        }
+        for method in item["methods"].as_array().into_iter().flatten() {
+            opened.push(method.as_str().expect("method address").to_string());
+        }
+    }
+    assert!(
+        opened.contains(&"main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду".to_string()),
+        "{opened:?}"
+    );
+    for at in opened {
+        let view = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": at}));
+        assert!(view.ok, "{at}: {}", view.summary);
+    }
+    // `check` ветви не путает её с командным интерфейсом подсистемы: срезы
+    // читаются, код модуля проверяет шаг `bsl` на самом модуле.
+    let checked = invoke(&fixture.workspace, ToolIdentity::Check, json!({"at": at}));
+    assert!(checked.ok, "{}", checked.summary);
+    let data = checked.data.expect("check verdict");
+    assert_eq!(data["status"], "readable", "{data}");
+    assert_eq!(data["validators"], json!([]), "{data}");
+    assert_eq!(
+        walk(&fixture.workspace, at).unroutable,
+        Vec::<String>::new()
+    );
 }

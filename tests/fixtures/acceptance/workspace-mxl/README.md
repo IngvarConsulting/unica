@@ -1,1 +1,3 @@
-Synthetic source-only spreadsheet fixture for public MXL acceptance. It is not evidence of platform import or printing. Unsafe templates retain the preimages of executed public counterexamples; the editable template uses writer-generated XML with disjoint row areas.
+Synthetic source-only spreadsheet fixture for public MXL acceptance. Unsafe templates retain the preimages of public counterexamples of #1311 that the former whole-document writer refused; since #1448 the writer edits them in place. The editable template uses writer-generated XML with disjoint row areas. None of these is evidence of platform import or printing.
+
+`PlatformExport` is a raw 8.3.27.2074 export (BOM, CRLF) of a hand-written spreadsheet, the same bytes as `tests/fixtures/platform_8_3_27/mxl_edit/Template.xml`; the scenario of #1448 checks that edits of it give the bytes the platform exports again.

@@ -1431,6 +1431,14 @@ pub(crate) struct WorkspaceActor<R = ()> {
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
     saved_apply_plans: Mutex<SavedApplyPlans>,
+    /// Parsed root artifacts of each admitted source set, retained across
+    /// calls and revalidated by file stamp on every use.
+    source_artifacts: Mutex<
+        HashMap<
+            WorkspaceSourceSetIdentity,
+            Arc<crate::infrastructure::v13_large_configuration::RegistrationCache>,
+        >,
+    >,
     index_work: SharedWork<(), LongWorkFailure>,
     runtime: R,
 }
@@ -1454,6 +1462,21 @@ impl WorkspaceActor<()> {
     ) -> Result<Self, String> {
         Self::with_runtime(identity, context, ())
     }
+}
+
+fn aggregate_named_root_matches(
+    matches: impl IntoIterator<Item = std::io::Result<bool>>,
+) -> std::io::Result<bool> {
+    let mut unavailable = None;
+    for matches in matches {
+        match matches {
+            Ok(true) => {}
+            Ok(false) => return Ok(false),
+            Err(error) if unavailable.is_none() => unavailable = Some(error),
+            Err(_) => {}
+        }
+    }
+    unavailable.map_or(Ok(true), Err)
 }
 
 fn validate_legacy_workspace_identity(identity: &WorkspaceIdentity) -> Result<(), String> {
@@ -1537,6 +1560,7 @@ impl<R> WorkspaceActor<R> {
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             saved_apply_plans: Mutex::new(SavedApplyPlans::default()),
+            source_artifacts: Mutex::new(HashMap::new()),
             index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
             runtime,
         })
@@ -1558,10 +1582,12 @@ impl<R> WorkspaceActor<R> {
     /// Whether every retained source-set root is still the directory its
     /// name resolves to. A warm actor whose root was replaced while idle
     /// must not be handed to the next admission.
-    pub(crate) fn retains_named_roots(&self) -> bool {
-        self.source_roots
-            .values()
-            .all(|root| root.validate_named_identity().is_ok())
+    pub(crate) fn retains_named_roots(&self) -> std::io::Result<bool> {
+        aggregate_named_root_matches(
+            self.source_roots
+                .values()
+                .map(|root| root.named_identity_matches()),
+        )
     }
 
     pub(crate) fn workspace_identity(&self) -> &WorkspaceIdentity {
@@ -2216,6 +2242,22 @@ impl<R> WorkspaceActor<R> {
         self.mutation_lane.hold_for_test()
     }
 
+    /// The root-artifact cache this actor retains for one bound source set.
+    pub(crate) fn source_artifacts(
+        &self,
+        binding: &ProviderRootBinding,
+    ) -> Result<Arc<crate::infrastructure::v13_large_configuration::RegistrationCache>, String>
+    {
+        self.validate_binding(binding)?;
+        let mut artifacts = self
+            .source_artifacts
+            .lock()
+            .map_err(|_| "workspace actor source-artifact cache is poisoned".to_string())?;
+        Ok(Arc::clone(
+            artifacts.entry(binding.source_set.clone()).or_default(),
+        ))
+    }
+
     pub(crate) fn index_service<'a>(
         &self,
         binding: &ProviderRootBinding,
@@ -2497,6 +2539,7 @@ fn digest_index_component(digest: &mut Sha256, bytes: &[u8]) -> Result<(), Strin
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceActorRegistryError {
     InvalidIdentity(String),
+    NamedRootUnavailable,
     Poisoned,
 }
 
@@ -2504,6 +2547,9 @@ impl std::fmt::Display for WorkspaceActorRegistryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidIdentity(message) => formatter.write_str(message),
+            Self::NamedRootUnavailable => {
+                formatter.write_str("workspace actor named root is temporarily unavailable")
+            }
             Self::Poisoned => formatter.write_str("workspace actor registry is poisoned"),
         }
     }
@@ -2519,6 +2565,8 @@ pub(crate) struct WorkspaceActorRegistry {
     /// Only unowned actors without such state may be released after idle.
     warm: Mutex<VecDeque<WarmWorkspaceActor>>,
     warm_ttl: Duration,
+    #[cfg(test)]
+    named_root_validation_error: Mutex<Option<ErrorKind>>,
 }
 
 #[derive(Debug)]
@@ -2541,6 +2589,8 @@ impl Default for WorkspaceActorRegistry {
             actors: Mutex::new(HashMap::new()),
             warm: Mutex::new(VecDeque::new()),
             warm_ttl: WARM_WORKSPACE_ACTOR_TTL,
+            #[cfg(test)]
+            named_root_validation_error: Mutex::new(None),
         }
     }
 }
@@ -2566,9 +2616,13 @@ impl WorkspaceActorRegistry {
         self.evict_expired_warm(now)?;
         actors.retain(|_, actor| actor.strong_count() > 0);
         if let Some(actor) = actors.get(&identity).and_then(Weak::upgrade) {
-            if actor.retains_named_roots() {
-                self.touch_warm(&actor, now)?;
-                return Ok(actor);
+            match self.retains_named_roots(&actor) {
+                Ok(true) => {
+                    self.touch_warm(&actor, now)?;
+                    return Ok(actor);
+                }
+                Err(_) => return Err(WorkspaceActorRegistryError::NamedRootUnavailable),
+                Ok(false) => {}
             }
             // The named root was replaced while the actor idled. Forget the
             // warm copy; an actor still held by a live invocation keeps its
@@ -2627,6 +2681,19 @@ impl WorkspaceActorRegistry {
         self.warm
             .lock()
             .map_err(|_| WorkspaceActorRegistryError::Poisoned)
+    }
+
+    fn retains_named_roots(&self, actor: &WorkspaceActor) -> std::io::Result<bool> {
+        #[cfg(test)]
+        if let Some(kind) = self
+            .named_root_validation_error
+            .lock()
+            .expect("named-root validation test seam must not be poisoned")
+            .take()
+        {
+            return Err(std::io::Error::from(kind));
+        }
+        actor.retains_named_roots()
     }
 
     fn touch_warm(
@@ -2714,6 +2781,19 @@ impl WorkspaceActorRegistry {
     }
 
     #[cfg(test)]
+    pub(crate) fn fail_next_named_root_validation_for_test(&self, kind: ErrorKind) {
+        let replaced = self
+            .named_root_validation_error
+            .lock()
+            .expect("named-root validation test seam must not be poisoned")
+            .replace(kind);
+        assert!(
+            replaced.is_none(),
+            "named-root validation failure already set"
+        );
+    }
+
+    #[cfg(test)]
     fn prune_dead_for_test(&self) -> Result<(), String> {
         self.actors
             .lock()
@@ -2725,9 +2805,10 @@ impl WorkspaceActorRegistry {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        set_apply_before_input_confirmation_hook, set_apply_dry_run_after_confirmation_hook,
-        ApplyAdmission, ApplyEffectDisposition, ApplyEffectReceipt, PreparedApplyBatch,
-        WorkspaceActorRegistry, WorkspaceIdentity, WorkspaceSourceSetInput,
+        aggregate_named_root_matches, set_apply_before_input_confirmation_hook,
+        set_apply_dry_run_after_confirmation_hook, ApplyAdmission, ApplyEffectDisposition,
+        ApplyEffectReceipt, PreparedApplyBatch, WorkspaceActorRegistry, WorkspaceIdentity,
+        WorkspaceSourceSetInput,
     };
     use crate::domain::address::QualifiedAddress;
     use crate::domain::cancellation::CancellationToken;
@@ -2754,6 +2835,7 @@ pub(crate) mod tests {
         set_support_policy_validation_hook, SupportPolicyTestStateGuard,
     };
     use std::cell::Cell;
+    use std::io::ErrorKind;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
@@ -2769,6 +2851,32 @@ pub(crate) mod tests {
             SourceFormat::PlatformXml,
             SourceProfile::platform_xml_8_3_27_format_2_20(),
         )
+    }
+
+    #[test]
+    fn replaced_named_root_outweighs_unavailable_root_in_any_iteration_order() {
+        for unavailable_first in [false, true] {
+            let unavailable = Err(std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                "injected temporary root validation failure",
+            ));
+            let matches = if unavailable_first {
+                vec![unavailable, Ok(false)]
+            } else {
+                vec![Ok(false), unavailable]
+            };
+            assert!(!aggregate_named_root_matches(matches).unwrap());
+        }
+
+        let unavailable = aggregate_named_root_matches([
+            Ok(true),
+            Err(std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                "injected temporary root validation failure",
+            )),
+        ])
+        .unwrap_err();
+        assert_eq!(unavailable.kind(), ErrorKind::PermissionDenied);
     }
 
     thread_local! {
@@ -3675,7 +3783,7 @@ pub(crate) mod tests {
             first.upgrade().is_none(),
             "a warm actor whose root directory was replaced must be released and rebuilt"
         );
-        assert!(second.retains_named_roots());
+        assert!(second.retains_named_roots().unwrap());
         assert_eq!(registry.warm_len_for_test().unwrap(), 1);
     }
 

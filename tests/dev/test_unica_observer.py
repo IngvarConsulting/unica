@@ -13,6 +13,7 @@ import http.client
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -135,12 +136,17 @@ class UnicaObserverTests(unittest.TestCase):
         self.assertIsInstance(answer["elapsedMs"], int)
         return answer["result"]
 
-    def sent_tool_calls(self) -> list[dict]:
-        with urllib.request.urlopen(self.url + "/api/log?since=0", timeout=30) as response:
-            entries = json.load(response)["entries"]
+    def log_entries(self, since: int = 0) -> list[dict]:
+        with urllib.request.urlopen(f"{self.url}/api/log?since={since}", timeout=30) as response:
+            return json.load(response)["entries"]
+
+    def last_seq(self) -> int:
+        return max((entry["seq"] for entry in self.log_entries()), default=0)
+
+    def sent_tool_calls(self, since: int = 0) -> list[dict]:
         return [
             entry["payload"]["params"]
-            for entry in entries
+            for entry in self.log_entries(since)
             if entry["dir"] == "out" and entry["payload"].get("method") == "tools/call"
         ]
 
@@ -217,6 +223,168 @@ class UnicaObserverTests(unittest.TestCase):
             "a token must never reach unica, whatever the tool",
         )
         self.assertEqual(tree_digest(self.workspace), self.before, "observer must not change workspace files")
+
+    def get(self, path: str) -> dict:
+        with urllib.request.urlopen(self.url + path, timeout=30) as response:
+            return json.load(response)
+
+    def test_every_tool_answers_a_schema_valid_call_and_execution_stops_before_unica(self) -> None:
+        catalog = self.get("/api/tools")
+        tools = {tool["name"].removeprefix("unica."): tool for tool in catalog["tools"]}
+        at = "main:Catalog.Валюты"
+        foreign_task = "00000000-0000-4000-8000-000000000000"
+
+        # Предпросмотр `run` пропускается и уходит в unica с `dryRun: true`.
+        # Ответ может быть отказом поставщика (нет v8-runner), но вызов
+        # состоялся; долгую операцию сервер передаёт в задачу наблюдателя.
+        run_previews = (
+            {"op": "extensions.list", "args": {}, "dryRun": True},
+            {"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": True},
+        )
+        mark = self.last_seq()
+        for arguments in run_previews:
+            with self.subTest(run_preview=arguments["op"]):
+                status, answer = self.post("/api/tool", {"tool": "run", "arguments": arguments})
+                self.assertEqual(status, 200, answer)
+                self.assertIn("ok", answer["result"], answer)
+        sent = [call for call in self.sent_tool_calls(mark) if call["name"].endswith("run")]
+        self.assertEqual([call["arguments"]["op"] for call in sent], ["extensions.list", "make"])
+        self.assertTrue(all(call["arguments"]["dryRun"] is True for call in sent), sent)
+        own_tasks = {
+            match
+            for entry in self.log_entries(mark)
+            if entry["dir"] == "in"
+            for match in re.findall(r'"taskId":\s*"([0-9a-f-]{36})"', json.dumps(entry["payload"]))
+        }
+        self.assertTrue(own_tasks, "a run preview is handed off to a task the observer owns")
+        own_task = sorted(own_tasks)[0]
+
+        # По вызову на каждый инструмент поверхности: новый инструмент без
+        # своего случая роняет тест, а не проходит молча.
+        cases = {
+            "view": {"at": at, "limit": 5},
+            "apply": {"at": at, "ops": [{"op": "attribute.add", "args": {"items": [{"name": "ObserverProbe"}]}}]},
+            "resolve": {"at": at},
+            "search": {"query": "Валюта", "corpus": "names", "limit": 5},
+            "check": {"at": at},
+            "diff": {"left": at, "right": at},
+            "run": {},
+            "docs": {"query": "Запрос", "limit": 1},
+            "task.get": {"taskId": own_task},
+            "task.result": {"taskId": own_task, "waitMs": 0},
+            "task.cancel": {"taskId": own_task},
+        }
+        self.assertEqual(set(tools), set(cases), "every tool from tools/list needs a schema-valid case")
+        for verb, arguments in cases.items():
+            with self.subTest(tool=verb):
+                self.assertIsNotNone(tools[verb]["policy"], f"{verb} is classified by the observer policy")
+                status, answer = self.post("/api/tool", {"tool": tools[verb]["name"], "arguments": arguments})
+                self.assertEqual(status, 200, answer)
+                self.assertEqual(answer["arguments"], arguments)
+                self.assertIsInstance(answer["elapsedMs"], int)
+                self.assertIsInstance(answer["result"], dict)
+                self.assertIn("ok", answer["result"], answer)
+
+        # Нарушение схемы — 400, неизвестный инструмент — 404; исполнение,
+        # запись и чужие задачи — 403. Ни один из них не доходит до unica.
+        token = "observer-test-token"
+        refused = (
+            ({"tool": "search", "arguments": {}}, 400),
+            ({"tool": "view", "arguments": {"at": at, "limit": 0}}, 400),
+            ({"tool": "diff", "arguments": {"left": at, "right": at, "extra": 1}}, 400),
+            ({"tool": "unica.write", "arguments": {}}, 404),
+            ({"tool": "apply", "arguments": {"executionToken": token}}, 403),
+            ({"tool": "apply", "arguments": {"at": at, "ops": [{"op": "attribute.add", "args": {"executionToken": token}}]}}, 403),
+            ({"tool": "apply", "arguments": {"at": at, "ops": [{"op": "attribute.remove"}], "dryRun": False}}, 403),
+            ({"tool": "apply", "arguments": {"at": at, "ops": [{"op": "attribute.remove"}], "ifRev": "rev"}}, 403),
+            ({"tool": "search", "arguments": {"query": "x", "executionToken": token}}, 403),
+            ({"tool": "run", "arguments": {"op": "push", "args": {}, "dryRun": False}}, 403),
+            ({"tool": "run", "arguments": {"op": "push", "args": {}}}, 403),
+            ({"tool": "run", "arguments": {"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": "true"}}, 403),
+            ({"tool": "run", "arguments": {"op": "launch", "args": {"clientMode": "thin"}, "dryRun": True}}, 403),
+            ({"tool": "run", "arguments": {"op": "unknown.op", "args": {}, "dryRun": True}}, 403),
+            ({"tool": "run", "arguments": {"dryRun": False}}, 403),
+            ({"tool": "task.get", "arguments": {"taskId": foreign_task}}, 403),
+            ({"tool": "task.result", "arguments": {"taskId": foreign_task}}, 403),
+            ({"tool": "task.cancel", "arguments": {"taskId": foreign_task}}, 403),
+        )
+        mark = self.last_seq()
+        for body, expected in refused:
+            with self.subTest(refused=body):
+                status, refusal = self.post("/api/tool", body)
+                self.assertEqual(status, expected, (body, refusal))
+        self.assertEqual(self.sent_tool_calls(mark), [], "refused calls never reach unica")
+
+        for call in self.sent_tool_calls():
+            arguments = call["arguments"]
+            self.assertNotIn("executionToken", json.dumps(arguments), call)
+            if call["name"].endswith("run") and "op" in arguments:
+                self.assertIs(arguments.get("dryRun"), True, call)
+                self.assertNotEqual(arguments["op"], "launch", call)
+            if call["name"].endswith("apply"):
+                self.assertLessEqual(set(arguments), {"at", "ops"}, call)
+        self.assertEqual(tree_digest(self.workspace), self.before, "observer must not change workspace files")
+
+    def test_contract_drafts_pass_preview_per_family_and_a_missing_contract_is_named(self) -> None:
+        # Семейства с контрактом, чей черновик на фикстуре предпросмотр не
+        # проходит, с причиной. Закрытый пробел роняет тест: запись удаляется.
+        known_gaps = {
+            # Пример контракта связывает наборы Left и Right, а в схеме
+            # фикстуры один набор данных: имена надо брать из узла.
+            "dataSetLink": "contract example names data sets absent from the node",
+        }
+        root = self.view()
+        pending = deque(f"{entry['name']}:Configuration" for entry in root["data"]["sourceSets"])
+        seen: set[str] = set()
+        passed: dict[str, str] = {}
+        failed: dict[str, list] = {}
+        unavailable_ops: set[str] = set()
+        while pending:
+            at = pending.popleft()
+            if at in seen or len(seen) >= 600:
+                continue
+            seen.add(at)
+            status, answer = self.post("/api/view", {"at": at, "extra": {"limit": 50}})
+            self.assertEqual(status, 200, answer)
+            result = answer["result"]
+            if not result["ok"]:
+                continue
+            data = result["data"]
+            for entry in data.get("can") or []:
+                op = entry["op"]
+                family = op.split(".", 1)[0]
+                if not entry["implemented"] or family in passed or op in unavailable_ops:
+                    continue
+                status, draft = self.post("/api/draft", {"at": data["at"], "op": op})
+                self.assertEqual(status, 200, draft)
+                self.assertEqual(draft["draft"]["at"], data["at"])
+                self.assertEqual(draft["draft"]["ops"][0]["op"], op)
+                if draft["contract"] == "unavailable":
+                    self.assertEqual(draft["note"], "контракт недоступен (#1468)", draft)
+                    unavailable_ops.add(op)
+                    continue
+                if draft["contract"] != "ok":
+                    continue
+                self.assertIsNone(draft["note"], draft)
+                self.assertEqual(draft["validation"], [], draft)
+                status, preview = self.post("/api/apply", draft["draft"])
+                self.assertEqual(status, 200, preview)
+                if preview["result"]["ok"]:
+                    self.assertIn("executionToken", preview["result"]["data"])
+                    passed[family] = op
+                    failed.pop(family, None)
+                else:
+                    failed.setdefault(family, []).append((data["at"], op, preview["result"]["summary"]))
+            for slot in ("branches", "items"):
+                pending.extend(
+                    child["at"]
+                    for child in data.get(slot) or []
+                    if isinstance(child, dict) and "at" in child and not child["at"].endswith((".Caller", ".Callee"))
+                )
+        self.assertGreaterEqual(len(passed), 10, passed)
+        self.assertEqual(set(failed), set(known_gaps), failed)
+        self.assertTrue(unavailable_ops, "the fixture has implemented operations without a contract")
+        self.assertEqual(tree_digest(self.workspace), self.before, "previews must not change workspace files")
 
     def test_foreign_origin_and_bad_length_are_refused(self) -> None:
         status, refusal = self.post("/api/view", {}, headers={"Origin": "http://evil.example"})

@@ -113,8 +113,15 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 # use): the same corpus generated with the fix runs all 69 cases under
 # --jobs 1 without a source error. Nine cases remain accepted-normalized
 # (#1369), so the run is not a pass. Keep LAST_VERIFIED.
+# #1448 removed the three cases of the retired DSL compilers (mxl-compile,
+# role-compile, subsystem-compile). #1450 moved support-edit-bin-only to the
+# configuration root and xdto-add-nested-property to the property address.
+# Two independent generations agree on the 66-case contract below. The full
+# --jobs 1 run on 8.3.27.2074 processes all 66 cases without a source error:
+# 57 pass and the same nine of #1369 stay accepted-normalized, so the run is
+# not a pass. Keep LAST_VERIFIED.
 EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "7c2a66149e33b5a57142dd81e5cd18af3aef7d008503b250338b5dda8c0d5805"
+    "bbd782e757485d65be77ebd9c2b0d7602b1ad2634c6ae7045397c88aa5598a4c"
 )
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -198,10 +205,7 @@ MANDATORY_CASE_IDS = frozenset(
         "meta-edit-resource-append",
         "meta-edit-resource-position-after",
         "meta-remove-object",
-        "mxl-compile-owned-template",
-        "role-compile-name-field",
         "role-edit-set-right",
-        "subsystem-compile-child",
         "subsystem-edit-add-child",
         "support-edit-bin-only",
         "template-add-binary-data",

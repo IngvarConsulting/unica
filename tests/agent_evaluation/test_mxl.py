@@ -1,4 +1,4 @@
-"""Executed only by the complete large agent-evaluation suite."""
+"""Локальная агентная приёмка сценария MXL."""
 import json
 import subprocess
 import unittest

@@ -55,7 +55,6 @@ pub(crate) struct LogicalViewReadAuthority<'a> {
     deadline: ProviderDeadline,
     module_projections: Mutex<BTreeMap<ModuleProjectionCacheKey, Arc<ModuleProjectionSet>>>,
     configuration_payloads: Mutex<BTreeMap<RevisionCacheKey, Arc<Value>>>,
-    configuration_registrations: Arc<RegistrationCache>,
     verified_owners: Mutex<BTreeSet<OwnerProofCacheKey>>,
     owner_evidence: Mutex<BTreeMap<OwnerProofCacheKey, Arc<PlatformXmlSourceSetOwnerEvidence>>>,
     verified_owner_edges: Mutex<BTreeSet<OwnerEdgeCacheKey>>,
@@ -153,12 +152,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     ) -> Self {
         Self {
             cancellation,
-            read,
+            read: read.with_artifacts(registration_cache),
             profile,
             deadline,
             module_projections: Mutex::new(BTreeMap::new()),
             configuration_payloads: Mutex::new(BTreeMap::new()),
-            configuration_registrations: registration_cache,
             verified_owners: Mutex::new(BTreeSet::new()),
             owner_evidence: Mutex::new(BTreeMap::new()),
             verified_owner_edges: Mutex::new(BTreeSet::new()),
@@ -629,8 +627,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         admitted: &ViewSourceSnapshot,
     ) -> Result<Value, ViewError> {
         if route.reader() == LogicalReader::Configuration {
+            // Корень доказывает только `Configuration.xml`: описание
+            // объекта проверяют прямое чтение и ветка его вида.
             let payload = self.configuration_payload(admitted)?;
-            self.verify_top_level_inventory(payload.as_ref(), admitted)?;
             return Ok(payload.as_ref().clone());
         }
         if route.reader() == LogicalReader::Metadata {
@@ -737,10 +736,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(Arc::clone(payload));
         }
         let mut checkpoint = || self.read_checkpoint();
-        let payload = Arc::new(
-            self.read
-                .configuration_payload_with_checkpoint(&mut checkpoint)?,
-        );
+        let payload = self
+            .read
+            .configuration_payload_with_checkpoint(&mut checkpoint)?;
         cache.insert(key, Arc::clone(&payload));
         Ok(payload)
     }
@@ -945,83 +943,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self.ensure_owner_registered_parts(owner_kind, owner_name, admitted)
     }
 
-    fn verify_top_level_inventory(
-        &self,
-        payload: &Value,
-        admitted: &ViewSourceSnapshot,
-    ) -> Result<(), ViewError> {
-        for item in payload
-            .get("registeredObjects")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let kind = item.get("kind").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "registered owner has no kind",
-                )
-            })?;
-            let name = item.get("name").and_then(Value::as_str).ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    "registered owner has no name",
-                )
-            })?;
-            if kind == NodeKind::WebSocketClient.as_str() {
-                continue;
-            }
-            let owner =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
-            self.verify_registered_owner(&owner, admitted)?;
-        }
-        Ok(())
-    }
-
-    /// The Configuration root already has registration evidence from the
-    /// streaming owner document. Verify each descriptor directly, without
-    /// rebuilding that full inventory or retaining one cache entry per owner.
-    fn verify_streamed_top_level_owner(&self, kind: &str, name: &str) -> Result<(), ViewError> {
-        if kind == NodeKind::WebSocketClient.as_str() {
-            return Ok(());
-        }
-        self.read_checkpoint()?;
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                .map_err(|error| {
-                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                })?;
-        let evidence = self
-            .read
-            .metadata_owner_evidence(&target, &mut || self.read_checkpoint())
-            .map_err(|error| {
-                if error.code() == RefusalCode::NotFound {
-                    ViewError::detailed(
-                        RefusalDetail::SourceUnreadable,
-                        format!(
-                            "registered metadata owner `{}` has no descriptor",
-                            target.as_str()
-                        ),
-                    )
-                } else {
-                    error
-                }
-            })?;
-        if evidence.artifact_kind() != kind || evidence.artifact_name() != Some(name) {
-            return Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                format!(
-                    "metadata descriptor identity does not match `{}`",
-                    target.as_str()
-                ),
-            ));
-        }
-        Ok(())
-    }
-
     fn ensure_owner_registered_parts(
         &self,
         owner_kind: &str,
@@ -1064,17 +985,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     fn streamed_configuration_registration_index(
         &self,
-        admitted: &ViewSourceSnapshot,
+        _admitted: &ViewSourceSnapshot,
     ) -> Result<Arc<RegistrationIndex>, ViewError> {
-        self.configuration_registrations.get_or_build(
-            &admitted.source_set_identity,
-            &admitted.revision,
-            &|| self.read_checkpoint(),
-            || {
-                self.read
-                    .streamed_configuration_registration_index(&|| self.read_checkpoint())
-            },
-        )
+        self.read
+            .streamed_configuration_registration_index(&|| self.read_checkpoint())
     }
 
     fn module_view(
@@ -1747,9 +1661,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         {
             let streamed = self
                 .read
-                .streamed_configuration_root(&|| self.read_checkpoint(), |kind, name| {
-                    self.verify_streamed_top_level_owner(kind, name)
-                })?;
+                .streamed_configuration_root(&|| self.read_checkpoint())?;
             crate::infrastructure::v13_read_projection::project_configuration_with_counts(
                 route.at(),
                 &streamed.payload,
@@ -2607,6 +2519,9 @@ fn module_projection_view_data(
                 .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
             Ok(NodeViewData::Node(region_node(requested, region)))
         }
+        // Срез `Public`/`Library`/`Override` — элемент без адреса: у
+        // `Interface` нет имени, и `…Interface.Public` грамматика отвергает.
+        // Адресуются методы среза (#1467).
         (NodeKind::Interface, None, None) => module_collection(
             requested,
             NodeKind::Interface,
@@ -2614,40 +2529,16 @@ fn module_projection_view_data(
                 .interfaces()
                 .iter()
                 .map(|interface| {
-                    node_value(
-                        &interface.at,
-                        NodeKind::Interface,
-                        interface.interface.as_str(),
-                        Map::from_iter([
-                            ("interface".to_string(), json!(interface.interface)),
-                            ("methods".to_string(), json!(interface.methods)),
-                        ]),
-                        Vec::new(),
-                    )
+                    json!({
+                        "kind": NodeKind::Interface.as_str(),
+                        "name": interface.interface.as_str(),
+                        "addressable": false,
+                        "interface": interface.interface,
+                        "methods": interface.methods,
+                    })
                 })
                 .collect(),
         ),
-        (NodeKind::Interface, Some(name), None) => projections
-            .interfaces()
-            .iter()
-            .find(|interface| interface.interface.as_str() == name)
-            .map(|interface| {
-                NodeViewData::Node(NodeView::new(
-                    &interface.at,
-                    NodeKind::Interface.as_str(),
-                    name,
-                    Map::from_iter([
-                        ("interface".to_string(), json!(interface.interface)),
-                        ("methods".to_string(), json!(interface.methods)),
-                    ]),
-                ))
-            })
-            .ok_or_else(|| {
-                ViewError::new(
-                    RefusalCode::NotFound,
-                    format!("interface `{name}` was not found"),
-                )
-            }),
         (NodeKind::Event, None, None) => module_collection(
             requested,
             NodeKind::Event,

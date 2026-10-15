@@ -89,7 +89,7 @@ kind(test)
     | test(/^infrastructure::native_operations::meta::validation_context::(tests)::/)
     | test(/^infrastructure::native_operations::mxl::(mxl_read_selector_bridge_tests|tests)::/)
     | test(/^infrastructure::native_operations::registry::(tests)::/)
-    | test(/^infrastructure::native_operations::role::(role_compile_contract_tests|role_edit_contract_tests|role_info_typed_result_tests)::/)
+    | test(/^infrastructure::native_operations::role::(role_edit_contract_tests|role_info_typed_result_tests|role_validate_contract_tests)::/)
     | test(/^infrastructure::native_operations::single_file_publisher::(tests)::/)
     | test(/^infrastructure::native_operations::subsystem::(subsystem_info_typed_result_tests|subsystem_read_selector_bridge_tests|tests)::/)
     | test(/^infrastructure::native_operations::support::(tests)::/)
@@ -131,7 +131,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
@@ -164,7 +163,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
@@ -194,7 +192,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
@@ -234,7 +231,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
@@ -304,7 +300,7 @@ kind(test)
     | test(/^infrastructure::native_operations::meta::validation_context::(tests)::/)
     | test(/^infrastructure::native_operations::mxl::(mxl_read_selector_bridge_tests|tests)::/)
     | test(/^infrastructure::native_operations::registry::(tests)::/)
-    | test(/^infrastructure::native_operations::role::(role_compile_contract_tests|role_edit_contract_tests|role_info_typed_result_tests)::/)
+    | test(/^infrastructure::native_operations::role::(role_edit_contract_tests|role_info_typed_result_tests|role_validate_contract_tests)::/)
     | test(/^infrastructure::native_operations::single_file_publisher::(tests)::/)
     | test(/^infrastructure::native_operations::subsystem::(subsystem_info_typed_result_tests|subsystem_read_selector_bridge_tests|tests)::/)
     | test(/^infrastructure::native_operations::support::(tests)::/)
@@ -355,7 +351,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
