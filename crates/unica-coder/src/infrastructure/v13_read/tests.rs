@@ -1,7 +1,7 @@
 use super::{
     project_known_suffix, project_typed_payload, resolve_platform_xml_target,
-    review_set_before_owner_proof, LogicalViewReadAuthority, MetadataAddress, SourceTarget,
-    TargetKindPolicy, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    LogicalViewReadAuthority, MetadataAddress, SourceTarget, TargetKindPolicy,
+    PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::{FindRequest, FindResult};
@@ -17,7 +17,6 @@ use crate::infrastructure::logical_tree::route_logical_address;
 use crate::infrastructure::platform::filesystem::{
     supports_retained_root_replacement_test, RetainedDirectoryCapability,
 };
-use crate::infrastructure::source_revision::SourceRevisionService;
 
 use crate::infrastructure::v13_read_port::{
     review_clear_revision_identity_hooks, review_set_revision_identity_hooks, ProviderReadAuthority,
@@ -531,15 +530,11 @@ fn actor_owned_reader_never_follows_a_source_set_remap_after_admission() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -593,15 +588,11 @@ fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
     .unwrap();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -637,15 +628,11 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
     let fixture = RealReaderFixture::new();
     fs::create_dir_all(fixture.source.join("Ext")).unwrap();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let reader = ProviderReadAuthority::new(
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
         root,
-        revisions,
     );
     let sidecar = fixture.source.join("Ext/HomePageWorkArea.xml");
 
@@ -677,15 +664,11 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
 fn actor_supplied_extension_kind_preserves_extension_support_semantics() {
     let fixture = RealReaderFixture::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let reader = ProviderReadAuthority::new(
         "extension",
         "actor-fixture-extension",
         SourceSetKind::Extension,
         root,
-        revisions,
     );
 
     let payload = configuration_payload(&reader).unwrap();
@@ -841,15 +824,11 @@ fn configuration_root_carries_the_retired_cf_info_facts() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -904,15 +883,11 @@ fn configuration_root_branch_counts_match_every_reachable_collection() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -1102,15 +1077,11 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let reader = ProviderReadAuthority::new(
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
         root,
-        revisions,
     );
     reader
         .exact_revision(
@@ -1145,15 +1116,11 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -3909,32 +3876,6 @@ fn large_configuration_root_rejects_malformed_tail() {
 }
 
 #[test]
-fn large_configuration_root_rejects_revision_change_during_owner_proof() {
-    let fixture = RealReaderFixture::new();
-    let root_xml = fixture.source.join("Configuration.xml");
-    let xml = fs::read_to_string(&root_xml).unwrap();
-    fs::write(
-        root_xml,
-        xml.replace(
-            "</MetaDataObject>",
-            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
-        ),
-    )
-    .unwrap();
-    let descriptor = fixture.source.join("Catalogs/Items.xml");
-    review_set_before_owner_proof(move || {
-        let mut text = fs::read_to_string(&descriptor).unwrap();
-        text.push('\n');
-        fs::write(&descriptor, text).unwrap();
-    });
-    let result = fixture
-        .view_service()
-        .view(ViewRequest::new("main:Configuration").unwrap());
-    assert!(!result.ok, "mixed-revision Configuration root escaped");
-    assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
-}
-
-#[test]
 fn every_reader_rejects_an_extra_unconsumed_address_tail() {
     let cases = [
         (
@@ -4132,9 +4073,6 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let metadata_target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
     let metadata_resolution = resolve_platform_xml_target(
@@ -4151,7 +4089,6 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4235,15 +4172,11 @@ fn websocket_client_source_view_is_an_explicit_provider_gap() {
     .unwrap();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4262,15 +4195,11 @@ fn extension_platform_event_does_not_advertise_unproved_interception() {
     fixture.install_accepted_profile_sources();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-extension",
         SourceSetKind::Extension,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4293,15 +4222,11 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
     );
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-extension-root",
         SourceSetKind::Extension,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4311,15 +4236,11 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
     assert!(module.ok, "{module:?}");
 
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-extension-root-find",
         SourceSetKind::Extension,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4379,86 +4300,20 @@ fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantic
 }
 
 #[test]
-pub(crate) fn operation_lease_find_traversal_scans_once_then_confirms_once() {
-    let fixture = RealReaderFixture::new();
-    fixture.install_accepted_profile_sources();
-    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
-    let deadline = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
-    let lease = revisions
-        .begin_retained_operation(&root, deadline, &fixture.cancellation)
-        .unwrap();
-    assert_eq!(revisions.retained_scan_count(), 1);
-    let authority = LogicalViewReadAuthority::with_read_authority(
-        &fixture.cancellation,
-        ProviderReadAuthority::new_with_revision_lease(
-            "main",
-            "actor-fixture-main",
-            SourceSetKind::Configuration,
-            Arc::clone(&root),
-            lease.clone(),
-        ),
-        PlatformProfile::v8_3_27(),
-        deadline,
-    );
-    let built = ReaderReach::new(vec![("main", &authority)]);
-    for expected in [
-        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
-        "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
-        "main:Role.SalesReader.Right.Catalog_Products.RLS.View",
-        "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field.Code",
-        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
-        "main:CommonModule.РеактивныйСервер.Method.InternalService",
-    ] {
-        let found = built.find(FindRequest::new(expected).unwrap());
-        assert!(
-            !found.is_nearest()
-                && found
-                    .candidates()
-                    .iter()
-                    .any(|candidate| candidate.at() == expected),
-            "the scan-count proof did not traverse {expected}: {found:?}"
-        );
-    }
-    assert_eq!(
-        revisions.retained_scan_count(),
-        1,
-        "node snapshots and reads must use the fixed operation revision"
-    );
-    revisions
-        .confirm_retained_operation(&root, &lease, deadline, &fixture.cancellation)
-        .unwrap();
-    assert_eq!(
-        revisions.retained_scan_count(),
-        2,
-        "the only second corpus scan is final operation confirmation"
-    );
-}
-
-#[test]
-fn operation_lease_rejects_named_root_replacement_before_node_read() {
+fn read_authority_rejects_named_root_replacement_before_node_read() {
     if !supports_retained_root_replacement_test() {
         return;
     }
     let fixture = RealReaderFixture::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let deadline = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
-    let lease = revisions
-        .begin_retained_operation(&root, deadline, &fixture.cancellation)
-        .unwrap();
     let authority = LogicalViewReadAuthority::with_read_authority(
         &fixture.cancellation,
-        ProviderReadAuthority::new_with_revision_lease(
+        ProviderReadAuthority::new(
             "main",
             "actor-fixture-main",
             SourceSetKind::Configuration,
             root,
-            lease,
         ),
         PlatformProfile::v8_3_27(),
         deadline,
@@ -4646,19 +4501,11 @@ fn external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_amb
 fn retained_external_inventory_is_cancellable() {
     let cancelled_fixture = RealExternalReaderFixture::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&cancelled_fixture.processor).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(
-            &cancelled_fixture.context,
-            &cancelled_fixture.processor,
-        )
-        .unwrap(),
-    );
     let reader = ProviderReadAuthority::new(
         "artifact_processor",
         "actor-external-cancel",
         SourceSetKind::ExternalProcessor,
         root,
-        revisions,
     );
     let cancellation = CancellationToken::new();
     let mut checkpoints = 0_usize;
@@ -4704,16 +4551,11 @@ fn add_large_external_descriptors(fixture: &RealExternalReaderFixture, count: us
 
 fn external_inventory_reader(fixture: &RealExternalReaderFixture) -> ProviderReadAuthority {
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.processor).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.processor)
-            .unwrap(),
-    );
     ProviderReadAuthority::new(
         "artifact_processor",
         "actor-external-complete",
         SourceSetKind::ExternalProcessor,
         root,
-        revisions,
     )
 }
 
@@ -4894,10 +4736,19 @@ pub(crate) fn one_read_parses_each_module_source_once_per_actor_revision() {
     );
     assert_eq!(
         authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
-        2,
-        "a changed exact revision must receive a new projection",
+        1,
+        "one read keeps its own projection; it is not a snapshot of later edits",
     );
-    assert_eq!(authority.configuration_payload_read_count(), 2);
+    assert_eq!(authority.configuration_payload_read_count(), 1);
+    let changed_methods = ViewService::new(fixture.read_authority(), ViewCursorStore::default())
+        .view(ViewRequest::new("main:CommonModule.РеактивныйСервер.Method").unwrap());
+    assert!(changed_methods.ok, "{changed_methods:?}");
+    assert!(
+        serde_json::to_string(&changed_methods.data)
+            .unwrap()
+            .contains("AfterRevisionChange"),
+        "a new read must parse the changed module source: {changed_methods:?}"
+    );
 
     let second_authority = fixture.read_authority();
     assert_reader_reaches(
@@ -5194,15 +5045,11 @@ impl RealExternalReaderFixture {
             &self.report
         };
         let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, source).unwrap(),
-        );
         LogicalViewReadAuthority::new(
             &self.cancellation,
             source_set,
             format!("actor-{source_set}"),
             kind,
-            revisions,
             root,
             PlatformProfile::v8_3_27(),
         )
@@ -5219,22 +5066,10 @@ impl RealExternalReaderFixture {
             &self.report
         };
         let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, source).unwrap(),
-        );
         let deadline = ProviderDeadline::no_deadline();
-        let lease = revisions
-            .begin_retained_operation(&root, deadline, &self.cancellation)
-            .unwrap();
         LogicalViewReadAuthority::with_read_authority(
             &self.cancellation,
-            ProviderReadAuthority::new_with_revision_lease(
-                source_set,
-                format!("actor-{source_set}"),
-                kind,
-                root,
-                lease,
-            ),
+            ProviderReadAuthority::new(source_set, format!("actor-{source_set}"), kind, root),
             PlatformProfile::v8_3_27(),
             deadline,
         )
@@ -5687,15 +5522,11 @@ impl RealReaderFixture {
 
     fn read_authority(&self) -> LogicalViewReadAuthority<'_> {
         let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
-        );
         LogicalViewReadAuthority::new(
             &self.cancellation,
             "main",
             "actor-fixture-main",
             SourceSetKind::Configuration,
-            revisions,
             source_root,
             PlatformProfile::v8_3_27(),
         )
@@ -5703,21 +5534,14 @@ impl RealReaderFixture {
 
     fn operation_read_authority(&self) -> LogicalViewReadAuthority<'_> {
         let root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
-        );
         let deadline = ProviderDeadline::no_deadline();
-        let lease = revisions
-            .begin_retained_operation(&root, deadline, &self.cancellation)
-            .unwrap();
         LogicalViewReadAuthority::with_read_authority(
             &self.cancellation,
-            ProviderReadAuthority::new_with_revision_lease(
+            ProviderReadAuthority::new(
                 "main",
                 "actor-fixture-main",
                 SourceSetKind::Configuration,
                 root,
-                lease,
             ),
             PlatformProfile::v8_3_27(),
             deadline,
@@ -5731,15 +5555,11 @@ impl RealReaderFixture {
     /// Тот же набор, объявленный расширением: заимствование живёт только здесь.
     fn extension_read_authority(&self) -> LogicalViewReadAuthority<'_> {
         let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
-        );
         LogicalViewReadAuthority::new(
             &self.cancellation,
             "main",
             "actor-fixture-extension-borrowing",
             SourceSetKind::Extension,
-            revisions,
             source_root,
             PlatformProfile::v8_3_27(),
         )
@@ -6041,23 +5861,6 @@ fn with_root_version(document: &str) -> String {
         return document.to_string();
     }
     format!("{} version=\"2.20\"{}", &document[..end], &document[end..])
-}
-
-#[test]
-fn review_rejects_revision_change_during_post_fence_owner_proof() {
-    let fixture = RealReaderFixture::new();
-    let descriptor = fixture.source.join("Catalogs/Items.xml");
-    review_set_before_owner_proof(move || {
-        let mut text = fs::read_to_string(&descriptor).unwrap();
-        text.push('\n');
-        fs::write(&descriptor, text).unwrap();
-    });
-
-    let service = fixture.view_service();
-    let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-
-    assert!(!result.ok, "mixed-revision read escaped: {result:?}");
-    assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
 }
 
 #[test]

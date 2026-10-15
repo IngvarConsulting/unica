@@ -228,25 +228,25 @@ Creation must be executed before the new Template is addressed. An addressed par
 ordinary text when written. Unaddressed neighbors should be verified after
 publication. Width can grow but the operation does not shrink it.
 
-Reading does not establish writability. The current writer cannot preserve
-all platform constructs: drawings, non-Rows areas, outside rows, overlapping
-or differently ordered areas, identified/multiple column sets and
-multilingual text/format collections refuse before writing. Such a refusal
-requires editing in the Designer; do not bypass it with manual XML writes.
-Support-state rules of the metadata owner also apply.
+The writer changes only the addressed cells, rows and areas of
+`Template.xml`; drawings, merges, other areas, rows outside areas, other
+column sets, translations and the bytes around the edit stay as they were.
+New cells have no own format, so they take the row and column formatting.
+`area.add` appends the area after every used row. A written row below an
+area grows it only when nothing follows the area; otherwise create another
+area with `area.add`. Some addressed nodes still refuse before writing: a
+non-Rows area, an area without rows, a cell inside a merge that does not
+start there, a cell holding a value or control, and a cell that takes a
+parameter or template fill from its row, column, column-set or document
+format. Edit these in the Designer; do not
+bypass a refusal with manual XML writes. Support-state rules of the metadata
+owner also apply.
 
-Full JSON-DSL compilation/decompilation, font/style definitions, rowStyle,
-merges, palettes and page properties are not public operations. The DSL
-reference preserves their format knowledge and historical conversion
-models, including generated font/style names and recognition of uniformly
-styled empty cells. Historical generated font names include `default`, `bold`,
-`header`, `small`, `italic`; style names describe properties, for example
-`bordered-center`, `bold-right`, `border-top`. Uniformly formatted cells with
-no parameter or text become `rowStyle` in the internal conversion model
-and are omitted from its explicit cells. These are format rules, not
-new canonical view fields. It is not a payload accepted by `mxl.set`, nor a JSON
-round-trip produced by `view`. An image may inform layout structure, but
-cannot supply capabilities missing from the public contract.
+Fonts, styles, merges, palettes and page properties are not public inputs:
+`mxl.set` writes text only. A `null` value is empty text; it does not create
+an absent cell. `view` returns a node projection, not a document to send
+back. An image may inform layout structure, but cannot
+supply capabilities missing from the public contract.
 
 Execute only the preview's own `executionToken`; reread Area/Body/Parameter
 and run `check` on the Template. Check infers `mxl` from the template kind.
@@ -256,6 +256,5 @@ Observe a returned Task to terminal state without repeating the mutation.
 
 - `../specs/1c-dcs-spec.md`
 - `../specs/1c-spreadsheet-spec.md`
-- `../specs/mxl-dsl-spec.md`
 - `../specs/1c-epf-spec.md`
 - `../specs/1c-erf-spec.md`

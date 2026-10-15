@@ -1495,10 +1495,7 @@ mod tests {
             "unica.interface.edit",
             "unica.meta.add",
             "unica.meta.edit",
-            "unica.mxl.compile",
-            "unica.role.compile",
             "unica.role.edit",
-            "unica.subsystem.compile",
             "unica.subsystem.edit",
         ];
         let expected_planned_command = [

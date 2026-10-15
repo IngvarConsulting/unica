@@ -1272,7 +1272,7 @@ pub(crate) mod actor_capacity_tests {
     use super::super::protocol_v5::{
         V5DaemonTaskSnapshot, V5InvocationRequest, V5InvocationResponse, V5ServerResponse,
     };
-    use super::super::runner_014::VERSION as RUNNER_VERSION;
+    use super::super::runner_015::VERSION as RUNNER_VERSION;
     use super::*;
     use crate::application::invocation::INVOCATION_HANDOFF_WINDOW;
     use crate::application::invocation_store::ToolIdentity;
@@ -1284,6 +1284,9 @@ pub(crate) mod actor_capacity_tests {
     use crate::domain::code_intelligence::ProviderDeadline;
     use crate::domain::invocation::InvocationStatus;
     use crate::domain::project_sources::{SourceFormat, SourceProfile, SourceSetKind};
+    use crate::infrastructure::platform::filesystem::retained_read_probe::{
+        RetainedRead, RetainedReadProbe,
+    };
     use crate::infrastructure::runtime_jobs::{
         RuntimeJobOperation, RuntimeJobRequest, RuntimeJobService,
     };
@@ -3531,7 +3534,7 @@ fn main() {
         assert!(args.iter().any(|argument| argument == "--dry-run"));
         assert!(args.iter().any(|argument| argument == "main"));
         std::fs::write(marker.join("push"), "v8-runner push preview invoked").unwrap();
-        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true}]}}"#);
+        println!("{}", r#"{"ok":true,"command":"push","data":{"ok":true,"provider_dispatched":false,"steps":[{"source_set":"main","mode":"full","ok":true,"applied":false}]}}"#);
         return;
     }
     if args.iter().any(|argument| argument == "extensions") {
@@ -6796,16 +6799,12 @@ struct ActorLogicalReadLease {"#,
             )
             .unwrap();
         let binding = actor.bind_provider_root("main", &source).unwrap();
-        let cancellation = CancellationToken::new();
-        let fence = actor
-            .capture_logical_read_revision(&binding, deadline, &cancellation)
-            .unwrap();
         let identity = format!(
             "{}:{}",
             actor.safe_identity_hash().unwrap().as_str(),
             binding.source_set_name()
         );
-        let capability = actor_read_source_capability_for_test(binding, identity, fence, deadline);
+        let capability = actor_read_source_capability_for_test(binding, identity, deadline);
         (workspace, actor, capability)
     }
 
@@ -9943,16 +9942,25 @@ struct ActorLogicalReadLease {"#,
                 ]}},
                 {"op": "element.add", "args": {"at": "main:Document.Order.Form.Main.Item.Content", "items": [{
                     "name": "Html", "type": "HTMLDocumentField", "path": "HtmlSource",
-                    "titleLocation": "none", "width": 1, "height": 1,
-                    "autoMaxWidth": false, "skipOnInput": true, "on": ["OnClick"]
+                    "titleLocation": "None", "width": 1, "height": 1,
+                    "autoMaxWidth": false, "skipOnInput": true
                 }]}}
             ]),
         );
+        // События нового элемента привязывает `event.bind` на их адресах с
+        // явным именем обработчика (Р2, Р4 #1447).
         apply_pair(
-            &format!("{item_at}.Event.DocumentComplete"),
-            serde_json::json!([{"op": "event.bind", "args": {"values": {
-                "handler": "HtmlDocumentComplete"
-            }}}]),
+            item_at,
+            serde_json::json!([
+                {"op": "event.bind", "args": {
+                    "at": format!("{item_at}.Event.DocumentComplete"),
+                    "values": {"handler": "HtmlDocumentComplete"}
+                }},
+                {"op": "event.bind", "args": {
+                    "at": format!("{item_at}.Event.OnClick"),
+                    "values": {"handler": "HtmlOnClick"}
+                }}
+            ]),
         );
 
         let form_path = source.join("Documents/Order/Forms/Main/Ext/Form.xml");
@@ -10001,7 +10009,7 @@ struct ActorLogicalReadLease {"#,
             events
                 .iter()
                 .any(|node| node.attribute("name") == Some("OnClick")
-                    && node.text().is_some_and(|handler| !handler.is_empty())),
+                    && node.text() == Some("HtmlOnClick")),
             "{xml}"
         );
         assert!(
@@ -10655,38 +10663,64 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn logical_read_admission_does_not_scan_source_revisions() {
-        assert_logical_read_does_not_scan(LogicalReadScanCase::Admission);
+    fn logical_read_of_one_object_opens_only_its_own_files() {
+        assert_logical_read_files_do_not_grow_with_unrelated_objects(false);
     }
 
     #[test]
-    fn logical_read_publication_does_not_scan_source_revisions() {
-        assert_logical_read_does_not_scan(LogicalReadScanCase::Publication);
+    fn borrowed_logical_read_admits_and_publishes_without_unrelated_objects() {
+        assert_logical_read_files_do_not_grow_with_unrelated_objects(true);
     }
 
-    #[test]
-    fn logical_read_parent_publication_does_not_scan_source_revisions() {
-        assert_logical_read_does_not_scan(LogicalReadScanCase::ParentPublication);
+    /// Registers `count` catalogs the read never addresses, each with its own
+    /// descriptor, so a tree scan or a read of every descriptor grows with it.
+    fn add_unrelated_catalogs(source: &std::path::Path, count: usize) {
+        let configuration = source.join("Configuration.xml");
+        let registrations = (0..count)
+            .map(|index| format!("<Catalog>Unrelated{index}</Catalog>"))
+            .collect::<String>();
+        let text = std::fs::read_to_string(&configuration).unwrap();
+        assert!(text.contains("<ChildObjects>"), "{text}");
+        std::fs::write(
+            &configuration,
+            text.replacen(
+                "<ChildObjects>",
+                &format!("<ChildObjects>{registrations}"),
+                1,
+            ),
+        )
+        .unwrap();
+        for index in 0..count {
+            std::fs::write(
+                source.join(format!("Catalogs/Unrelated{index}.xml")),
+                format!(
+                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="dddddddd-dddd-4ddd-8ddd-{index:012}"><Properties><Name>Unrelated{index}</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#
+                ),
+            )
+            .unwrap();
+        }
     }
 
-    #[derive(Clone, Copy)]
-    enum LogicalReadScanCase {
-        Admission,
-        Publication,
-        ParentPublication,
+    struct LogicalReadPhases {
+        admission: Vec<RetainedRead>,
+        execution: Vec<RetainedRead>,
+        publication: Vec<RetainedRead>,
     }
 
-    /// The probe clock moves only when a retained revision scan starts, so an
-    /// unchanged reading proves that no scan ran. The read itself goes
-    /// through the production admission, which gives it no deadline (#1251).
-    fn assert_logical_read_does_not_scan(case: LogicalReadScanCase) {
-        let parent_publication = matches!(case, LogicalReadScanCase::ParentPublication);
+    /// Runs one logical `view` through production admission, execution and
+    /// publication and records the source files each phase opens or lists.
+    fn observe_logical_read(parent_publication: bool, unrelated: usize) -> LogicalReadPhases {
         let workspace = if parent_publication {
             borrowing_view_fixture("normal")
         } else {
             source_selection_read_fixture().0
         };
+        add_unrelated_catalogs(&workspace.path().join("src"), unrelated);
+        if parent_publication {
+            add_unrelated_catalogs(&workspace.path().join("ext"), unrelated);
+        }
         let runtime = bootstrap_runtime();
+        let probe = RetainedReadProbe::watch(workspace.path());
         let request = InvocationRequest::new(
             ToolIdentity::View,
             serde_json::json!({"at": if parent_publication { "ext:Catalog.Items" } else { "main:Catalog.Items" }}),
@@ -10706,21 +10740,9 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        let started = Instant::now();
-        let scanned = started + Duration::from_secs(120);
-        set_logical_read_now(started);
         let cancellation = CancellationToken::new();
-        let _admission_scan = matches!(
-            case,
-            LogicalReadScanCase::Admission | LogicalReadScanCase::ParentPublication
-        )
-        .then(|| {
-            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
-                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                move || set_logical_read_now(scanned),
-            )
-        });
         let execution = invocation.begin_execution(&cancellation).unwrap();
+        let admission = probe.take();
         let service =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
         let staged = service.execute(&execution, cancellation.clone()).unwrap();
@@ -10735,25 +10757,75 @@ struct ActorLogicalReadLease {"#,
                 "resolved"
             );
         }
-        let _publication_scan = matches!(case, LogicalReadScanCase::Publication).then(|| {
-            crate::infrastructure::source_revision::set_retained_scan_test_mutation(
-                crate::infrastructure::source_revision::RetainedScanTestMutationPoint::ScanStart,
-                move || set_logical_read_now(scanned),
-            )
-        });
+        let execution_reads = probe.take();
         let result = execution
             .publish(Ok(staged), &cancellation)
             .unwrap()
             .expect("a logical read publishes a domain result");
-        assert_eq!(
-            logical_read_now(),
-            started,
-            "logical read invoked a global source revision scan"
-        );
+        let publication = probe.take();
         assert!(result.ok, "{result:?}");
         assert!(
             result.data.is_some(),
             "successful read must keep source data"
+        );
+        LogicalReadPhases {
+            admission,
+            execution: execution_reads,
+            publication,
+        }
+    }
+
+    /// A read admits, stages and publishes from the addressed node: the set of
+    /// opened and listed source entries is the same for one and for many
+    /// unrelated registered objects, and never touches their descriptors.
+    /// A borrowed read still resolves its parent by reading the parent's
+    /// descriptors while staging (#1457); its admission and publication
+    /// remain bounded by the addressed nodes.
+    fn assert_logical_read_files_do_not_grow_with_unrelated_objects(parent_publication: bool) {
+        let few = observe_logical_read(parent_publication, 1);
+        let many = observe_logical_read(parent_publication, 6);
+        let mut phases = vec![
+            ("admission", &few.admission, &many.admission),
+            ("publication", &few.publication, &many.publication),
+        ];
+        if !parent_publication {
+            phases.push(("execution", &few.execution, &many.execution));
+        }
+        for (phase, few, many) in phases {
+            assert_eq!(
+                few, many,
+                "{phase} source work grows with unrelated objects"
+            );
+            assert!(
+                !many
+                    .iter()
+                    .any(|read| format!("{read:?}").contains("Unrelated")),
+                "{phase} read an unaddressed object: {many:?}"
+            );
+            assert!(
+                !many
+                    .iter()
+                    .any(|read| matches!(read, RetainedRead::Listed(_))),
+                "{phase} enumerated a source directory: {many:?}"
+            );
+        }
+        assert!(
+            few.execution
+                .iter()
+                .any(|read| format!("{read:?}").contains("Items.xml")),
+            "the probe must observe the addressed descriptor read: {:?}",
+            few.execution
+        );
+        // A borrowed read revalidates the source selection at publication:
+        // the project file and each selected root marker, never an object.
+        assert!(
+            few.publication.iter().all(|read| {
+                parent_publication
+                    && matches!(read, RetainedRead::Opened(path)
+                        if path.ends_with("v8project.yaml") || path.ends_with("Configuration.xml"))
+            }),
+            "publication must not reopen source files: {:?}",
+            few.publication
         );
     }
 
@@ -11554,7 +11626,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    pub(crate) fn logical_reads_run_without_deadline_source_scans_or_mutation_lane_wait() {
+    pub(crate) fn logical_reads_run_without_deadline_tree_scans_or_mutation_lane_wait() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         let sibling = workspace.path().join("dep");
@@ -11580,6 +11652,19 @@ struct ActorLogicalReadLease {"#,
             r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Catalog uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"><Properties><Name>Items</Name></Properties><ChildObjects/></Catalog></MetaDataObject>"#,
         )
         .unwrap();
+        add_unrelated_catalogs(&source, 3);
+        let sibling_reads = RetainedReadProbe::watch(&sibling);
+        let selected_reads = RetainedReadProbe::watch(&source);
+        let assert_no_unrelated_object_or_listing = |label: &str| {
+            let reads = selected_reads.take();
+            assert!(
+                !reads.iter().any(|read| {
+                    matches!(read, RetainedRead::Listed(_))
+                        || format!("{read:?}").contains("Unrelated")
+                }),
+                "{label} scanned the selected source tree: {reads:?}"
+            );
+        };
         let runtime = V5CanonicalInvocationRuntime::new(
             Arc::new(
                 crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
@@ -11605,29 +11690,14 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        let sibling_binding = invocation
-            .read_source_binding_for_test("dep")
-            .unwrap()
-            .clone();
-        let sibling_revisions = invocation
-            .actor_for_test()
-            .source_revision_service(&sibling_binding)
-            .unwrap();
-        let selected_revisions = invocation
-            .actor_for_test()
-            .source_revision_service(invocation.read_source_binding_for_test("main").unwrap())
-            .unwrap();
-        let started = Instant::now();
-        set_logical_read_now(started);
-        // Only the actor mutation lane below still needs a finite fixture
-        // deadline; the reads themselves are admitted by production code.
-        let deadline = ProviderDeadline::from_budget(Duration::from_secs(120));
         let cancellation = CancellationToken::new();
         let execution = invocation.begin_execution(&cancellation).unwrap();
-        assert_eq!(
-            sibling_revisions.retained_scan_count(),
-            0,
-            "qualified view must not admit or scan an unrelated source set"
+        let sibling_admission = sibling_reads.take();
+        assert!(
+            sibling_admission
+                .iter()
+                .all(|read| *read == RetainedRead::Opened("Configuration.xml".into())),
+            "source selection may prove the sibling root marker, but a qualified view must not read the unrelated source set: {sibling_admission:?}"
         );
         std::fs::write(
             sibling.join("Configuration.xml"),
@@ -11635,7 +11705,6 @@ struct ActorLogicalReadLease {"#,
         )
         .unwrap();
 
-        set_logical_read_now(started + Duration::from_secs(8));
         let sources = execution.read_sources().unwrap();
         assert_eq!(sources.len(), 1);
         assert_eq!(
@@ -11650,11 +11719,7 @@ struct ActorLogicalReadLease {"#,
             .expect("canonical v0.13 execution");
         assert!(result.ok, "canonical v0.13 execution must succeed");
         assert!(result.rev.is_none());
-        assert_eq!(
-            selected_revisions.retained_scan_count(),
-            0,
-            "view admission and execution must not scan even the selected source tree"
-        );
+        assert_no_unrelated_object_or_listing("view admission and execution");
         for (tool, arguments) in [
             (
                 ToolIdentity::Resolve,
@@ -11706,29 +11771,31 @@ struct ActorLogicalReadLease {"#,
                 .unwrap()
                 .unwrap();
             assert!(published.ok);
-            assert_eq!(
-                selected_revisions.retained_scan_count(),
-                0,
-                "{tool:?} must not scan the selected source tree"
-            );
-            assert_eq!(
-                sibling_revisions.retained_scan_count(),
-                0,
-                "{tool:?} must not scan the unrelated source tree"
+            match tool {
+                // A text search reads its scope by contract.
+                ToolIdentity::Search => {
+                    selected_reads.take();
+                }
+                // Resolve by address still builds the full layout directory
+                // and reads every descriptor head (#1457).
+                ToolIdentity::Resolve => {
+                    selected_reads.take();
+                }
+                _ => assert_no_unrelated_object_or_listing(&format!("{tool:?}")),
+            }
+            let sibling = sibling_reads.take();
+            assert!(
+                sibling
+                    .iter()
+                    .all(|read| *read == RetainedRead::Opened("Configuration.xml".into())),
+                "{tool:?} must not read the unrelated source tree beyond its root marker: {sibling:?}"
             );
         }
         let actor = Arc::clone(execution.actor_for_test());
-        let legacy_fence = actor
-            .capture_revision(execution.provider_root_for_test(), deadline, &cancellation)
-            .expect("capture a fence for the actor mutation lane");
-        let held_publication = actor
-            .begin_publication(&legacy_fence, deadline, &cancellation)
-            .expect("hold the actor mutation lane");
-        let scans_before_publish = selected_revisions.retained_scan_count();
+        let held_lane = actor.hold_mutation_lane_for_test();
         let (published_tx, published_rx) = mpsc::channel();
         let publish_cancellation = cancellation.clone();
         std::thread::spawn(move || {
-            set_logical_read_now(started + Duration::from_secs(8));
             published_tx
                 .send(execution.publish(Ok(result), &publish_cancellation))
                 .unwrap();
@@ -11738,17 +11805,17 @@ struct ActorLogicalReadLease {"#,
             .expect("logical publication must not wait on the mutation lane")
             .unwrap()
             .unwrap();
-        drop(held_publication);
+        drop(held_lane);
         assert!(published.ok);
         assert!(published.rev.is_none());
         assert_eq!(
-            selected_revisions.retained_scan_count(),
-            scans_before_publish,
-            "read publication must not scan the selected source tree"
+            selected_reads.take(),
+            Vec::new(),
+            "read publication must not reopen the selected source tree"
         );
         assert_eq!(
-            sibling_revisions.retained_scan_count(),
-            0,
+            sibling_reads.take(),
+            Vec::new(),
             "an unrelated source mutation must not invalidate the qualified view"
         );
 
@@ -11785,32 +11852,28 @@ struct ActorLogicalReadLease {"#,
             "canonical v0.13 find execution must succeed"
         );
         // A layout directory publishes no revision state: `find` confirms
-        // nothing and never holds the actor mutation lane, so a competing
-        // publication is free while its result stands.
+        // nothing and never waits for the actor mutation lane, so it publishes
+        // while a competing apply holds that lane.
         let find_actor = Arc::clone(find_execution.actor_for_test());
-        let legacy_fence = find_actor
-            .capture_revision(
-                find_execution.provider_root_for_test(),
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .unwrap();
-        let published = find_execution
-            .publish(Ok(find_result), &cancellation)
+        let held_lane = find_actor.hold_mutation_lane_for_test();
+        let (published_tx, published_rx) = mpsc::channel();
+        let publish_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            published_tx
+                .send(find_execution.publish(Ok(find_result), &publish_cancellation))
+                .unwrap();
+        });
+        let published = published_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("find publication must not wait on the mutation lane")
             .expect("find publication")
             .expect("find result");
+        drop(held_lane);
         assert!(published.ok);
         assert!(
             published.rev.is_none(),
             "a find directory is not a revision snapshot and must publish no rev"
         );
-        find_actor
-            .begin_publication(
-                &legacy_fence,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &cancellation,
-            )
-            .expect("find must not hold the actor mutation lane");
 
         let find_invocation = bind_workspace_invocation(
             &find_request,
@@ -11848,7 +11911,6 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        set_logical_read_now(started + Duration::from_secs(9));
         let execution = invocation.begin_execution(&cancellation).unwrap();
         let result = service
             .execute(&execution, cancellation.clone())
@@ -11866,12 +11928,7 @@ struct ActorLogicalReadLease {"#,
 
     fn rejected_hidden_v13_view_execution(
         at: &str,
-    ) -> (
-        tempfile::TempDir,
-        ActorBoundExecution,
-        Arc<crate::infrastructure::source_revision::SourceRevisionService>,
-        usize,
-    ) {
+    ) -> (tempfile::TempDir, ActorBoundExecution, RetainedReadProbe) {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(&source).unwrap();
@@ -11910,27 +11967,22 @@ struct ActorLogicalReadLease {"#,
             runtime.capture_response_deadline_for_test(),
         )
         .unwrap();
-        let revisions = invocation
-            .actor_for_test()
-            .source_revision_service(invocation.read_source_binding_for_test("main").unwrap())
-            .unwrap();
-        let scans_before = revisions.retained_scan_count();
+        let reads = RetainedReadProbe::watch(&source);
         let cancellation = CancellationToken::new();
 
         let execution = invocation
             .begin_execution(&cancellation)
             .expect("ordinary rejected address must reach the typed view handler");
         assert_eq!(
-            revisions.retained_scan_count(),
-            scans_before,
-            "an address rejected before source selection must not scan a source corpus"
+            reads.take(),
+            Vec::new(),
+            "an address rejected before source selection must not read a source corpus"
         );
-        (workspace, execution, revisions, scans_before)
+        (workspace, execution, reads)
     }
 
     fn execute_rejected_hidden_v13_view_address(at: &str) -> DomainResult {
-        let (_workspace, execution, revisions, scans_before) =
-            rejected_hidden_v13_view_execution(at);
+        let (_workspace, execution, reads) = rejected_hidden_v13_view_execution(at);
         let cancellation = CancellationToken::new();
         let result = crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()
             .execute(&execution, cancellation.clone())
@@ -11940,16 +11992,15 @@ struct ActorLogicalReadLease {"#,
             .unwrap()
             .unwrap();
         assert_eq!(
-            revisions.retained_scan_count(),
-            scans_before,
-            "zero-fence typed rejection publication must not scan a source corpus"
+            reads.take(),
+            Vec::new(),
+            "zero-fence typed rejection must not read a source corpus"
         );
         result
     }
 
     fn zero_fence_accepts_forged_result(at: &str, mutate: impl FnOnce(&mut DomainResult)) -> bool {
-        let (_workspace, execution, revisions, scans_before) =
-            rejected_hidden_v13_view_execution(at);
+        let (_workspace, execution, reads) = rejected_hidden_v13_view_execution(at);
         let cancellation = CancellationToken::new();
         let mut result =
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()
@@ -11958,9 +12009,9 @@ struct ActorLogicalReadLease {"#,
         mutate(&mut result);
         let accepted = execution.publish(Ok(result), &cancellation).is_ok();
         assert_eq!(
-            revisions.retained_scan_count(),
-            scans_before,
-            "forged rejected-path result must not scan a source corpus"
+            reads.take(),
+            Vec::new(),
+            "forged rejected-path result must not read a source corpus"
         );
         accepted
     }
@@ -12042,8 +12093,7 @@ struct ActorLogicalReadLease {"#,
                 }
             );
 
-            let (_workspace, execution, revisions, scans_before) =
-                rejected_hidden_v13_view_execution(at);
+            let (_workspace, execution, reads) = rejected_hidden_v13_view_execution(at);
             let cancellation = CancellationToken::new();
             if execution
                 .publish(
@@ -12054,17 +12104,16 @@ struct ActorLogicalReadLease {"#,
             {
                 accepted.push(format!("{at}:InvocationFailure"));
             }
-            assert_eq!(revisions.retained_scan_count(), scans_before);
+            assert_eq!(reads.take(), Vec::new());
 
-            let (_workspace, execution, revisions, scans_before) =
-                rejected_hidden_v13_view_execution(at);
+            let (_workspace, execution, reads) = rejected_hidden_v13_view_execution(at);
             if execution
                 .publish(Ok(DomainResult::success("forged success")), &cancellation)
                 .is_ok()
             {
                 accepted.push(format!("{at}:success"));
             }
-            assert_eq!(revisions.retained_scan_count(), scans_before);
+            assert_eq!(reads.take(), Vec::new());
         }
         assert!(
             accepted.is_empty(),
@@ -12660,8 +12709,8 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
-    /// Раннер 0.12 не умеет загрузить CF/CFE без применения и не знает `apply` и
-    /// `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
+    /// Адаптер раннера 0.15 не загружает CF/CFE без применения и не исполняет `apply`
+    /// и `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
     /// типизированный отказ при bind — до рабочего пространства, PlatformXml и
     /// раннера.
     #[test]
@@ -12988,7 +13037,6 @@ struct ActorLogicalReadLease {"#,
                     .expect("dirty signal")
                     .recv()
                     .expect("dirty request");
-                invocation.mark_source_revision_dirty_for_test();
                 self.dirty_done.send(()).expect("dirty acknowledgement");
             }
             lease

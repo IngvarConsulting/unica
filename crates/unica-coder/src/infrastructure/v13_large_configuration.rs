@@ -1278,7 +1278,7 @@ mod tests {
     }
 
     #[test]
-    fn registration_cache_reuses_only_the_same_source_revision() {
+    fn registration_cache_reuses_only_the_same_read_identity() {
         fn index(name: &str) -> Result<RegistrationIndex, ViewError> {
             let mut sorter = RegistrationSorter::new();
             sorter.push("CommonModule".into(), name.into(), &|| Ok(()))?;

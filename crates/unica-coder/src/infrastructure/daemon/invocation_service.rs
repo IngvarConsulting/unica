@@ -24,8 +24,6 @@ use crate::infrastructure::v13_large_configuration::{
     read_configuration_registration_index, RegistrationCache, RegistrationIndex,
 };
 use crate::infrastructure::workspace::discover_workspace;
-#[cfg(test)]
-use crate::infrastructure::workspace_actor::WorkspaceRevisionFence;
 use crate::infrastructure::workspace_actor::{
     ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor,
     WorkspaceActorRegistry, WorkspaceActorRegistryError, WorkspaceSourceSetInput,
@@ -632,13 +630,12 @@ impl ActorReadSourceCapability {
 pub(super) fn actor_read_source_capability_for_test(
     binding: ProviderRootBinding,
     identity: String,
-    fence: crate::infrastructure::workspace_actor::WorkspaceLogicalReadFence,
     deadline: ProviderDeadline,
 ) -> ActorReadSourceCapability {
     ActorReadSourceCapability {
         binding,
         identity,
-        read_identity: fence.revision().revision_identity(),
+        read_identity: uuid::Uuid::new_v4().to_string(),
         deadline,
         registration_cache: Arc::new(RegistrationCache::default()),
     }
@@ -935,9 +932,6 @@ pub(crate) struct ActorBoundExecution {
 }
 
 enum ActorExecutionRevision {
-    #[cfg(test)]
-    #[allow(dead_code)]
-    Legacy(WorkspaceRevisionFence),
     LogicalRead(ActorLogicalReadLease),
     /// `find` reads the physical layout of the admitted roots and answers a
     /// directory of addresses and paths. A directory is not a snapshot, so it
@@ -1310,24 +1304,12 @@ impl ActorBoundExecution {
         self.invocation.provider_root_for_test()
     }
 
-    #[cfg(test)]
-    pub(super) fn mark_source_revision_dirty_for_test(&self) {
-        self.invocation.actor.mark_source_revisions_dirty();
-    }
-
     pub(super) fn publish(
         self,
         staged: Result<DomainResult, InvocationFailure>,
         cancellation: &CancellationToken,
     ) -> Result<Result<DomainResult, InvocationFailure>, ExecutionBoundaryError> {
         match self.revision {
-            #[cfg(test)]
-            ActorExecutionRevision::Legacy(revision) => self
-                .invocation
-                .actor
-                .begin_publication(&revision, ProviderDeadline::no_deadline(), cancellation)?
-                .publish(staged, ProviderDeadline::no_deadline(), cancellation)
-                .map_err(ExecutionBoundaryError::from),
             // A layout directory publishes no revision state: `find` neither
             // captures a lease nor confirms one, so its result stands as read.
             ActorExecutionRevision::LayoutRead(lease) => {
@@ -1427,21 +1409,12 @@ impl ActorBoundExecution {
                 if confirmed.load(std::sync::atomic::Ordering::Acquire) {
                     return Ok(staged);
                 }
-                let dry_run = self
-                    .invocation
-                    .arguments
-                    .get("dryRun")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true);
+                // `dryRun` и `ifRev` отклоняются до привязки к актору
+                // (`validate_hidden_v13_request`), поэтому отдельного
+                // закрытого предпросмотра здесь не бывает: любой успех,
+                // изменение или ревизия требуют публикации актором.
                 let requires_actor_publication = match &staged {
-                    Ok(result) => {
-                        let closed_dry_run_result = dry_run
-                            && result.ok
-                            && result.changed.is_empty()
-                            && result.rev.is_none();
-                        !closed_dry_run_result
-                            && (result.ok || !result.changed.is_empty() || result.rev.is_some())
-                    }
+                    Ok(result) => result.ok || !result.changed.is_empty() || result.rev.is_some(),
                     Err(_) => false,
                 };
                 if requires_actor_publication {

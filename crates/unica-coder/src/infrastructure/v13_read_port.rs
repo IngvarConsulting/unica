@@ -44,8 +44,6 @@ use crate::infrastructure::platform_xml_owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
-#[cfg(test)]
-use crate::infrastructure::source_revision::{RetainedRevisionLease, SourceRevisionService};
 use crate::infrastructure::v13_large_configuration::{
     read_configuration_registration_index, read_configuration_root, RegistrationIndex,
     StreamedConfigurationRoot,
@@ -89,9 +87,6 @@ pub(crate) struct TemplateValidationInput {
 
 const MAX_CONFIGURATION_BYTES: usize = 8 * 1024 * 1024;
 
-/// One actor-issued read authority for one admitted source set. Hidden v0.13
-/// reads are descriptor-relative to this retained directory and revisions come
-/// from the paired actor-owned service.
 /// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.
 pub(crate) struct MetadataLocalRead {
     pub(crate) info: MetaLocalInfo,
@@ -99,12 +94,15 @@ pub(crate) struct MetadataLocalRead {
     pub(crate) borrowing: Option<MetaBorrowing>,
 }
 
+/// One actor-issued read authority for one admitted source set. Reads are
+/// descriptor-relative to this retained directory; the snapshot identity is
+/// issued at admission and never derived from a scan of the source tree.
 pub(crate) struct ProviderReadAuthority {
     source_set: String,
     source_set_identity: String,
     source_set_kind: SourceSetKind,
     root: Arc<RetainedDirectoryCapability>,
-    revisions: ProviderRevisionAuthority,
+    snapshot_identity: String,
     /// The parsed `Ext/ParentConfigurations.bin` marker. One authority serves
     /// one admitted operation, so the marker is read and parsed once instead
     /// of once per owner descriptor that asks for its support state.
@@ -119,14 +117,6 @@ pub(crate) struct ProviderReadAuthority {
     support_state_reads: std::sync::atomic::AtomicUsize,
 }
 
-enum ProviderRevisionAuthority {
-    #[cfg(test)]
-    Live(Arc<SourceRevisionService>),
-    #[cfg(test)]
-    Operation(RetainedRevisionLease),
-    LocalSnapshot(String),
-}
-
 impl ProviderReadAuthority {
     #[cfg(test)]
     pub(crate) fn new(
@@ -134,50 +124,14 @@ impl ProviderReadAuthority {
         source_set_identity: impl Into<String>,
         source_set_kind: SourceSetKind,
         root: Arc<RetainedDirectoryCapability>,
-        revisions: Arc<SourceRevisionService>,
     ) -> Self {
-        Self {
-            source_set: source_set.into(),
-            source_set_identity: source_set_identity.into(),
+        Self::new_local_snapshot(
+            source_set,
+            source_set_identity,
             source_set_kind,
             root,
-            revisions: ProviderRevisionAuthority::Live(revisions),
-            support_state: std::sync::Mutex::new(None),
-            #[cfg(test)]
-            module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
-            metadata_descriptor_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
-            configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
-            support_state_reads: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_with_revision_lease(
-        source_set: impl Into<String>,
-        source_set_identity: impl Into<String>,
-        source_set_kind: SourceSetKind,
-        root: Arc<RetainedDirectoryCapability>,
-        revision: RetainedRevisionLease,
-    ) -> Self {
-        Self {
-            source_set: source_set.into(),
-            source_set_identity: source_set_identity.into(),
-            source_set_kind,
-            root,
-            revisions: ProviderRevisionAuthority::Operation(revision),
-            support_state: std::sync::Mutex::new(None),
-            #[cfg(test)]
-            module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
-            metadata_descriptor_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
-            configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
-            support_state_reads: std::sync::atomic::AtomicUsize::new(0),
-        }
+            "test-local-snapshot".to_string(),
+        )
     }
 
     pub(crate) fn new_local_snapshot(
@@ -192,7 +146,7 @@ impl ProviderReadAuthority {
             source_set_identity: source_set_identity.into(),
             source_set_kind,
             root,
-            revisions: ProviderRevisionAuthority::LocalSnapshot(snapshot_identity),
+            snapshot_identity,
             support_state: std::sync::Mutex::new(None),
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -241,52 +195,22 @@ impl ProviderReadAuthority {
                 hook();
             }
         });
-        match &self.revisions {
-            #[cfg(test)]
-            ProviderRevisionAuthority::Live(revisions) => revisions
-                .snapshot_retained(&self.root, deadline, cancellation)
-                .map(|revision| {
-                    format!(
-                        "{}:{}:{}",
-                        revision.algorithm, revision.generation, revision.digest
-                    )
-                })
-                .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error)),
-            ProviderRevisionAuthority::LocalSnapshot(identity) => {
-                if cancellation.is_cancelled() {
-                    Err(ViewError::new(
-                        RefusalCode::Cancelled,
-                        "logical read was cancelled",
-                    ))
-                } else if deadline.is_elapsed() {
-                    Err(ViewError::new(
-                        RefusalCode::DeadlineExceeded,
-                        "logical read operation deadline elapsed",
-                    ))
-                } else {
-                    self.root.validate_named_identity().map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                    })?;
-                    Ok(identity.clone())
-                }
-            }
-            #[cfg(test)]
-            ProviderRevisionAuthority::Operation(revision) => {
-                if cancellation.is_cancelled() {
-                    Err(ViewError::new(
-                        RefusalCode::Cancelled,
-                        "logical read was cancelled",
-                    ))
-                } else if deadline.is_elapsed() {
-                    Err(ViewError::new(
-                        RefusalCode::DeadlineExceeded,
-                        "logical read operation deadline elapsed",
-                    ))
-                } else {
-                    Ok(revision.revision_identity())
-                }
-            }
+        if cancellation.is_cancelled() {
+            return Err(ViewError::new(
+                RefusalCode::Cancelled,
+                "logical read was cancelled",
+            ));
         }
+        if deadline.is_elapsed() {
+            return Err(ViewError::new(
+                RefusalCode::DeadlineExceeded,
+                "logical read operation deadline elapsed",
+            ));
+        }
+        self.root.validate_named_identity().map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        Ok(self.snapshot_identity.clone())
     }
 
     pub(crate) fn read_relative(

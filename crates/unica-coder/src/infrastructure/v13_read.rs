@@ -39,54 +39,15 @@ use crate::infrastructure::platform_xml_owner::PlatformXmlSourceSetOwnerEvidence
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
-#[cfg(test)]
-use crate::infrastructure::source_revision::SourceRevisionService;
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
 use serde_json::{json, Map, Value};
-#[cfg(test)]
-use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-#[cfg(test)]
-thread_local! {
-    static REVIEW_BEFORE_OWNER_PROOF: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
-    static REVIEW_AFTER_CANONICAL_ROLE_READ: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
-}
-
-#[cfg(test)]
-pub(crate) fn review_set_before_owner_proof(hook: impl FnOnce() + 'static) {
-    REVIEW_BEFORE_OWNER_PROOF.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
-}
-
-#[cfg(test)]
-pub(crate) fn review_set_after_canonical_role_read(hook: impl FnOnce() + 'static) {
-    REVIEW_AFTER_CANONICAL_ROLE_READ.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
-}
-
-#[cfg(test)]
-fn review_run_before_owner_proof() {
-    REVIEW_BEFORE_OWNER_PROOF.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
-        }
-    });
-}
-
-#[cfg(test)]
-fn review_run_after_canonical_role_read() {
-    REVIEW_AFTER_CANONICAL_ROLE_READ.with(|slot| {
-        if let Some(hook) = slot.borrow_mut().take() {
-            hook();
-        }
-    });
-}
-
 const MAX_MODULE_BYTES: usize = 8 * 1024 * 1024;
-/// Hidden v0.13 read adapter. Its revision service is supplied by the
-/// workspace actor that owns the source capability; the adapter never creates
-/// an ambient per-call revision authority.
+/// Logical read adapter over one actor-issued source capability. Its read
+/// identity is fixed at admission; the adapter never snapshots the tree.
 pub(crate) struct LogicalViewReadAuthority<'a> {
     cancellation: &'a CancellationToken,
     read: ProviderReadAuthority,
@@ -146,7 +107,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
         source_set_kind: SourceSetKind,
-        revision_service: Arc<SourceRevisionService>,
         source_root: Arc<RetainedDirectoryCapability>,
         profile: PlatformProfile,
     ) -> Self {
@@ -157,7 +117,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 source_set_identity,
                 source_set_kind,
                 source_root,
-                revision_service,
             ),
             profile,
             ProviderDeadline::no_deadline(),
@@ -1030,8 +989,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(());
         }
         self.read_checkpoint()?;
-        #[cfg(test)]
-        review_run_before_owner_proof();
         let target =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
                 .map_err(|error| {
@@ -1314,8 +1271,6 @@ impl<'a> LogicalViewReadAuthority<'a> {
         target: &MetadataAddress,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
-        #[cfg(test)]
-        review_run_before_owner_proof();
         self.verify_registered_owner(target, admitted)
     }
 
@@ -1673,8 +1628,6 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         }
         let payload = self.typed_payload_for(&route, admitted)?;
         let projected = project_typed_payload(&route, payload)?;
-        #[cfg(test)]
-        review_run_after_canonical_role_read();
         if admitted.revision != self.exact_revision()? {
             return Err(ViewError::new(
                 RefusalCode::StaleCursor,

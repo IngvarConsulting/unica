@@ -4119,14 +4119,9 @@ pub(super) mod tests {
                 if dry_run { "poison-dry" } else { "poison-real" },
                 b"Procedure Base()\nEndProcedure\n",
             );
-            let service = fixture
-                .actor
-                .source_revision_service(&fixture.binding)
-                .unwrap();
             let source_before = snapshot_staged_code_tree(&fixture.source);
             let cache = fixture.root.join(".build/unica");
             let cache_before = snapshot_staged_code_tree(&cache);
-            let machine_before = service.machine_state_for_test();
             let admitted = fixture
                 .actor
                 .admit_apply(
@@ -4159,7 +4154,6 @@ pub(super) mod tests {
             assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
             assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
             assert_eq!(snapshot_staged_code_tree(&cache), cache_before);
-            assert_eq!(service.machine_state_for_test(), machine_before);
             assert!(!cache.join("state.json").exists());
             fixture.cleanup();
         }

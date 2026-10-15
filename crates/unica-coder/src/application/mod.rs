@@ -2712,20 +2712,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             },
         },
         ToolSpec {
-            name: "unica.subsystem.compile",
-            description: "Compile subsystem XML from JSON DSL.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for(
-                "subsystem-compile",
-                Some(DomainEventKind::SubsystemChanged),
-            ),
-            handler: ToolHandler::NativeOperation {
-                operation: "subsystem-compile",
-                event: Some(DomainEventKind::SubsystemChanged),
-            },
-        },
-        ToolSpec {
             name: "unica.subsystem.edit",
             description: "Edit subsystem XML content and hierarchy.",
             execution: ToolExecution::Mutation,
@@ -2763,39 +2749,6 @@ fn configuration_tools() -> Vec<ToolSpec> {
             handler: ToolHandler::NativeOperation {
                 operation: "mxl-info",
                 event: None,
-            },
-        },
-        ToolSpec {
-            name: "unica.mxl.decompile",
-            description: "Decompile spreadsheet Template.xml to JSON DSL.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("mxl-decompile", None),
-            handler: ToolHandler::NativeOperation {
-                operation: "mxl-decompile",
-                event: None,
-            },
-        },
-        ToolSpec {
-            name: "unica.mxl.compile",
-            description: "Compile spreadsheet Template.xml from JSON DSL.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("mxl-compile", Some(DomainEventKind::MxlChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "mxl-compile",
-                event: Some(DomainEventKind::MxlChanged),
-            },
-        },
-        ToolSpec {
-            name: "unica.role.compile",
-            description: "Compile role metadata and Rights.xml from JSON DSL.",
-            execution: ToolExecution::Mutation,
-            result_contract: ResultContract::ExternalStream,
-            cache_access: cache_access_for("role-compile", Some(DomainEventKind::RoleChanged)),
-            handler: ToolHandler::NativeOperation {
-                operation: "role-compile",
-                event: Some(DomainEventKind::RoleChanged),
             },
         },
         ToolSpec {
@@ -4296,13 +4249,7 @@ pub(crate) mod tests {
     fn xml_dsl_tools_route_to_parity_covered_native_handlers() {
         // `unica.cf.info` left the parity stand when it started answering with
         // typed data: there is no prose left to compare (ADR-0023).
-        const PARITY_COVERED_TOOLS: &[&str] = &[
-            "unica.form.compile",
-            "unica.subsystem.compile",
-            "unica.mxl.compile",
-            "unica.mxl.decompile",
-            "unica.role.compile",
-        ];
+        const PARITY_COVERED_TOOLS: &[&str] = &["unica.form.compile"];
         const REPO_OWNED_NATIVE_TOOLS: &[&str] = &[];
         // A tool that answers with typed data has no prose left for the parity
         // stand to compare, so it is covered by its own crate tests instead
@@ -7568,13 +7515,6 @@ pub(crate) mod tests {
                                 SupportGuardRequirement::Editable,
                                 "{operation} path mutation must require an editable owner"
                             );
-                            if operation == "subsystem-compile" {
-                                assert_eq!(
-                                    names,
-                                    &["Parent", "parent", "OutputDir", "outputDir"],
-                                    "subsystem compilation must guard Parent first and retain OutputDir as the root fallback"
-                                );
-                            }
                         }
                         SupportGuardPolicy::ObjectName { requirement } => {
                             assert!(
@@ -7600,10 +7540,7 @@ pub(crate) mod tests {
                 "form-compile",
                 "form-edit",
                 "interface-edit",
-                "mxl-compile",
-                "role-compile",
                 "role-edit",
-                "subsystem-compile",
                 "subsystem-edit",
             ],
             "guarded platform-XML mutations changed without updating the support contract"
@@ -7668,8 +7605,6 @@ pub(crate) mod tests {
 
     #[test]
     fn mutating_platform_xml_operations_declare_effective_format_paths() {
-        use operation_descriptors::FormatGuardPolicy;
-
         let expected = [
             ("code-patch", &[][..], "HandlerResolved"),
             ("role-edit", &[][..], "HandlerResolved"),
@@ -7712,24 +7647,9 @@ pub(crate) mod tests {
                 "DeclaredArgs",
             ),
             (
-                "subsystem-compile",
-                &["OutputDir", "outputDir", "Parent", "parent"][..],
-                "DeclaredArgs",
-            ),
-            (
                 "subsystem-edit",
                 &["SubsystemPath", "subsystemPath", "Path", "path"][..],
                 "HandlerResolved",
-            ),
-            (
-                "mxl-compile",
-                &["OutputPath", "outputPath"][..],
-                "DeclaredArgs",
-            ),
-            (
-                "role-compile",
-                &["OutputDir", "outputDir"][..],
-                "DeclaredArgs",
             ),
         ];
 
@@ -7780,13 +7700,6 @@ pub(crate) mod tests {
                 "{operation} must declare path arguments or explicit handler resolution"
             );
         }
-        assert_eq!(
-            operation_descriptors::native_operation_descriptor("mxl-compile")
-                .unwrap()
-                .format_guard,
-            FormatGuardPolicy::ExistingDump,
-            "mxl.compile must guard an existing owner while allowing standalone output"
-        );
     }
 
     #[test]
@@ -7898,51 +7811,6 @@ pub(crate) mod tests {
                 std::fs::remove_dir_all(root).unwrap();
             }
         }
-    }
-
-    #[test]
-    fn declared_existing_mxl_output_rejects_wrong_root_before_handler() {
-        let root = test_workspace_root("unica-mxl-existing-wrong-root");
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let definition = workspace.join("mxl.json");
-        std::fs::write(
-            &definition,
-            r#"{"columns":1,"areas":[{"name":"Area","rows":[{"cells":[{"col":1,"text":"value"}]}]}]}"#,
-        )
-        .unwrap();
-        let output = workspace.join("Template.xml");
-        std::fs::write(&output, b"<garbage/>").unwrap();
-        let before = std::fs::read(&output).unwrap();
-        let args = Map::from_iter([
-            (
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            ),
-            (
-                "JsonPath".to_string(),
-                Value::String(definition.display().to_string()),
-            ),
-            (
-                "OutputPath".to_string(),
-                Value::String(output.display().to_string()),
-            ),
-            ("dryRun".to_string(), Value::Bool(false)),
-        ]);
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.mxl.compile", &args)
-            .unwrap();
-
-        assert!(!result.ok, "{result:?}");
-        let diagnostic = &result.diagnostics.as_ref().unwrap()["formatCompatibility"];
-        assert_eq!(diagnostic["code"], "formatVersionInvalid", "{result:?}");
-        assert_eq!(diagnostic["compatibility"], "invalid", "{result:?}");
-        assert_eq!(std::fs::read(&output).unwrap(), before);
-        assert!(result.changes.is_empty(), "{result:?}");
-        assert!(result.artifacts.is_empty(), "{result:?}");
-        assert!(result.cache.events.is_empty(), "{result:?}");
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -8662,110 +8530,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn mxl_compile_blocks_write_inside_older_dump_with_structured_diagnostic() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-application-format-guard-mxl-old-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let src = root.join("src");
-        let output = src.join("Reports/Sales/Templates/Print/Ext/Template.xml");
-        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration/></MetaDataObject>"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &output,
-            br#"<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet"/>"#,
-        )
-        .unwrap();
-        let before = std::fs::read(&output).unwrap();
-        let json_path = root.join("mxl.json");
-        std::fs::write(
-            &json_path,
-            r#"{"columns":1,"areas":[{"name":"A","rows":[{"cells":[{"col":1,"text":"x"}]}]}]}"#,
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert("cwd".into(), Value::String(root.display().to_string()));
-        args.insert(
-            "JsonPath".into(),
-            Value::String(json_path.display().to_string()),
-        );
-        args.insert(
-            "OutputPath".into(),
-            Value::String(output.display().to_string()),
-        );
-        args.insert("dryRun".into(), Value::Bool(false));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.mxl.compile", &args)
-            .unwrap();
-
-        assert!(!result.ok, "{result:?}");
-        assert_eq!(
-            result.diagnostics.as_ref().unwrap()["formatCompatibility"]["actualFormat"],
-            "2.19"
-        );
-        assert_eq!(std::fs::read(&output).unwrap(), before);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn mxl_compile_allows_new_standalone_output() {
-        let root = std::env::temp_dir().join(format!(
-            "unica-application-format-guard-mxl-standalone-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let src = root.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(
-            root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration/></MetaDataObject>"#,
-        )
-        .unwrap();
-        let json_path = root.join("mxl.json");
-        std::fs::write(
-            &json_path,
-            r#"{"columns":1,"areas":[{"name":"A","rows":[{"cells":[{"col":1,"text":"x"}]}]}]}"#,
-        )
-        .unwrap();
-        let output = root.join("generated/standalone.xml");
-        let mut args = Map::new();
-        args.insert("cwd".into(), Value::String(root.display().to_string()));
-        args.insert(
-            "JsonPath".into(),
-            Value::String(json_path.display().to_string()),
-        );
-        args.insert(
-            "OutputPath".into(),
-            Value::String(output.display().to_string()),
-        );
-        args.insert("dryRun".into(), Value::Bool(false));
-
-        let result = UnicaApplication::new()
-            .call_tool("unica.mxl.compile", &args)
-            .unwrap();
-
-        assert!(result.ok, "{result:?}");
-        assert!(output.is_file());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
     fn source_format_sensitive_descriptors_name_source_paths() {
         for operation in ["cf-info", "form-edit", "role-info"] {
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
@@ -8778,14 +8542,10 @@ pub(crate) mod tests {
 
     #[test]
     fn native_descriptors_expose_required_adapter_arguments() {
-        let required_by_operation = [
-            ("role-compile", &["JsonPath", "OutputDir"][..]),
-            (
-                "role-edit",
-                &["sourceSet", "metadataPath", "operations"][..],
-            ),
-            ("mxl-compile", &["JsonPath", "OutputPath"][..]),
-        ];
+        let required_by_operation = [(
+            "role-edit",
+            &["sourceSet", "metadataPath", "operations"][..],
+        )];
 
         for (operation, expected_required) in required_by_operation {
             let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
@@ -9208,241 +8968,6 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn role_compile_registers_in_canonical_position_and_preserves_crlf() {
-        let root =
-            temp_scaffolded_configuration_workspace("unica-role-compile-canonical-registration");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let config_path = src.join("Configuration.xml");
-        write_scaffolded_configuration_fixture(
-            &config_path,
-            &[
-                "<Language>Русский</Language>",
-                "<SessionParameter>CurrentUser</SessionParameter>",
-                "<CommonTemplate>Shared</CommonTemplate>",
-            ],
-            "<!-- registrar-tail -->\n\n",
-        );
-        let config_before = std::fs::read(&config_path).unwrap();
-        let role_json = workspace.join("sample-user.json");
-        std::fs::write(
-            &role_json,
-            r#"{
-  "name": "SampleUser",
-  "synonym": "Sample user",
-  "objects": ["Catalog.Items: @view"]
-}"#,
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(true));
-        args.insert(
-            "JsonPath".to_string(),
-            Value::String(role_json.display().to_string()),
-        );
-        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-
-        let preview = UnicaApplication::new()
-            .call_tool("unica.role.compile", &args)
-            .unwrap();
-
-        assert!(preview.ok, "{:?}", preview.errors);
-        assert!(preview.summary.contains("dry run"));
-        assert!(preview
-            .changes
-            .iter()
-            .any(|change| change.contains("would create") && change.contains("SampleUser.xml")));
-        assert!(preview
-            .changes
-            .iter()
-            .any(|change| change.contains("would update") && change.contains("Configuration.xml")));
-        assert!(preview.stdout.unwrap_or_default().contains("@@ bytes"));
-        assert!(preview.artifacts.is_empty());
-        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
-        assert!(!src.join("Roles/SampleUser.xml").exists());
-
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        let result = UnicaApplication::new()
-            .call_tool("unica.role.compile", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-        let config = String::from_utf8(std::fs::read(&config_path).unwrap()).unwrap();
-        assert!(config.contains(concat!(
-            "\t\t\t<SessionParameter>CurrentUser</SessionParameter>\r\n",
-            "\t\t\t<Role>SampleUser</Role>\r\n",
-            "\t\t\t<CommonTemplate>Shared</CommonTemplate>\r\n"
-        )));
-        assert!(config.ends_with("<!-- registrar-tail -->\r\n\r\n"));
-        assert!(!config.replace("\r\n", "").contains('\n'));
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn role_compile_generates_distinct_non_placeholder_uuid_v4() {
-        let root = temp_meta_compile_workspace("unica-role-compile-uuid-v4");
-        let workspace = root.join("workspace");
-        let fixtures = workspace.join("fixtures");
-        std::fs::create_dir_all(&fixtures).unwrap();
-
-        let reader_json = fixtures.join("sample-reader.json");
-        std::fs::write(
-            &reader_json,
-            r#"{
-  "name": "SampleReader",
-  "synonym": "Sample reader",
-  "comment": "Synthetic repro",
-  "objects": ["Catalog.Items: @view"]
-}"#,
-        )
-        .unwrap();
-        let editor_json = fixtures.join("sample-editor.json");
-        std::fs::write(
-            &editor_json,
-            r#"{
-  "name": "SampleEditor",
-  "synonym": "Sample editor",
-  "comment": "Synthetic repro",
-  "objects": ["Catalog.Items: @view @edit"]
-}"#,
-        )
-        .unwrap();
-
-        for json_path in [&reader_json, &editor_json] {
-            let mut args = Map::new();
-            args.insert(
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            );
-            args.insert("dryRun".to_string(), Value::Bool(false));
-            args.insert(
-                "JsonPath".to_string(),
-                Value::String(json_path.display().to_string()),
-            );
-            args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-            let result = UnicaApplication::new()
-                .call_tool("unica.role.compile", &args)
-                .unwrap();
-
-            assert!(result.ok, "{:?}", result.errors);
-        }
-
-        let reader_xml =
-            std::fs::read_to_string(workspace.join("src/Roles/SampleReader.xml")).unwrap();
-        let editor_xml =
-            std::fs::read_to_string(workspace.join("src/Roles/SampleEditor.xml")).unwrap();
-        assert_valid_root_uuid(&reader_xml, "Role");
-        assert_valid_root_uuid(&editor_xml, "Role");
-        let reader_uuid = metadata_root_uuid(&reader_xml, "Role");
-        let editor_uuid = metadata_root_uuid(&editor_xml, "Role");
-        assert_ne!(reader_uuid, editor_uuid);
-        for uuid in [&reader_uuid, &editor_uuid] {
-            assert!(
-                !uuid.starts_with("00000000-0000-0000-"),
-                "role.compile must not generate placeholder UUID: {uuid}"
-            );
-            assert_eq!(
-                uuid.as_bytes().get(14),
-                Some(&b'4'),
-                "UUID must be v4: {uuid}"
-            );
-        }
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn role_compile_preserves_existing_uuid_when_regenerating_role() {
-        let root = temp_meta_compile_workspace("unica-role-compile-idempotent-uuid");
-        let workspace = root.join("workspace");
-        let fixtures = workspace.join("fixtures");
-        std::fs::create_dir_all(&fixtures).unwrap();
-
-        let role_json = fixtures.join("sample-reader.json");
-        std::fs::write(
-            &role_json,
-            r#"{
-  "name": "SampleReader",
-  "synonym": "Sample reader",
-  "comment": "Synthetic repro",
-  "objects": ["Catalog.Items: @view"]
-}"#,
-        )
-        .unwrap();
-
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "JsonPath".to_string(),
-            Value::String(role_json.display().to_string()),
-        );
-        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-        let result = UnicaApplication::new()
-            .call_tool("unica.role.compile", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-
-        let first_xml =
-            std::fs::read_to_string(workspace.join("src/Roles/SampleReader.xml")).unwrap();
-        let first_uuid = metadata_root_uuid(&first_xml, "Role");
-        let metadata_path = workspace.join("src/Roles/SampleReader.xml");
-        let rights_path = workspace.join("src/Roles/SampleReader/Ext/Rights.xml");
-        let config_path = workspace.join("src/Configuration.xml");
-        let metadata_before = std::fs::read(&metadata_path).unwrap();
-        let rights_before = std::fs::read(&rights_path).unwrap();
-        let config_before = std::fs::read(&config_path).unwrap();
-        std::fs::write(
-            &role_json,
-            r#"{
-  "name": "SampleReader",
-  "synonym": "Changed definition must not overwrite",
-  "comment": "Synthetic repro",
-  "objects": ["Catalog.Items: @view @edit"]
-}"#,
-        )
-        .unwrap();
-
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "JsonPath".to_string(),
-            Value::String(role_json.display().to_string()),
-        );
-        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-        let result = UnicaApplication::new()
-            .call_tool("unica.role.compile", &args)
-            .unwrap();
-
-        assert!(result.ok, "{:?}", result.errors);
-        assert!(result.changes.is_empty(), "{:?}", result.changes);
-        assert!(result.artifacts.is_empty(), "{:?}", result.artifacts);
-
-        let regenerated_xml =
-            std::fs::read_to_string(workspace.join("src/Roles/SampleReader.xml")).unwrap();
-        let regenerated_uuid = metadata_root_uuid(&regenerated_xml, "Role");
-        assert_eq!(first_uuid, regenerated_uuid);
-        assert_eq!(std::fs::read(&metadata_path).unwrap(), metadata_before);
-        assert_eq!(std::fs::read(&rights_path).unwrap(), rights_before);
-        assert_eq!(std::fs::read(&config_path).unwrap(), config_before);
-
-        let _ = std::fs::remove_dir_all(root);
-    }
-
     struct FixedOutcomePorts {
         outcome: AdapterOutcome,
         data: Option<Value>,
@@ -9770,111 +9295,6 @@ pub(crate) mod tests {
         root
     }
 
-    fn temp_meta_compile_workspace(prefix: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{nanos}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        std::fs::write(
-            src.join("Configuration.xml"),
-            support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-        )
-        .unwrap();
-        write_support_test_language(&src);
-        root
-    }
-
-    fn temp_scaffolded_configuration_workspace(prefix: &str) -> std::path::PathBuf {
-        let root = test_workspace_root(prefix);
-        let workspace = root.join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        std::fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let init = UnicaApplication::new()
-            .call_tool(
-                "unica.cf.init",
-                &Map::from_iter([
-                    (
-                        "cwd".to_string(),
-                        Value::String(workspace.display().to_string()),
-                    ),
-                    ("dryRun".to_string(), Value::Bool(false)),
-                    ("Name".to_string(), json!("Demo")),
-                    ("OutputDir".to_string(), json!("src")),
-                ]),
-            )
-            .expect("cf.init must route through the public application boundary");
-        assert!(init.ok, "{:?}", init.errors);
-        root
-    }
-
-    fn write_scaffolded_configuration_fixture(
-        config_path: &std::path::Path,
-        child_objects: &[&str],
-        trailer: &str,
-    ) -> Vec<u8> {
-        let mut config = std::fs::read_to_string(config_path).unwrap();
-        let start_marker = "\t\t<ChildObjects>\n";
-        let start = config.find(start_marker).unwrap();
-        let end_marker = "\t\t</ChildObjects>";
-        let end = config[start..].find(end_marker).unwrap() + start + end_marker.len();
-        let children = child_objects
-            .iter()
-            .map(|child| format!("\t\t\t{child}\n"))
-            .collect::<String>();
-        config.replace_range(start..end, &format!("{start_marker}{children}{end_marker}"));
-        if !trailer.is_empty() {
-            config = config.replacen(
-                "</MetaDataObject>",
-                &format!("</MetaDataObject>{trailer}"),
-                1,
-            );
-        }
-        let bytes = config
-            .replace("\r\n", "\n")
-            .replace('\n', "\r\n")
-            .into_bytes();
-        std::fs::write(config_path, &bytes).unwrap();
-        bytes
-    }
-
-    fn assert_valid_root_uuid(xml: &str, tag_name: &str) {
-        let uuid = metadata_root_uuid(xml, tag_name);
-        assert!(
-            uuid::Uuid::parse_str(&uuid).is_ok(),
-            "{tag_name} root uuid is invalid: {uuid}"
-        );
-    }
-
-    fn metadata_root_uuid(xml: &str, tag_name: &str) -> String {
-        let marker = format!("<{tag_name} uuid=\"");
-        let start = xml
-            .find(&marker)
-            .unwrap_or_else(|| panic!("missing root marker {marker}"))
-            + marker.len();
-        let end = xml[start..]
-            .find('"')
-            .unwrap_or_else(|| panic!("{tag_name} root uuid is not terminated"))
-            + start;
-        xml[start..end].to_string()
-    }
-
     fn support_test_configuration_xml(uuid: &str) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -9931,28 +9351,6 @@ pub(crate) mod tests {
     </Properties>
     <ChildObjects/>
   </Catalog>
-</MetaDataObject>"#
-        )
-    }
-
-    fn support_test_subsystem_xml(uuid: &str, name: &str) -> String {
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
-  <Subsystem uuid="{uuid}">
-    <Properties>
-      <Name>{name}</Name>
-      <Synonym/>
-      <Comment/>
-      <IncludeHelpInContents>true</IncludeHelpInContents>
-      <IncludeInCommandInterface>true</IncludeInCommandInterface>
-      <UseOneCommand>false</UseOneCommand>
-      <Explanation/>
-      <Picture/>
-      <Content/>
-    </Properties>
-    <ChildObjects/>
-  </Subsystem>
 </MetaDataObject>"#
         )
     }
@@ -10443,128 +9841,6 @@ pub(crate) mod tests {
         assert!(error.contains("platform_xml"), "{error}");
         assert!(!workspace.join("src/Form.xml").exists());
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    pub(crate) fn subsystem_compile_guards_locked_parent_before_both_planners() {
-        for dry_run in [false, true] {
-            let root = test_workspace_root(if dry_run {
-                "unica-subsystem-parent-guard-preview"
-            } else {
-                "unica-subsystem-parent-guard-apply"
-            });
-            let workspace = root.join("workspace");
-            let src = workspace.join("src");
-            let ext = src.join("Ext");
-            let subsystems = src.join("Subsystems");
-            std::fs::create_dir_all(&ext).unwrap();
-            std::fs::create_dir_all(&subsystems).unwrap();
-            std::fs::write(
-                workspace.join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-            )
-            .unwrap();
-            std::fs::write(
-                src.join("Configuration.xml"),
-                support_test_configuration_xml("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-            )
-            .unwrap();
-            let parent_path = subsystems.join("Parent.xml");
-            std::fs::write(
-                &parent_path,
-                support_test_subsystem_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "Parent"),
-            )
-            .unwrap();
-            std::fs::write(
-                ext.join("ParentConfigurations.bin"),
-                support_test_parent_configurations_bin(
-                    "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-                    "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-                    "cccccccc-cccc-cccc-cccc-cccccccccccc",
-                ),
-            )
-            .unwrap();
-            let before = std::fs::read(&parent_path).unwrap();
-            let args = json!({
-                "cwd": workspace,
-                "dryRun": dry_run,
-                "OutputDir": "src",
-                "Parent": "src/Subsystems/Parent.xml",
-                "Value": r#"{"name":"Child"}"#
-            })
-            .as_object()
-            .unwrap()
-            .clone();
-
-            let result = UnicaApplication::new()
-                .call_tool("unica.subsystem.compile", &args)
-                .unwrap();
-            let after = std::fs::read(&parent_path).unwrap();
-            let normalized_parent = normalized_path(&parent_path).display().to_string();
-            let child_exists = src.join("Subsystems/Parent/Subsystems/Child.xml").exists();
-            std::fs::remove_dir_all(root).unwrap();
-
-            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
-            assert_eq!(
-                result.summary,
-                if dry_run {
-                    "dry run: unica.subsystem.compile blocked by support guard"
-                } else {
-                    "unica.subsystem.compile blocked by support guard"
-                }
-            );
-            assert!(result.errors.join("\n").contains("на замке"), "{result:?}");
-            assert_eq!(result.artifacts, [normalized_parent]);
-            assert!(result.cache.events.is_empty(), "{result:?}");
-            assert_eq!(after, before, "dryRun={dry_run}");
-            assert!(!child_exists, "dryRun={dry_run}");
-        }
-    }
-
-    #[test]
-    fn subsystem_compile_retains_locked_configuration_fallback_without_parent() {
-        let config_uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
-        let (root, workspace, _bin_path) = support_test_workspace(
-            "unica-subsystem-root-guard",
-            support_test_parent_configurations_bin(
-                config_uuid,
-                config_uuid,
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            ),
-        );
-        let src = workspace.join("src");
-        let config_path = src.join("Configuration.xml");
-        let before = std::fs::read(&config_path).unwrap();
-        let mut args = json!({
-            "cwd": workspace,
-            "OutputDir": "src",
-            "Value": r#"{"name":"RootChild"}"#
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-        let mut results = Vec::new();
-
-        for dry_run in [false, true] {
-            args.insert("dryRun".to_string(), Value::Bool(dry_run));
-            let result = UnicaApplication::new()
-                .call_tool("unica.subsystem.compile", &args)
-                .unwrap();
-
-            assert!(!result.ok, "dryRun={dry_run}: {result:?}");
-            assert_eq!(
-                result.artifacts,
-                [normalized_path(&src).display().to_string()]
-            );
-            assert!(result.errors.join("\n").contains("на замке"), "{result:?}");
-            assert!(result.cache.events.is_empty(), "{result:?}");
-            assert_eq!(std::fs::read(&config_path).unwrap(), before);
-            assert!(!src.join("Subsystems/RootChild.xml").exists());
-            results.push(result);
-        }
-        assert_support_guard_block_parity(&results[0], &results[1]);
-
-        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -98,7 +98,6 @@ DOCUMENTED_READER_TOOL_NAMES = {
     "unica.documentation.search",
     "unica.form.info",
     "unica.meta.info",
-    "unica.mxl.decompile",
     "unica.mxl.info",
     "unica.role.info",
     "unica.subsystem.info",
@@ -263,109 +262,6 @@ SUCCESS_SCENARIOS = [
         expect_ok=True,
         compare_files=True,
     ),
-    ParityScenario(
-        name="subsystem-compile-basic",
-        tool="unica.subsystem.compile",
-        skill="subsystem-compile",
-        script="subsystem-compile.py",
-        arguments={
-            "DefinitionFile": "fixtures/subsystem-sales.json",
-            "OutputDir": "src/Subsystems",
-            "NoValidate": True,
-        },
-        fixtures=(FileFixture("subsystem-sales.json", "fixtures/subsystem-sales.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="mxl-compile-simple",
-        tool="unica.mxl.compile",
-        skill="mxl-compile",
-        script="mxl-compile.py",
-        arguments={
-            "JsonPath": "fixtures/mxl-simple.json",
-            "OutputPath": "templates/MXL.xml",
-        },
-        fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="mxl-decompile-simple-stdout",
-        tool="unica.mxl.decompile",
-        skill="mxl-decompile",
-        script="mxl-decompile.py",
-        arguments={
-            "TemplatePath": "templates/MXL.xml",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="mxl-compile",
-                script="mxl-compile.py",
-                arguments={
-                    "JsonPath": "fixtures/mxl-simple.json",
-                    "OutputPath": "templates/MXL.xml",
-                },
-            ),
-        ),
-        fixtures=(FileFixture("mxl-simple.json", "fixtures/mxl-simple.json"),),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-mxl-decompile-real-template-stdout",
-        tool="unica.mxl.decompile",
-        skill="mxl-decompile",
-        script="mxl-decompile.py",
-        arguments={
-            "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-        },
-        fixtures=(
-            FileFixture(
-                BSP_MXL_RECEIPT_FIXTURE,
-                "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            ),
-        ),
-        expect_ok=True,
-    ),
-    ParityScenario(
-        name="bsp-mxl-parity-roundtrip-real-template",
-        tool="unica.mxl.compile",
-        skill="mxl-compile",
-        script="mxl-compile.py",
-        arguments={
-            "JsonPath": "mxl-bsp.json",
-            "OutputPath": "roundtrip/Template.xml",
-        },
-        setup_steps=(
-            SetupStep(
-                skill="mxl-decompile",
-                script="mxl-decompile.py",
-                tool="unica.mxl.decompile",
-                arguments={
-                    "TemplatePath": "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-                },
-                stdout_path="mxl-bsp.json",
-            ),
-        ),
-        fixtures=(
-            FileFixture(
-                BSP_MXL_RECEIPT_FIXTURE,
-                "src/Reports/ParityReport/Templates/Receipt/Ext/Template.xml",
-            ),
-        ),
-        expect_ok=True,
-        compare_files=True,
-    ),
-    ParityScenario(
-        name="role-compile-reader",
-        tool="unica.role.compile",
-        skill="role-compile",
-        script="role-compile.py",
-        arguments={"JsonPath": "fixtures/role-reader.json", "OutputDir": "src/Roles"},
-        fixtures=(FileFixture("role-reader.json", "fixtures/role-reader.json"),),
-        expect_ok=True,
-        compare_files=True,
-    ),
 ]
 
 
@@ -378,14 +274,6 @@ MISSING_INPUT_SCENARIOS = [
     # on a missing file, the tool fails on an address it cannot prove, and those
     # are different contracts by construction. The typed refusal is covered by
     # `meta_info_reports_an_unknown_address_without_naming_a_path`.
-    ParityScenario(
-        "mxl-decompile-missing-template",
-        "unica.mxl.decompile",
-        "mxl-decompile",
-        "mxl-decompile.py",
-        {"TemplatePath": "missing/Template.xml"},
-        False,
-    ),
 ]
 
 SCENARIOS = tuple(
@@ -395,10 +283,6 @@ MIN_NATIVE_PARITY_COVERAGE = 1.0
 
 NATIVE_PARITY_TOOLS = {
     "unica.form.compile",
-    "unica.subsystem.compile",
-    "unica.mxl.compile",
-    "unica.mxl.decompile",
-    "unica.role.compile",
 }
 
 MUTATING_FORM_PARITY_TOOLS = {
@@ -433,19 +317,6 @@ TYPED_RESULT_TOOLS = {
 
 EXPECTED_TOOLS = {
     "unica.form.compile",
-    "unica.subsystem.compile",
-    "unica.mxl.compile",
-    "unica.mxl.decompile",
-    "unica.role.compile",
-}
-
-BSP_PARITY_REQUIRED_TOOLS = {
-    "unica.mxl.decompile",
-    "unica.mxl.compile",
-}
-
-BSP_MUTATING_REQUIRED_TOOLS = {
-    "unica.mxl.compile",
 }
 
 UUID_RE = re.compile(
@@ -581,20 +452,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
 
         self.assertGreater(len(russian_text("Synonym")), 38)
         self.assertLessEqual(len(russian_text("ListPresentation")), 38)
-
-    def test_bsp_fixture_parity_covers_real_world_read_and_edit_tools(self) -> None:
-        for tool in sorted(BSP_PARITY_REQUIRED_TOOLS):
-            with self.subTest(tool=tool):
-                scenarios = [
-                    scenario
-                    for scenario in SCENARIOS
-                    if scenario.name.startswith("bsp-")
-                    and scenario.tool == tool
-                    and scenario.expect_ok
-                ]
-                self.assertGreater(len(scenarios), 0)
-                if tool in BSP_MUTATING_REQUIRED_TOOLS:
-                    self.assertTrue(any(scenario.compare_files for scenario in scenarios))
 
     def test_event_subscription_fixture_exports_its_declared_handler(self) -> None:
         with tempfile.TemporaryDirectory(prefix="unica-event-handler-fixture-") as temp:
@@ -1664,7 +1521,6 @@ LOGICAL_READER_TARGETS: dict[str, dict[str, Any]] = {
     "unica.dcs.validate": {"address": "Report.ParityReport.Template.ParityDcs"},
     "unica.mxl.info": {"address": "Report.ParityReport.Template.ParityMxl"},
     "unica.mxl.validate": {"address": "Report.ParityReport.Template.ParityMxl"},
-    "unica.mxl.decompile": {"address": "Report.ParityReport.Template.ParityMxl"},
     "unica.subsystem.info": {"address": "Subsystem.ParitySubsystem"},
     "unica.subsystem.validate": {"address": "Subsystem.ParitySubsystem"},
     "unica.cf.validate": {"address": None},
@@ -1888,7 +1744,7 @@ EndProcedure
                 workspace / reader_content_path(raw, "Form.xml"),
             )
             continue
-        if tool_name in {"unica.mxl.info", "unica.mxl.decompile"}:
+        if tool_name == "unica.mxl.info":
             if "SrcDir" in arguments:
                 arguments.pop("SrcDir")
                 raw = f"reader-fixtures/mxl/{example.line}/Ext/Template.xml"
