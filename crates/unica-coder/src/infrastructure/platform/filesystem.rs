@@ -753,15 +753,26 @@ impl RetainedDirectoryCapability {
         filesystem_case_sensitive_for_directory(&self.retained.directory)
     }
 
-    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+    /// Проверяет, указывает ли имя на удерживаемый каталог.
+    ///
+    /// `false` означает только завершённое сравнение двух разных физических
+    /// идентичностей. Ошибка открытия или чтения метаданных остаётся `Err`,
+    /// потому что по ней нельзя заключать, что имя было подменено.
+    pub(crate) fn named_identity_matches(&self) -> io::Result<bool> {
         let rebound = if let Some(parent) = &self.parent {
-            parent.directory.validate_named_identity()?;
+            if !parent.directory.named_identity_matches()? {
+                return Ok(false);
+            }
             open_directory_child_nofollow(&parent.directory.retained.directory, &parent.name)?
         } else {
             open_absolute_directory_path_nofollow(&self.path)?
         };
         let rebound_identity = file_identity(&rebound)?;
-        if rebound_identity != self.retained.identity {
+        Ok(rebound_identity == self.retained.identity)
+    }
+
+    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+        if !self.named_identity_matches()? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "named directory identity changed after capability admission",

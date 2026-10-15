@@ -10,6 +10,7 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::saved_apply_large_retained_inputs_can_be_saved_and_executed
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_more_than_256_plans_keep_earlier_tokens_without_writes
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_eight_other_workspace_profiles_and_replays_exactly
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_temporary_named_root_validation_failure
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_plan_survives_former_three_hundred_second_expiry
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_plan_survives_former_six_hundred_second_actor_idle_window
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_refusal_replays_after_former_actor_idle_window_without_replanning
