@@ -1294,7 +1294,8 @@ async function showPreview(nodeAt, entry) {
     ? `<p class="note" id="draftNote">${esc(answer.note)} <span class="cnt">${esc(answer.contractAt || "")}</span></p>`
     : `<p class="yes" id="draftNote">черновик собран по контракту <span class="cnt">${esc(answer.contractAt || "")}</span></p>`;
   if (answer.validation && answer.validation.length) html += `<p class="note bad">черновик не проходит схему контракта: ${esc(answer.validation.join("; "))}</p>`;
-  html += `<textarea id="draft" spellcheck="false">${esc(pretty(answer.draft))}</textarea>
+  const draftText = pretty(answer.draft);
+  html += `<textarea id="draft" spellcheck="false" rows="${Math.min(32, draftText.split("\n").length + 1)}">${esc(draftText)}</textarea>
     <p><button class="primary" id="runPreview">Построить план</button> <button id="draftToTool">в форму apply</button></p><div id="previewOut"></div>`;
   detail.innerHTML = html;
   $("draftToTool").onclick = () => {
@@ -1444,6 +1445,7 @@ function renderTools(catalog, tool, args) {
   const initial = args === undefined ? toolPrefill(tool) : args;
   fields.querySelectorAll("[data-field]").forEach((input) => setField(input, initial[input.dataset.field]));
   $("toolArgs").value = pretty(initial);
+  $("toolArgs").rows = Math.min(24, $("toolArgs").value.split("\n").length + 1);
   const sync = () => {
     const {args: built, errors} = readFields(fields);
     // Поля вне формы (например, пришедшие из `next`) сохраняются.
