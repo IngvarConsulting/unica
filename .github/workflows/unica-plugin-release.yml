@@ -158,7 +158,7 @@ jobs:
       - run: python scripts/ci/check-version-contract.py
       - run: python -m pip install -r tests/ci/requirements.txt
       # Форматирование от цели сборки не зависит — одного раннера хватает.
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable
           components: rustfmt
@@ -167,7 +167,7 @@ jobs:
       # уходят в Code Scanning, где видны по правилу и строке, и разбираются
       # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные
       # уязвимости действий.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: zizmor@1.30.0
       - env:
@@ -176,7 +176,7 @@ jobs:
       # Токен pull request из форка писать в Code Scanning не вправе; своим
       # веткам и push загрузка доступна.
       - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: zizmor.sarif
           category: zizmor
@@ -215,7 +215,7 @@ jobs:
       # План выгружается до тестов, как у Rust: джоба, умершая на середине
       # набора, оставляет состав, и недошедшие тесты попадут в отчёт `skipped`.
       - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --plan-only --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plan-python-${{ matrix.slug }}
           path: .build/results
@@ -226,7 +226,7 @@ jobs:
       - run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python --suite "$SUITE" --only-size "$LANE" --results .build/results --runner ubuntu-latest --line "$RUN_LINE"
       # Результаты едут артефактом и при красном прогоне: ради них он и шёл.
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: results-python-${{ matrix.slug }}
           path: .build/results
@@ -290,7 +290,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable
           components: clippy
@@ -315,14 +315,14 @@ jobs:
       # каждом раннере матрицы, своим шагом до тестов. Находки едут в Code
       # Scanning, а `-D warnings` по-прежнему красит джобу. Версии закреплены:
       # исполнители — часть контракта прогона.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-nextest@0.9.143,clippy-sarif@0.8.0,sarif-fmt@0.8.0
       # Подпись и план выгружаются раньше линта и тестов: раннер, упавший на
       # clippy или сборке, оставляет подпись, и недошедшие тесты попадут в
       # отчёт как `skipped`, а не исчезнут из него.
       - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --plan-only --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: plan-rust-${{ matrix.runner }}
           # План с подписью: сайт сопоставляет его с результатами по линии и раннеру.
@@ -334,13 +334,13 @@ jobs:
           cargo clippy --workspace --all-targets --all-features --message-format=json -- -D warnings \
             | clippy-sarif | tee clippy.sarif | sarif-fmt
       - if: always() && hashFiles('clippy.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: clippy.sarif
           category: clippy-${{ matrix.runner }}
       - run: python3 scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust --results .build/results --runner "$MATRIX_RUNNER" --line "$RUN_LINE"
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: results-rust-${{ matrix.runner }}
           path: .build/results
@@ -387,7 +387,7 @@ jobs:
         if: matrix.target == 'win-x64'
         run: python -m unittest tests.ci.test_smoke_unica_bootstrap
       - if: matrix.target == 'win-x64'
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           # package.json здесь нет: кэшу пакетов нечего хранить, а в релизном
@@ -401,7 +401,7 @@ jobs:
           npm install --global @openai/codex@0.145.0-alpha.18
           test "$(codex --version)" = "codex-cli 0.145.0-alpha.18"
       - id: rust-toolchain
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
           toolchain: stable
       # Сборка тега читает только кэш, записанный прогонами main; pull request
@@ -622,7 +622,7 @@ jobs:
       # паттерном публикация выпуска забирает архивы ядра, и совпадать с ним
       # должны только они (#701).
       - name: Upload runtime metadata
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-metadata-${{ matrix.target }}
           # Разрез поставки: по архиву на артефакт, и у каждого свои
@@ -631,21 +631,21 @@ jobs:
           if-no-files-found: error
           retention-days: 1
       - name: Upload runtime verification evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-asset-verification-${{ matrix.target }}
           path: .build/runtime-assets/${{ matrix.target }}/asset-verification-${{ matrix.target }}.json
           if-no-files-found: error
           retention-days: 1
       - name: Upload bootstrap payload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-bootstrap-${{ matrix.target }}
           path: .build/bootstrap-artifacts/${{ matrix.target }}
           if-no-files-found: error
           retention-days: 1
       - name: Upload P0 wire evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-wire-${{ matrix.target }}
           path: .build/p0-wire
@@ -653,7 +653,7 @@ jobs:
           retention-days: 1
       - name: Upload required runtime archive
         if: ${{ matrix.target == 'linux-x64' || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-runtime-${{ matrix.target }}
           path: .build/runtime-assets/${{ matrix.target }}/*-runtime-${{ matrix.target }}.tar.gz
@@ -670,7 +670,7 @@ jobs:
           --artifact rlm-tools-bsl
       - name: Upload BSP assessment engine
         if: matrix.target == 'linux-x64'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-assessment-engine-linux-x64
           # Zipped workflow artifacts normalize files to 0644. The inner tar
@@ -705,12 +705,12 @@ jobs:
           set -euo pipefail
           version="$(python -c 'import json; print(json.load(open("plugins/unica/.codex-plugin/plugin.json"))["version"])')"
           echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: unica-metadata-*
           path: .build/runtime-metadata
           merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: unica-bootstrap-*
           path: .build/bootstrap-root
@@ -742,7 +742,7 @@ jobs:
           test "$(claude --version | cut -d' ' -f1)" = "$CLAUDE_CLI_VERSION"
           claude plugin validate dist/thin/marketplace/plugins/unica
           claude plugin validate dist/thin/marketplace
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-thin-marketplace
           path: dist/thin/marketplace
@@ -750,7 +750,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-p0-package-evidence
           path: dist/thin/p0-package-evidence.json
@@ -780,12 +780,12 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: unica-wire-*
           path: .build/p0-wire
           merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: unica-asset-verification-*
           path: .build/p0-assets
@@ -800,11 +800,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh run download "$GITHUB_RUN_ID" --name unica-thin-marketplace --dir .build/p0-marketplace
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unica-p0-package-evidence
           path: .build/p0-package
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unica-release-assessment
           path: .build/release-assessment
@@ -826,7 +826,7 @@ jobs:
             --source-commit "$source_commit" \
             --release-tag "v$version" \
             --out-dir dist/p0-proof
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-p0-proof
           path: dist/p0-proof
@@ -861,7 +861,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unica-thin-marketplace
           path: .build/thin
@@ -900,11 +900,11 @@ jobs:
           set -euo pipefail
           version="$(python -c 'import json; print(json.load(open("plugins/unica/.codex-plugin/plugin.json"))["version"])')"
           echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unica-runtime-linux-x64
           path: dist/runtime
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unica-assessment-engine-linux-x64
           path: .build/assessment-engine
@@ -918,7 +918,7 @@ jobs:
           --bsp-ref 3.2.1.446
           --release-tag "$RELEASE_TAG"
           --github-run-id "${{ github.run_id }}"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: unica-release-assessment
@@ -944,12 +944,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: unica-runtime-*
           path: dist/runtime
           merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: unica-metadata-*
           path: dist/metadata
@@ -1013,7 +1013,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unica-thin-marketplace
           path: .build/thin
@@ -1066,13 +1066,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$GITHUB_REF_NAME" --pattern 'unica-runtime-*' --dir published
       - run: python scripts/ci/verify-release-assets.py --asset-dir published --source re-downloaded --report published/asset-verification-re-downloaded.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-published-asset-verification
           path: published/asset-verification-re-downloaded.json
           if-no-files-found: error
           retention-days: 14
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unica-thin-marketplace
           path: .build/thin
