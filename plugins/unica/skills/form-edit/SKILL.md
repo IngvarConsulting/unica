@@ -36,10 +36,10 @@ allowed-tools:
 
 | Адрес `at` | Операции |
 |---|---|
-| `<набор>:<Вид>.<Имя>.Form.<Форма>` | `element.add` в корень формы, `formAttribute.add`, `formCommand.add`, `form.remove` |
-| `….Form.<Форма>.Item.<Группа>[.Item.<Вложенная>…]` — контейнер | `element.add` внутрь контейнера, `element.remove` самого контейнера |
-| `….Item.<Поле>` — поле, декорация, кнопка | `element.remove` |
-| `….Item.<ФормаКоманднаяПанель>`, `….Item.<Таблица>.Item.<ТаблицаКоманднаяПанель>` | `element.add` кнопки в автоматическую командную панель |
+| `<набор>:<Вид>.<Имя>.Form.<Форма>` | `item.add` в корень формы, `formAttribute.add`, `formCommand.add`, `form.remove` |
+| `….Form.<Форма>.Item.<Группа>[.Item.<Вложенная>…]` — контейнер | `item.add` внутрь контейнера, `item.remove` самого контейнера |
+| `….Item.<Поле>` — поле, декорация, кнопка | `item.remove` |
+| `….Item.<ФормаКоманднаяПанель>`, `….Item.<Таблица>.Item.<ТаблицаКоманднаяПанель>` | `item.add` кнопки в автоматическую командную панель |
 | `….Form.<Форма>[.Item.<Элемент>…].Event.<Событие>` | `event.bind`, `event.implement` |
 | `<набор>:<Вид>.<Имя>` | `form.add`, `form.set` |
 
@@ -53,21 +53,21 @@ allowed-tools:
 ### Закрытый контракт операции
 
 Подробный контракт операции читается адресом `<узел>.Can.<операция>`,
-например `main:Catalog.Номенклатура.Form.ФормаЭлемента.Can.element.add`.
+например `main:Catalog.Номенклатура.Form.ФормаЭлемента.Can.item.add`.
 Он перечисляет ровно те ключи, которые записывает писатель операции.
 Ключ вне контракта, значение не того типа или вне перечисления получают
 `bad_value` с точным путём (`ops[0].args.items[0].backColor`) до записи:
 операция не теряет его молча.
 
-`element.add` добавляет один элемент без вложенного содержимого. Ключи
+`item.add` добавляет один элемент без вложенного содержимого. Ключи
 элемента зависят от его `type`: например, `backColor` и `font` пишет только
 кнопка, а `title` не пишут таблица и поле надписи. Вложенный элемент
-добавляется отдельным `element.add` на адресе контейнера
+добавляется отдельным `item.add` на адресе контейнера
 (`….Item.<Группа>`), обработчик — `event.bind` на адресе события
 (`….Item.<Элемент>.Event.<Событие>`) с явным именем. Ключи `children`,
 `columns`, `elements`, `commandBar`, `autoCmdBar`, `autoCommandBar`,
 `contextMenu`, `extendedTooltip`, `html`, `on` и `handlers` получают
-`bad_value`, а `next` ведёт к контракту `element.add`. Командная панель
+`bad_value`, а `next` ведёт к контракту `item.add`. Командная панель
 принимает только кнопки: её контракт публикует один вид `Button`. Группа и поле в ней добавляются в одном вызове
 двумя операциями: вторая адресует группу через `args.at`.
 
@@ -80,10 +80,16 @@ allowed-tools:
 и получают `bad_value`.
 
 Прежние аргументы, которые называли элемент или событие, сняты:
-`items[].into` у `element.add`, `items[].name`, элемент-строка `items[]`
-и `values.name` у `element.remove`, `values.element` и `values.event`
+`items[].into` у `item.add`, `items[].name`, элемент-строка `items[]`
+и `values.name` у `item.remove`, `values.element` и `values.event`
 у `event.bind`. Вызов с ними получает
 `bad_value`, а `next` ведёт к адресу узла, который называло значение.
+Прежние имена `element.add` и `element.remove` тоже сняты: вызов получает
+`bad_value` без записи. Если `item.add` или `item.remove` исполнима на
+адресе вызова или на его предке, `next` ведёт к её контракту
+`<узел>.Can.item.*` на ближайшем таком узле. Если такого узла нет —
+например, `element.remove` на самой форме или на автоматической командной
+панели, — отказ называет форму адреса, а `next` ведёт к словарю узла.
 
 `formCommand.add` добавляет команды формы. Элемент `items[]` принимает
 `name`, `title`, `tooltip`, `action`, `shortcut`, `picture`,
@@ -92,7 +98,7 @@ allowed-tools:
 
 ## MCP вызов
 
-Поле в группу шапки — `element.add` на адресе группы. Сосед `after`
+Поле в группу шапки — `item.add` на адресе группы. Сосед `after`
 называет элемент того же контейнера, после которого встаёт новый:
 
 ```json
@@ -105,7 +111,7 @@ allowed-tools:
       "at": "main:Catalog.Номенклатура.Form.ФормаЭлемента.Item.ГруппаШапка",
       "ops": [
         {
-          "op": "element.add",
+          "op": "item.add",
           "args": {
             "items": [
               {"name": "Артикул", "type": "InputField", "path": "Объект.Артикул", "after": "Код"}
@@ -150,13 +156,13 @@ allowed-tools:
 
 ### Удаление элементов
 
-`element.remove` удаляет элемент, названный адресом
+`item.remove` удаляет элемент, названный адресом
 `…Form.<Форма>.Item.<Группа>.Item.<Имя>`; аргументов у операции нет:
 
 ```json
 {
   "at": "main:Catalog.Номенклатура.Form.ФормаЭлемента.Item.Товары",
-  "ops": [{"op": "element.remove"}]
+  "ops": [{"op": "item.remove"}]
 }
 ```
 
@@ -189,7 +195,7 @@ Preview и apply возвращают одинаковую типизирова�
 
 ### Типы элементов
 
-В `element.add` каждый `items[]` задаёт `name` и `type`; без `type`
+В `item.add` каждый `items[]` задаёт `name` и `type`; без `type`
 создаётся поле ввода. Словарь создаёт одиннадцать видов. Кроме ключей
 таблицы, каждый вид принимает `after` и флаги `visible`, `hidden`,
 `userVisible` (только `false`), `enabled`, `disabled`, `readOnly`.
@@ -211,7 +217,7 @@ Preview и apply возвращают одинаковую типизирова�
 Перечисления (`titleLocation`, `orientation`, `representation` и другие)
 принимают значения платформы с заглавной буквы: `None`, `Horizontal`,
 `GroupBox`. Полный список ключей и значений — в контракте
-`<адрес>.Can.element.add`. Ключи динамического списка (`autoRefresh`,
+`<адрес>.Can.item.add`. Ключи динамического списка (`autoRefresh`,
 `autoRefreshPeriod`, `choiceFoldersAndItems`, `restoreCurrentRow`,
 `showRoot`, `allowRootChoice`, `updateOnDataChange`,
 `allowGettingCurrentRowURL`) пишутся только с `_dynList: true`; кнопка
@@ -233,7 +239,7 @@ HTML-поле привязывается через `path` к строковом
 ```json
 {
   "at": "main:Catalog.ТехническиеПроекты.Form.ФормаЭлемента",
-  "ops": [{"op": "element.add", "args": {"items": [{
+  "ops": [{"op": "item.add", "args": {"items": [{
     "name": "ПолеОписания", "type": "HTMLDocumentField",
     "path": "СтраницаРедактораОписания", "titleLocation": "None",
     "width": 1, "height": 1, "autoMaxWidth": false, "skipOnInput": true
@@ -247,10 +253,10 @@ HTML-поле привязывается через `path` к строковом
 Булевы параметры принимают JSON boolean. События — только `OnClick` и
 `DocumentComplete`: привяжите их `event.bind` по адресу события
 `…Form.ФормаЭлемента.Item.ПолеОписания.Event.DocumentComplete` с явным
-именем обработчика, в том же вызове после `element.add` или позже.
+именем обработчика, в том же вызове после `item.add` или позже.
 DOM-свойство `Document` относится к выполнению 1С и не записывается в XML.
 
-Чтобы поместить HTML-поле в группу, вызовите `element.add` на адресе группы;
+Чтобы поместить HTML-поле в группу, вызовите `item.add` на адресе группы;
 `after` задаёт соседний элемент. Полученную форму
 прочитайте через `unica.view` и проверьте через `unica.check`.
 
