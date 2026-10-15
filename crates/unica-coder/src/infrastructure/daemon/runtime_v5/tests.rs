@@ -6470,6 +6470,194 @@ fn accumulated_retirement_store(hooks: Arc<dyn V5RuntimeHooks>) -> AccumulatedRe
     }
 }
 
+/// Reopening invalidates the previous owner's permission before any new one
+/// is issued. A failed deletion keeps the exact pending link and both indexes.
+#[test]
+fn reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete() {
+    let root = tempfile::tempdir().expect("temporary retirement state");
+    let state_root = std::fs::canonicalize(root.path()).unwrap();
+    let identity = CoreIdentity::production_v5();
+    let clock = Arc::new(ManualEpochClock::new(1_000));
+    let config = DaemonServerConfig::new(
+        state_root.clone(),
+        identity.clone(),
+        Duration::from_millis(50),
+    )
+    .with_v5_epoch_clock_for_test(clock.clone());
+    let state = DaemonStateDirectory::open(&state_root, &identity).unwrap();
+    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
+    let key = materialize_completed_task_key(
+        &runtime,
+        &identity,
+        &clock,
+        "target",
+        1_000,
+        2_000,
+        "target result",
+    );
+    let neighbor = materialize_completed_task(
+        &runtime,
+        &identity,
+        &clock,
+        "neighbor",
+        1_100,
+        2_100,
+        "neighbor result",
+    );
+    clock.set(RETIREMENT_TEST_OBSERVED_EPOCH_MS);
+    let deadline = || Instant::now() + Duration::from_secs(5);
+    let provider_deadline = || crate::domain::code_intelligence::ProviderDeadline::new(deadline());
+    let terminal = match retirement_link(&runtime, key.reserved_task_id()).unwrap() {
+        TaskLifecycleLinkRecord::TaskTerminalBound(terminal) => terminal,
+        other => panic!("expected terminal link, got {other:?}"),
+    };
+    let pending = runtime
+        .task_projection
+        .lifecycle_links
+        .begin_task_retirement(&terminal, 64, 64, provider_deadline())
+        .unwrap();
+    let old = runtime
+        .task_projection
+        .authorize_task_retirement(&pending, deadline())
+        .unwrap_or_else(|failure| panic!("authorize old owner: {}", failure.error));
+    drop(runtime);
+
+    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
+    let target_before = runtime
+        .task_projection
+        .task_store
+        .get(key.reserved_task_id(), provider_deadline())
+        .unwrap();
+    let neighbor_before = runtime
+        .task_projection
+        .task_store
+        .get(neighbor, provider_deadline())
+        .unwrap();
+    let neighbor_link = retirement_link(&runtime, neighbor);
+    let receipts_before = runtime.receipt_ledger.generation(deadline()).unwrap();
+    let links_before = runtime
+        .task_projection
+        .lifecycle_links
+        .memory_catalog_for_test();
+    let disk_before = crate::test_support::tree_snapshot(state.path());
+    match runtime.task_projection.delete_terminal_authorized(
+        &old,
+        clock.now_epoch_millis(),
+        deadline(),
+    ) {
+        Err(failure) => assert!(matches!(
+            failure.error,
+            ReceiptLedgerError::Corrupt("stale or malformed process retirement capability")
+        )),
+        Ok(_) => panic!("previous owner's authorization was accepted"),
+    }
+    assert_eq!(
+        runtime
+            .task_projection
+            .task_store
+            .get(key.reserved_task_id(), provider_deadline())
+            .unwrap(),
+        target_before
+    );
+    assert_eq!(
+        runtime
+            .task_projection
+            .task_store
+            .get(neighbor, provider_deadline())
+            .unwrap(),
+        neighbor_before
+    );
+    assert_eq!(
+        runtime.receipt_ledger.generation(deadline()).unwrap(),
+        receipts_before
+    );
+    assert_eq!(
+        runtime
+            .task_projection
+            .lifecycle_links
+            .memory_catalog_for_test(),
+        links_before
+    );
+    assert_eq!(
+        crate::test_support::tree_snapshot(state.path()),
+        disk_before
+    );
+
+    let fresh = runtime
+        .task_projection
+        .authorize_task_retirement(&pending, deadline())
+        .unwrap_or_else(|failure| panic!("authorize reopened owner: {}", failure.error));
+    runtime
+        .task_projection
+        .task_store
+        .inject_next_publication_failure(PublicationFailure::AfterDeleteBeforeSync);
+    match runtime.task_projection.delete_terminal_authorized(
+        &fresh,
+        clock.now_epoch_millis(),
+        deadline(),
+    ) {
+        Err(failure) => assert!(matches!(
+            failure.error,
+            ReceiptLedgerError::CommitUncertain { .. }
+        )),
+        Ok(_) => panic!("injected uncertain deletion succeeded"),
+    }
+    assert!(!retirement_task_present(&runtime, key.reserved_task_id()));
+    assert_eq!(
+        runtime
+            .task_projection
+            .lifecycle_links
+            .memory_catalog_for_test(),
+        links_before
+    );
+    assert_eq!(
+        runtime.receipt_ledger.generation(deadline()).unwrap(),
+        receipts_before
+    );
+    assert_eq!(
+        runtime
+            .task_projection
+            .task_store
+            .get(neighbor, provider_deadline())
+            .unwrap(),
+        neighbor_before
+    );
+
+    let outcome = runtime
+        .task_projection
+        .delete_terminal_authorized(&fresh, clock.now_epoch_millis(), deadline())
+        .unwrap_or_else(|failure| panic!("confirm absent target: {}", failure.error));
+    assert!(matches!(outcome, V5DeleteTerminalOutcome::AlreadyAbsent(_)));
+    runtime
+        .task_projection
+        .finalize_task_retirement(&fresh, deadline())
+        .unwrap_or_else(|failure| panic!("finalize confirmed deletion: {}", failure.error));
+    assert!(retirement_link(&runtime, key.reserved_task_id()).is_none());
+    assert_eq!(retirement_link(&runtime, neighbor), neighbor_link);
+    assert_eq!(
+        runtime
+            .task_projection
+            .task_store
+            .get(neighbor, provider_deadline())
+            .unwrap(),
+        neighbor_before
+    );
+    drop(runtime);
+
+    let runtime = V5ReceiptRuntime::open(&state, &config).unwrap();
+    assert!(!retirement_task_present(&runtime, key.reserved_task_id()));
+    assert!(retirement_link(&runtime, key.reserved_task_id()).is_none());
+    assert_eq!(retirement_link(&runtime, neighbor), neighbor_link);
+    assert_eq!(
+        runtime
+            .task_projection
+            .task_store
+            .get(neighbor, provider_deadline())
+            .unwrap(),
+        neighbor_before
+    );
+}
+
 /// #863: a record whose retirement fails at `step` stays with its committed
 /// state; the live Task is answered, the other expired records are retired,
 /// the failed one is not retried on every poll and is retired after its pause.
