@@ -25,7 +25,7 @@
         "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
         "ops": [
           {
-            "op": "element.add",
+            "op": "item.add",
             "args": {
               "items": [
                 {
@@ -56,7 +56,7 @@
           "eq": "$capture.before"
         }
       ],
-      "refusal": "bad_value: ops[0].args.items[0].height: unknown argument; `element.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add`"
+      "refusal": "bad_value: ops[0].args.items[0].height: unknown argument; `item.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add`"
     },
     {
       "tool": "unica.apply",
@@ -64,7 +64,7 @@
         "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
         "ops": [
           {
-            "op": "element.add",
+            "op": "item.add",
             "args": {
               "items": [
                 {
@@ -95,7 +95,7 @@
           "eq": "$capture.before"
         }
       ],
-      "refusal": "bad_value: ops[0].args.items[0].searchStringLocation: unknown argument; `element.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.eleme"
+      "refusal": "bad_value: ops[0].args.items[0].searchStringLocation: unknown argument; `item.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
     },
     {
       "tool": "unica.apply",
@@ -103,7 +103,7 @@
         "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
         "ops": [
           {
-            "op": "element.add",
+            "op": "item.add",
             "args": {
               "items": [
                 {
@@ -139,7 +139,7 @@
           "eq": "$capture.before"
         }
       ],
-      "refusal": "bad_value: element.add adds one element without nested content; drop `columns` and add each nested element with a separate element.add at `main:Catalog.Валюты.Form.ФормаЭл"
+      "refusal": "bad_value: item.add adds one element without nested content; drop `columns` and add each nested element with a separate item.add at `main:Catalog.Валюты.Form.ФормаЭлемента"
     },
     {
       "tool": "unica.apply",
@@ -147,7 +147,7 @@
         "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
         "ops": [
           {
-            "op": "element.add",
+            "op": "item.add",
             "args": {
               "items": [
                 {
@@ -160,7 +160,7 @@
             }
           },
           {
-            "op": "element.add",
+            "op": "item.add",
             "args": {
               "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ReportTable",
               "items": [
