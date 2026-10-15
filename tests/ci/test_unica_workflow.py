@@ -197,8 +197,35 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("unlabeled", on["pull_request"]["types"])
         self.assertNotIn("paths", on["pull_request"])
         self.assertNotIn("paths", on["push"])
-        self.assertEqual(gate["name"], "Unica CI")
-        self.assertEqual(condition(gate), "always()")
+        # Метка, кроме `ci:full`, ворота не меняет: прогон метки идёт своей
+        # группой (не отменяет настоящий), его корневые джобы и ворота
+        # пропускаются, а у ворот другое имя — пропуск засчитался бы успехом
+        # обязательной проверки `Unica CI` поверх красного вердикта.
+        ignored = (
+            "github.event_name == 'pull_request' && "
+            "(github.event.action == 'labeled' || github.event.action == 'unlabeled') && "
+            "github.event.label.name != 'ci:full'"
+        )
+        self.assertEqual(
+            normalized(gate["name"]),
+            "${{ (" + ignored + ") && 'Unica CI (label ignored)' || 'Unica CI' }}",
+        )
+        self.assertEqual(normalized(condition(gate)), "${{ always() && !(" + ignored + ") }}")
+        for root in ("classify-changes", "guards"):
+            with self.subTest(root=root):
+                self.assertEqual(normalized(condition(job(self.release, root))), "${{ !(" + ignored + ") }}")
+        group = normalized(self.release["concurrency"]["group"])
+        self.assertTrue(group.endswith("${{ (" + ignored + ") && format('-label-{0}', github.run_id) || '' }}"), group)
+        # Остальные джобы ждут корневых: без `always()` или с требованием их
+        # успеха они пропускаются вслед за ними.
+        for job_id, found in jobs(self.release).items():
+            if job_id in ("classify-changes", "guards", "unica-ci"):
+                continue
+            with self.subTest(job=job_id):
+                self.assertTrue(needs(found), job_id)
+                text = normalized(condition(found) or "")
+                if "always()" in text:
+                    self.assertRegex(text, r"needs\.[a-z-]+\.result == 'success'")
         self.assertIn("python scripts/ci/evaluate-ci-gate.py", script(gate))
         for upstream in (
             "classify-changes",
