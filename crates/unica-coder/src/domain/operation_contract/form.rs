@@ -457,7 +457,7 @@ const FORM_SLOTS: [&str; 13] = [
 ];
 
 impl OperationContract {
-    /// Контракты операций формы. `formCommand.add` публикует #1439.
+    /// Контракты операций формы; `formCommand.add` — из #1439.
     pub(crate) fn form(op: &str) -> Option<Self> {
         let at = || ("at", text(true));
         let (schema, target, effect, notes, example_args) = match op {
@@ -515,6 +515,37 @@ impl OperationContract {
                 "Add form attributes with the listed properties.",
                 "View, edit, functional options, use-always fields, save, value type, dynamic-list settings and role-specific visibility are not written by this operation and are refused.",
                 json!({"items":[{"name":"Sample","type":"String"}]}),
+            ),
+            "formCommand.add" => (
+                object(
+                    &[
+                        at(),
+                        (
+                            "items",
+                            json!({"type":"array","minItems":1,"items":object(&[
+                                ("name",json!({"type":"string","pattern":r"\S",
+                                    "description":"New command name, unused in the form."})),
+                                ("title",json!({"type":"string","pattern":r"\S",
+                                    "description":"Title in the configuration language."})),
+                                ("tooltip",json!({"type":"string","pattern":r"\S",
+                                    "description":"Tooltip in the configuration language."})),
+                                ("action",json!({"type":"string","pattern":r"\S",
+                                    "description":"Handler procedure in the form module; defaults to the command name."})),
+                                ("shortcut",json!({"type":"string","pattern":r"\S",
+                                    "description":"Keyboard shortcut as the platform writes it, e.g. F5."})),
+                                ("picture",json!({"type":"string","pattern":r"^(StdPicture|CommonPicture)\.[^.\s]+$",
+                                    "description":"Picture reference StdPicture.<Name> or CommonPicture.<Name>; written with LoadTransparent=true."})),
+                                ("representation",json!({"type":"string","enum":["Auto","Text","Picture","TextPicture"],
+                                    "description":"Command DefaultRepresentation; the button set (PictureAndText, None, Compact) is not valid for a command."})),
+                            ], &["name"])}),
+                        ),
+                    ],
+                    &["items"],
+                ),
+                "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Command branch before choosing names.",
+                "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with element.add.",
+                "A property outside this schema is refused before any write; use, functionalOptions, currentRowUse, modifiesSavedData and the associated table are not written by this operation.",
+                json!({"items":[{"name":"Refresh","title":"Refresh","tooltip":"Refresh the list","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
             ),
             "event.bind" => (
                 object(&[at(), ("values", object(&[
@@ -665,6 +696,7 @@ mod tests {
             "element.remove",
             "formAttribute.add",
             "event.bind",
+            "formCommand.add",
         ] {
             let contract = OperationContract::form(op).unwrap();
             assert!(
@@ -674,7 +706,6 @@ mod tests {
         }
         let implement = OperationContract::event("event.implement").unwrap();
         assert!(implement.normalize(&implement.example_args, "args").is_ok());
-        assert!(OperationContract::form("formCommand.add").is_none());
     }
 
     #[test]

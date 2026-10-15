@@ -18,8 +18,8 @@ Fix: batch input data, use one server call, update client state once.
 
 Symptom: code starts touching new metadata objects but roles are not updated.
 
-Fix: inspect touched objects, update focused rights through role DSL, validate
-`Rights.xml`.
+Fix: inspect touched objects, add or update focused rights through `unica.apply`
+(`right.add`, `right.set`), then check the role with `unica.check`.
 
 ## External Integration Timeouts
 

@@ -69,7 +69,7 @@ allowed-tools:
 | Операция | Формат Value | Описание |
 |----------|-------------|----------|
 | `modify-property` | `Ключ=Значение` (batch `;;`) | Изменить свойство |
-| `add-childObject` | `Type.Name` (batch `;;`) | Зарегистрировать уже существующий файл объекта в ChildObjects. Для создания нового объекта используй `/unica:meta-add`, `/unica:role-compile`, `/unica:subsystem-compile` — они регистрируют автоматически |
+| `add-childObject` | `Type.Name` (batch `;;`) | Зарегистрировать уже существующий файл объекта в ChildObjects. Для создания нового объекта используй `/unica:meta-add`, `/unica:role-edit` (`role.create`), `/unica:subsystem-edit` (`subsystem.create`) — они регистрируют автоматически |
 | `remove-childObject` | `Type.Name` (batch `;;`) | Удалить объект из ChildObjects |
 | `add-defaultRole` | `Role.Name` или `Name` | Добавить роль по умолчанию |
 | `remove-defaultRole` | `Role.Name` или `Name` | Удалить роль по умолчанию |

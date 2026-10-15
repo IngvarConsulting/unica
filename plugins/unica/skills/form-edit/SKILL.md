@@ -57,8 +57,7 @@ allowed-tools:
 Он перечисляет ровно те ключи, которые записывает писатель операции.
 Ключ вне контракта, значение не того типа или вне перечисления получают
 `bad_value` с точным путём (`ops[0].args.items[0].backColor`) до записи:
-операция не теряет его молча. Контракт `formCommand.add` пока
-не опубликован.
+операция не теряет его молча.
 
 `element.add` добавляет один элемент без вложенного содержимого. Ключи
 элемента зависят от его `type`: например, `backColor` и `font` пишет только
@@ -85,6 +84,11 @@ allowed-tools:
 и `values.name` у `element.remove`, `values.element` и `values.event`
 у `event.bind`. Вызов с ними получает
 `bad_value`, а `next` ведёт к адресу узла, который называло значение.
+
+`formCommand.add` добавляет команды формы. Элемент `items[]` принимает
+`name`, `title`, `tooltip`, `action`, `shortcut`, `picture`,
+`representation`; другой ключ отклоняется до записи. Контракт —
+`<форма>.Can.formCommand.add`.
 
 ## MCP вызов
 
@@ -384,10 +388,10 @@ BSL с неподтверждёнными именами. Пробел чтен�
 `Override`) на адресе события формы или элемента. У обычной формы
 `callType` не задаётся. Событие нового элемента привязывает `event.bind`
 на его адресе: `{"values": {"handler": "Расш1_ПолеПриИзмененииПосле",
-"callType": "After"}}`. Команда, которую
-добавляет `formCommand.add` на форме расширения, несёт `callType` действия
-(`{"name": "Подбор", "action": "Расш1_ПодборПосле", "callType": "After"}`)
-или список `actions: [{"callType": "Before", "handler": "…"}]`.
+"callType": "After"}}`. `formCommand.add` `callType` и `actions`
+не принимает: перехват действия команды формы расширения —
+`event.implement` с `callType` на адресе
+`….Form.<Форма>.Command.<Команда>.Event.Execute`.
 
 Повтор идентичного binding является явным idempotent no-op. Конфликт обработчика/`callType`, duplicate, отсутствующий элемент и любой недопустимый event отклоняют весь batch до мутации; планирование использует тот же planner.
 

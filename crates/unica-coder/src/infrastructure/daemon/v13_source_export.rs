@@ -17,7 +17,7 @@
 //! строка наружу не идут.
 
 use super::protocol::InvocationRequest;
-use super::runner_014::Runner014ProcessRunner;
+use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     note_another_copy, resolve_bundled_runner, runner_rejection, runner_start_rejection,
@@ -163,7 +163,7 @@ impl PreparedSourceExport {
     }
 
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
-        execute_with_runner(self, &Runner014ProcessRunner, cancellation)
+        execute_with_runner(self, &Runner015ProcessRunner, cancellation)
     }
 }
 
@@ -313,6 +313,38 @@ struct ExportPlan {
     target_absolute: PathBuf,
     /// Цель уже была на месте при превью: применение назовёт её заменённой.
     existed: bool,
+    /// Режим, который случился (у превью — режим плана), строчными буквами:
+    /// `full`, `incremental`, `partial` или `unknown`.
+    performed_mode: &'static str,
+    /// Почему случившийся режим не тот, что просили, словами раннера 0.15.
+    mode_reason: Option<&'static str>,
+}
+
+/// Случившийся режим выгрузки из конверта: закрытый словарь раннера 0.15.
+fn performed_mode(value: &Value) -> Option<&'static str> {
+    match value.as_str()? {
+        "FULL" => Some("full"),
+        "INCREMENTAL" => Some("incremental"),
+        "PARTIAL" => Some("partial"),
+        "UNKNOWN" => Some("unknown"),
+        _ => None,
+    }
+}
+
+/// Причина расхождения режимов: закрытый словарь раннера 0.15; поле
+/// необязательно.
+fn mode_reason(value: &Value) -> Result<Option<&'static str>, ()> {
+    match value {
+        Value::Null => Ok(None),
+        Value::String(reason) => match reason.as_str() {
+            "version_file" => Ok(Some("version_file")),
+            "foreign_format" => Ok(Some("foreign_format")),
+            "platform_forecast" => Ok(Some("platform_forecast")),
+            "unknown" => Ok(Some("unknown")),
+            _ => Err(()),
+        },
+        _ => Err(()),
+    }
 }
 
 fn execute_with_resolved_runner(
@@ -370,6 +402,8 @@ fn execute_with_resolved_runner(
                 "sourceSet": plan.source_set,
                 "extension": prepared.arguments.extension,
                 "mode": prepared.arguments.mode.as_str(),
+                "plannedMode": plan.performed_mode,
+                "modeReason": plan.mode_reason,
                 "target": path_text(&plan.target),
                 "targetExists": plan.existed,
                 "force": true,
@@ -432,17 +466,33 @@ fn execute_with_resolved_runner(
         }
     };
     let state = if plan.existed { "replaced" } else { "created" };
+    let requested_mode = prepared.arguments.mode.as_str();
+    // Раннер 0.15 называет случившийся режим отдельно от запрошенного: при
+    // расхождении ответ говорит, какой режим был и почему, а не повторяет запрос.
+    let mode_text = if performed.performed_mode == requested_mode {
+        format!("{requested_mode} mode")
+    } else {
+        format!(
+            "{requested_mode} mode requested, the export ran in {} mode{}",
+            performed.performed_mode,
+            performed
+                .mode_reason
+                .map(|reason| format!(" ({reason})"))
+                .unwrap_or_default()
+        )
+    };
     let mut result = DomainResult::success(format!(
-        "pull exported source set `{}` ({} mode); the target holds {files} files",
+        "pull exported source set `{}` ({mode_text}); the target holds {files} files",
         plan.source_set,
-        prepared.arguments.mode.as_str()
     ));
     result.data = Some(json!({
         "op": OPERATION,
         "dryRun": false,
         "sourceSet": plan.source_set,
         "extension": prepared.arguments.extension,
-        "mode": prepared.arguments.mode.as_str(),
+        "mode": requested_mode,
+        "performedMode": performed.performed_mode,
+        "modeReason": performed.mode_reason,
         "target": path_text(&plan.target),
         "files": files,
         "state": state,
@@ -476,7 +526,10 @@ fn validate_envelope(
             },
         ));
     }
-    if data["mode"] != prepared.arguments.mode.runner_mode()
+    // С 0.15 обязательный `requested_mode` — запрошенный режим, а `mode` —
+    // случившийся: по плану раннера и прогнозу платформы он бывает полным вместо
+    // инкрементного или неизвестным (`UNKNOWN`) (CTR.WIRE.PULL-DATA v6).
+    if data["requested_mode"] != prepared.arguments.mode.runner_mode()
         || data["extension"].as_str() != prepared.arguments.extension.as_deref()
     {
         return Err(reject(
@@ -534,11 +587,25 @@ fn validate_envelope(
             )
         })?
         .to_path_buf();
+    let performed_mode = performed_mode(&data["mode"]).ok_or_else(|| {
+        reject(
+            RefusalCode::InvalidResult,
+            format!("v8-runner {phase} reported an unknown export mode"),
+        )
+    })?;
+    let mode_reason = mode_reason(&data["mode_reason"]).map_err(|()| {
+        reject(
+            RefusalCode::InvalidResult,
+            format!("v8-runner {phase} reported an unknown reason for its export mode"),
+        )
+    })?;
     Ok(ExportPlan {
         source_set,
         target,
         existed: target_absolute.is_dir(),
         target_absolute,
+        performed_mode,
+        mode_reason,
     })
 }
 
@@ -818,6 +885,7 @@ mod tests {
             "ok": true,
             "provider_dispatched": dispatched,
             "source_set": set,
+            "requested_mode": mode,
             "mode": mode,
             "target_path": root.join(set),
             "duration_ms": 2,
@@ -858,17 +926,33 @@ mod tests {
 
     /// Живые конверты раннера 0.14.0: `pull` копии в базу другой рабочей копии
     /// идёт с предупреждением раннера. Ответ называет его своим предупреждением
-    /// и выходом к своей базе, без прозы раннера.
+    /// и выходом к своей базе, без прозы раннера. Проверяется путь
+    /// предупреждения, а не форма данных: конверт 0.14 без обязательного
+    /// в 0.15 `requested_mode` отвергается, поэтому поле добавлено в тесте
+    /// (`tests/fixtures/v8_runner_014/README.md`).
     #[test]
     fn captured_pull_into_the_infobase_of_another_copy_names_it() {
         let root = workspace();
         fs::create_dir_all(root.path().join("main")).unwrap();
         fs::write(root.path().join("main/Configuration.xml"), "<x/>").unwrap();
         let target = normalize_path_identity(root.path()).unwrap().join("main");
+        let legacy = captured_014("other-copy-pull-preview.json");
+        let runner = SequenceRunner::new(vec![process(legacy, true)]);
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, Some("main"), None, true),
+            &runner,
+        );
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+
         let mut preview = captured_014("other-copy-pull-preview.json");
         let mut applied = captured_014("other-copy-pull-apply.json");
         for envelope in [&mut preview, &mut applied] {
             envelope["data"]["target_path"] = json!(target);
+            envelope["data"]["requested_mode"] = envelope["data"]["mode"].clone();
         }
         let runner = SequenceRunner::new(vec![process(preview.clone(), true)]);
         let result = run(
@@ -1165,6 +1249,64 @@ mod tests {
         let encoded = serde_json::to_string(&result).unwrap();
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
         assert!(!encoded.contains("--config"));
+    }
+
+    /// Раннер 0.15 называет запрошенный режим (`requested_mode`) отдельно от
+    /// случившегося (`mode`): инкрементная выгрузка без файла версий идёт
+    /// полной. Это не чужой ответ, а честный режим, и ответ его называет.
+    #[test]
+    fn apply_names_the_export_mode_that_happened_when_it_differs() {
+        let root = workspace();
+        let mut performed = envelope(root.path(), "main", "INCREMENTAL", None, true);
+        performed["data"]["mode"] = json!("FULL");
+        performed["data"]["mode_reason"] = json!("version_file");
+        let runner = SequenceRunner::exporting(
+            vec![
+                process(
+                    envelope(root.path(), "main", "INCREMENTAL", None, false),
+                    true,
+                ),
+                process(performed, true),
+            ],
+            root.path().join("main"),
+        );
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Incremental, None, None, false),
+            &runner,
+        );
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["mode"], "incremental");
+        assert_eq!(data["performedMode"], "full");
+        assert_eq!(data["modeReason"], "version_file");
+        assert!(
+            result
+                .summary
+                .contains("incremental mode requested, the export ran in full mode (version_file)"),
+            "{result:?}"
+        );
+
+        // Ответ на другой запрошенный режим и неизвестный режим не принимаются.
+        for (field, value) in [
+            ("requested_mode", "FULL"),
+            ("mode", "SOMETIMES"),
+            ("mode_reason", "weather"),
+        ] {
+            let root = workspace();
+            let mut preview = envelope(root.path(), "main", "INCREMENTAL", None, false);
+            preview["data"][field] = json!(value);
+            let runner = SequenceRunner::new(vec![process(preview, true)]);
+            let result = run(
+                root.path(),
+                &prepared(root.path(), ExportMode::Incremental, None, None, true),
+                &runner,
+            );
+            assert_eq!(
+                result.diagnostics[0]["code"], "invalid_result",
+                "{field}: {result:?}"
+            );
+        }
     }
 
     #[test]

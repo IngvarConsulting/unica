@@ -4787,6 +4787,75 @@ mod tests {
         .is_ok());
     }
 
+    /// `formCommand.add` принимает ровно ключи, которые писатель кладёт
+    /// в `<Command>`, и передаёт их писателю; остальное отказывает
+    /// `bad_value` до записи, а не теряется молча (#1439).
+    #[test]
+    fn form_command_add_accepts_only_the_keys_its_writer_writes() {
+        let fixture = ApplySeamFixture::new();
+        let at = "main:Catalog.Items.Form.Item";
+        let item = json!({
+            "name": "Refresh",
+            "title": "Refresh",
+            "tooltip": "Refresh the list",
+            "shortcut": "F5",
+            "picture": "StdPicture.Refresh",
+            "representation": "TextPicture",
+        });
+        let plan = parse_form_resource_plan_operation(
+            "formCommand.add",
+            &json!({"at": at, "items": [item.clone()]}),
+            0,
+            &fixture.binding,
+        )
+        .expect("every published key is accepted")
+        .kind;
+        let super::FormResourcePlanKind::FormEdit { definitions, .. } = plan else {
+            panic!("formCommand.add plans a form edit");
+        };
+        let mut expected = item.as_object().unwrap().clone();
+        expected.insert("action".into(), json!("Refresh"));
+        assert_eq!(definitions, vec![json!({"commands": [expected]})]);
+
+        for (field, value) in [
+            ("use", json!(false)),
+            ("functionalOptions", json!(["FunctionalOption.X"])),
+            ("currentRowUse", json!("DontUse")),
+            ("modifiesSavedData", json!(true)),
+            ("table", json!("Список")),
+            ("loadTransparent", json!(false)),
+            ("representation", json!("PictureAndText")),
+            ("representation", json!("text")),
+            ("picture", json!({"src": "StdPicture.Refresh"})),
+            ("picture", json!("abs:picture.png")),
+            ("title", json!({"ru": "Обновить"})),
+            ("title", json!("")),
+            ("callType", json!("Before")),
+            (
+                "actions",
+                json!([{"callType": "Before", "handler": "RefreshBefore"}]),
+            ),
+            ("tooltip", json!({"ru": "Обновить"})),
+            ("tooltip", json!("")),
+            ("shortcut", json!("")),
+        ] {
+            let error = parse_form_resource_plan_operation(
+                "formCommand.add",
+                &json!({"at": at, "items": [{"name": "Refresh", field: value}]}),
+                0,
+                &fixture.binding,
+            )
+            .expect_err("a key the writer does not write is refused");
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::BadValue,
+                "{field} {value}"
+            );
+            let path = format!("ops[0].args.items[0].{field}");
+            assert_eq!(error.path(), Some(path.as_str()), "{field} {value}");
+        }
+    }
+
     #[test]
     fn form_operations_refuse_a_root_target_and_name_the_argument() {
         let fixture = ApplySeamFixture::new();

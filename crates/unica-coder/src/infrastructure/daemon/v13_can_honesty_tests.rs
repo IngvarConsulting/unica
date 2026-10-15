@@ -1289,8 +1289,8 @@ fn honest_can_on_form_items_and_events() {
         }
         // Подробный контракт каждой операции узла читается её адресом, и его
         // пример строит предпросмотр на этом узле: контракт и планировщик
-        // согласны (#1447). Контракт `formCommand.add` публикует #1439.
-        for op in expected.iter().filter(|op| *op != "formCommand.add") {
+        // согласны (#1447).
+        for op in expected.iter() {
             let detailed = invoke(
                 &fixture.workspace,
                 ToolIdentity::View,
