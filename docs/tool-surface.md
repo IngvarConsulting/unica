@@ -39,7 +39,7 @@ Plan typed edits with at and ops without writing; execute that saved plan with e
 - Изменить свойство через доказанную retained-публикацию `props.set`
 - Добавить, изменить и удалить атрибут через сохранённый план и token-only исполнение
 - Записать true и false в ClientOrdinaryApplication общего модуля; предпросмотр не изменяет файл, неверный тип значения и Document получают bad_value без записи
-- Создать страницы формы и перенести существующие группы через element.move одним атомарным планом, сохранив идентификаторы, события и вложенные элементы
+- Создать страницы формы и перенести существующие группы через item.move одним атомарным планом, сохранив идентификаторы, события и вложенные элементы
 
 ## check
 
@@ -240,7 +240,7 @@ Inspect the workspace with no arguments, or read one logical 1C node by address.
 | `cursor` | string | нет | Continuation cursor from an earlier addressed view. |
 | `limit` | integer | нет | Maximum child items per addressed view page, from 1 to 50; valid only with at. Omit for 20. A preferred 64 KiB page size may stop earlier, but an indivisible item remains whole. |
 
-**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) с целевым размером страницы 64 КиБ; неделимый элемент возвращается целиком до технического предела результата, `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает сохранённый снимок; ветвь графа вызовов сохраняет полученные связи для продолжения; с квалифицированным `at` узел содержит `props`/`branches`/`items` и словарь операций `can`, а адрес `<узел>.Can.<op>` отдаёт контракт аргументов одной операции (отвечают типизированным `data`)
+**Результат сейчас:** Без аргументов `data` описывает workspace, `v8project.yaml`, source sets, infobase target, readiness и только релевантный setup; infobase-only workspace получает точные preview-продолжения CF и DT; обычная адресная коллекция `view` возвращает до 20 элементов по умолчанию (максимум 50) с целевым размером страницы 64 КиБ; неделимый элемент возвращается целиком до технического предела результата; `Body` модуля и `Method.<имя>.Body` BSL — не коллекция: ответ без `structuredContent` несёт конверт JSON и исходный текст в бюджете ответа клиента (по умолчанию 16 КиБ, у известных хостов — измеренный) отдельным текстовым блоком, больший текст отказывает `result_too_large` с `next` на `Region` и `Method` модуля; `page.stoppedBy` называет `limit`, `bytes` или `complete`, курсор продолжает сохранённый снимок; ветвь графа вызовов сохраняет полученные связи для продолжения; с квалифицированным `at` узел содержит `props`/`branches`/`items` и словарь операций `can`, а адрес `<узел>.Can.<op>` отдаёт контракт аргументов одной операции (отвечают типизированным `data`)
 
 **Целевой контракт:** Расширять проекции новыми адресуемыми узлами, не возвращая физические пути
 

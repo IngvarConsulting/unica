@@ -3305,9 +3305,10 @@ fn rollback_retained_apply(
         if let Some(file) = change.published.take() {
             let removal = file
                 .remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name());
-            // Windows completes a handle-based delete only after every handle to the
-            // delete-pending file is closed.  Release the journal's retained handle
-            // before attempting to restore a displaced preimage at the same name.
+            // Retained-apply cleanup unlinks the name at once on Windows (POSIX
+            // delete semantics); the classic fallback keeps a delete-pending name
+            // until every handle closes. Release the journal's retained handle
+            // before restoring a displaced preimage at the same name.
             drop(file);
             if let Err(error) = removal {
                 errors.push(format!("published apply child was preserved: {error}"));

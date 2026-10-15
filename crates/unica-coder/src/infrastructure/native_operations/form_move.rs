@@ -7,10 +7,16 @@ use std::ops::Range;
 const NS: &str = "http://v8.1c.ru/8.3/xcf/logform";
 
 #[derive(Debug, Clone)]
-pub(crate) struct FormElementMove {
+pub(crate) enum FormMoveDestination {
+    Root,
+    Named(String),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FormItemMove {
     pub(crate) name: String,
     pub(crate) source_path: Option<Vec<String>>,
-    pub(crate) into: Option<String>,
+    pub(crate) into: FormMoveDestination,
     pub(crate) after: Option<String>,
 }
 
@@ -130,7 +136,52 @@ fn escape_attribute(value: &str) -> String {
         .replace('\t', "&#9;")
 }
 
-fn portable_fragment(xml: &str, source: Node<'_, '_>, destination: Node<'_, '_>) -> String {
+/// Меняем только форматирующие whitespace-узлы между элементами. Значимый
+/// текст, комментарии и CRLF остаются нетронутыми, а глубина поддерева
+/// становится такой же, как у платформенной выгрузки в новом контейнере.
+fn reindent_fragment(xml: &str, source: Node<'_, '_>, target_prefix: &str) -> String {
+    let source_range = source.range();
+    let source_indent = line_indent(xml, source_range.start);
+    let target_indent = target_prefix.rsplit('\n').next().unwrap_or("");
+    if source_indent == target_indent {
+        return xml[source_range].to_string();
+    }
+    let from = format!("\n{source_indent}");
+    let to = format!("\n{target_indent}");
+    let mut edits = source
+        .descendants()
+        .filter(|node| {
+            node.is_text()
+                && node.text().is_some_and(|text| {
+                    text.contains('\n') && text.bytes().all(|byte| byte.is_ascii_whitespace())
+                })
+                && node
+                    .parent()
+                    .is_some_and(|parent| parent.children().any(|child| child.is_element()))
+        })
+        .filter_map(|node| {
+            let range = node.range();
+            let rewritten = xml[range.clone()].replace(&from, &to);
+            (rewritten != xml[range.clone()]).then_some((
+                range.start - source_range.start..range.end - source_range.start,
+                rewritten,
+            ))
+        })
+        .collect::<Vec<_>>();
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut fragment = xml[source_range].to_string();
+    for (range, replacement) in edits {
+        fragment.replace_range(range, &replacement);
+    }
+    fragment
+}
+
+fn portable_fragment(
+    xml: &str,
+    source: Node<'_, '_>,
+    destination: Node<'_, '_>,
+    target_prefix: &str,
+) -> String {
     let range = source.range();
     let open_end = opening_end(xml, source);
     let opening = &xml[range.start..=open_end];
@@ -151,7 +202,7 @@ fn portable_fragment(xml: &str, source: Node<'_, '_>, destination: Node<'_, '_>)
         let key = prefix.map_or_else(|| "xmlns".to_string(), |prefix| format!("xmlns:{prefix}"));
         declarations.push_str(&format!(" {key}=\"{}\"", escape_attribute(namespace.uri())));
     }
-    let mut fragment = xml[range.clone()].to_string();
+    let mut fragment = reindent_fragment(xml, source, target_prefix);
     let insertion = open_end - range.start - usize::from(xml.as_bytes()[open_end - 1] == b'/');
     fragment.insert_str(insertion, &declarations);
     fragment
@@ -170,6 +221,56 @@ fn cut_range(xml: &str, node: Node<'_, '_>) -> Range<usize> {
     range
 }
 
+fn line_ending(xml: &str) -> &'static str {
+    if xml.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
+}
+
+fn line_indent(xml: &str, position: usize) -> &str {
+    let line_start = xml[..position].rfind('\n').map_or(0, |index| index + 1);
+    let indent = &xml[line_start..position];
+    if indent.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+        indent
+    } else {
+        ""
+    }
+}
+
+/// Префикс прямого потомка в стиле текущего контейнера. Если потомки уже
+/// есть, берём их фактический отступ; для пустого платформенного узла строим
+/// следующий табличный уровень и сохраняем CRLF/LF документа.
+fn child_prefix(xml: &str, parent: Node<'_, '_>) -> String {
+    if !xml.contains('\n') {
+        return String::new();
+    }
+    if let Some(prefix) = parent
+        .children()
+        .find(|node| !node.is_text())
+        .and_then(|node| node.prev_sibling())
+        .filter(Node::is_text)
+        .map(|node| &xml[node.range()])
+        .filter(|text| text.bytes().all(|byte| byte.is_ascii_whitespace()))
+    {
+        return prefix.to_string();
+    }
+    format!(
+        "{}{}\t",
+        line_ending(xml),
+        line_indent(xml, parent.range().start)
+    )
+}
+
+fn nested_prefix(prefix: &str) -> String {
+    if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}\t")
+    }
+}
+
 fn end_insertion(xml: &str, node: Node<'_, '_>, fragment: &str) -> (Range<usize>, String) {
     let range = node.range();
     let end = opening_end(xml, node);
@@ -180,7 +281,19 @@ fn end_insertion(xml: &str, node: Node<'_, '_>, fragment: &str) -> (Range<usize>
             + range.start
             + 1;
         let qname = &xml[range.start + 1..qname_end];
-        return (end - 1..end + 1, format!(">{fragment}</{qname}>"));
+        let closing_prefix = if fragment.contains('\n') {
+            format!(
+                "{}{}",
+                line_ending(xml),
+                line_indent(xml, node.range().start)
+            )
+        } else {
+            String::new()
+        };
+        return (
+            end - 1..end + 1,
+            format!(">{fragment}{closing_prefix}</{qname}>"),
+        );
     }
     let pos = node
         .last_child()
@@ -192,7 +305,7 @@ fn end_insertion(xml: &str, node: Node<'_, '_>, fragment: &str) -> (Range<usize>
     (pos..pos, fragment.to_string())
 }
 
-pub(crate) fn move_element(xml: &str, request: &FormElementMove) -> Result<String, MoveError> {
+pub(crate) fn move_item(xml: &str, request: &FormItemMove) -> Result<String, MoveError> {
     let document =
         Document::parse(xml).map_err(|e| error("name", format!("invalid form XML: {e}")))?;
     let root = document.root_element();
@@ -219,8 +332,8 @@ pub(crate) fn move_element(xml: &str, request: &FormElementMove) -> Result<Strin
     let source_items = source.parent_element().filter(|node| node.has_tag_name((NS, "ChildItems")))
         .ok_or_else(|| error("name", "only an element directly owned by working ChildItems may be moved; companions cannot be separated"))?;
     let destination = match &request.into {
-        Some(name) => named(root, name, "into")?,
-        None => root,
+        FormMoveDestination::Named(name) => named(root, name, "into")?,
+        FormMoveDestination::Root => root,
     };
     if destination.ancestors().any(|node| node == source) {
         return Err(error(
@@ -245,6 +358,7 @@ pub(crate) fn move_element(xml: &str, request: &FormElementMove) -> Result<Strin
             ));
         }
     }
+    validate_placement(source, destination)?;
     if target_items == Some(source_items) {
         let previous = source.prev_siblings().skip(1).find(Node::is_element);
         let next = source.next_siblings().skip(1).find(Node::is_element);
@@ -252,18 +366,17 @@ pub(crate) fn move_element(xml: &str, request: &FormElementMove) -> Result<Strin
             return Ok(xml.to_string());
         }
     }
-    validate_placement(source, destination)?;
     let cut = cut_range(xml, source);
-    let prefix = &xml[cut.start..source.range().start];
     let namespace_parent = target_items.unwrap_or(destination);
-    let fragment = format!(
-        "{prefix}{}",
-        portable_fragment(xml, source, namespace_parent)
-    );
+    let destination_prefix = target_items
+        .map(|items| child_prefix(xml, items))
+        .unwrap_or_else(|| nested_prefix(&child_prefix(xml, destination)));
+    let portable = portable_fragment(xml, source, namespace_parent, &destination_prefix);
     let (insert, replacement) = if let Some(after) = after {
         let pos = after.range().end;
-        (pos..pos, fragment)
+        (pos..pos, format!("{}{}", destination_prefix, portable))
     } else if let Some(items) = target_items {
+        let fragment = format!("{}{}", destination_prefix, portable);
         end_insertion(xml, items, &fragment)
     } else {
         let prefix = if destination.lookup_namespace_uri(None) == Some(NS) {
@@ -276,7 +389,10 @@ pub(crate) fn move_element(xml: &str, request: &FormElementMove) -> Result<Strin
                     .expect("logform namespace is in scope")
             )
         };
-        let section = format!("<{prefix}ChildItems>{fragment}</{prefix}ChildItems>");
+        let section_prefix = child_prefix(xml, destination);
+        let section = format!(
+            "<{prefix}ChildItems>{destination_prefix}{portable}{section_prefix}</{prefix}ChildItems>"
+        );
         if destination == root {
             if let Some(anchor) = root.children().find(|node| {
                 node.is_element()
@@ -287,12 +403,12 @@ pub(crate) fn move_element(xml: &str, request: &FormElementMove) -> Result<Strin
                     )
             }) {
                 let pos = anchor.range().start;
-                (pos..pos, section)
+                (pos..pos, format!("{section}{section_prefix}"))
             } else {
-                end_insertion(xml, destination, &section)
+                end_insertion(xml, destination, &format!("{section_prefix}{section}"))
             }
         } else {
-            end_insertion(xml, destination, &section)
+            end_insertion(xml, destination, &format!("{section_prefix}{section}"))
         }
     };
     let mut edits = [(cut, String::new()), (insert, replacement)];

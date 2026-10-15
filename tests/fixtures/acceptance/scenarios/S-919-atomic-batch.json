@@ -1,0 +1,197 @@
+{
+  "id": "S-919-atomic-batch",
+  "issue": 919,
+  "area": "Формы",
+  "task": "Создать страницы и перенести существующие элементы одним атомарным пакетом; точный повтор не меняет файл, а несовместимый получатель даёт типизированный отказ до записи",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.move",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное",
+              "values": {"into": "ГруппаСлужебная"}
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "items": [{"name": "ГруппаДополнительная", "type": "Group"}]
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "items": [{"name": "СтраницыКорпуса", "type": "Pages"}]
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.СтраницыКорпуса",
+              "items": [
+                {"name": "ОсновнаяСтраница", "type": "Page"},
+                {"name": "ДополнительнаяСтраница", "type": "Page"}
+              ]
+            }
+          },
+          {
+            "op": "item.move",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
+              "values": {"into": "ОсновнаяСтраница"}
+            }
+          },
+          {
+            "op": "item.move",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаДополнительная",
+              "values": {"into": "ДополнительнаяСтраница"}
+            }
+          }
+        ]
+      },
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "preview"},
+        {"pointer": "/data/executable", "eq": true}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$executionToken"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "published"}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']",
+          "eq": ["InputField"]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ДополнительнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаДополнительная']",
+          "eq": ["UsualGroup"]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ExtendedTooltip[@name='ГруппаСлужебнаяРасширеннаяПодсказка'][@id='8']",
+          "eq": ["ExtendedTooltip"]
+        },
+        {
+          "kind": "xmlTags",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "select": "./{*}ChildItems/{*}InputField[@name='ПолеНаименование'][@id='1']",
+          "eq": ["InputField"]
+        }
+      ],
+      "captures": {
+        "afterTabs": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.check",
+      "args": {"at": "main:Catalog.Валюты.Form.ФормаЭлемента"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/diagnosticCount", "eq": 0}
+      ],
+      "status": "passed",
+      "validators": ["form"]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.move",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.СтраницыКорпуса.Item.ОсновнаяСтраница.Item.ГруппаСлужебная",
+              "values": {"into": "ОсновнаяСтраница"}
+            }
+          },
+          {
+            "op": "item.move",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.СтраницыКорпуса.Item.ДополнительнаяСтраница.Item.ГруппаДополнительная",
+              "values": {"into": "ДополнительнаяСтраница"}
+            }
+          }
+        ]
+      },
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "preview"},
+        {"pointer": "/data/effects", "eq": 0}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.afterTabs"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {"executionToken": "$executionToken"},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/mode", "eq": "published"},
+        {"pointer": "/data/effects", "eq": 0},
+        {"pointer": "/changed", "absent": true}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.afterTabs"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование",
+        "ops": [
+          {
+            "op": "item.move",
+            "args": {"values": {"into": "ФормаКоманднаяПанель"}}
+          }
+        ]
+      },
+      "expect": ["refused"],
+      "refusal": "bad_value: InputField cannot be placed in AutoCommandBar without conversion or losing its table binding",
+      "assertions": [
+        {"pointer": "/ok", "eq": false},
+        {"pointer": "/at", "eq": "ops[0].args.values.into"}
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.afterTabs"
+        }
+      ]
+    }
+  ]
+}

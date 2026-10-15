@@ -9,7 +9,7 @@ body:
         `unica.find`, `unica.search`, `unica.check`, `unica.diff`, `unica.run`,
         `unica.docs` и задачи `task.*`. Реестр того, что поверхность уже решает,
         лежит в
-        [`docs/acceptance-scenarios.md`](https://github.com/IngvarConsulting/unica/blob/main/docs/acceptance-scenarios.md):
+        [реестре приёмочных сценариев](https://ingvarconsulting.github.io/unica/acceptance-scenarios.html):
         каталог сценариев по областям, покрытие операций `apply` и профилей
         `check`. Сверьтесь с ним перед заполнением: возможно, нужна не новая
         операция, а сценарий для существующей — эта форма годится и для этого.

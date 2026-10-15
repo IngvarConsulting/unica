@@ -2,7 +2,8 @@
 id: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 check:
   - crates/unica-coder/src/infrastructure/native_operations/form_move_tests.rs::compact_subtree_moves_without_losing_adjacent_siblings_or_references
-  - crates/unica-coder/src/infrastructure/native_operations/form_move_tests.rs::crlf_comments_and_text_are_not_normalized_or_cut_with_the_line
+  - crates/unica-coder/src/infrastructure/native_operations/form_move_tests.rs::crlf_comments_and_meaningful_text_survive_platform_reindentation
+  - crates/unica-coder/src/infrastructure/native_operations/form_move_tests.rs::platform_indentation_follows_destination_without_changing_leaf_text
   - crates/unica-coder/src/infrastructure/native_operations/form_move_tests.rs::inherited_qname_namespaces_survive_conflicting_destination_bindings
   - crates/unica-coder/src/infrastructure/native_operations/form_move_tests.rs::prefixed_form_preserves_inherited_default_namespace_for_qname_values
   - crates/unica-coder/src/infrastructure/native_operations/form_move_tests.rs::moving_from_no_default_namespace_does_not_rebind_unqualified_extensions
@@ -14,7 +15,7 @@ check:
 
 # Перенос сохраняет содержимое элемента формы
 
-`element.move` перемещает существующее XML-поддерево целиком, сохраняя
+`item.move` перемещает существующее XML-поддерево целиком, сохраняя
 идентификаторы, свойства, события, привязки, вложенные элементы и companions.
 Соседние элементы и сохранённая базовая форма `BaseForm` не переписываются.
 Companions нельзя переносить отдельно от владельца.

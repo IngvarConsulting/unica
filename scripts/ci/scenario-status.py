@@ -10,12 +10,22 @@ from __future__ import annotations
 
 import argparse
 import collections
+import importlib.util
 import json
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CORPUS = REPO_ROOT / "tests" / "fixtures" / "acceptance" / "scenario-corpus.json"
+CORPUS_STORAGE = Path(__file__).with_name("acceptance_corpus.py")
+
+
+def load_corpus(root: Path | None = None) -> dict:
+    """Весь корпус тем же загрузчиком, что и приёмочный тест: закрытый блок
+    `S###` и сценарии по одному в файле."""
+    spec = importlib.util.spec_from_file_location("acceptance_corpus", CORPUS_STORAGE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load(module.ROOT if root is None else root)
 
 # Режим сценария по его цепочке: пишет ли он файлы, только строит план или
 # ничего не меняет. Каталог называется «что умеет», и без этой метки
@@ -79,7 +89,11 @@ def build(corpus: dict) -> dict[str, object]:
             }
         )
 
-    rows.sort(key=lambda row: (row["area"], row["id"]))
+    # Порядок корпуса задан загрузчиком: закрытый блок по номерам, затем новые
+    # сценарии по номеру задачи. Строковое сравнение поставило бы `S-…` раньше
+    # `S001`, поэтому внутри области сохраняется порядок корпуса.
+    order = {scenario["id"]: index for index, scenario in enumerate(scenarios)}
+    rows.sort(key=lambda row: (row["area"], order[row["id"]]))
 
     # Полные цепочки уезжают на страницу отдельным блоком: таблица показывает
     # задачу, а окно деталей — вызовы с аргументами и ожидаемым классом ответа.
@@ -148,11 +162,11 @@ def build(corpus: dict) -> dict[str, object]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--corpus", type=Path, default=CORPUS)
+    parser.add_argument("--corpus", type=Path, help="каталог корпуса; по умолчанию tests/fixtures/acceptance")
     parser.add_argument("--out", type=Path, help="куда писать; по умолчанию stdout")
     args = parser.parse_args()
 
-    data = build(json.loads(args.corpus.read_text(encoding="utf-8")))
+    data = build(load_corpus(args.corpus))
     rendered = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     if args.out:
         args.out.write_text(rendered, encoding="utf-8")

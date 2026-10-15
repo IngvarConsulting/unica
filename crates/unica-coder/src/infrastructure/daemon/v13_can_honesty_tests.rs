@@ -20,7 +20,7 @@ use crate::application::ports::TokioClock;
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{
     ApplyRequest, FormItemRole, OperationDescriptor, OperationFamily, OperationRegistry,
-    SourceSetTraits,
+    OperationSite, SourceSetTraits,
 };
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
@@ -167,12 +167,14 @@ const WRITES_BEYOND_NODE: &[(&str, &str)] = &[
 /// чьи файлы сверяются с узлом `at`. Остальные операции словаря доходят до
 /// плана только с именами, которых в фикстуре нет, и проверку записи здесь
 /// не получают: прежде всего операции СКД, табличного документа и членов
-/// метаданных.
+/// метаданных. Общее имя двух семейств (`attribute.add` объекта и формы,
+/// #1465) записывается с семейством — `Form:attribute.add`, — чтобы
+/// проверка одной записи не прятала непроверенную другую.
 const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
     (
         "workspace",
         &[
-            "attribute.add",
+            "Metadata:attribute.add",
             "childSubsystem.add",
             "childSubsystem.remove",
             "code.insert",
@@ -193,11 +195,11 @@ const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
             "commandVisibility.set",
             "content.add",
             "content.remove",
-            "element.add",
+            "item.add",
             "event.bind",
             "form.remove",
-            "formAttribute.add",
-            "formCommand.add",
+            "Form:attribute.add",
+            "Form:command.add",
             "help.create",
             "objectType.add",
             "props.set",
@@ -489,6 +491,23 @@ fn shape_key(address: &QualifiedAddress) -> String {
 /// Правдоподобные аргументы операции: разбор семейства проходит целиком,
 /// и отказ по цели не прячется за отказом по аргументам.
 fn sample_args(descriptor: OperationDescriptor) -> Value {
+    // Аргументы зависят только от операции, а контракт строится заново на
+    // каждый вызов: обход спрашивает их на каждом узле. Ключ — семейство и
+    // имя: у общего имени двух семейств (#1465) свои аргументы.
+    thread_local! {
+        static SAMPLES: std::cell::RefCell<BTreeMap<String, Value>> =
+            const { std::cell::RefCell::new(BTreeMap::new()) };
+    }
+    SAMPLES.with(|samples| {
+        samples
+            .borrow_mut()
+            .entry(write_key(descriptor))
+            .or_insert_with(|| build_sample_args(descriptor))
+            .clone()
+    })
+}
+
+fn build_sample_args(descriptor: OperationDescriptor) -> Value {
     let op = descriptor.name();
     if let Some(contract) = descriptor.argument_contract() {
         return contract.example_args;
@@ -509,8 +528,9 @@ fn sample_args(descriptor: OperationDescriptor) -> Value {
         | "property.remove"
         | "event.implement"
         | "childSubsystem.remove" => json!({"at": ""}),
-        "form.add" | "formAttribute.add" | "formCommand.add" | "element.add"
-        | "childSubsystem.add" => json!({"items": [{"name": "Sample"}]}),
+        "form.add" | "attribute.add" | "command.add" | "item.add" | "childSubsystem.add" => {
+            json!({"items": [{"name": "Sample"}]})
+        }
         "form.set" => json!({"values": {"defaultObjectForm": "Sample"}}),
         "event.bind" => json!({"values": {"handler": "Sample"}}),
         "content.add" => json!({"items": [{"object": "Catalog.Sample"}]}),
@@ -545,7 +565,7 @@ fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
         .last()
         .is_some_and(|segment| segment.kind() == NodeKind::Method);
     match descriptor.name() {
-        "element.remove" => json!({"at": ""}),
+        "item.remove" => json!({"at": ""}),
         // Место вставки у метода — до или после него (#1354).
         "code.insert" if method_address => {
             json!({"at": "", "text": "// sample\n", "position": "after"})
@@ -676,8 +696,9 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
         .find(|(fixture, _)| *fixture == name)
         .map_or(&[][..], |(_, ops)| *ops);
     for op in required {
+        let key = required_write_key(op);
         assert!(
-            writes_checked.contains(*op),
+            writes_checked.contains(&key),
             "{name}: the plan of `{op}` was not checked against its node; checked {writes_checked:?}"
         );
     }
@@ -892,6 +913,29 @@ fn source_root(workspace: &Path, set: &str) -> PathBuf {
         .expect("declared source set")
 }
 
+/// Ключ проверенной записи — семейство и имя: общее имя двух семейств
+/// (#1465) проверяется у каждой записи отдельно.
+fn write_key(descriptor: OperationDescriptor) -> String {
+    format!("{:?}:{}", descriptor.family(), descriptor.name())
+}
+
+/// Ключ строки `WRITES_CHECKED_AT_LEAST`: с семейством как есть, без него —
+/// только для имени одной записи реестра.
+fn required_write_key(entry: &str) -> String {
+    if entry.contains(':') {
+        return entry.to_string();
+    }
+    let mut named = OperationRegistry::closed().named(entry);
+    let descriptor = named
+        .next()
+        .unwrap_or_else(|| panic!("`{entry}` is registered"));
+    assert!(
+        named.next().is_none(),
+        "`{entry}` names two registry records: write it with its family"
+    );
+    write_key(descriptor)
+}
+
 thread_local! {
     static NARROWINGS_SEEN: std::cell::RefCell<BTreeSet<usize>> =
         const { std::cell::RefCell::new(BTreeSet::new()) };
@@ -921,6 +965,13 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
     NARROWINGS_SEEN.with(|narrowings_seen| {
     for descriptor in OperationRegistry::closed().descriptors().iter().copied() {
         let op = descriptor.name();
+        // Общее имя (`attribute.add` объекта и формы, #1465): вызов на этом
+        // адресе исполняет запись, которую выбирает адрес, и сверяется она.
+        let resolved = OperationSite::new(&address, checked.traits)
+            .and_then(|site| OperationRegistry::closed().lookup_at(op, &site));
+        if resolved.is_some_and(|resolved| resolved.family() != descriptor.family()) {
+            continue;
+        }
         let listed = can.contains(op);
         let request = apply_request(at, op, node_args(descriptor, &address));
         let preflight = preflight_apply_operations(&request, checked.traits, &|_| None);
@@ -993,7 +1044,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         }
         if plan_writes && listed && family == Ok(true) {
             if let Ok(paths) = plan(checked, &request) {
-                WRITES_CHECKED.with(|done| done.borrow_mut().insert(op.to_string()));
+                WRITES_CHECKED.with(|done| done.borrow_mut().insert(write_key(descriptor)));
                 check_written_paths(checked, &address, route, op, &paths, mismatches);
             }
         }
@@ -1107,14 +1158,14 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
         ),
         (
             "cf:Catalog.Items.Form.Main.Item.Header",
-            "formAttribute.add",
+            "attribute.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main",
             true,
         ),
         (
             "cf:Catalog.Items.Form.Main.Item.Header.Event.OnChange",
-            "element.add",
+            "item.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main.Item.Header",
             true,
@@ -1168,7 +1219,7 @@ fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
         ),
         (
             "cf:Catalog.Items.Attribute.Code",
-            "element.add",
+            "item.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Attribute.Code",
             "`Kind.Name.Form.F[.Item.I…]`",
@@ -1270,35 +1321,27 @@ fn honest_can_on_form_items_and_events() {
     let list = "main:Catalog.Валюты.Form.ФормаСписка";
     let form_ops = [
         "form.remove",
-        "element.add",
-        "element.remove",
-        "formAttribute.add",
-        "formCommand.add",
+        "item.add",
+        "item.remove",
+        "attribute.add",
+        "command.add",
         "event.bind",
         "event.implement",
     ];
     let cases: [(String, &[&str]); 8] = [
         (
             form.to_string(),
-            &[
-                "form.remove",
-                "element.add",
-                "formAttribute.add",
-                "formCommand.add",
-            ],
+            &["form.remove", "item.add", "attribute.add", "command.add"],
         ),
         (
             format!("{form}.Item.ГруппаСлужебная"),
-            &["element.add", "element.remove"],
+            &["item.add", "item.remove"],
         ),
-        (format!("{form}.Item.ПолеНаименование"), &["element.remove"]),
-        (
-            format!("{form}.Item.ФормаКоманднаяПанель"),
-            &["element.add"],
-        ),
+        (format!("{form}.Item.ПолеНаименование"), &["item.remove"]),
+        (format!("{form}.Item.ФормаКоманднаяПанель"), &["item.add"]),
         (
             format!("{list}.Item.List.Item.ListCommandBar"),
-            &["element.add"],
+            &["item.add"],
         ),
         (
             format!("{form}.Event.OnOpen"),
@@ -1316,12 +1359,12 @@ fn honest_can_on_form_items_and_events() {
         ),
     ];
     let args = |op: &str, at: &str| match op {
-        "element.add" => {
+        "item.add" => {
             json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close"}]})
         }
-        "element.remove" | "form.remove" | "event.implement" => json!({"at": at}),
-        "formAttribute.add" => json!({"items": [{"name": "Проба", "type": "String"}]}),
-        "formCommand.add" => json!({"items": [{"name": "Проба"}]}),
+        "item.remove" | "form.remove" | "event.implement" => json!({"at": at}),
+        "attribute.add" => json!({"items": [{"name": "Проба", "type": "String"}]}),
+        "command.add" => json!({"items": [{"name": "Проба"}]}),
         "event.bind" => json!({"values": {"handler": "Проба"}}),
         other => panic!("{other} has no sample"),
     };
@@ -1353,12 +1396,12 @@ fn honest_can_on_form_items_and_events() {
                 serde_json::to_value(&result).unwrap()
             );
             // В поле элемент не добавить: отказ до планирования ведёт
-            // к ближайшему узлу, где `element.add` исполнима.
-            if op == "element.add" && at.ends_with(".Item.ПолеНаименование") {
+            // к ближайшему узлу, где `item.add` исполнима.
+            if op == "item.add" && at.ends_with(".Item.ПолеНаименование") {
                 assert_eq!(result.at.as_deref(), Some("ops[0].at"), "{result:?}");
                 assert_eq!(
                     result.next[0]["args"]["at"],
-                    format!("{form}.Can.element.add"),
+                    format!("{form}.Can.item.add"),
                     "{result:?}"
                 );
             }
@@ -1381,7 +1424,7 @@ fn honest_can_on_form_items_and_events() {
             // Командная панель принимает только кнопки: её контракт публикует
             // один вид, а поле ввода в ней планировщик отвергает.
             let command_bar = at.ends_with("КоманднаяПанель") || at.ends_with("ListCommandBar");
-            if *op == "element.add" {
+            if *op == "item.add" {
                 let kinds = contract["argsSchema"]["properties"]["items"]["items"]["anyOf"]
                     .as_array()
                     .unwrap()
@@ -1427,7 +1470,7 @@ fn retired_form_arguments_route_next_to_the_item_or_event_address() {
     for (at, op, args, location, next, branch, fixed) in [
         (
             list.to_string(),
-            "element.add",
+            "item.add",
             json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close", "into": "ListCommandBar"}]}),
             "ops[0].args.items[0].into",
             format!("{list}.Item.List.Item.ListCommandBar"),
@@ -1436,7 +1479,7 @@ fn retired_form_arguments_route_next_to_the_item_or_event_address() {
         ),
         (
             element.to_string(),
-            "element.remove",
+            "item.remove",
             json!({"items": [{"name": "ГруппаСлужебная"}]}),
             "ops[0].args.items[0].name",
             format!("{element}.Item.ГруппаСлужебная"),
@@ -1980,6 +2023,98 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
     );
     assert_eq!(refusal.next.len(), 1);
     assert_eq!(refusal.next[0]["args"]["at"], "cf:Catalog.Items");
+    // Операции элемента формы названы по узлу `Item` (#1465): снятые
+    // `element.*` называют `item.*` на ближайшем узле, где она исполнима:
+    // на самом адресе или на его предке, а `next` ведёт к её контракту.
+    let form = "cf:Catalog.Items.Form.Choice";
+    let add = json!({"items": [{"name": "Code", "type": "InputField", "path": "Code"}]});
+    for (at, retired, args, target) in [
+        (
+            form.to_string(),
+            "element.add",
+            add.clone(),
+            Some(form.to_string()),
+        ),
+        (
+            format!("{form}.Item.Code"),
+            "element.remove",
+            json!({}),
+            Some(format!("{form}.Item.Code")),
+        ),
+        (
+            format!("{form}.Item.Code.Event.OnChange"),
+            "element.add",
+            add.clone(),
+            Some(format!("{form}.Item.Code")),
+        ),
+        // На форме удалять нечего: элемент называет его адрес.
+        (form.to_string(), "element.remove", json!({}), None),
+        // Реквизит и команда формы названы по своему узлу, как у объекта.
+        (
+            format!("{form}.Item.Code"),
+            "formAttribute.add",
+            json!({"items": [{"name": "Comment", "type": "String"}]}),
+            Some(form.to_string()),
+        ),
+        (
+            form.to_string(),
+            "formCommand.add",
+            json!({"items": [{"name": "Refresh"}]}),
+            Some(form.to_string()),
+        ),
+        // Снятая операция формы не уводит к реквизиту объекта.
+        (
+            "cf:Catalog.Items".to_string(),
+            "formAttribute.add",
+            json!({"items": [{"name": "Comment", "type": "String"}]}),
+            None,
+        ),
+    ] {
+        let replacement = match retired {
+            "formAttribute.add" => "attribute.add".to_string(),
+            "formCommand.add" => "command.add".to_string(),
+            other => other.replace("element.", "item."),
+        };
+        let request = apply_request(&at, retired, args);
+        let refusal = preflight_apply_operations(&request, traits, &|_| None)
+            .expect_err("a retired operation refuses before planning");
+        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{retired}");
+        assert_eq!(refusal.at.as_deref(), Some("ops[0].op"), "{retired}");
+        let message = refusal.diagnostics[0]["message"].as_str().unwrap();
+        assert_eq!(refusal.next.len(), 1, "{retired} at {at}");
+        match target {
+            Some(target) => {
+                assert!(
+                    message.contains(&format!("call `{replacement}` at `{target}`")),
+                    "{message}"
+                );
+                assert_eq!(
+                    refusal.next[0]["args"]["at"],
+                    format!("{target}.Can.{replacement}"),
+                    "{retired} at {at}"
+                );
+            }
+            None => {
+                assert!(
+                    message.contains(&format!("call `{replacement}`, which addresses")),
+                    "{message}"
+                );
+                assert_eq!(refusal.next[0]["args"]["at"], at, "{retired} at {at}");
+            }
+        }
+    }
+    // Общее имя без исполнимого узла в цепочке адреса называет формы
+    // адреса обеих записей: объекта и формы.
+    let request = apply_request(
+        "cf:Constant.Rate",
+        "attribute.add",
+        json!({"items": [{"name": "Comment", "type": "String"}]}),
+    );
+    let refusal = preflight_apply_operations(&request, traits, &|_| None)
+        .expect_err("attribute.add does not apply to a constant");
+    let message = refusal.diagnostics[0]["message"].as_str().unwrap();
+    assert!(message.contains("`Kind.Name.Form.F`"), "{message}");
+    assert!(message.contains(" or "), "{message}");
 }
 
 /// Новые узлы схемы (#1357): снятый `group`, `parent` или `name` ведёт

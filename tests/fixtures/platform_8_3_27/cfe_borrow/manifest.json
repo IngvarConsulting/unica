@@ -12,6 +12,11 @@
       "sha256": "0ce535de5f0b4295212b7c20de8514944b33f6566143ad1632f11024c819313b",
       "size": 2846
     },
+    "extension-enum-value.xml": {
+      "sha256": "913e8093c77a6c8d1b08843e8fcd3eab1506bf845afa1ea164a3b4d688ac21ce",
+      "size": 2567,
+      "source": "Исходный экспорт расширения после живого цикла ibcmd 8.3.27.2074; фиксирует канонический EnumValue с BOM и CRLF (#1396)."
+    },
     "extension-common-module.xml": {
       "sha256": "5539cbafbe3c4545d2192bf8ed4d42ad97a7816ef041d61839764f92de5c662e",
       "size": 1854,

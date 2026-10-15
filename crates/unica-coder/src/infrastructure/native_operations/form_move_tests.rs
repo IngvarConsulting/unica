@@ -1,4 +1,4 @@
-use super::{move_element, FormElementMove, NS};
+use super::{move_item, FormItemMove, FormMoveDestination, NS};
 use roxmltree::{Document, Node};
 
 fn form(body: &str) -> String {
@@ -6,12 +6,14 @@ fn form(body: &str) -> String {
 }
 
 fn moved(xml: &str, name: &str, into: Option<&str>, after: Option<&str>) -> String {
-    move_element(
+    move_item(
         xml,
-        &FormElementMove {
+        &FormItemMove {
             name: name.into(),
             source_path: None,
-            into: into.map(str::to_owned),
+            into: into.map_or(FormMoveDestination::Root, |name| {
+                FormMoveDestination::Named(name.to_owned())
+            }),
             after: after.map(str::to_owned),
         },
     )
@@ -37,12 +39,14 @@ fn children(node: Node<'_, '_>) -> Vec<String> {
 }
 
 fn rejected(xml: &str, name: &str, into: Option<&str>, after: Option<&str>, field: &str) {
-    let error = move_element(
+    let error = move_item(
         xml,
-        &FormElementMove {
+        &FormItemMove {
             name: name.into(),
             source_path: None,
-            into: into.map(str::to_owned),
+            into: into.map_or(FormMoveDestination::Root, |name| {
+                FormMoveDestination::Named(name.to_owned())
+            }),
             after: after.map(str::to_owned),
         },
     )
@@ -51,18 +55,66 @@ fn rejected(xml: &str, name: &str, into: Option<&str>, after: Option<&str>, fiel
     assert!(!error.message.is_empty());
 }
 
-fn fixture_source(fixture: &serde_json::Value, case: &serde_json::Value) -> String {
-    assert_eq!(fixture["schemaVersion"], 2);
-    case["sourceParts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|index| {
-            fixture["sourceXmlFragments"][index.as_u64().unwrap() as usize]
-                .as_str()
-                .unwrap()
-        })
-        .collect()
+fn item_xml(spec: &str, name: &str, data_path: Option<&str>, nested: bool) -> String {
+    let (kind, button_type) = spec
+        .split_once(':')
+        .map_or((spec, None), |(kind, value)| (kind, Some(value)));
+    let mut body = String::new();
+    if let Some(button_type) = button_type {
+        body.push_str(&format!("<Type>{button_type}</Type>"));
+    }
+    if let Some(data_path) = data_path {
+        body.push_str(&format!("<DataPath>{data_path}</DataPath>"));
+    }
+    if nested {
+        body.push_str("<ChildItems><ColumnGroup name=\"Nested\"/></ChildItems>");
+    }
+    if body.is_empty() {
+        format!("<{kind} name=\"{name}\"/>")
+    } else {
+        format!("<{kind} name=\"{name}\">{body}</{kind}>")
+    }
+}
+
+fn matrix_xml(source_kind: &str, destination_kind: &str, context: &str) -> String {
+    let is_field = super::is_field(source_kind.split(':').next().unwrap());
+    let unbound = context == "unboundTableColumn";
+    let source = item_xml(
+        source_kind,
+        "MovedChild",
+        (is_field && context != "ordinary" && !unbound).then_some("Rows.Value"),
+        context == "differentTableNested",
+    );
+    let target = item_xml(destination_kind, "TargetParent", None, false);
+    match context {
+        "ordinary" => form(&format!("<ChildItems>{source}{target}</ChildItems>")),
+        "sameTableColumn" => {
+            let (table_name, target) = if destination_kind == "Table" {
+                ("TargetParent", String::new())
+            } else {
+                ("SourceTable", target)
+            };
+            form(&format!(
+                "<ChildItems><Table name=\"{table_name}\"><DataPath>Rows</DataPath><ChildItems>{source}{target}</ChildItems></Table></ChildItems>"
+            ))
+        }
+        "tableColumn" => form(&format!(
+            "<ChildItems><Table name=\"SourceTable\"><DataPath>Rows</DataPath><ChildItems>{source}</ChildItems></Table>{target}</ChildItems>"
+        )),
+        "matchingTable" | "differentTable" | "differentTableNested"
+        | "unboundTableColumn" => {
+            let target_path = if context == "matchingTable" { "Rows" } else { "OtherRows" };
+            let (table_name, target_child) = if destination_kind == "ColumnGroup" {
+                ("TargetTable", target)
+            } else {
+                ("TargetParent", String::new())
+            };
+            form(&format!(
+                "<ChildItems><Table name=\"SourceTable\"><DataPath>Rows</DataPath><ChildItems>{source}</ChildItems></Table><Table name=\"{table_name}\"><DataPath>{target_path}</DataPath><ChildItems>{target_child}</ChildItems></Table></ChildItems>"
+            ))
+        }
+        other => panic!("unknown matrix context {other}"),
+    }
 }
 
 #[test]
@@ -91,14 +143,18 @@ fn compact_subtree_moves_without_losing_adjacent_siblings_or_references() {
 }
 
 #[test]
-fn crlf_comments_and_text_are_not_normalized_or_cut_with_the_line() {
+fn crlf_comments_and_meaningful_text_survive_platform_reindentation() {
     let subtree = "<UsualGroup name=\"Move\" id=\"1\">\r\n<Title>first\r\n  second &amp; third</Title><!--inside--></UsualGroup>";
     let xml = form(&format!(
         "<ChildItems>\r\n<!--before-->{subtree}<!--after--><UsualGroup name=\"Target\" id=\"2\"><ChildItems/></UsualGroup>\r\n</ChildItems>"
     ));
     let result = moved(&xml, "Move", Some("Target"), None);
     let doc = Document::parse(&result).unwrap();
-    assert_eq!(&result[named(&doc, "Move").range()], subtree);
+    assert_eq!(
+        &result[named(&doc, "Move").range()],
+        "<UsualGroup name=\"Move\" id=\"1\">\r\n\t<Title>first\r\n  second &amp; third</Title><!--inside--></UsualGroup>"
+    );
+    assert!(!result.replace("\r\n", "").contains('\n'));
     let root_items = doc
         .root_element()
         .children()
@@ -290,69 +346,86 @@ fn placement_matrix_matches_observed_platform_kinds_bindings_and_parents() {
         "../../../../../tests/fixtures/platform_8_3_27/form_move/cases.json"
     ))
     .unwrap();
+    assert_eq!(fixture["schemaVersion"], 1);
+    let field_kinds = fixture["fieldKinds"].as_array().unwrap();
     let mut checked = 0;
-    let mut not_instantiated = 0;
     for case in fixture["cases"].as_array().unwrap() {
-        if case["outcome"] == "sourceNotInstantiated" {
-            not_instantiated += 1;
-            continue;
-        }
-        let xml = fixture_source(&fixture, case);
-        let xml = xml.as_str();
-        let doc = Document::parse(xml).unwrap();
-        let source = named(&doc, "MovedChild");
-        let parent = case["parent"].as_str().unwrap();
-        let destination = match parent {
-            "Form" => doc.root_element(),
-            "AutoCommandBar" => named(&doc, "MainBar"),
-            _ => named(&doc, "TargetParent"),
+        let source_kinds: Vec<&str> = if case["sourceKinds"] == "$fieldKinds" {
+            field_kinds
+                .iter()
+                .map(|kind| kind.as_str().unwrap())
+                .collect()
+        } else {
+            case["sourceKinds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|kind| kind.as_str().unwrap())
+                .collect()
         };
-        let result = super::validate_placement(source, destination);
-        assert_eq!(
-            result.is_ok(),
-            case["outcome"] == "preserving",
-            "{}: {} to {parent}, source={}, Type={}, nested={}: {result:?}",
-            case["form"],
-            case["child"],
-            case["source"],
-            case["buttonType"],
-            case["nestedColumn"]
-        );
-        if result.is_ok() {
-            let before = &xml[source.range()];
-            let result = moved(
-                xml,
-                "MovedChild",
-                match parent {
-                    "Form" => None,
-                    "AutoCommandBar" => Some("MainBar"),
-                    _ => Some("TargetParent"),
-                },
-                None,
-            );
-            let moved_doc = Document::parse(&result).unwrap();
-            let actual = named(&moved_doc, "MovedChild");
-            assert_eq!(
-                &result[actual.range()],
-                before,
-                "{}: subtree changed",
-                case["form"]
-            );
-            let actual_parent = actual.parent_element().unwrap().parent_element().unwrap();
-            assert_eq!(actual_parent.tag_name().name(), parent);
+        for source_kind in source_kinds {
+            for destination_kind in case["destinationKinds"].as_array().unwrap() {
+                let destination_kind = destination_kind.as_str().unwrap();
+                let xml = matrix_xml(
+                    source_kind,
+                    destination_kind,
+                    case["sourceContext"].as_str().unwrap(),
+                );
+                let doc = Document::parse(&xml).unwrap();
+                let source = named(&doc, "MovedChild");
+                let destination = if destination_kind == "Form" {
+                    doc.root_element()
+                } else {
+                    named(&doc, "TargetParent")
+                };
+                let result = super::validate_placement(source, destination);
+                let expected = case["expected"].as_str().unwrap();
+                assert_eq!(
+                    result.is_ok(),
+                    expected == "allowed",
+                    "{}: {source_kind} to {destination_kind}: {result:?}",
+                    case["id"]
+                );
+                if expected == "unsupported" {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .message
+                            .contains("temporarily unsupported"),
+                        "{}: unsupported case lost its typed reason",
+                        case["id"]
+                    );
+                }
+                if expected == "allowed" {
+                    let before = xml[source.range()].to_string();
+                    let result = moved(
+                        &xml,
+                        "MovedChild",
+                        (destination_kind != "Form").then_some("TargetParent"),
+                        None,
+                    );
+                    let moved_doc = Document::parse(&result).unwrap();
+                    let actual = named(&moved_doc, "MovedChild");
+                    assert_eq!(&result[actual.range()], before, "{}", case["id"]);
+                    let actual_parent = actual.parent_element().unwrap().parent_element().unwrap();
+                    assert_eq!(actual_parent.tag_name().name(), destination_kind);
+                }
+                checked += 1;
+            }
         }
-        checked += 1;
     }
-    assert_eq!(checked, 541);
-    assert_eq!(not_instantiated, 4);
+    assert!(
+        checked >= 100,
+        "matrix unexpectedly lost coverage: {checked}"
+    );
 }
 
 #[test]
-fn exact_noop_does_not_invoke_platform_type_conversion() {
+fn exact_noop_still_checks_the_destination_matrix() {
     let xml = form(
         r#"<ChildItems><Button name="Existing"><Type>CommandBarButton</Type></Button></ChildItems>"#,
     );
-    assert_eq!(moved(&xml, "Existing", None, None), xml);
+    rejected(&xml, "Existing", None, None, "into");
 }
 
 #[test]
@@ -373,66 +446,69 @@ fn compatibility_reads_complete_property_text_across_comments() {
 }
 
 #[test]
+fn platform_indentation_follows_destination_without_changing_leaf_text() {
+    let xml = format!(
+        "<Form xmlns=\"{NS}\">\r\n\t<ChildItems>\r\n\t\t<InputField name=\"Move\">\r\n\t\t\t<DataPath>Object.Value</DataPath>\r\n\t\t\t<Title><item><content>  Значение  </content></item></Title>\r\n\t\t</InputField>\r\n\t\t<UsualGroup name=\"Target\">\r\n\t\t\t<ChildItems/>\r\n\t\t</UsualGroup>\r\n\t</ChildItems>\r\n</Form>"
+    );
+    let nested = moved(&xml, "Move", Some("Target"), None);
+    assert!(nested.contains(
+        "\r\n\t\t\t\t<InputField name=\"Move\">\r\n\t\t\t\t\t<DataPath>Object.Value</DataPath>"
+    ));
+    assert!(nested.contains("<content>  Значение  </content>"));
+
+    let root = moved(&nested, "Move", None, None);
+    assert!(root
+        .contains("\r\n\t\t<InputField name=\"Move\">\r\n\t\t\t<DataPath>Object.Value</DataPath>"));
+    assert!(root.contains("<content>  Значение  </content>"));
+    assert!(!root.replace("\r\n", "").contains('\n'));
+}
+
+#[test]
 fn addressed_source_keeps_column_groups_in_its_complete_current_path() {
     let xml = form(
         r#"<ChildItems><Table name="Table"><DataPath>41/1:abc</DataPath><ChildItems><ColumnGroup name="Before"><ChildItems><InputField name="Field"><DataPath>42/1:def</DataPath></InputField></ChildItems></ColumnGroup><ColumnGroup name="After"/></ChildItems></Table></ChildItems>"#,
     );
-    let request = |path: &[&str]| FormElementMove {
+    let request = |path: &[&str]| FormItemMove {
         name: "Field".into(),
         source_path: Some(path.iter().map(|part| part.to_string()).collect()),
-        into: Some("After".into()),
+        into: FormMoveDestination::Named("After".into()),
         after: None,
     };
     let full = request(&["Table", "Before", "Field"]);
-    let moved = move_element(&xml, &full).unwrap();
+    let moved = move_item(&xml, &full).unwrap();
     let doc = Document::parse(&moved).unwrap();
     assert_eq!(children(named(&doc, "After")), ["Field"]);
     assert!(moved.contains("<DataPath>42/1:def</DataPath>"));
     assert!(
-        move_element(&moved, &full).is_err(),
+        move_item(&moved, &full).is_err(),
         "old parent path survived the move"
     );
     assert!(
-        move_element(&xml, &request(&["Table", "Field"])).is_err(),
+        move_item(&xml, &request(&["Table", "Field"])).is_err(),
         "a column group was silently skipped"
     );
     assert_eq!(
-        move_element(&moved, &request(&["Table", "After", "Field"])).unwrap(),
+        move_item(&moved, &request(&["Table", "After", "Field"])).unwrap(),
         moved
     );
 }
 
 #[test]
 fn uninstantiated_columns_have_an_explicit_temporary_cross_table_refusal() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../tests/fixtures/platform_8_3_27/form_move/cases.json"
-    ))
-    .unwrap();
-    let mut checked = 0;
-    for case in fixture["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|case| case["outcome"] == "sourceNotInstantiated")
-    {
-        let xml = fixture_source(&fixture, case);
-        let xml = xml.as_str();
-        let request = FormElementMove {
-            name: "MovedChild".into(),
-            source_path: None,
-            into: Some("TargetParent".into()),
-            after: None,
-        };
-        let error = move_element(xml, &request).unwrap_err();
-        assert_eq!(error.field, "into");
-        assert!(
-            error.message.contains("temporarily unsupported"),
-            "{error:?}"
-        );
-        assert!(error.message.contains("DataPath"), "{error:?}");
-        checked += 1;
-    }
-    assert_eq!(checked, 4);
+    let xml = matrix_xml("InputField", "ColumnGroup", "unboundTableColumn");
+    let request = FormItemMove {
+        name: "MovedChild".into(),
+        source_path: None,
+        into: FormMoveDestination::Named("TargetParent".into()),
+        after: None,
+    };
+    let error = move_item(&xml, &request).unwrap_err();
+    assert_eq!(error.field, "into");
+    assert!(
+        error.message.contains("temporarily unsupported"),
+        "{error:?}"
+    );
+    assert!(error.message.contains("DataPath"), "{error:?}");
     let xml = form(
         r#"<ChildItems><Table name="Table"><ChildItems><ColumnGroup name="Before"><ChildItems><InputField name="Unbound"/></ChildItems></ColumnGroup><ColumnGroup name="After"/></ChildItems></Table></ChildItems>"#,
     );

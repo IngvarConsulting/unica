@@ -753,15 +753,26 @@ impl RetainedDirectoryCapability {
         filesystem_case_sensitive_for_directory(&self.retained.directory)
     }
 
-    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+    /// Проверяет, указывает ли имя на удерживаемый каталог.
+    ///
+    /// `false` означает только завершённое сравнение двух разных физических
+    /// идентичностей. Ошибка открытия или чтения метаданных остаётся `Err`,
+    /// потому что по ней нельзя заключать, что имя было подменено.
+    pub(crate) fn named_identity_matches(&self) -> io::Result<bool> {
         let rebound = if let Some(parent) = &self.parent {
-            parent.directory.validate_named_identity()?;
+            if !parent.directory.named_identity_matches()? {
+                return Ok(false);
+            }
             open_directory_child_nofollow(&parent.directory.retained.directory, &parent.name)?
         } else {
             open_absolute_directory_path_nofollow(&self.path)?
         };
         let rebound_identity = file_identity(&rebound)?;
-        if rebound_identity != self.retained.identity {
+        Ok(rebound_identity == self.retained.identity)
+    }
+
+    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+        if !self.named_identity_matches()? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "named directory identity changed after capability admission",
@@ -915,7 +926,8 @@ impl RetainedDirectoryCapability {
     /// fresh transaction-private quarantine with no replacement, then the
     /// moved identity is observed. If a concurrent directory was moved, it is
     /// restored to the public name when possible and never deleted here.
-    /// Windows keeps its handle-based directory deletion.
+    /// Windows deletes through the verified handle with POSIX semantics, so
+    /// the name leaves the parent even while another handle stays open.
     pub(crate) fn remove_empty_named_identity_relative_for_retained_apply(
         &self,
         quarantine_name: &std::ffi::OsStr,
@@ -987,7 +999,17 @@ impl RetainedDirectoryCapability {
             }
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let _ = quarantine_name;
+            remove_identity_bound_empty_directory_child_unlinking_name(
+                &parent.directory.retained.directory,
+                &parent.name,
+                self.retained.identity,
+                &self.retained.directory,
+            )
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = quarantine_name;
             remove_identity_bound_empty_directory_child(
@@ -1647,7 +1669,9 @@ impl RetainedRegularFileCapability {
     /// name to Unix's validate-then-`unlinkat` race. Unix first moves the
     /// identity to a unique transaction-owned quarantine name, verifies the
     /// move outcome, and only then performs best-effort artifact deletion.
-    /// Windows keeps its stronger handle-based delete. Portable Unix has no
+    /// Windows keeps its stronger handle-based delete, with POSIX semantics so
+    /// that no delete-pending name stays behind while another handle to the
+    /// file is open (issue #1463). Portable Unix has no
     /// unlink-by-descriptor operation: the final unlink of the verified,
     /// transaction-unique quarantine is still name-based. A hostile same-user
     /// process that discovers and swaps that internal name in the final gap can
@@ -1702,7 +1726,20 @@ impl RetainedRegularFileCapability {
                     )
                 })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // A saved plan, a cache participant or another reader of this
+            // workspace may still hold the file. Its name must leave the
+            // source tree now, not when the last handle closes (issue #1463).
+            let _ = quarantine_name;
+            remove_identity_bound_regular_child_unlinking_name(
+                &self.parent.retained.directory,
+                &self.name,
+                self.identity,
+                &self.file,
+            )
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = quarantine_name;
             self.remove_named_identity_relative()
@@ -3793,6 +3830,61 @@ fn open_child_for_delete_and_attribute_write(
 #[cfg(windows)]
 pub(crate) fn delete_open_child(file: &fs::File) -> io::Result<()> {
     set_delete_disposition(file)
+}
+
+/// Deletes the opened child and removes its name from the parent at once,
+/// even while other handles to the same object remain open.
+///
+/// The classic disposition of [`delete_open_child`] leaves the name in the
+/// directory as delete-pending until the last handle closes; any reader that
+/// opens that name gets `ERROR_ACCESS_DENIED` (issue #1463). POSIX delete
+/// semantics unlinks the name immediately and keeps the data only for the open
+/// handles. A volume that does not support it falls back to the classic
+/// disposition.
+#[cfg(windows)]
+pub(crate) fn delete_open_child_unlinking_name(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_DISPOSITION_INFORMATION_EX: u32 = 64;
+    const FILE_DISPOSITION_FLAG_DELETE: u32 = 0x0000_0001;
+    const FILE_DISPOSITION_FLAG_POSIX_SEMANTICS: u32 = 0x0000_0002;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002_u32 as i32;
+    const STATUS_INVALID_INFO_CLASS: i32 = 0xC000_0003_u32 as i32;
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
+    const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BB_u32 as i32;
+    const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010_u32 as i32;
+
+    let mut flags = FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS;
+    let mut status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    // SAFETY: file is an owned handle opened with DELETE access by the delete-open helpers, and
+    // flags/status remain writable for the duration of the native call. Once marked, the only
+    // subsequent operation on the handle is Drop/close.
+    let result = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            (&mut flags as *mut u32).cast(),
+            std::mem::size_of_val(&flags) as u32,
+            FILE_DISPOSITION_INFORMATION_EX,
+        )
+    };
+    if result >= 0 {
+        return Ok(());
+    }
+    if matches!(
+        result,
+        STATUS_NOT_IMPLEMENTED
+            | STATUS_INVALID_INFO_CLASS
+            | STATUS_INVALID_PARAMETER
+            | STATUS_NOT_SUPPORTED
+            | STATUS_INVALID_DEVICE_REQUEST
+    ) {
+        return set_delete_disposition(file);
+    }
+    Err(nt_status_error(result))
 }
 
 #[cfg(windows)]
@@ -6098,15 +6190,51 @@ fn restore_regular_child_from_cleanup_quarantine(
 }
 
 #[cfg(windows)]
-#[allow(
-    clippy::permissions_set_readonly_false,
-    reason = "the verified child handle changes only FILE_ATTRIBUTE_READONLY before deletion"
-)]
 pub(crate) fn remove_identity_bound_regular_child(
     parent: &fs::File,
     name: &std::ffi::OsStr,
     expected_identity: FileIdentity,
     retained: &fs::File,
+) -> io::Result<()> {
+    remove_identity_bound_regular_child_with(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        delete_open_child,
+    )
+}
+
+/// Same identity-bound removal, but the name leaves the directory at once even
+/// while another handle to the file stays open (see
+/// [`delete_open_child_unlinking_name`]).
+#[cfg(windows)]
+pub(crate) fn remove_identity_bound_regular_child_unlinking_name(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+) -> io::Result<()> {
+    remove_identity_bound_regular_child_with(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        delete_open_child_unlinking_name,
+    )
+}
+
+#[cfg(windows)]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "the verified child handle changes only FILE_ATTRIBUTE_READONLY before deletion"
+)]
+fn remove_identity_bound_regular_child_with(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    delete: fn(&fs::File) -> io::Result<()>,
 ) -> io::Result<()> {
     let named = open_child_for_delete_and_attribute_write(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::RegularFile
@@ -6134,7 +6262,7 @@ pub(crate) fn remove_identity_bound_regular_child(
         permissions.set_readonly(false);
         named.set_permissions(permissions)?;
     }
-    delete_open_child(&named)
+    delete(&named)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -6180,6 +6308,41 @@ pub(crate) fn remove_identity_bound_empty_directory_child(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
+    remove_identity_bound_empty_directory_child_with(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        delete_open_child,
+    )
+}
+
+/// Same identity-bound removal of an empty directory whose name leaves its
+/// parent at once even while another handle to it stays open.
+#[cfg(windows)]
+pub(crate) fn remove_identity_bound_empty_directory_child_unlinking_name(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+) -> io::Result<()> {
+    remove_identity_bound_empty_directory_child_with(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        delete_open_child_unlinking_name,
+    )
+}
+
+#[cfg(windows)]
+fn remove_identity_bound_empty_directory_child_with(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    delete: fn(&fs::File) -> io::Result<()>,
+) -> io::Result<()> {
     let named = open_any_child_for_delete(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::Directory
         || file_identity(&named)? != expected_identity
@@ -6199,7 +6362,7 @@ pub(crate) fn remove_identity_bound_empty_directory_child(
             "directory child identity changed; replacement left untouched",
         ));
     }
-    delete_open_child(&named)
+    delete(&named)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -8042,6 +8205,67 @@ mod tests {
         assert_eq!(hard_link_count(&target_file).unwrap(), 2);
 
         drop(target_file);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Issue #1463: a retained-apply cleanup may run while another owner (a
+    /// pending saved plan, a reader) still holds the file or directory. Its
+    /// name must leave the parent at once; on Windows a delete-pending name
+    /// stayed until the daemon exited and could not be opened by anyone.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_apply_cleanup_leaves_no_name_while_another_handle_is_open() {
+        use super::{RetainedChildCapability, RetainedDirectoryCapability};
+        use std::ffi::OsStr;
+        use std::io::Read;
+
+        let root = unique_temp_root("retained-apply-cleanup-open-handle");
+        fs::create_dir_all(root.join("Created")).unwrap();
+        fs::write(root.join(".unica-apply-recovery"), b"preimage").unwrap();
+        let canonical = fs::canonicalize(&root).unwrap();
+        let parent = RetainedDirectoryCapability::open(&canonical).unwrap();
+        let Ok(RetainedChildCapability::RegularFile(recovery)) =
+            parent.retain_immediate_child_nofollow(OsStr::new(".unica-apply-recovery"))
+        else {
+            panic!("fixture recovery file must be a regular child");
+        };
+        let Ok(RetainedChildCapability::Directory(created)) =
+            parent.retain_immediate_child_nofollow(OsStr::new("Created"))
+        else {
+            panic!("fixture directory must be a directory child");
+        };
+        let mut other_file = fs::File::open(canonical.join(".unica-apply-recovery")).unwrap();
+        let other_directory =
+            RetainedDirectoryCapability::open(&canonical.join("Created")).unwrap();
+
+        recovery
+            .remove_named_identity_relative_for_retained_apply(OsStr::new(
+                ".unica-apply-quarantine",
+            ))
+            .unwrap();
+        created
+            .remove_empty_named_identity_relative_for_retained_apply(OsStr::new(
+                ".unica-apply-dir-cleanup-quarantine",
+            ))
+            .unwrap();
+
+        let names = fs::read_dir(&canonical)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert!(
+            names.is_empty(),
+            "cleanup left names while other handles stay open: {names:?}"
+        );
+        let mut bytes = Vec::new();
+        other_file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"preimage", "the other owner keeps its open data");
+
+        drop(other_file);
+        drop(other_directory);
+        drop(recovery);
+        drop(created);
+        drop(parent);
         fs::remove_dir_all(root).unwrap();
     }
 

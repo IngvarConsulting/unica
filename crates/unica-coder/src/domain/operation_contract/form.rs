@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 const FORM_HELP: &str = "skills/form-edit/SKILL.md";
 const EVENT_HELP: &str = "skills/form-events/SKILL.md";
 
-/// Вид элемента, который создаёт `element.add`: имя вида в `type`, его
+/// Вид элемента, который создаёт `item.add`: имя вида в `type`, его
 /// синонимы и ключи, которые генератор элемента (`form::emit_form_*`)
 /// записывает в XML этого вида.
 pub(crate) struct FormElementKind {
@@ -206,8 +206,8 @@ pub(crate) const FORM_ELEMENT_KINDS: &[FormElementKind] = &[
 ];
 
 /// Ключи вложенного дерева, companion-содержимого и событий, которые
-/// `element.add` больше не принимает (Р2, #1447): элемент добавляется один,
-/// вложенный — отдельным `element.add` на адресе контейнера, обработчик —
+/// `item.add` больше не принимает (Р2, #1447): элемент добавляется один,
+/// вложенный — отдельным `item.add` на адресе контейнера, обработчик —
 /// `event.bind` на адресе события.
 pub(crate) const FORM_ELEMENT_NESTED_KEYS: &[&str] = &[
     "children",
@@ -457,8 +457,11 @@ const FORM_SLOTS: [&str; 13] = [
 ];
 
 impl OperationContract {
-    /// Контракты операций формы; `formCommand.add` — из #1439.
+    /// Контракты операций формы; `command.add` — из #1439.
     pub(crate) fn form(op: &str) -> Option<Self> {
+        if op == "item.move" {
+            return Some(Self::form_move());
+        }
         let at = || ("at", text(true));
         let (schema, target, effect, notes, example_args) = match op {
             "form.add" => (
@@ -469,7 +472,7 @@ impl OperationContract {
                 ], &["name"])}))], &["items"]),
                 "The form owner: <source-set>:<Kind>.<Name>. Read its Form branch before choosing a new name.",
                 "Create an empty form with its descriptor, Form.xml and module, register it in the owner and fill the owner's empty default slot of its purpose. ListForm, ChoiceForm and RecordForm/RecordSetForm have their own purpose; ObjectForm, SettingsForm, FolderForm and Generic all create an object-purpose form and fill DefaultObjectForm (DefaultForm for a report or data processor): point other slots with form.set.",
-                "Fill the new form with element.add, formAttribute.add and event.bind at its address after the plan is executed; within one apply call a later operation may already address it.",
+                "Fill the new form with item.add, attribute.add and event.bind at its address after the plan is executed; within one apply call a later operation may already address it.",
                 json!({"items":[{"name":"Sample","type":"ObjectForm"}]}),
             ),
             "form.set" => {
@@ -495,28 +498,28 @@ impl OperationContract {
                 "The form is named by its address; the operation takes no other arguments.",
                 json!({}),
             ),
-            "element.add" => (
+            "item.add" => (
                 object(&[at(), ("items", json!({"type":"array","minItems":1,"items":element_item_schema(&[])}))], &["items"]),
                 "The form <source-set>:<Kind>.<Name>.Form.<Form> or its container item ….Item.<Group>[.Item.<Nested>…] (group, pages, page, table, command bar).",
                 "Add each listed element, without nested content, at the end of the addressed container or after its sibling `after`. Identifiers and companion items (ContextMenu, ExtendedTooltip, table additions) are written by the operation.",
-                "Each item is one element; its keys depend on its type. A nested element is added by a separate element.add at the address of its container; a handler is bound with event.bind at ….Item.<Element>.Event.<Event>. children, columns, elements, commandBar, autoCmdBar, autoCommandBar, contextMenu, extendedTooltip, html, on and handlers are refused. A command bar takes only buttons. Cross-field rules are checked by the planner: dynamic-list keys of a table need _dynList: true; a button takes one of command, commandName, stdCommand.",
+                "Each item is one element; its keys depend on its type. A nested element is added by a separate item.add at the address of its container; a handler is bound with event.bind at ….Item.<Element>.Event.<Event>. children, columns, elements, commandBar, autoCmdBar, autoCommandBar, contextMenu, extendedTooltip, html, on and handlers are refused. A command bar takes only buttons. Cross-field rules are checked by the planner: dynamic-list keys of a table need _dynList: true; a button takes one of command, commandName, stdCommand.",
                 json!({"items":[{"name":"Sample","type":"InputField"}]}),
             ),
-            "element.remove" => (
+            "item.remove" => (
                 object(&[at()], &[]),
                 "The existing item: <source-set>:<Kind>.<Name>.Form.<Form>.Item.<Element>[.Item.<Nested>…].",
                 "Remove the item with its nested items and companions.",
                 "The item is named by its address; the operation takes no other arguments.",
                 json!({}),
             ),
-            "formAttribute.add" => (
+            "attribute.add" => (
                 object(&[at(), ("items", json!({"type":"array","minItems":1,"items":attribute_item_schema()}))], &["items"]),
                 "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Attribute branch before choosing names.",
                 "Add form attributes with the listed properties.",
                 "View, edit, functional options, use-always fields, save, value type, dynamic-list settings and role-specific visibility are not written by this operation and are refused.",
                 json!({"items":[{"name":"Sample","type":"String"}]}),
             ),
-            "formCommand.add" => (
+            "command.add" => (
                 object(
                     &[
                         at(),
@@ -543,7 +546,7 @@ impl OperationContract {
                     &["items"],
                 ),
                 "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Command branch before choosing names.",
-                "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with element.add.",
+                "Add form commands with the listed properties, written in the platform's FormCommand order. Place a button bound to the command with item.add.",
                 "A property outside this schema is refused before any write; use, functionalOptions, currentRowUse, modifiesSavedData and the associated table are not written by this operation.",
                 json!({"items":[{"name":"Refresh","title":"Refresh","tooltip":"Refresh the list","shortcut":"F5","picture":"StdPicture.Refresh","representation":"TextPicture"}]}),
             ),
@@ -570,10 +573,10 @@ impl OperationContract {
         })
     }
 
-    /// Контракт `element.add` на командной панели: она принимает только
+    /// Контракт `item.add` на командной панели: она принимает только
     /// кнопки, и контракт узла публикует один вид.
-    pub(crate) fn form_element_add_in_command_bar() -> Self {
-        let mut contract = Self::form("element.add").expect("element.add contract");
+    pub(crate) fn form_item_add_in_command_bar() -> Self {
+        let mut contract = Self::form("item.add").expect("item.add contract");
         contract.schema["properties"]["items"]["items"] = element_item_schema(&["Button"]);
         contract.target = "A command bar: the form's ….Item.<Form>КоманднаяПанель, a table's ….Item.<Table>.Item.<Table>КоманднаяПанель, or a CommandBar item.";
         contract.example_args =
@@ -625,8 +628,8 @@ mod tests {
     /// Ключ, которого писатель вида не пишет, отказывает по точному пути,
     /// а не по общему «ни одна альтернатива не подошла» (#1447).
     #[test]
-    fn element_add_refuses_a_key_of_another_kind_at_its_exact_path() {
-        let contract = OperationContract::form("element.add").unwrap();
+    fn item_add_refuses_a_key_of_another_kind_at_its_exact_path() {
+        let contract = OperationContract::form("item.add").unwrap();
         for (item, path) in [
             (
                 json!({"name":"A","type":"InputField","backColor":"web:Red"}),
@@ -692,11 +695,12 @@ mod tests {
             "form.add",
             "form.set",
             "form.remove",
-            "element.add",
-            "element.remove",
-            "formAttribute.add",
+            "item.add",
+            "item.remove",
+            "item.move",
+            "attribute.add",
             "event.bind",
-            "formCommand.add",
+            "command.add",
         ] {
             let contract = OperationContract::form(op).unwrap();
             assert!(
@@ -710,7 +714,7 @@ mod tests {
 
     #[test]
     fn form_attribute_add_refuses_properties_it_does_not_write() {
-        let contract = OperationContract::form("formAttribute.add").unwrap();
+        let contract = OperationContract::form("attribute.add").unwrap();
         for key in [
             "view",
             "edit",

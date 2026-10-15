@@ -10,7 +10,7 @@ use super::v13_call_graph::{
     declare_method_branches, fetch_summary, module_file_for_placed, placed_for_module_file,
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
-use super::v13_read_modes::{attach_can, operation_node, search_scope_prefix, source_backed};
+use super::v13_read_modes::{attach_can, operation_node_with, search_scope_prefix, source_backed};
 use crate::application::invocation_store::ToolIdentity;
 use crate::application::operation_descriptors::ExecutionClass;
 use crate::application::result_store::{
@@ -739,15 +739,38 @@ impl CanonicalV13ReadService {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    operation_node(&data, op, &owner_at, can_context).map_err(|error| {
-                        let mut refused = ViewError::new(error.code(), error.to_string());
-                        refused.set_next(json!({
-                            "tool": "unica.view",
-                            "args": {"at": owner_at},
-                            "reason": "операции, применимые к этому узлу",
-                        }));
-                        refused
-                    })
+                    // Роль элемента-предка читается его узлом: маршрут снятой
+                    // операции не ведёт в поле, куда элемент не добавить.
+                    let ancestor_role = |item: &QualifiedAddress| {
+                        if item.segments().last()?.kind() != NodeKind::Item {
+                            return None;
+                        }
+                        let read = service.view(ViewRequest::new(&item.to_string()).ok()?);
+                        read.data?
+                            .get("props")?
+                            .get("tag")?
+                            .as_str()
+                            .map(crate::domain::apply::FormItemRole::from_tag)
+                    };
+                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role).map_err(
+                        |error| {
+                            let mut refused = ViewError::new(error.code(), error.to_string());
+                            // Снятая операция ведёт к контракту заменившей (#1465).
+                            refused.set_next(match error.next() {
+                                Some(contract) => json!({
+                                    "tool": "unica.view",
+                                    "args": {"at": contract},
+                                    "reason": "контракт операции, заменившей снятую",
+                                }),
+                                None => json!({
+                                    "tool": "unica.view",
+                                    "args": {"at": owner_at},
+                                    "reason": "операции, применимые к этому узлу",
+                                }),
+                            });
+                            refused
+                        },
+                    )
                 }
                 None => {
                     attach_can(&mut data, can_context);
@@ -4172,17 +4195,13 @@ pub(super) fn preflight_apply_operations_with(
             // Снятая операция ведёт к заменившей на узле-родителе (#1354).
             if let Some(retired) = crate::domain::apply::RetiredOperation::lookup(operation.name())
             {
-                let target = retired.replacement_at(operation.at());
-                return Err(Box::new(with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].op")),
-                        RefusalCode::BadValue,
-                        format!(
-                            "apply operation `{}` is retired: call `{}` at `{target}`; {}",
-                            retired.op, retired.replacement, retired.arguments
-                        ),
-                    ),
-                    &target.to_string(),
+                return Err(Box::new(retired_operation_refusal(
+                    index,
+                    operation.at(),
+                    retired,
+                    source,
+                    template_format,
+                    form_item,
                 )));
             }
             return Err(Box::new(with_node_dictionary(
@@ -4197,6 +4216,11 @@ pub(super) fn preflight_apply_operations_with(
                 &operation.at().to_string(),
             )));
         };
+        // Общее имя (`attribute.add` объекта и формы, #1465) выбирает
+        // запись по адресу вызова.
+        let descriptor = OperationSite::new(operation.at(), source)
+            .and_then(|site| registry.lookup_at(operation.name(), &site))
+            .unwrap_or(descriptor);
         // Набор, который семейство не пишет, — свойство набора, а не «не тот
         // узел»: тот же отказ даёт разбор планировщиком.
         if !source.writes(descriptor.family()) {
@@ -4396,10 +4420,14 @@ pub(super) fn preflight_apply_operations_with(
             target_kind.as_str(),
             operation.at()
         );
-        let nearest =
-            descriptor.nearest_applicable_ancestor_with(&site, template_format, form_item);
+        let nearest = registry.nearest_applicable_ancestor_with(
+            operation.name(),
+            &site,
+            template_format,
+            form_item,
+        );
         let refusal = match nearest {
-            Some(target) => with_operation_dictionary(
+            Some((descriptor, target)) => with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
@@ -4409,7 +4437,13 @@ pub(super) fn preflight_apply_operations_with(
                 descriptor,
             ),
             None => {
-                let message = format!("{refused}; it addresses {}", descriptor.address_shape());
+                // Общее имя (#1465) исполнимо по формам адреса обеих записей.
+                let shapes = registry
+                    .named(operation.name())
+                    .map(|descriptor| descriptor.address_shape())
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                let message = format!("{refused}; it addresses {shapes}");
                 let refusal = error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
@@ -4435,6 +4469,64 @@ pub(super) fn preflight_apply_operations_with(
         return Err(Box::new(refusal));
     }
     Ok(())
+}
+
+/// Отказ снятой операции без записи (#1354, #1465). Создающая операция
+/// ведёт к словарю родителя; переименованная — к контракту заменившей на
+/// ближайшем узле, где она исполнима, как отказ «не тот узел». Если такого
+/// узла в цепочке адреса нет, отказ называет форму адреса заменившей.
+fn retired_operation_refusal(
+    index: usize,
+    at: &QualifiedAddress,
+    retired: crate::domain::apply::RetiredOperation,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+) -> DomainResult {
+    let location = Some(format!("ops[{index}].op"));
+    let site = OperationSite::new(at, source);
+    let target = site
+        .as_ref()
+        .and_then(|site| retired.replacement_target(site, template_format, form_item));
+    let replacement = retired.descriptor();
+    match (target, replacement) {
+        (Some(target), Some(replacement)) => {
+            let refusal = error_result(
+                location,
+                RefusalCode::BadValue,
+                format!(
+                    "apply operation `{}` is retired: call `{}` at `{target}`; {}",
+                    retired.op, retired.replacement, retired.arguments
+                ),
+            );
+            if retired.creates.is_some() {
+                with_node_dictionary(refusal, &target.to_string())
+            } else {
+                with_operation_dictionary(refusal, &target.to_string(), replacement)
+            }
+        }
+        (_, replacement) => {
+            let shape = replacement.map_or_else(String::new, |replacement| {
+                format!(", which addresses {}", replacement.address_shape())
+            });
+            let refusal = error_result(
+                location,
+                RefusalCode::BadValue,
+                format!(
+                    "apply operation `{}` is retired: call `{}`{shape}; {}",
+                    retired.op, retired.replacement, retired.arguments
+                ),
+            );
+            let readable =
+                crate::infrastructure::logical_tree::route_logical_address(at, source.profile())
+                    .is_ok();
+            if readable {
+                with_node_dictionary(refusal, &at.to_string())
+            } else {
+                with_node_dictionary(refusal, &format!("{}:Configuration", at.source_set()))
+            }
+        }
+    }
 }
 
 /// Принимает ли роль элемента формы по адресу `at` операцию; адрес не
@@ -4691,9 +4783,7 @@ fn view_error_result(
     // Маршрут переносится вместе с кодом и уточнением: иначе два пути наружу
     // расходятся, и отказ теряет альтернативу в зависимости от того, каким
     // из них он вышел.
-    if let Some(next) = error.next() {
-        result.next.push(next.clone());
-    }
+    result.next.extend(error.next().iter().cloned());
     result
 }
 
@@ -5634,7 +5724,7 @@ mod tests {
         ] {
             for (suffix, kind, from, to) in [
                 (".Method.Ping", "Method", 3, 65),
-                (".Method.Ping.Body", "Body", 4, 64),
+                (".Method.Ping.Body", "Body", 3, 65),
                 (".Body", "Body", 1, 72),
                 (".Region.A.Region.Inner", "Region", 2, 66),
                 (".Region.B.Region.Inner", "Region", 69, 71),
@@ -5873,7 +5963,8 @@ mod tests {
     fn resolve_exact_method_spans_annotations_through_its_closing_line() {
         use crate::application::invocation_store::ToolIdentity;
         let workspace = resolve_exact_workspace();
-        // Документация и пустая строка выше аннотаций методу не принадлежат.
+        // Документация, отделённая пустой строкой, методу не принадлежит;
+        // прилегающая входит в диапазон `Body` — тот же, что текст `view`.
         let module = concat!(
             "// Документация.\n\n&НаСервере\n&Перед(\"Ping\")\nПроцедура Annotated(\n",
             "    Value) Экспорт\n    Сообщить(Value);\nКонецПроцедуры\n\n",
@@ -5899,7 +5990,7 @@ mod tests {
                 (
                     ".Method.Annotated.Body",
                     "Body",
-                    json!({"state":"range","from":7,"to":7}),
+                    json!({"state":"range","from":3,"to":8}),
                 ),
                 (
                     ".Method.Empty",
@@ -5909,7 +6000,7 @@ mod tests {
                 (
                     ".Method.Empty.Body",
                     "Body",
-                    json!({"state":"notLineBased"}),
+                    json!({"state":"range","from":10,"to":11}),
                 ),
                 (
                     ".Method.Inline",
@@ -5931,6 +6022,11 @@ mod tests {
                     "Method",
                     json!({"state":"range","from":21,"to":24}),
                 ),
+                (
+                    ".Method.Documented.Body",
+                    "Body",
+                    json!({"state":"range","from":19,"to":24}),
+                ),
                 (".Body", "Body", json!({"state":"range","from":1,"to":24})),
             ] {
                 let at = format!("main:{prefix}{suffix}");
@@ -5942,7 +6038,7 @@ mod tests {
                 assert_eq!(data["path"], path, "{at}: {result:?}");
                 assert_eq!(data["lines"], lines, "{at}: {result:?}");
             }
-            // View keeps naming the body lines of the method.
+            // View names the same lines as the method text and its resolve.
             let view = invoke_exact_read(
                 workspace.path(),
                 ToolIdentity::View,
@@ -5950,7 +6046,7 @@ mod tests {
             );
             assert!(view.ok, "{view:?}");
             let props = &view.data.as_ref().unwrap()["props"];
-            assert_eq!((&props["line"], &props["endLine"]), (&json!(7), &json!(7)));
+            assert_eq!((&props["line"], &props["endLine"]), (&json!(3), &json!(8)));
         }
     }
 
@@ -5973,14 +6069,18 @@ mod tests {
             std::fs::write(&file, source).unwrap();
             let view = invoke_exact_read(workspace.path(), ToolIdentity::View, at.clone());
             assert!(view.ok, "{source:?}: {view:?}");
-            let items = view.data.as_ref().unwrap()["items"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            let viewed = items.last().map_or(
-                json!({"state":"notLineBased"}),
-                |last| json!({"state":"range","from":1,"to":last["line"]}),
-            );
+            // Строки текста `Body` агент считает сам — так же, как `str::lines`.
+            let lines = view
+                .source_text
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .count();
+            let viewed = if lines == 0 {
+                json!({"state":"notLineBased"})
+            } else {
+                json!({"state":"range","from":1,"to":lines})
+            };
             assert_eq!(viewed, expected, "view numbering of {source:?}");
             let resolved = invoke_exact_read(workspace.path(), ToolIdentity::Resolve, at.clone());
             assert!(resolved.ok, "{source:?}: {resolved:?}");

@@ -1710,6 +1710,9 @@ fn bind_workspace_invocation_controlled(
                     stage: "the actor registry rejected the workspace identity",
                 })
             }
+            WorkspaceActorRegistryError::NamedRootUnavailable => {
+                unadmitted(UnadmittedCause::ActorRootUnavailable)
+            }
             WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::RegistryFailed,
         })?;
     after_actor_admission(&mut admitted_sources);
@@ -1821,6 +1824,8 @@ pub(super) enum UnadmittedCause {
     },
     /// Наборы отобраны, но актор их не связал.
     ActorBindingFailed { stage: &'static str },
+    /// Повторное открытие имени корня временно не подтвердило его идентичность.
+    ActorRootUnavailable,
 }
 
 /// Test control of the workspace admission walk: a test can hold the walk at

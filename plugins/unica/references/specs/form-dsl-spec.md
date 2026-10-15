@@ -4,14 +4,11 @@
 
 Справочник внутреннего JSON-описания общего писателя управляемых форм 1С.
 Публичный путь — `unica.apply`: создание через `form.add` на владельце, наполнение через
-`element.add`, `formAttribute.add`, `formCommand.add` и `event.bind`.
-`element.add` принимает типизированные `items[]` с `name` и `type`;
+`item.add`, `attribute.add`, `command.add` и `event.bind`.
+`item.add` принимает типизированные `items[]` с `name` и `type`;
 ключи DSL ниже не заменяют этот контракт. Поддержанные виды и примеры вызовов —
 в [form-edit](../../skills/form-edit/SKILL.md). Не все возможности справочника
 реализованы публичными операциями.
-
-Перенос существующего поддерева выполняет отдельная операция `element.move`;
-DSL не пересоздаёт переносимый элемент. См. [контракт совместимости](form-move-spec.md).
 
 ---
 
@@ -845,7 +842,7 @@ flags/layout/оформление/companions/события общий), плю�
 Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и рус. (`ПолеТабличногоДокумента`, `ПолеИндикатора`, `ПолеДиаграммы`, `ПолеДиаграммыГанта`, …).
 Скаляры `output`/`protection`/… — generic pass-through; bool как `true`/`false`, enum verbatim.
 
-Для HTML-поля публичный вызов — `unica.apply` → `element.add` с
+Для HTML-поля публичный вызов — `unica.apply` → `item.add` с
 `items: [{"name": "ПолеHTML", "type": "HTMLDocumentField", "path": "АдресHTML"}]`.
 Ключ `html` — внутреннее описание, не имя MCP-инструмента. `output` и
 `warningOnEditRepresentation` для HTML-поля нативный писатель не выпускает.
@@ -1147,9 +1144,9 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 ]
 ```
 
-`formCommand.add` принимает из этой таблицы только `name`, `title`, `tooltip`,
+`command.add` принимает из этой таблицы только `name`, `title`, `tooltip`,
 `action`, `shortcut`, `picture` (строкой) и `representation`; остальные ключи
-отклоняются до записи. Контракт операции — `<форма>.Can.formCommand.add`.
+отклоняются до записи. Контракт операции — `<форма>.Can.command.add`.
 
 | Свойство | Тип | Описание |
 |----------|-----|----------|

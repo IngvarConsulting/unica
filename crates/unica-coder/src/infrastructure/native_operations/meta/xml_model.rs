@@ -1137,6 +1137,137 @@ pub(super) fn canonical_meta_event_sources(sources: &[MetaEventSource]) -> Vec<M
     canonical
 }
 
+fn xml_node_range_with_preceding_whitespace(
+    node: roxmltree::Node<'_, '_>,
+) -> std::ops::Range<usize> {
+    let mut range = node.range();
+    if let Some(whitespace) = node.prev_sibling().filter(|sibling| {
+        sibling.is_text() && sibling.text().is_some_and(|text| text.trim().is_empty())
+    }) {
+        range.start = whitespace.range().start;
+    }
+    range
+}
+
+/// Add/remove only logical member nodes. Existing members, namespace bindings
+/// and opaque TypeIds keep their bytes and relative positions.
+pub(super) fn edit_meta_event_subscription_members(
+    xml: &str,
+    source: roxmltree::Node<'_, '_>,
+    mode: crate::domain::metadata::RelationEditMode,
+    requested: &[MetaEventSource],
+    indent: &str,
+) -> Result<String, String> {
+    use crate::domain::metadata::RelationEditMode;
+    let observed = parse_meta_event_subscription_source(source)?;
+    let range = source.range();
+    let fragment = &xml[range.clone()];
+    let requested_keys = requested
+        .iter()
+        .map(MetaEventSource::identity_key)
+        .collect::<std::collections::HashSet<_>>();
+    let logical_nodes = source
+        .children()
+        .filter(|n| {
+            n.has_tag_name((DATA_CORE_NS, "Type")) || n.has_tag_name((DATA_CORE_NS, "TypeSet"))
+        })
+        .collect::<Vec<_>>();
+    let mut edits = Vec::new();
+    match mode {
+        RelationEditMode::Remove => {
+            for (node, member) in logical_nodes.iter().zip(&observed.sources) {
+                if requested_keys.contains(&member.identity_key()) {
+                    let span = xml_node_range_with_preceding_whitespace(*node);
+                    edits.push((
+                        span.start - range.start..span.end - range.start,
+                        String::new(),
+                    ));
+                }
+            }
+        }
+        RelationEditMode::Add => {
+            let existing_keys = observed
+                .sources
+                .iter()
+                .map(MetaEventSource::identity_key)
+                .collect::<std::collections::HashSet<_>>();
+            let additions = canonical_meta_event_sources(requested)
+                .into_iter()
+                .filter(|s| !existing_keys.contains(&s.identity_key()))
+                .collect::<Vec<_>>();
+            if additions.is_empty() {
+                return Ok(fragment.to_owned());
+            }
+            let eol = if xml.contains("\r\n") {
+                "\r\n"
+            } else if xml.contains('\r') {
+                "\r"
+            } else {
+                "\n"
+            };
+            let namespaces = EventSourceEmissionNamespaces::for_source(source, &additions);
+            let declarations = namespaces
+                .declarations
+                .iter()
+                .map(|(prefix, uri)| format!(r#" xmlns:{prefix}="{uri}""#))
+                .collect::<String>();
+            let mut type_members = String::new();
+            let mut set_members = String::new();
+            for member in &additions {
+                let (tag, namespace, local_name) = event_source_wire_contract(member)?;
+                let prefix = &namespaces.data;
+                let wire = escape_xml(&format!(
+                    "{}:{local_name}",
+                    namespaces.wire_prefix(namespace)
+                ));
+                let item =
+                    format!("{eol}{indent}\t<{prefix}:{tag}{declarations}>{wire}</{prefix}:{tag}>");
+                if tag == "Type" {
+                    type_members.push_str(&item);
+                } else {
+                    set_members.push_str(&item);
+                }
+            }
+            if let Some(open) = fragment.strip_suffix("/>") {
+                let qname = fragment[1..]
+                    .split(|c: char| c.is_whitespace() || c == '/' || c == '>')
+                    .next()
+                    .ok_or("missing Source QName")?;
+                return Ok(format!(
+                    "{open}>{type_members}{set_members}{eol}{indent}</{qname}>"
+                ));
+            }
+            let open_end = source.first_child().map_or_else(
+                || fragment.rfind("</").ok_or("missing Source closing tag"),
+                |node| Ok(node.range().start - range.start),
+            )?;
+            let type_end = logical_nodes
+                .iter()
+                .rfind(|n| n.has_tag_name((DATA_CORE_NS, "Type")))
+                .map_or(open_end, |n| n.range().end - range.start);
+            let members_end = source
+                .children()
+                .rfind(|n| n.is_element())
+                .map_or(open_end, |n| n.range().end - range.start);
+            if !type_members.is_empty() {
+                edits.push((type_end..type_end, type_members));
+            }
+            if !set_members.is_empty() {
+                edits.push((members_end..members_end, set_members));
+            }
+        }
+        RelationEditMode::Replace => {
+            return Err("incremental source editing requires add or remove".into())
+        }
+    }
+    edits.sort_by_key(|(span, _)| span.start);
+    let mut result = fragment.to_owned();
+    for (span, replacement) in edits.into_iter().rev() {
+        result.replace_range(span, &replacement);
+    }
+    Ok(result)
+}
+
 /// Emit only the Source element. Callers supply its existing indentation so
 /// direct-node replacement preserves the descriptor's surrounding layout.
 /// Emit Source from logical members plus the `v8:TypeId` members kept
@@ -1827,6 +1958,22 @@ mod tests {
         format!(
             r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:v8="{DATA_CORE_NS}" xmlns:cfg="{CURRENT_CONFIG_NS}" xmlns:xs="{XML_SCHEMA_NS}" version="2.20"><EventSubscription><Properties><Name>Events</Name>{source}</Properties><ChildObjects/></EventSubscription></MetaDataObject>"#
         )
+    }
+
+    #[test]
+    fn event_source_removal_range_includes_whitespace_before_self_closing_last_element() {
+        let xml = "<Source>\r\n\t<Keep/>\r\n\t<Remove/>\r\n</Source>";
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let removed = document
+            .root_element()
+            .children()
+            .find(|node| node.has_tag_name("Remove"))
+            .unwrap();
+        let mut result = xml.to_string();
+
+        result.replace_range(xml_node_range_with_preceding_whitespace(removed), "");
+
+        assert_eq!(result, "<Source>\r\n\t<Keep/>\r\n</Source>");
     }
 
     #[test]

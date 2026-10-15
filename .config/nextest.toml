@@ -131,7 +131,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
@@ -164,7 +163,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
@@ -194,7 +192,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
@@ -234,7 +231,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (
@@ -355,7 +351,6 @@ binary(daemon_receipt_ledger) & (
     | test(/^task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery$/)
     | test(/^task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops$/)
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
-    | test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)
 )
 ) | (
 binary(unica_coder) & (

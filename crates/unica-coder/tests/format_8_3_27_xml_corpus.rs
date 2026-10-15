@@ -10,6 +10,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use unica_coder::application::{ToolHandler, UnicaApplication};
 
+#[path = "platform/daemon_teardown.rs"]
+mod daemon_teardown;
 #[path = "platform/format_8_3_27_xml_corpus.rs"]
 mod platform_support;
 
@@ -715,6 +717,21 @@ fn common_args(workspace: &Path) -> Map<String, Value> {
 
 const CANONICAL_APPLY_TOOL: &str = "unica.apply";
 
+/// Состояние поставщика одного канонического вызова. Пауза простоя не
+/// останавливает его демона: после apply он держит результат для повтора
+/// (`arch/rules/workspace/actor-retention.md`) и переживает MCP. На Windows
+/// живой демон держит `target\debug\unica.exe`, и следующая сборка с другими
+/// признаками не может заменить файл. Поэтому демон останавливается, а
+/// состояние удаляется на любом выходе из вызова, в том числе по ошибке.
+struct CanonicalCallState(PathBuf);
+
+impl Drop for CanonicalCallState {
+    fn drop(&mut self) {
+        daemon_teardown::stop_daemons_under(&self.0);
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Runs one canonical `unica.apply` publication over the packaged stdio
 /// surface: the same production path a host uses, with the daemon state kept
 /// outside the case workspace so the platform checkpoint boundary stays clean.
@@ -740,7 +757,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
         STATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&state).map_err(|error| error.to_string())?;
-    let state = fs::canonicalize(&state).map_err(|error| error.to_string())?;
+    let state = CanonicalCallState(fs::canonicalize(&state).map_err(|error| error.to_string())?);
     let mut request = args.clone();
     request.remove("cwd");
     let publish_apply =
@@ -750,7 +767,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
     }
     let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
         .current_dir(&workspace)
-        .env("UNICA_PROVIDER_STATE_DIR", &state)
+        .env("UNICA_PROVIDER_STATE_DIR", &state.0)
         // Демон переживает MCP: без назначенной паузы он остаётся на
         // четверть часа, и к концу прогона их набирается столько же,
         // сколько было тестов.
@@ -875,7 +892,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
     response = completed_response(&mut stdin, &mut reader, response, "execute")?;
     drop(stdin);
     let _ = child.wait();
-    let _ = fs::remove_dir_all(&state);
+    drop(state);
     let structured = response
         .get("result")
         .and_then(|result| result.get("structuredContent"))

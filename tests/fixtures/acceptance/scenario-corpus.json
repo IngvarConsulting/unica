@@ -3900,7 +3900,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -3930,7 +3930,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
       "ops": [
        {
-        "op": "element.remove"
+        "op": "item.remove"
        }
       ]
      },
@@ -3951,7 +3951,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
@@ -3980,7 +3980,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -4043,7 +4043,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -4177,7 +4177,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -4232,7 +4232,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаСписка",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -4262,7 +4262,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -14929,7 +14929,7 @@
    "name": "code-insert-method-and-anchor-line-boundaries",
    "pr": 1292,
    "area": "Код BSL",
-   "task": "Anchor before/after учитывает только методы; method before/after сохраняет аннотацию и соседей; точный post-image и повтор без записи",
+   "task": "Anchor before/after учитывает только методы; method before встаёт над документирующим комментарием и аннотацией метода, after — после его окончания, соседи сохраняются; точный post-image и повтор без записи",
    "workspace": "tests/fixtures/acceptance/workspace-code",
    "wire": [
     {
@@ -15695,7 +15695,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15776,7 +15776,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15852,7 +15852,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15933,7 +15933,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -16009,7 +16009,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -16090,7 +16090,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -16166,7 +16166,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -20246,7 +20246,7 @@
    "id": "S356",
    "issue": 919,
    "area": "Формы",
-   "task": "Перенести существующее поле в группу, сохранив ID, привязку, заголовок и companions; предпросмотр не пишет, опубликованный результат проходит check",
+   "task": "Не переносить элемент без явного получателя: item.move требует values.into и не трактует пропуск как корень формы",
    "wire": [
     {
      "tool": "unica.apply",
@@ -20254,26 +20254,26 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное",
       "ops": [
        {
-        "op": "element.move",
-        "args": {
-         "values": {
-          "into": "ГруппаСлужебная"
-         }
-        }
+        "op": "item.move"
        }
       ]
      },
      "expect": [
-      "ok"
+      "refused"
      ],
+     "refusal": "bad_value: ops[0].args.values: required argument is missing; `item.move` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеП",
      "assertions": [
       {
-       "pointer": "/data/mode",
-       "eq": "preview"
+       "pointer": "/ok",
+       "eq": false
       },
       {
-       "pointer": "/data/executable",
-       "eq": true
+       "pointer": "/at",
+       "eq": "ops[0].args.values"
+      },
+      {
+       "pointer": "/diagnostics/0/code",
+       "eq": "bad_value"
       }
      ],
      "fileAssertions": [
@@ -20282,88 +20282,6 @@
        "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
        "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
       }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "executionToken": "$executionToken"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "published"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']",
-       "eq": [
-        "InputField"
-       ]
-      },
-      {
-       "kind": "xml",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}DataPath",
-       "eq": [
-        "Объект.НаименованиеПолное"
-       ]
-      },
-      {
-       "kind": "xml",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}Title/{*}item/{*}content",
-       "eq": [
-        "Полное наименование"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ContextMenu[@name='ПолеНаименованиеПолноеКонтекстноеМеню'][@id='5']",
-       "eq": [
-        "ContextMenu"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ExtendedTooltip[@name='ПолеНаименованиеПолноеРасширеннаяПодсказка'][@id='6']",
-       "eq": [
-        "ExtendedTooltip"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное']",
-       "eq": []
-      }
-     ]
-    },
-    {
-     "tool": "unica.check",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/diagnosticCount",
-       "eq": 0
-      }
-     ],
-     "status": "passed",
-     "validators": [
-      "form"
      ]
     }
    ]
@@ -30671,8 +30589,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -30966,8 +30884,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31261,8 +31179,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31556,8 +31474,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31851,8 +31769,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -32668,7 +32586,7 @@
         }
        },
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "at": "cf:Report.Sales.Form.Main",
          "items": [
@@ -32681,7 +32599,7 @@
         }
        },
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "at": "cf:Report.Sales.Form.Main",
          "items": [
@@ -32701,7 +32619,7 @@
         }
        },
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "at": "cf:Report.Sales.Form.Main",
          "items": [
@@ -33407,7 +33325,7 @@
    "name": "text-search-hit-opens-its-module",
    "issue": 1298,
    "area": "Код BSL",
-   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку",
+   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и найти ту же строку в его исходном тексте",
    "workspace": "tests/fixtures/acceptance/workspace",
    "wire": [
     {
@@ -33474,12 +33392,20 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/items/12/line",
-       "eq": "$capture.hitLine"
+       "pointer": "/data/kind",
+       "eq": "Body"
       },
       {
-       "pointer": "/data/items/12/text",
-       "eq": "$capture.hitSnippet"
+       "pointer": "/data/items",
+       "absent": true
+      },
+      {
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "contains": "$capture.hitSnippet"
       }
      ]
     }
@@ -33490,7 +33416,7 @@
    "name": "misplaced-element-add-routes-to-form-can",
    "issue": 1351,
    "area": "Формы",
-   "task": "element.add на адресе события поля отказывает без записи; next минует поле, в которое элемент не добавить, и ведёт к can формы, а исправленный вызов на адресе группы строит предпросмотр",
+   "task": "item.add на адресе события поля отказывает без записи; next минует поле, в которое элемент не добавить, и ведёт к can формы, а исправленный вызов на адресе группы строит предпросмотр",
    "workspace": "tests/fixtures/acceptance/workspace",
    "wire": [
     {
@@ -33505,7 +33431,7 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "element.add",
+        "op": "item.add",
         "args": "items",
         "implemented": true
        }
@@ -33513,7 +33439,7 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "element.remove",
+        "op": "item.remove",
         "args": "at",
         "implemented": true
        }
@@ -33532,7 +33458,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -33547,11 +33473,11 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `element.add` does not apply to Event `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange`; it applies at `main:Catalog",
+     "refusal": "bad_value: apply operation `item.add` does not apply to Event `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange`; it applies at `main:Catalog.Ва",
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
       }
      ],
      "fileAssertions": [
@@ -33574,7 +33500,7 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "element.add",
+        "op": "item.add",
         "args": "items",
         "implemented": true
        }
@@ -33587,7 +33513,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -35516,7 +35442,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ФормаКоманднаяПанель",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -35564,7 +35490,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -35613,7 +35539,7 @@
    "name": "element-add-ambiguous-placement-refused",
    "issue": 1392,
    "area": "Формы",
-   "task": "element.add по адресу командной панели, имя которой носят обе командные панели формы, отказывает без записи",
+   "task": "item.add по адресу командной панели, имя которой носят обе командные панели формы, отказывает без записи",
    "workspace": "tests/fixtures/acceptance/workspace-form-names",
    "wire": [
     {
@@ -35637,7 +35563,7 @@
       "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Панель",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -36137,24 +36063,11 @@
      "assertions": [
       {
        "pointer": "/data/items",
-       "eq": [
-        {
-         "line": 1,
-         "text": "#Если Сервер Тогда"
-        },
-        {
-         "line": 2,
-         "text": "Процедура Проверка() Экспорт"
-        },
-        {
-         "line": 3,
-         "text": "КонецПроцедуры"
-        },
-        {
-         "line": 4,
-         "text": "#КонецЕсли"
-        }
-       ]
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "eq": "#Если Сервер Тогда\nПроцедура Проверка() Экспорт\nКонецПроцедуры\n#КонецЕсли\n"
       }
      ]
     },
@@ -38960,7 +38873,7 @@
    "name": "form-element-add-into-routes-to-the-container-address",
    "issue": 1355,
    "area": "Формы",
-   "task": "Прежний items[].into у element.add отказывает без записи; next ведёт к адресу контейнера по его пути в форме (командная панель таблицы — через таблицу), его can содержит element.add, и вызов на этом адресе строит предпросмотр",
+   "task": "Прежний items[].into у item.add отказывает без записи; next ведёт к адресу контейнера по его пути в форме (командная панель таблицы — через таблицу), его can содержит item.add, и вызов на этом адресе строит предпросмотр",
    "wire": [
     {
      "tool": "unica.view",
@@ -38983,7 +38896,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаСписка",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -39000,7 +38913,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: `element.add` names its subject by address, not by `items[0].into`; call it at `main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar`",
+     "refusal": "bad_value: `item.add` names its subject by address, not by `items[0].into`; call it at `main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar`",
      "assertions": [
       {
        "pointer": "/at",
@@ -39008,7 +38921,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar.Can.element.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar.Can.item.add"
       },
       {
        "pointer": "/next/1/args/at",
@@ -39035,7 +38948,7 @@
       {
        "pointer": "/data/can",
        "contains": {
-        "op": "element.add",
+        "op": "item.add",
         "args": "items",
         "implemented": true
        }
@@ -39048,7 +38961,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -39208,7 +39121,7 @@
    "name": "form-element-remove-by-name-routes-to-the-item-address",
    "issue": 1355,
    "area": "Формы",
-   "task": "element.remove на форме с именем в items отказывает без записи; next ведёт к адресу элемента, а удаление по этому адресу строит предпросмотр",
+   "task": "item.remove на форме с именем в items отказывает без записи; next ведёт к адресу элемента, а удаление по этому адресу строит предпросмотр",
    "wire": [
     {
      "tool": "unica.view",
@@ -39231,7 +39144,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.remove",
+        "op": "item.remove",
         "args": {
          "items": [
           {
@@ -39245,7 +39158,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: `element.remove` names its subject by address, not by `items[0].name`; call it at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная`",
+     "refusal": "bad_value: `item.remove` names its subject by address, not by `items[0].name`; call it at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная`",
      "assertions": [
       {
        "pointer": "/at",
@@ -39253,7 +39166,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.element.remove"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.item.remove"
       }
      ],
      "fileAssertions": [
@@ -39270,7 +39183,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
       "ops": [
        {
-        "op": "element.remove"
+        "op": "item.remove"
        }
       ]
      },
@@ -39640,7 +39553,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -39655,7 +39568,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument; `formCommand.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.formCommand.add`",
+     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument; `command.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.command.add`",
      "assertions": [
       {
        "pointer": "/at",
@@ -39676,7 +39589,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formCommand.add",
+        "op": "command.add",
         "args": {
          "items": [
           {
@@ -40054,7 +39967,7 @@
    "name": "form-element-add-refuses-a-key-its-kind-does-not-write",
    "issue": 1447,
    "area": "Формы",
-   "task": "Подробный контракт element.add публикует ключи по виду элемента; backColor у поля ввода, которого писатель поля не пишет, отказывает bad_value по точному пути без записи, а тот же элемент без него строит предпросмотр",
+   "task": "Подробный контракт item.add публикует ключи по виду элемента; backColor у поля ввода, которого писатель поля не пишет, отказывает bad_value по точному пути без записи, а тот же элемент без него строит предпросмотр",
    "wire": [
     {
      "tool": "unica.view",
@@ -40074,7 +39987,7 @@
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
      },
      "expect": [
       "ok"
@@ -40092,7 +40005,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40109,7 +40022,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].backColor: unknown argument; `element.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add`",
+     "refusal": "bad_value: ops[0].args.items[0].backColor: unknown argument; `item.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add`",
      "assertions": [
       {
        "pointer": "/at",
@@ -40117,7 +40030,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
       }
      ],
      "fileAssertions": [
@@ -40134,7 +40047,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40164,7 +40077,7 @@
    "name": "form-element-add-adds-one-element-without-nested-content",
    "issue": 1447,
    "area": "Формы",
-   "task": "element.add добавляет один элемент: вложенные children и событие on отказывают bad_value без записи, next ведёт к контракту element.add; группа и поле в ней добавляются двумя операциями, обработчик — event.bind на адресе события",
+   "task": "item.add добавляет один элемент: вложенные children и событие on отказывают bad_value без записи, next ведёт к контракту item.add; группа и поле в ней добавляются двумя операциями, обработчик — event.bind на адресе события",
    "wire": [
     {
      "tool": "unica.view",
@@ -40187,7 +40100,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40209,7 +40122,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: element.add adds one element without nested content; drop `children` and add each nested element with a separate element.add at `main:Catalog.Валюты.Form.ФормаЭ",
+     "refusal": "bad_value: item.add adds one element without nested content; drop `children` and add each nested element with a separate item.add at `main:Catalog.Валюты.Form.ФормаЭлемент",
      "assertions": [
       {
        "pointer": "/at",
@@ -40217,7 +40130,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
       },
       {
        "pointer": "/summary",
@@ -40238,7 +40151,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40257,7 +40170,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: element.add does not bind events; drop `on` and bind each handler with event.bind at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>`",
+     "refusal": "bad_value: item.add does not bind events; drop `on` and bind each handler with event.bind at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>` on",
      "assertions": [
       {
        "pointer": "/at",
@@ -40282,7 +40195,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "items": [
           {
@@ -40293,7 +40206,7 @@
         }
        },
        {
-        "op": "element.add",
+        "op": "item.add",
         "args": {
          "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий",
          "items": [
@@ -40363,7 +40276,7 @@
    "name": "form-attribute-add-refuses-unwritten-properties-and-writes-fill-check",
    "issue": 1447,
    "area": "Формы",
-   "task": "formAttribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
+   "task": "attribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
    "wire": [
     {
      "tool": "unica.view",
@@ -40386,7 +40299,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
@@ -40404,7 +40317,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `formAttribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.fo",
+     "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `attribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.attrib",
      "assertions": [
       {
        "pointer": "/at",
@@ -40412,7 +40325,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.formAttribute.add"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
       }
      ],
      "fileAssertions": [
@@ -40429,7 +40342,7 @@
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
       "ops": [
        {
-        "op": "formAttribute.add",
+        "op": "attribute.add",
         "args": {
          "items": [
           {
@@ -40723,394 +40636,81 @@
   },
   {
    "id": "S440",
-   "issue": 919,
-   "name": "form-create-pages-and-move-existing-groups",
-   "area": "Формы",
-   "task": "Создать страницы и распределить существующие группы одним атомарным пакетом; сохранить вложенное поле, ID и companions; точный повтор не меняет файл",
+   "name": "method-body-text-round-trips-through-code-replace",
+   "issue": 1458,
+   "area": "Код BSL",
+   "task": "Прочитать метод исходным текстом с документирующим комментарием, исправить строку в этом тексте и заменить им тот же адрес: метод меняется на месте без дублирования комментария",
    "wire": [
     {
-     "tool": "unica.apply",
+     "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "element.move",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное",
-         "values": {
-          "into": "ГруппаСлужебная"
-         }
-        }
-       },
-       {
-        "op": "element.add",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-         "items": [
-          {
-           "name": "ГруппаДополнительная",
-           "type": "Group"
-          }
-         ]
-        }
-       }
-      ]
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/mode",
-       "eq": "preview"
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
       },
       {
-       "pointer": "/data/executable",
-       "eq": true
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "executionToken": "$executionToken"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "published"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']",
-       "eq": [
-        "InputField"
-       ]
+       "pointer": "/data/kind",
+       "eq": "Body"
       },
       {
-       "kind": "xml",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}DataPath",
-       "eq": [
-        "Объект.НаименованиеПолное"
-       ]
-      },
-      {
-       "kind": "xml",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}Title/{*}item/{*}content",
-       "eq": [
-        "Полное наименование"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ContextMenu[@name='ПолеНаименованиеПолноеКонтекстноеМеню'][@id='5']",
-       "eq": [
-        "ContextMenu"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ExtendedTooltip[@name='ПолеНаименованиеПолноеРасширеннаяПодсказка'][@id='6']",
-       "eq": [
-        "ExtendedTooltip"
-       ]
-      }
-     ],
-     "captures": {
-      "beforeTabs": {
-       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "kind": "sha256"
-      }
-     }
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "element.add",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-         "items": [
-          {
-           "name": "СтраницыКорпуса",
-           "type": "Pages"
-          }
-         ]
-        }
-       },
-       {
-        "op": "element.add",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.СтраницыКорпуса",
-         "items": [
-          {
-           "name": "ОсновнаяСтраница",
-           "type": "Page"
-          }
-         ]
-        }
-       },
-       {
-        "op": "element.add",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.СтраницыКорпуса",
-         "items": [
-          {
-           "name": "ДополнительнаяСтраница",
-           "type": "Page"
-          }
-         ]
-        }
-       },
-       {
-        "op": "element.move",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
-         "values": {
-          "into": "ОсновнаяСтраница"
-         }
-        }
-       },
-       {
-        "op": "element.move",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаДополнительная",
-         "values": {
-          "into": "ДополнительнаяСтраница"
-         }
-        }
-       }
-      ]
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "preview"
-      },
-      {
-       "pointer": "/data/executable",
-       "eq": true
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.beforeTabs"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "executionToken": "$executionToken"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "published"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']",
-       "eq": [
-        "InputField"
-       ]
-      },
-      {
-       "kind": "xml",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}DataPath",
-       "eq": [
-        "Объект.НаименованиеПолное"
-       ]
-      },
-      {
-       "kind": "xml",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}Title/{*}item/{*}content",
-       "eq": [
-        "Полное наименование"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ContextMenu[@name='ПолеНаименованиеПолноеКонтекстноеМеню'][@id='5']",
-       "eq": [
-        "ContextMenu"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ChildItems/{*}InputField[@name='ПолеНаименованиеПолное'][@id='4']/{*}ExtendedTooltip[@name='ПолеНаименованиеПолноеРасширеннаяПодсказка'][@id='6']",
-       "eq": [
-        "ExtendedTooltip"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ОсновнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаСлужебная'][@id='7']/{*}ExtendedTooltip[@name='ГруппаСлужебнаяРасширеннаяПодсказка'][@id='8']",
-       "eq": [
-        "ExtendedTooltip"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}Pages[@name='СтраницыКорпуса']/{*}ChildItems/{*}Page[@name='ДополнительнаяСтраница']/{*}ChildItems/{*}UsualGroup[@name='ГруппаДополнительная']",
-       "eq": [
-        "UsualGroup"
-       ]
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}UsualGroup",
-       "eq": []
-      },
-      {
-       "kind": "xmlTags",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "select": "./{*}ChildItems/{*}InputField[@name='ПолеНаименование'][@id='1']",
-       "eq": [
-        "InputField"
-       ]
-      }
-     ],
-     "captures": {
-      "afterTabs": {
-       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "kind": "sha256"
-      }
-     }
-    },
-    {
-     "tool": "unica.check",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/diagnosticCount",
-       "eq": 0
-      }
-     ],
-     "status": "passed",
-     "validators": [
-      "form"
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "element.move",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.СтраницыКорпуса.Item.ОсновнаяСтраница.Item.ГруппаСлужебная",
-         "values": {
-          "into": "ОсновнаяСтраница"
-         }
-        }
-       },
-       {
-        "op": "element.move",
-        "args": {
-         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.СтраницыКорпуса.Item.ДополнительнаяСтраница.Item.ГруппаДополнительная",
-         "values": {
-          "into": "ДополнительнаяСтраница"
-         }
-        }
-       }
-      ]
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "preview"
-      },
-      {
-       "pointer": "/data/executable",
-       "eq": true
-      },
-      {
-       "pointer": "/data/effects",
-       "eq": 0
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.afterTabs"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "executionToken": "$executionToken"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "published"
-      },
-      {
-       "pointer": "/data/effects",
-       "eq": 0
-      },
-      {
-       "pointer": "/changed",
+       "pointer": "/data/items",
        "absent": true
-      }
-     ],
-     "fileAssertions": [
+      },
       {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.afterTabs"
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "eq": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = Неопределено;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body",
+         "text": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = 443;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/sourceText",
+       "eq": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = 443;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
       }
      ]
     }
