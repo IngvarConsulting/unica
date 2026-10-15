@@ -1902,7 +1902,7 @@ fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> 
 
 /// Элементы владельца, как их адресует `view`: его автоматическая командная
 /// панель (у формы и таблицы), затем `ChildItems`. Панель — место кнопок,
-/// которые добавляет `element.add` по её адресу (#1355); остальные
+/// которые добавляет `item.add` по её адресу (#1355); остальные
 /// companions (`ContextMenu`, `ExtendedTooltip`, …) в дерево не входят.
 fn form_info_children(owner: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
     form_child(owner, "AutoCommandBar")
@@ -7807,7 +7807,7 @@ pub(crate) fn emit_form_edit_attribute_item(
     Ok(())
 }
 
-/// One form `<Command>` for both the form compiler and `formCommand.add`.
+/// One form `<Command>` for both the form compiler and `command.add`.
 /// Properties follow the platform's FormCommand XDTO order: Title, ToolTip,
 /// Use, Shortcut, Picture, Action, FunctionalOptions, Representation, ...
 /// The element shapes match 8.3.27 dumps: multilingual Title and ToolTip,
@@ -16248,7 +16248,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Each command key `formCommand.add` publishes is written exactly as an
+    /// Each command key `command.add` publishes is written exactly as an
     /// 8.3.27 dump writes it (#1439). Every expected block repeats, with
     /// neutral names and texts, the shape of a `<Command>` from a platform
     /// dump that carries only the keys under test: tabs, element order,
@@ -16382,7 +16382,7 @@ pub(crate) mod tests {
         "\t\t</Command>",
     );
 
-    /// The form compiler and `formCommand.add` share one command writer:
+    /// The form compiler and `command.add` share one command writer:
     /// a compiled form carries the same `<Command>` block, ToolTip included.
     #[test]
     fn form_compile_writes_the_same_command_block_as_form_command_add() {

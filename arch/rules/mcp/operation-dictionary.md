@@ -36,6 +36,10 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs::a_data_set_is_found_by_name_inside_unions
   - crates/unica-coder/src/domain/apply.rs::a_subnode_named_by_an_argument_is_refused_with_its_address
   - crates/unica-coder/src/domain/apply.rs::a_retired_creation_names_the_parent_operation
+  - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::operation_dictionary_tests::a_retired_operation_contract_names_its_replacement
+  - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::operation_dictionary_tests::a_shared_operation_name_publishes_the_contract_of_the_addressed_node
+  - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::operation_dictionary_tests::a_retired_operation_route_follows_roles_and_inherited_content
+  - crates/unica-coder/src/domain/apply.rs::a_renamed_operation_target_respects_the_item_role
   - crates/unica-coder/src/domain/operation_contract.rs::role_contracts_publish_the_entry_shape
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_subnode_arguments_route_next_to_the_subnode_address
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::right_set_grants_lists_and_restricts_rights_on_the_staged_document
@@ -197,15 +201,34 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 Элемент и событие формы адресуются цепочкой
 `Form.<форма>[.Item.<элемент>[.Item.<вложенный>…]][.Event.<событие>]`, как их
 показывает `view`; автоматическая командная панель формы и таблицы видна
-элементом `Item`. `element.add` добавляет в форму или в элемент-контейнер,
-названный адресом, `element.remove` удаляет элемент по его адресу,
+элементом `Item`. `item.add` добавляет в форму или в элемент-контейнер,
+названный адресом, `item.remove` удаляет элемент по его адресу,
 `event.bind` привязывает обработчик (`values.handler`, `values.callType`)
-на адресе события. Словарь элемента учитывает его роль: в поле, декорацию
+на адресе события. Реквизит и команду формы добавляют `attribute.add`
+и `command.add` на адресе формы. Операции формы названы по виду своего
+узла (`Item`, `Attribute`, `Command`), и имя реквизита и команды общее
+с объектом метаданных: запись реестра и контракт `<узел>.Can.<операция>`
+выбирает адрес вызова — на форме это реквизит и команда формы, на объекте
+это члены его описания. Отказ «не тот узел» у общего имени ведёт `next`
+к самому глубокому узлу, где исполнима запись любого из семейств.
+Снятые `element.add`, `element.remove`, `formAttribute.add`
+и `formCommand.add` в реестре отсутствуют. Вызов получает `bad_value`
+без записи, а `next` ведёт к контракту заменившей операции формы
+на ближайшем узле, где она исполнима: на адресе вызова или на его предке,
+как отказ «не тот узел», с учётом роли элемента. Удаление узла, которое
+его роль не принимает (автоматическая командная панель), другим узлом
+не подменяется. К члену объекта метаданных снятая операция формы
+не ведёт. Если такого узла в цепочке адреса нет, отказ называет форму
+адреса заменившей операции и словарь узла. Чтение `<узел>.Can.<снятая>`
+отвечает `bad_value` с `next` к контракту заменившей, у `form.create` —
+к `form.add` владельца; у заимствованного узла с содержимым родителя
+`next` ведёт к словарю узла.
+Словарь элемента учитывает его роль: в поле, декорацию
 и кнопку элемент не добавляется, автоматическая командная панель отдельно
 от владельца не удаляется. Позиция `after` остаётся именем соседа в том же
 контейнере; сосед из другого контейнера отвергается `bad_value`. Снятые
-аргументы — `items[].into` у `element.add`, `items[].name`, элемент-строка
-`items[]` и `values.name` у `element.remove`, `values.element`
+аргументы — `items[].into` у `item.add`, `items[].name`, элемент-строка
+`items[]` и `values.name` у `item.remove`, `values.element`
 и `values.event` у `event.bind` — получают тот же отказ `bad_value`
 с `next` к узлу, который называло значение: к элементу по его пути
 в форме, к событию с именем из реестра. Элемент, которого в форме нет,
