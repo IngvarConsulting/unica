@@ -3,7 +3,7 @@
   "name": "resolve-the-exact-form-and-module-file",
   "issue": 1508,
   "area": "Навигация по исходникам",
-  "task": "Разрешить физические пути Form.xml, BSL формы и модуля менеджера обработки и документа в точные логические цели, сохраняя запрошенный файл.",
+  "task": "Разрешить физические пути Form.xml, BSL формы и модулей владельца по ролям, допустимым профилем платформы, в точные логические цели, сохраняя запрошенный файл; недопустимую роль и незарегистрированные цели — отказывать.",
   "workspace": "tests/fixtures/acceptance/workspace-resolve-resources",
   "wire": [
     {
@@ -538,6 +538,22 @@
         "refused"
       ],
       "refusal": "not_found: no admitted source set places `src/Ext/ExternalConnectionModule.bsl`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Documents/Invoice/Ext/RecordSetModule.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: no admitted source set places `src/Documents/Invoice/Ext/RecordSetModule.bsl`",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
