@@ -3907,6 +3907,28 @@ fn main() {
             ])
             .stdout(stdout)
             .stderr(stderr);
+        // The test harness exports this package's identity (`CARGO_MANIFEST_DIR`,
+        // `CARGO_PKG_*`, …). Build scripts such as ring's declare some of these
+        // names in `rerun-if-env-changed`, and Cargo compares them with its own
+        // environment: an inherited value would rerun those scripts and make
+        // the outer test build recompile everything above them.
+        for (name, _) in std::env::vars_os() {
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name == "OUT_DIR"
+                || name == "CARGO_CRATE_NAME"
+                || name == "CARGO_BIN_NAME"
+                || name == "CARGO_PRIMARY_PACKAGE"
+                || name == "CARGO_TARGET_TMPDIR"
+                || name.starts_with("CARGO_MANIFEST_")
+                || name.starts_with("CARGO_PKG_")
+                || name.starts_with("CARGO_CFG_")
+                || name.starts_with("CARGO_FEATURE_")
+            {
+                command.env_remove(name);
+            }
+        }
         if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
             command.env("CARGO_TARGET_DIR", target_dir);
         }
