@@ -2459,7 +2459,8 @@ pub(crate) fn form_build_tree(
                     state.has_collapsed = true;
                 }
             }
-            "UsualGroup" | "Pages" | "Table" | "CommandBar" | "ButtonGroup" | "Popup" => {
+            "UsualGroup" | "Pages" | "Table" | "ColumnGroup" | "CommandBar" | "ButtonGroup"
+            | "Popup" => {
                 if let Some(child_items) = form_child(*child, "ChildItems") {
                     form_build_tree(
                         child_items,
@@ -2483,7 +2484,6 @@ pub(crate) fn form_skip_elements() -> &'static [&'static str] {
         "SearchStringAddition",
         "ViewStatusAddition",
         "SearchControlAddition",
-        "ColumnGroup",
     ]
 }
 

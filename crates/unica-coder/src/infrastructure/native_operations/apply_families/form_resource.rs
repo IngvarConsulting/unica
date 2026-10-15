@@ -24,6 +24,15 @@ use crate::infrastructure::workspace_actor::{FormResourceApplyAuthority, Provide
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+enum FormEditStep {
+    Definition(Value),
+    Move {
+        request: super::super::form_move::FormItemMove,
+        location: String,
+    },
+}
+
 const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 
 #[derive(Debug, Clone)]
@@ -117,7 +126,7 @@ enum FormResourcePlanKind {
         owner: MetadataAddress,
         form: String,
         subject: FormEditSubject,
-        definitions: Vec<Value>,
+        definitions: Vec<FormEditStep>,
     },
     Unsupported,
 }
@@ -198,7 +207,7 @@ pub(super) fn form_items_of(text: &str) -> Result<Vec<FormInfoElement>, String> 
 fn check_form_edit_subject(
     xml_text: &str,
     subject: &FormEditSubject,
-    definitions: &[Value],
+    definitions: &[FormEditStep],
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
@@ -250,7 +259,10 @@ fn check_form_edit_subject(
         // Элементы, добавленные раньше в том же `items`, к моменту
         // следующего уже стоят в контейнере и тоже служат соседями.
         let mut added: Vec<&str> = Vec::new();
-        for (index, definition) in definitions.iter().enumerate() {
+        for (index, step) in definitions.iter().enumerate() {
+            let FormEditStep::Definition(definition) = step else {
+                continue;
+            };
             if let Some(after) = definition.get("after").and_then(Value::as_str) {
                 if !siblings.iter().any(|sibling| sibling.name == after) && !added.contains(&after)
                 {
@@ -1510,7 +1522,7 @@ fn parse_form_operation(
     let placed = match operation {
         "form.add" | "form.set" => target.form.is_none(),
         "item.add" => target.form.is_some() && target.event.is_none(),
-        "item.remove" => !target.items.is_empty() && target.event.is_none(),
+        "item.remove" | "item.move" => !target.items.is_empty() && target.event.is_none(),
         "event.bind" => target.event.is_some(),
         _ => target.form.is_some() && target.items.is_empty() && target.event.is_none(),
     };
@@ -1520,7 +1532,9 @@ fn parse_form_operation(
             "item.add" => {
                 "the form `Owner.Name.Form.F` or its item `….Item.A[.Item.B…]` that receives the elements"
             }
-            "item.remove" => "the removed item `Owner.Name.Form.F.Item.A[.Item.B…]`",
+            "item.remove" | "item.move" => {
+                "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
+            }
             "event.bind" => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
             _ => "the form `Owner.Name.Form.F`",
         };
@@ -1694,7 +1708,7 @@ fn parse_form_operation(
                     }
                     (None, None) => {}
                 }
-                definitions.push(Value::Object(wrapper));
+                definitions.push(FormEditStep::Definition(Value::Object(wrapper)));
             }
             if definitions.is_empty() {
                 return Err(bad(
@@ -1708,6 +1722,44 @@ fn parse_form_operation(
                 form,
                 subject: FormEditSubject::Container(target.items),
                 definitions,
+            })
+        }
+        "item.move" => {
+            let form = form_of(&target)?;
+            let normalized = crate::domain::operation_contract::OperationContract::form_move()
+                .normalize(
+                    &Value::Object(args.clone()),
+                    &format!("ops[{op_index}].args"),
+                )
+                .map_err(|error| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message)
+                        .at_path(error.path)
+                })?;
+            let values = &normalized["values"];
+            let into = match values.get("into") {
+                Some(Value::Null) => super::super::form_move::FormMoveDestination::Root,
+                Some(Value::String(name)) => {
+                    super::super::form_move::FormMoveDestination::Named(name.clone())
+                }
+                _ => unreachable!("the item.move contract normalizes an explicit into"),
+            };
+            let request = super::super::form_move::FormItemMove {
+                name: target.items.last().expect("move addresses an item").clone(),
+                source_path: Some(target.items.clone()),
+                into,
+                after: values
+                    .get("after")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            };
+            Ok(FormResourcePlanKind::FormEdit {
+                owner: target.owner,
+                form,
+                subject: FormEditSubject::Node(target.items),
+                definitions: vec![FormEditStep::Move {
+                    request,
+                    location: format!("ops[{op_index}].args.values"),
+                }],
             })
         }
         "item.remove" => {
@@ -1733,7 +1785,9 @@ fn parse_form_operation(
                 owner: target.owner,
                 form,
                 subject: FormEditSubject::Removed(target.items),
-                definitions: vec![serde_json::json!({"removeElements": [{"name": name}]})],
+                definitions: vec![FormEditStep::Definition(
+                    serde_json::json!({"removeElements": [{"name": name}]}),
+                )],
             })
         }
         "attribute.add" | "command.add" => {
@@ -1781,7 +1835,7 @@ fn parse_form_operation(
                 owner: target.owner,
                 form,
                 subject: FormEditSubject::Node(Vec::new()),
-                definitions: vec![Value::Object(wrapper)],
+                definitions: vec![FormEditStep::Definition(Value::Object(wrapper))],
             })
         }
         "event.bind" => {
@@ -1813,7 +1867,7 @@ fn parse_form_operation(
                 owner: target.owner,
                 form,
                 subject: FormEditSubject::Node(target.items),
-                definitions: vec![definition],
+                definitions: vec![FormEditStep::Definition(definition)],
             })
         }
         _ => Ok(FormResourcePlanKind::Unsupported),
@@ -2158,7 +2212,7 @@ fn stage_form_edit(
     owner: &MetadataAddress,
     form: &str,
     subject: &FormEditSubject,
-    definitions: &[Value],
+    definitions: &[FormEditStep],
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
@@ -2196,7 +2250,23 @@ fn stage_form_edit(
     // definition writes such text: the definition is first applied without a
     // language and, if it needs one, applied again from the same image.
     let mut lang: Option<String> = None;
-    for definition in definitions {
+    for step in definitions {
+        let definition = match step {
+            FormEditStep::Definition(definition) => definition,
+            FormEditStep::Move { request, location } => {
+                xml_text =
+                    super::super::form_move::move_item(&xml_text, request).map_err(|error| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(
+                            if error.field == "name" {
+                                at_path.clone()
+                            } else {
+                                format!("{location}.{}", error.field)
+                            },
+                        )
+                    })?;
+                continue;
+            }
+        };
         let apply = |xml_text: &mut String, lang: Option<&str>| {
             crate::infrastructure::native_operations::form::form_edit_apply_definition(
                 xml_text, definition, &absolute, root_start, lang,
@@ -2223,8 +2293,17 @@ fn stage_form_edit(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
         })?;
     }
-    let postimage = with_bom(&xml_text);
-    if postimage == preimage {
+    // Перенос сохраняет исходное состояние BOM. Остальные определения
+    // используют прежнюю нормализацию писателя формы.
+    let is_move = definitions
+        .iter()
+        .any(|step| matches!(step, FormEditStep::Move { .. }));
+    let postimage = if is_move && !preimage.starts_with(UTF8_BOM) {
+        xml_text.as_bytes().to_vec()
+    } else {
+        with_bom(&xml_text)
+    };
+    if !is_move && postimage == preimage {
         return Ok(());
     }
     let validation = crate::infrastructure::native_operations::form::validate_form_with_source(
@@ -2237,6 +2316,9 @@ fn stage_form_edit(
             ApplyPlanError::new(ApplyPlanErrorKind::Postcondition, message).at_path(args_path)
         },
     )?;
+    if postimage == preimage {
+        return Ok(());
+    }
     staged
         .replace(&relative, &preimage, postimage)
         .map_err(|error| ApplyPlanError::staging(error, at_path))?;
@@ -5194,7 +5276,10 @@ mod tests {
         };
         let mut expected = item.as_object().unwrap().clone();
         expected.insert("action".into(), json!("Refresh"));
-        assert_eq!(definitions, vec![json!({"commands": [expected]})]);
+        let [super::FormEditStep::Definition(definition)] = definitions.as_slice() else {
+            panic!("expected one command definition");
+        };
+        assert_eq!(definition, &json!({"commands": [expected]}));
 
         for (field, value) in [
             ("use", json!(false)),

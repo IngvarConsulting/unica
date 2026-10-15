@@ -20245,8 +20245,8 @@
   {
    "id": "S356",
    "issue": 919,
-   "area": "Известные пробелы",
-   "task": "Перенести существующее поле вместе с companions в существующую группу: item.move по адресу поля пока отсутствует (#919)",
+   "area": "Формы",
+   "task": "Не переносить элемент без явного получателя: item.move требует values.into и не трактует пропуск как корень формы",
    "wire": [
     {
      "tool": "unica.apply",
@@ -20259,10 +20259,9 @@
       ]
      },
      "expect": [
-      "gap",
-      "unsupported"
+      "refused"
      ],
-     "gap": "#919: операция переноса существующего поля отсутствует в каноническом реестре",
+     "refusal": "bad_value: ops[0].args.values: required argument is missing; `item.move` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеП",
      "assertions": [
       {
        "pointer": "/ok",
@@ -20270,21 +20269,11 @@
       },
       {
        "pointer": "/at",
-       "eq": "ops[0].op"
+       "eq": "ops[0].args.values"
       },
       {
        "pointer": "/diagnostics/0/code",
-       "eq": "unsupported_operation"
-      },
-      {
-       "pointer": "/diagnostics",
-       "eq": [
-        {
-         "code": "unsupported_operation",
-         "outcome": "goElsewhere",
-         "message": "apply operation `item.move` is not in the canonical registry"
-        }
-       ]
+       "eq": "bad_value"
       }
      ],
      "fileAssertions": [

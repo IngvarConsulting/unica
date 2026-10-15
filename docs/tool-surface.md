@@ -39,6 +39,7 @@ Plan typed edits with at and ops without writing; execute that saved plan with e
 - Изменить свойство через доказанную retained-публикацию `props.set`
 - Добавить, изменить и удалить атрибут через сохранённый план и token-only исполнение
 - Записать true и false в ClientOrdinaryApplication общего модуля; предпросмотр не изменяет файл, неверный тип значения и Document получают bad_value без записи
+- Создать страницы формы и перенести существующие группы через item.move одним атомарным планом, сохранив идентификаторы, события и вложенные элементы
 
 ## check
 
