@@ -22,6 +22,7 @@ pub(crate) mod event;
 pub(crate) mod external;
 pub(crate) mod form;
 pub(crate) mod form_event_registry;
+pub(crate) mod form_move;
 pub(crate) mod help;
 pub(crate) mod interface;
 pub(crate) mod logical_selector;
