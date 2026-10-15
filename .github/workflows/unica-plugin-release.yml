@@ -13,7 +13,10 @@ on:
         options: [main, large]
         default: main
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # Смена меток не запускает основной workflow: новый suite без `Unica CI`
+    # заменяет для ruleset успешный suite той же головы PR. Метка `ci:full`
+    # читается из снимка pull request при следующем push (`synchronize`).
+    types: [opened, synchronize, reopened]
   # Очередь слияния: прогон на будущем состоянии main пачкой pull request.
   # Здесь ловится то, что отбор по размеру на pull request пропускает.
   merge_group:
@@ -40,19 +43,13 @@ env:
 
 # Ручной и ночной запуск идут своей группой: в общей с push они ждали бы за
 # сборкой ветки, а второй push вытеснял бы ожидающий прогон.
-# Метка pull request, кроме `ci:full`, ворота не меняет: такой прогон идёт
-# своей группой и не отменяет прогон того же pull request. Иначе pull
-# request, открытый с меткой, давал отменённый прогон с красными строками.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', inputs.profile) || '' }}${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:full') && format('-label-{0}', github.run_id) || '' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'workflow_dispatch' && format('-dispatch-{0}', inputs.profile) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   classify-changes:
     runs-on: ubuntu-latest
-    # Метка, кроме `ci:full`, ворота не меняет: джобы прогона пропускаются,
-    # а за ними и все зависимые.
-    if: ${{ !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:full') }}
     timeout-minutes: 10
     outputs:
       rust_changed: ${{ steps.scope.outputs.rust_changed }}
@@ -76,7 +73,8 @@ jobs:
       # быстрый сигнал. Полная матрица идёт в очереди слияния, на push в ветку
       # и по кнопке: очередь проверяет ровно то дерево, что ляжет в `main`, и
       # класс дефектов `#[cfg]` ловит она, ценой одной выкидки, а не красного
-      # `main`. Метка `ci:full` возвращает полную матрицу на pull request.
+      # `main`. Метка `ci:full`, прочитанная при старте прогона pull request,
+      # возвращает полную матрицу.
       # Windows — только в ночном ярусе `large`: с остальных матриц он снят за
       # нестабильность раннера, а ночью сбой виден и никого не блокирует.
       - id: runners
@@ -145,9 +143,6 @@ jobs:
   guards:
     name: Guards
     runs-on: ubuntu-latest
-    # Метка, кроме `ci:full`, ворота не меняет: джобы прогона пропускаются,
-    # а за ними и все зависимые.
-    if: ${{ !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:full') }}
     timeout-minutes: 15
     # Загрузка SARIF пишет в Code Scanning; права джобы заменяют права
     # workflow целиком, поэтому `contents: read` повторён.
@@ -1099,14 +1094,12 @@ jobs:
           --plugin-root .build/thin/plugins/unica
 
   unica-ci:
-    # Обязательная проверка ruleset называется `Unica CI`. Пропущенная джоба
-    # засчитывается как успех, и прогон метки, пропущенный под этим именем,
-    # перекрыл бы красный вердикт настоящего прогона того же коммита.
-    # Поэтому у прогона, который метка не меняет, у ворот другое имя.
-    name: ${{ (github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:full') && 'Unica CI (label ignored)' || 'Unica CI' }}
+    # Стабильное имя обязательной проверки ruleset. Смена метки не запускает
+    # этот workflow и потому не создаёт более новый suite без этих ворот.
+    name: Unica CI
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: ${{ always() && !(github.event_name == 'pull_request' && (github.event.action == 'labeled' || github.event.action == 'unlabeled') && github.event.label.name != 'ci:full') }}
+    if: always()
     needs:
       - classify-changes
       - guards

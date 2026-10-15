@@ -1,6 +1,10 @@
 ---
 id: INV.SURFACE.CHECK-INFERS-VALIDATORS
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_check_preserves_bom_format_warning
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_check_validates_the_child_and_rejects_wrong_identity
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_check_refuses_linked_dependencies
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_subsystem_check_refuses_replaced_root
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_format_owner_read_stops_at_typed_midstream_checkpoint
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_keeps_captured_format_evidence_after_replacement
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::canonical_dcs_validation_does_not_follow_links_after_input_capture
@@ -26,3 +30,9 @@ check:
 не назначен, отвечает читаемостью (`status: "readable"`). Заимствованный
 узел без своего файла содержимого (`content: "inherited"`) не получает
 валидатор этого файла.
+
+Для зарегистрированной подсистемы, включая вложенную в пределах адресной
+модели, проверяется выбранный дескриптор и его прямые зависимости.
+Проверка родителя не заменяет проверку дочерней цели. Дескрипторы цепочки,
+файлы дочерних подсистем и `CommandInterface.xml` доступны только через
+удержанный корень без следования символическим ссылкам.
