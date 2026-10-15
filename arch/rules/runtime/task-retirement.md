@@ -10,7 +10,8 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::uncertain_retirement_delete_stays_with_its_record_and_reconciles_on_retry
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::retirement_failure_after_uncertain_link_commit_serves_the_durable_catalog
   - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::retirement_retry_pause_doubles_up_to_an_hour_without_an_attempt_limit
-gap: https://github.com/IngvarConsulting/unica/issues/945
+  - crates/unica-coder/src/infrastructure/daemon/runtime_v5/tests.rs::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete
+  - crates/unica-coder/src/infrastructure/task_lifecycle_link_store_v5.rs::finalized_retirement_removes_exact_link_and_both_indexes_across_reopen
 ---
 
 # Очистка задания согласуется с его квитанцией
@@ -45,6 +46,4 @@ gap: https://github.com/IngvarConsulting/unica/issues/945
 [правилу остановки](receipt-store-fail-stop.md).
 
 После подтверждённого удаления задания удаляются его связь и оба индекса
-квитанции. Пока исход удаления не подтверждён, они сохраняются. Проверка
-реальных индексов ещё не завершена: прежний отчёт восстанавливал их
-из списка связей и не доказывал состояние самих индексов.
+квитанции. Пока исход удаления не подтверждён, они сохраняются.
