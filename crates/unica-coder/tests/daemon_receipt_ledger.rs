@@ -2043,7 +2043,6 @@ struct TaskRetirementAuthorizationObservation {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TaskRetirementAuthorizationReuseObservation {
     presented_fingerprint: String,
-    rejected_sequence: u64,
     receipt_store_mutations_before: u64,
     receipt_store_mutations_after: u64,
     task_store_mutations_before: u64,
@@ -4259,7 +4258,6 @@ fn assert_task_retirement_case(case: &TaskRetirementCaseObservation) {
                 reuse.task_store_mutations_before,
                 reuse.task_store_mutations_after
             );
-            assert!(reuse.rejected_sequence > recovered.issued_sequence);
         } else {
             assert!(case.old_authorization_reuse.is_none());
         }

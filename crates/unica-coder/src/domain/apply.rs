@@ -999,7 +999,7 @@ impl TemplateFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FormItemRole {
     /// Принимает вложенные элементы: группа, страницы, страница, таблица,
-    /// командная панель, группа кнопок, подменю.
+    /// группа колонок, командная панель, группа кнопок, подменю.
     Container,
     /// Автоматическая командная панель формы или таблицы: в неё добавляются
     /// кнопки, но удалить её отдельно от владельца нельзя.
@@ -1019,9 +1019,8 @@ impl FormItemRole {
             .unwrap_or_default();
         match kind {
             "AutoCommandBar" => Self::AutoCommandBar,
-            "Group" | "Table" | "CmdBar" | "Pages" | "Page" | "Popup" | "BtnGroup" => {
-                Self::Container
-            }
+            "Group" | "Table" | "ColumnGroup" | "CmdBar" | "Pages" | "Page" | "Popup"
+            | "BtnGroup" => Self::Container,
             _ => Self::Leaf,
         }
     }
@@ -1087,6 +1086,7 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "form.remove",
     "item.add",
     "item.remove",
+    "item.move",
     "event.bind",
     "right.add",
     "right.set",
@@ -1245,14 +1245,17 @@ impl OperationDescriptor {
     }
 
     /// Фильтр роли элемента формы. Элемент добавляется только в контейнер
-    /// (группу, страницы, страницу, таблицу, командную панель), а
+    /// (группу, страницы, страницу, таблицу, группу колонок, командную панель), а
     /// автоматическая командная панель — часть своего владельца и не
     /// удаляется. `None` — роль не установлена.
     pub(crate) fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
         !matches!(
             (self.name, role),
             ("item.add", Some(FormItemRole::Leaf))
-                | ("item.remove", Some(FormItemRole::AutoCommandBar))
+                | (
+                    "item.remove" | "item.move",
+                    Some(FormItemRole::AutoCommandBar)
+                )
         )
     }
 
@@ -1512,6 +1515,7 @@ operation_descriptors!(
     ),
     ("item.add", Form, FormItemContainer, Items),
     ("item.remove", Form, FormItem, Target),
+    ("item.move", Form, FormItem, Values),
     ("attribute.add", Form, Form, Items),
     ("command.add", Form, Form, Items),
     ("event.bind", Form, FormEvent, Values),
@@ -2943,6 +2947,7 @@ mod tests {
             "predefinedItem.remove",
             "item.add",
             "item.remove",
+            "item.move",
             "attribute.add",
             "command.add",
             "event.bind",
@@ -3026,7 +3031,7 @@ mod tests {
             "event.implement",
         ];
         let registry = OperationRegistry::closed();
-        assert_eq!(expected.len(), 121);
+        assert_eq!(expected.len(), 122);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465): имя одно, семейство выбирает адрес. Других
@@ -3881,6 +3886,7 @@ mod tests {
             ("[Group:V]", true, true),
             ("[Group]", true, true),
             ("[Table]", true, true),
+            ("[ColumnGroup]", true, true),
             ("[Pages]", true, true),
             ("[Page]", true, true),
             ("[CmdBar]", true, true),
@@ -3900,6 +3906,7 @@ mod tests {
             };
             assert_eq!(verdict("item.add"), add, "{tag}");
             assert_eq!(verdict("item.remove"), remove, "{tag}");
+            assert_eq!(verdict("item.move"), remove, "{tag}");
         }
     }
 

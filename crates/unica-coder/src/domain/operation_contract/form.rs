@@ -474,6 +474,9 @@ const FORM_SLOTS: [&str; 13] = [
 impl OperationContract {
     /// Контракты операций формы; `command.add` — из #1439.
     pub(crate) fn form(op: &str) -> Option<Self> {
+        if op == "item.move" {
+            return Some(Self::form_move());
+        }
         let at = || ("at", text(true));
         let (schema, target, effect, notes, example_args) = match op {
             "form.add" => (
@@ -727,6 +730,7 @@ mod tests {
             "form.remove",
             "item.add",
             "item.remove",
+            "item.move",
             "attribute.add",
             "event.bind",
             "command.add",

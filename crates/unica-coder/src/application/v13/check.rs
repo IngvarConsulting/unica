@@ -354,7 +354,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // The typed metadata validator reads object descriptors only; roles
         // and subsystems keep their own validators.
         "Role" => vec![CheckStep::Native(CheckValidator::Role)],
-        "Subsystem" => vec![CheckStep::Native(CheckValidator::Subsystem)],
+        "Subsystem" if facts.named => vec![CheckStep::Native(CheckValidator::Subsystem)],
         "Interface" | "CommandInterface" => vec![CheckStep::Native(CheckValidator::Interface)],
         // Узел с кодом проверяется анализатором BSL. Прежде план у него был
         // пуст, и `check` отвечал «читается» — то есть молчал о находках,
@@ -854,14 +854,16 @@ mod tests {
         )
         .is_empty());
         // Ветвь вида метаданных (`main:Catalog`) — не один дескриптор.
-        assert!(plan_for_node(
-            "Catalog",
-            NodeFacts {
-                named: false,
-                ..plain
-            }
-        )
-        .is_empty());
+        for kind in ["Catalog", "Subsystem"] {
+            assert!(plan_for_node(
+                kind,
+                NodeFacts {
+                    named: false,
+                    ..plain
+                }
+            )
+            .is_empty());
+        }
         // Метод разбирается не отдельно: анализатор читает модуль целиком, и
         // отдельный шаг на методе поднимал бы инструмент дважды на один файл.
         assert!(plan_for_node("Method", plain).is_empty());

@@ -500,6 +500,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
+    pub(crate) fn validate_subsystem(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let route = route_logical_address(&canonical, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+        let target = route.reader_metadata_path().ok_or_else(|| {
+            ViewError::new(RefusalCode::BadValue, "subsystem check has no descriptor")
+        })?;
+        self.verify_registered_owner(target, &admitted)?;
+        self.read
+            .validate_subsystem(&canonical, &mut || self.read_checkpoint())
+    }
+
     /// Proves a DCS template through the same registration and descriptor
     /// authority as view, then reads its body through the retained source root.
     pub(crate) fn dcs_validation_input(
