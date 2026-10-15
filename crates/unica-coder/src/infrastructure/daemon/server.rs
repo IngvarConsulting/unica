@@ -1,5 +1,5 @@
 use super::identity::CoreIdentity;
-use crate::domain::refusal::RefusalCode;
+use crate::domain::refusal::{RefusalCode, RefusalDetail};
 #[path = "invocation_service.rs"]
 mod invocation_service;
 #[cfg(test)]
@@ -107,6 +107,13 @@ fn reject_workspace_admission(
             "the initialization dictionary: source, CF/DT, and existing-infobase routes",
         )
     };
+    let retry = || {
+        super::v13_workspace_bootstrap::next_action(
+            &format!("unica.{}", request.tool().catalog_name()),
+            serde_json::Value::Object(request.arguments().clone()),
+            "retry the same call after the source root becomes available",
+        )
+    };
 
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -191,6 +198,21 @@ fn reject_workspace_admission(
             format!("workspace actor admission failed: {stage}"),
             vec![facts(), verdict()],
         ),
+        UnadmittedCause::ActorRootUnavailable => {
+            let mut result = DomainResult::canonical_rejection_detailed(
+                None,
+                RefusalDetail::SourceTemporarilyUnavailable,
+                "workspace actor source root is temporarily unavailable; the retained actor and its saved plans were preserved",
+            );
+            result.data = Some(serde_json::Value::Object(payload));
+            result.next = vec![retry()];
+            super::v13_workspace_bootstrap::annotate_workspace_origin(
+                &mut result,
+                request.workspace_hint(),
+                request.workspace_origin(),
+            );
+            return V5CanonicalPrepareError::Rejected(Box::new(result));
+        }
     };
 
     let mut result = DomainResult::canonical_rejection(None, code, summary);
@@ -8992,6 +9014,66 @@ struct ActorLogicalReadLease {"#,
             published,
             "replay changed the published source"
         );
+    }
+
+    #[test]
+    fn saved_apply_token_survives_temporary_named_root_validation_failure() {
+        let workspace = subsystem_picture_workspace("", true);
+        let source = workspace.path().join("src");
+        let before = crate::test_support::tree_snapshot(&source);
+        let runtime = bootstrap_runtime();
+        let preview = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({
+                "at": "main:Subsystem.Sales",
+                "ops": [{"op": "props.set", "args": {"values": {"Comment": "retained after temporary root failure"}}}]
+            }),
+        );
+        assert!(preview.ok, "{preview:?}");
+        let token = preview.data.as_ref().unwrap()["executionToken"].clone();
+
+        runtime
+            .workspace_actors
+            .fail_next_named_root_validation_for_test(std::io::ErrorKind::PermissionDenied);
+        let unavailable = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert!(!unavailable.ok, "{unavailable:?}");
+        assert_eq!(
+            unavailable.diagnostics[0]["code"], "provider_unavailable",
+            "временная ошибка открытия корня не должна превращать токен в неизвестный: {unavailable:?}"
+        );
+        assert_eq!(
+            unavailable.diagnostics[0]["detailCode"],
+            "source_temporarily_unavailable"
+        );
+        assert_eq!(unavailable.diagnostics[0]["outcome"], "retry");
+        assert_eq!(unavailable.next[0]["tool"], "unica.apply");
+        assert_eq!(unavailable.next[0]["args"]["executionToken"], token);
+        assert_eq!(
+            crate::test_support::tree_snapshot(&source),
+            before,
+            "отказ допуска не должен публиковать сохранённый план"
+        );
+
+        let executed = submit_canonical(
+            &runtime,
+            workspace.path(),
+            ToolIdentity::Apply,
+            serde_json::json!({"executionToken": token}),
+        );
+        assert!(
+            executed.ok,
+            "повтор после временной ошибки должен исполнить прежний токен: {executed:?}"
+        );
+        assert!(std::fs::read_to_string(source.join("Subsystems/Sales.xml"))
+            .unwrap()
+            .contains("retained after temporary root failure"));
     }
 
     fn saved_apply_survives_retention_age(age: Duration) {
