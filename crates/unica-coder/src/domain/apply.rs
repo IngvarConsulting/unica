@@ -2782,6 +2782,7 @@ mod tests {
             "predefinedItem.remove",
             "element.add",
             "element.remove",
+            "element.move",
             "formAttribute.add",
             "formCommand.add",
             "event.bind",
@@ -2865,7 +2866,7 @@ mod tests {
             "event.implement",
         ];
         let registry = OperationRegistry::closed();
-        assert_eq!(expected.len(), 121);
+        assert_eq!(expected.len(), 122);
         assert_eq!(registry.names(), expected);
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();

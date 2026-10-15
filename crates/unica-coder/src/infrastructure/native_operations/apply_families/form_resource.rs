@@ -2244,6 +2244,8 @@ fn stage_form_edit(
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(args_path.clone())
         })?;
     }
+    // Move preserves source bytes, including BOM state. Definition edits keep
+    // their established BOM normalization; changing it is outside this operation.
     let is_move = definitions
         .iter()
         .any(|step| matches!(step, FormEditStep::Move { .. }));

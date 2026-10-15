@@ -246,7 +246,7 @@ def report_json(report: dict) -> str:
 
 
 def check_fixture(path: Path) -> None:
-    report = json.loads(path.read_text())
+    report = json.loads(path.read_text(encoding="utf-8"))
     if report["schemaVersion"] != 2:
         raise ValueError("expected compact fixture schemaVersion 2")
     for case in report["cases"]:
@@ -314,13 +314,13 @@ def main():
         form_dir = source / "CommonForms" / name / "Ext"
         (form_dir / "Form").mkdir(parents=True)
         descriptor = f'<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonForm uuid="{uuid.uuid5(uuid.NAMESPACE_URL, name)}"><Properties><Name>{name}</Name><FormType>Managed</FormType></Properties></CommonForm></MetaDataObject>'
-        (source / "CommonForms" / f"{name}.xml").write_text(descriptor)
+        (source / "CommonForms" / f"{name}.xml").write_text(descriptor, encoding="utf-8")
         xml, module = form_source(case)
         (form_dir / "Form.xml").write_bytes(xml)
-        (form_dir / "Form" / "Module.bsl").write_text(module)
+        (form_dir / "Form" / "Module.bsl").write_text(module, encoding="utf-8-sig")
     configuration = source / "Configuration.xml"
-    text = configuration.read_text(encoding="utf-8-sig")
-    configuration.write_text(text.replace("<ChildObjects>", "<ChildObjects>" + "".join(references), 1))
+    text = configuration.read_text(encoding="utf-8")
+    configuration.write_text(text.replace("<ChildObjects>", "<ChildObjects>" + "".join(references), 1), encoding="utf-8")
     output = work / "runtime.tsv"
     lines = ["Процедура ПриНачалеРаботыСистемы()", f'Результат = Новый ЗаписьТекста("{output}", КодировкаТекста.UTF8);']
     for case in matrix:
@@ -330,7 +330,7 @@ def main():
                       "Исключение", f'Результат.ЗаписатьСтроку("{name}" + Символы.Таб + "CREATEERROR" + Символы.Таб + ОписаниеОшибки());', "КонецПопытки;"])
     lines.extend(["Результат.Закрыть();", "ЗавершитьРаботуСистемы(Ложь);", "КонецПроцедуры"])
     (source / "Ext").mkdir(exist_ok=True)
-    (source / "Ext" / "ManagedApplicationModule.bsl").write_text("\n".join(lines))
+    (source / "Ext" / "ManagedApplicationModule.bsl").write_text("\n".join(lines), encoding="utf-8-sig")
     run("import", [str(args.ibcmd), "config", *options, "import", str(source)])
     run("check", [str(args.ibcmd), "config", *options, "check", "--force"])
     run("apply", [str(args.ibcmd), "config", *options, "apply", "--force"])
@@ -405,7 +405,7 @@ def main():
               "installFileCount": inventory["fileCount"], "method": "FormItems.Move in OnCreateAtServer of real managed CommonForms",
               "postMoveRoundtrip": {"cycles": 2, "caseCount": len(expected), "allSubtreesAndParentsPreserved": all(row["subtreeAndParentPreserved"] for row in roundtrip)},
               "harnessSha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-              "cases": [{**case, **observations[case["form"]], "sourceXml": (source / "CommonForms" / case["form"] / "Ext" / "Form.xml").read_text()} for case in matrix]}
+              "cases": [{**case, **observations[case["form"]], "sourceXml": (source / "CommonForms" / case["form"] / "Ext" / "Form.xml").read_text(encoding="utf-8")} for case in matrix]}
     for case in report["cases"]:
         if case["status"] == "observed":
             case["outcome"] = "preserving" if case["preserves"] else ("refused" if not case["atTarget"] else "converted")
@@ -432,8 +432,8 @@ def main():
         shutil.copy2(current / "CommonForms" / case["form"] / "Ext" / "Form.xml", work / "postmove" / f"{name}.xml")
     report["postMoveRoundtrip"]["exportedFormDigests"] = digests
     report["postMoveRoundtrip"]["representatives"] = [{"form": case["form"], "path": f"postmove/{name}.xml"} for name, case in representatives.items()]
-    (work / "observations.json").write_text(report_json(compact_report(report)))
-    (work / "commands.json").write_text(json.dumps(commands, ensure_ascii=False, indent=2) + "\n")
+    (work / "observations.json").write_text(report_json(compact_report(report)), encoding="utf-8")
+    (work / "commands.json").write_text(json.dumps(commands, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"observed {len(matrix)} cases; report: {work / 'observations.json'}")
 
 
