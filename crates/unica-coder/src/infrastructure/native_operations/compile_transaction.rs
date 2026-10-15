@@ -611,15 +611,20 @@ pub(super) struct RetainedApplyChangeBinding {
 }
 
 /// An unchanged input inspected by a retained apply planner. It keeps the
-/// physical route and a content fingerprint, but never keeps the file body.
+/// physical identities of its route and a content fingerprint, but neither the
+/// file body nor an open descriptor: a reference scan over a whole
+/// configuration must not hold one descriptor per inspected file. The check
+/// walks the route from the retained root again and proves the same physical
+/// objects and bytes. Without a held descriptor a filesystem may reuse an
+/// identity for a recreated object; the bytes are still rehashed, so only a
+/// recreation with identical content passes, which changes no planned input.
 #[derive(Debug)]
 pub(super) struct RetainedApplyReadGuardBinding {
     pub(super) root: Arc<RetainedDirectoryCapability>,
     pub(super) relative_path: PathBuf,
-    pub(super) ancestor: RetainedDirectoryCapability,
-    pub(super) name: OsString,
-    pub(super) original_file:
-        crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+    /// Physical identity of each directory between the root and the file.
+    pub(super) route_identities: Vec<crate::infrastructure::platform::filesystem::FileIdentity>,
+    pub(super) file_identity: crate::infrastructure::platform::filesystem::FileIdentity,
     pub(super) expected_len: u64,
     pub(super) expected_sha256: [u8; 32],
     pub(super) deadline: crate::domain::code_intelligence::ProviderDeadline,
@@ -2474,6 +2479,82 @@ fn validate_retained_apply_preimage_typed(
     Ok(())
 }
 
+impl RetainedApplyReadGuardBinding {
+    /// Walk the guarded route from the retained root again and retain the
+    /// file it names now. Every directory and the file must be the physical
+    /// objects observed while planning; the descriptors of this walk are
+    /// released when the returned capability is dropped.
+    pub(super) fn retain_named_route(
+        &self,
+    ) -> Result<
+        crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+        RetainedApplyValidationError,
+    > {
+        let components = self
+            .relative_path
+            .components()
+            .map(|component| match component {
+                std::path::Component::Normal(name) => Ok(name),
+                _ => Err(RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::Invariant,
+                    "reference input path is not relative",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some((name, parents)) = components.split_last() else {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Invariant,
+                "reference input path is empty",
+            ));
+        };
+        if parents.len() != self.route_identities.len() {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Invariant,
+                "reference input route does not match its identities",
+            ));
+        }
+        let mut parent = self.root.as_ref().clone();
+        for (component, expected) in parents.iter().zip(&self.route_identities) {
+            if self.cancellation.is_cancelled() {
+                return Err(RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::Cancelled,
+                    "retained apply reference check cancelled",
+                ));
+            }
+            if self.deadline.is_elapsed() {
+                return Err(RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::Deadline,
+                    "retained apply reference check deadline elapsed",
+                ));
+            }
+            parent = match parent.retain_immediate_child_nofollow(component) {
+                Ok(RetainedChildCapability::Directory(child)) if child.identity() == *expected => {
+                    child
+                }
+                _ => {
+                    return Err(RetainedApplyValidationError::new(
+                        RetainedApplyValidationErrorKind::ContainmentIdentity,
+                        format!(
+                            "reference input parent changed: {}",
+                            self.relative_path.display()
+                        ),
+                    ));
+                }
+            };
+        }
+        match parent.retain_immediate_child_nofollow(name) {
+            Ok(RetainedChildCapability::RegularFile(file)) => Ok(file),
+            _ => Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "reference input is no longer a regular file: {}",
+                    self.relative_path.display()
+                ),
+            )),
+        }
+    }
+}
+
 fn validate_retained_apply_read_guard(
     guard: &RetainedApplyReadGuardBinding,
 ) -> Result<(), RetainedApplyValidationError> {
@@ -2499,24 +2580,7 @@ fn validate_retained_apply_read_guard(
             format!("reference input root changed: {error}"),
         )
     })?;
-    guard.ancestor.validate_named_identity().map_err(|error| {
-        RetainedApplyValidationError::new(
-            RetainedApplyValidationErrorKind::ContainmentIdentity,
-            format!("reference input parent changed: {error}"),
-        )
-    })?;
-    let observed = match guard.ancestor.retain_immediate_child_nofollow(&guard.name) {
-        Ok(RetainedChildCapability::RegularFile(file)) => file,
-        _ => {
-            return Err(RetainedApplyValidationError::new(
-                RetainedApplyValidationErrorKind::ContainmentIdentity,
-                format!(
-                    "reference input is no longer a regular file: {}",
-                    guard.relative_path.display()
-                ),
-            ));
-        }
-    };
+    let observed = guard.retain_named_route()?;
     if observed.hard_link_count().map_err(|error| {
         RetainedApplyValidationError::new(
             RetainedApplyValidationErrorKind::UnsupportedProvider,
@@ -2532,7 +2596,7 @@ fn validate_retained_apply_read_guard(
             ),
         ));
     }
-    if observed.identity() != guard.original_file.identity() {
+    if observed.identity() != guard.file_identity {
         return Err(RetainedApplyValidationError::new(
             RetainedApplyValidationErrorKind::ConcurrentRevision,
             format!(
@@ -2541,15 +2605,12 @@ fn validate_retained_apply_read_guard(
             ),
         ));
     }
-    let mut file = guard
-        .original_file
-        .open_named_identity_for_read()
-        .map_err(|error| {
-            RetainedApplyValidationError::new(
-                RetainedApplyValidationErrorKind::ConcurrentRevision,
-                format!("reference input cannot be reopened: {error}"),
-            )
-        })?;
+    let mut file = observed.open_named_identity_for_read().map_err(|error| {
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ConcurrentRevision,
+            format!("reference input cannot be reopened: {error}"),
+        )
+    })?;
     let mut hash = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     let mut length = 0_u64;
@@ -2593,15 +2654,13 @@ fn validate_retained_apply_read_guard(
     }
     #[cfg(test)]
     run_retained_apply_after_reference_stream_hook();
-    guard
-        .original_file
-        .validate_named_identity()
-        .map_err(|error| {
-            RetainedApplyValidationError::new(
-                RetainedApplyValidationErrorKind::ConcurrentRevision,
-                format!("reference input identity changed during content check: {error}"),
-            )
-        })?;
+    drop(file);
+    observed.validate_named_identity().map_err(|error| {
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ConcurrentRevision,
+            format!("reference input identity changed during content check: {error}"),
+        )
+    })?;
     Ok(())
 }
 
@@ -3246,9 +3305,10 @@ fn rollback_retained_apply(
         if let Some(file) = change.published.take() {
             let removal = file
                 .remove_named_identity_relative_for_retained_apply(&retained_apply_stage_name());
-            // Windows completes a handle-based delete only after every handle to the
-            // delete-pending file is closed.  Release the journal's retained handle
-            // before attempting to restore a displaced preimage at the same name.
+            // Retained-apply cleanup unlinks the name at once on Windows (POSIX
+            // delete semantics); the classic fallback keeps a delete-pending name
+            // until every handle closes. Release the journal's retained handle
+            // before restoring a displaced preimage at the same name.
             drop(file);
             if let Err(error) = removal {
                 errors.push(format!("published apply child was preserved: {error}"));

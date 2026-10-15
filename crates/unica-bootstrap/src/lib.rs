@@ -19,11 +19,13 @@ pub use cache::{Prefetched, RuntimeInstallation, RuntimeInstaller};
 pub use download::{DownloadObserver, Downloader, HttpDownloader, SilentDownload};
 pub use error::{BootstrapError, Failure, Result};
 pub use host::{
-    capture_host_workspace_context, host_tool_deadline, host_workspace_capabilities,
-    host_workspace_environment_keys, provider_state_root, request_needs_client_roots,
-    runtime_cache_root, verify_installed_plugin_metadata, verify_installed_skill_package,
-    ClientRoots, HostRequest, HostWorkspaceContext, ResolvedWorkspace, RootsFailure, RootsFallback,
-    WorkspaceOrigin,
+    capture_host_workspace_context, host_response_budget, host_tool_deadline,
+    host_workspace_capabilities, host_workspace_environment_keys, known_client_budgets,
+    provider_state_root, request_needs_client_roots, response_budget_environment_keys,
+    runtime_cache_root, source_text_tool_meta, verify_installed_plugin_metadata,
+    verify_installed_skill_package, ClientRoots, HostRequest, HostWorkspaceContext,
+    ResolvedWorkspace, ResponseBudget, RootsFailure, RootsFallback, WorkspaceOrigin,
+    DEFAULT_RESPONSE_BUDGET, MAX_RESPONSE_BUDGET,
 };
 pub use manifest::{
     Artifact, ArtifactRole, DeliveryForm, ReleaseIdentity, RuntimeAsset, RuntimeFile,
