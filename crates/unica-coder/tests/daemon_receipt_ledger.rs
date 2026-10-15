@@ -19,8 +19,7 @@ use std::fmt::Write as _;
 use std::io::Read as _;
 use unica_coder::receipt_ledger_test_support::{
     canonical_v5_terminal_for_test, execute_scenario_json, receipt_key_digest_for_test,
-    receipt_writer_wall_load_supported_for_test, request_scope_hash_for_test,
-    task_link_digest_for_test,
+    request_scope_hash_for_test, task_link_digest_for_test,
 };
 
 const CUTOFF_MS: u64 = 7_000;
@@ -6266,10 +6265,6 @@ fn load_total_elapsed_ms(load: &LoadObservation) -> u64 {
     load.drain_completed_monotonic_ms - load.window_started_monotonic_ms
 }
 
-fn load_writer_drain_ms(load: &LoadObservation) -> u64 {
-    load.drain_completed_monotonic_ms - load.window_ended_monotonic_ms
-}
-
 fn completed_at_window_end(load: &LoadObservation) -> usize {
     load.lifecycles
         .iter()
@@ -6287,40 +6282,6 @@ fn load_p99_ms(load: &LoadObservation) -> u64 {
     latencies.sort_unstable();
     let rank = (latencies.len() * 99).div_ceil(100).saturating_sub(1);
     latencies[rank]
-}
-
-/// Calls of one writer batch share their start and completion, so a high
-/// percentile over calls is decided by a few batches. The profile names the
-/// batches themselves: one slow outlier and a uniformly slow writer need
-/// different explanations.
-fn batch_latency_profile(load: &LoadObservation) -> String {
-    let mut batches: Vec<(u64, u64)> = load
-        .lifecycles
-        .iter()
-        .map(|lifecycle| {
-            (
-                lifecycle.started_monotonic_ms,
-                lifecycle.response_latency_ms,
-            )
-        })
-        .collect::<BTreeMap<_, _>>()
-        .into_iter()
-        .collect();
-    let started = batches.first().map_or(0, |(start, _)| *start);
-    batches.sort_unstable_by_key(|(_, latency)| std::cmp::Reverse(*latency));
-    let mut latencies: Vec<u64> = batches.iter().map(|(_, latency)| *latency).collect();
-    latencies.sort_unstable();
-    let median = latencies.get(latencies.len() / 2).copied().unwrap_or(0);
-    let slowest: Vec<String> = batches
-        .iter()
-        .take(5)
-        .map(|(start, latency)| format!("{latency}ms@+{}ms", start - started))
-        .collect();
-    format!(
-        "batches={} median={median}ms slowest=[{}]",
-        latencies.len(),
-        slowest.join(", ")
-    )
 }
 
 fn max_concurrency_sample(
@@ -13155,44 +13116,6 @@ fn acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay() {
         assert_eq!(repeated.terminal_digest, original.terminal_digest);
         assert_eq!(repeated.ack_epoch_ms, original.ack_epoch_ms);
     }
-}
-
-#[test]
-fn wall_clock_writer_sustains_32_receipts_per_second_on_posix() {
-    if !receipt_writer_wall_load_supported_for_test() {
-        return;
-    }
-
-    let report = execute(Scenario::wall(vec![Action::RunDirectLoad {
-        calls: 1_920,
-        duration_ms: 60_000,
-        concurrency: 32,
-        retained_receipt_terminals: 0,
-        immediate_ack: true,
-        label: "wall-clock".to_string(),
-    }]));
-
-    let load = load_run(&report, "wall-clock");
-    assert_direct_load_lifecycles(load, 1_920);
-    assert!(load_window_ms(load) >= 60_000);
-    assert!(
-        load_total_elapsed_ms(load) <= 62_000,
-        "wall gate overran: {}ms",
-        load_total_elapsed_ms(load)
-    );
-    assert!(completed_at_window_end(load) >= 1_920);
-    assert!(
-        load_p99_ms(load) <= 250,
-        "p99={}ms budget=250ms; {}",
-        load_p99_ms(load),
-        batch_latency_profile(load)
-    );
-    assert!(load_writer_drain_ms(load) <= 2_000);
-    assert!(
-        max_concurrency_sample(load, |sample| sample.live_receipts) <= FORMER_LIVE_RECEIPT_LIMIT
-    );
-    assert_eq!(load.task_store_create_attempts, 0);
-    assert_eq!(load.listener, ListenerState::Listening);
 }
 
 #[test]

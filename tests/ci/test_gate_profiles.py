@@ -184,7 +184,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         for replacement in [
             f"test(/^{name}/)",
             "test(/^infrastructure::source_selection_evidence::tests::/)",
-            "test(/^wall_clock_writer_sustains_32_receipts_per_second_on_posix$/)",
+            "test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)",
             exact + " | " + exact,
         ]:
             with self.subTest(replacement=replacement):
