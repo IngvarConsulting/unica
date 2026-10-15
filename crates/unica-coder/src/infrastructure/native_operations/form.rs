@@ -10302,13 +10302,14 @@ fn emit_form_document_field(
     if field_tag == "TextDocumentField" && element.contains_key("skipOnInput") {
         return Err("TextDocumentField property skipOnInput is unsupported".to_string());
     }
+    emit_form_common_flags(lines, element, &inner);
+    // Выгрузка 8.3.27 ставит SkipOnInput после Visible/Enabled/ReadOnly.
     if field_tag == "HTMLDocumentField" {
         form_compile_validate_element_boolean(element, "skipOnInput")?;
         if let Some(value) = element.get("skipOnInput").and_then(Value::as_bool) {
             lines.push(format!("{inner}<SkipOnInput>{value}</SkipOnInput>"));
         }
     }
-    emit_form_common_flags(lines, element, &inner);
     if let Some(title) = element.get("title").and_then(Value::as_str) {
         emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
@@ -10332,8 +10333,9 @@ fn emit_form_document_field(
             }
         }
         form_compile_validate_element_boolean(element, auto_key)?;
-        if let Some(value) = element.get(auto_key).and_then(Value::as_bool) {
-            lines.push(format!("{inner}<{auto_tag}>{value}</{auto_tag}>"));
+        // true — значение по умолчанию: платформа его не выгружает.
+        if let Some(false) = element.get(auto_key).and_then(Value::as_bool) {
+            lines.push(format!("{inner}<{auto_tag}>false</{auto_tag}>"));
         }
     }
     emit_form_companion(
@@ -19534,7 +19536,7 @@ pub(crate) mod tests {
                     "title": "Описание & детали", "titleLocation": "none",
                     "tooltip": "Подсказка", "tooltipRepresentation": "Button",
                     "skipOnInput": true, "width": 1, "height": 2,
-                    "autoMaxWidth": false, "autoMaxHeight": true,
+                    "autoMaxWidth": false, "autoMaxHeight": false,
                     "visible": false, "enabled": false, "readOnly": true,
                     "on": ["OnClick", "DocumentComplete"],
                 "handlers": {"OnClick": "ПолеHTMLПриНажатии", "DocumentComplete": "ПолеHTMLДокументСформирован"}}]
@@ -19579,16 +19581,17 @@ pub(crate) mod tests {
             .map(|node| node.tag_name().name())
             .collect::<Vec<_>>();
         // Канон ревью #1389 задаёт общий порядок HTML- и TextDocumentField.
-        // Выгрузка HTML ниже отдельно подтверждает положение SkipOnInput,
-        // TitleLocation и companions относительно начала и конца поля.
+        // Положение SkipOnInput после ReadOnly подтверждено живым кругом
+        // 8.3.27.2074 при ревью #1389; выгрузка HTML ниже сверяет значения
+        // DataPath, SkipOnInput, TitleLocation и companions.
         assert_eq!(
             child_names,
             [
                 "DataPath",
-                "SkipOnInput",
                 "Visible",
                 "Enabled",
                 "ReadOnly",
+                "SkipOnInput",
                 "Title",
                 "TitleLocation",
                 "ToolTip",
@@ -19625,7 +19628,7 @@ pub(crate) mod tests {
             ("Width", "1"),
             ("Height", "2"),
             ("AutoMaxWidth", "false"),
-            ("AutoMaxHeight", "true"),
+            ("AutoMaxHeight", "false"),
             ("Visible", "false"),
             ("Enabled", "false"),
             ("ReadOnly", "true"),
