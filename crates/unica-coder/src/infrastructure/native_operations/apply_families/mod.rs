@@ -1541,13 +1541,23 @@ mod tests {
                 serde_json::json!({"editingAllowedCheck": policy}).to_string(),
             )
             .unwrap();
-            let request = ApplyRequest::parse(serde_json::json!({
-                "at": "main:Document.First.Form.Card",
-                "ops": [
-                    {"op": "supportRule.set", "args": {"values": {"rule": "editable"}}},
-                    {"op": "event.bind", "args": {"values": {"event": "OnOpen", "handler": "OnOpen"}}}
-                ], "dryRun": true
-            }).as_object().unwrap(), &["main"]).unwrap();
+            let request = ApplyRequest::parse(
+                serde_json::json!({
+                    "at": "main:Document.First.Form.Card",
+                    "ops": [
+                        {"op": "supportRule.set", "args": {"values": {"rule": "editable"}}},
+                        {"op": "item.add", "args": {"items": [{
+                            "name": "Field",
+                            "type": "InputField",
+                            "path": "Object.Field"
+                        }]}}
+                    ], "dryRun": true
+                })
+                .as_object()
+                .unwrap(),
+                &["main"],
+            )
+            .unwrap();
             let result = plan_hidden_v13_apply(&request, &fixture.binding, &fixture.admission());
             let error = result.unwrap_err();
             assert_eq!(

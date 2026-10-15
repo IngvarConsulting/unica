@@ -3231,8 +3231,9 @@ pub(crate) fn plan_form_resource_batch(
     Ok((staged, provisional))
 }
 
-// A nested address must prove its registration and descriptor identity before
-// its UUID can select a support record. All reads join the staged preimage fence.
+// Вложенный адрес сначала доказывает регистрацию и идентичность описания,
+// только затем его UUID выбирает запись поддержки. Все чтения входят
+// в барьер исходного состояния подготовленного применения.
 fn prove_support_form_owner(
     staged: &mut ApplyStagedState,
     target: &MetadataAddress,
@@ -3284,8 +3285,8 @@ fn prove_support_form_owner(
     {
         return Err(invalid());
     }
-    // The container is not the form owner. Reject its UUID rather than let
-    // the generic support reader select a different object's record.
+    // Контейнер не является владельцем формы. Его UUID отклоняется, чтобы
+    // общий читатель поддержки не выбрал запись другого объекта.
     let text = std::str::from_utf8(descriptor).map_err(|_| invalid())?;
     let document =
         roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|_| invalid())?;
