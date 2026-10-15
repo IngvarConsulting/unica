@@ -1,6 +1,10 @@
 ---
 id: INV.RLM.MAINTENANCE-STATUS
 check:
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_wait_deadline_preserves_the_last_observed_maintenance
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_wait_deadline_before_observation_is_typed_without_maintenance
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_wait_cancellation_wins_over_expiration_and_observed_maintenance
+  - crates/unica-coder/src/infrastructure/code_intelligence.rs::rlm_wait_terminal_observation_supersedes_prior_maintenance
   - crates/unica-coder/src/infrastructure/workspace_services.rs::real_index_queue_and_worker_state_reach_serialized_search_and_navigation
   - crates/unica-coder/src/infrastructure/workspace_services.rs::dropped_index_job_is_not_reported_as_running
   - crates/unica-coder/src/infrastructure/workspace_services.rs::maintenance_queue_execution_and_failure_keep_the_published_index_readable
@@ -21,6 +25,11 @@ check:
 не требуется. Если состояние работы неизвестно, ответ явно сообщает об этом.
 Постановка в очередь не означает начало выполнения, а начало — успешное
 завершение.
+
+При завершении цикла ожидания по сроку ответ сохраняет последнее
+подтверждённое состояние обновления, наблюдённое в рамках этого вызова. Если наблюдений
+ещё не было, результат называет истечение срока. Отмена вызова сохраняет
+приоритет над истечением срока и состоянием обновления.
 
 Состояние обновления не запрещает
 [чтение пригодного старого индекса](rlm-stale-results.md).
