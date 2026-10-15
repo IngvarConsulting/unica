@@ -5,6 +5,7 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/cfe_borrow_object.rs::extension_identity_damage_is_refused_instead_of_repaired
   - crates/unica-coder/src/infrastructure/native_operations/cfe_borrow_object.rs::refresh_updates_transferred_properties_preserving_local_xml_and_noop_bytes
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/borrow.rs::canonical_borrow_preview_refresh_and_noop_keep_local_identity_and_events_honest
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/borrow.rs::canonical_enum_value_preview_refresh_and_noop_preserve_local_siblings
 ---
 
 # Повторное заимствование сохраняет идентификаторы объекта

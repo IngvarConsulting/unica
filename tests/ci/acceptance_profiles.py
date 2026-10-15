@@ -35,6 +35,8 @@ EXTERNAL_CHECK_ADDRESSES = {
 }
 AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE}
 SOURCE_WORKSPACES = {
+    "tests/fixtures/acceptance/workspace-support-form",
+    "tests/fixtures/acceptance/workspace-event-source-order",
     "tests/fixtures/acceptance/workspace-incomplete-borrowed",
     "tests/fixtures/acceptance/workspace-invalid-borrowing",
     "tests/fixtures/acceptance/workspace-predefined",

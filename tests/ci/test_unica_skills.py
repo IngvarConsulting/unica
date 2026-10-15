@@ -906,7 +906,7 @@ SCENARIO_PRESERVING_TOKENS = {
     ],
     "form-compile": [
         '"op": "form.add"',
-        '"op": "formAttribute.add"',
+        '"op": "attribute.add"',
     ],
     # Действие стало именем операции. `hide` и `show` свелись к одному
     # `commandVisibility.set` с булевым значением: платформа хранит одно поле,

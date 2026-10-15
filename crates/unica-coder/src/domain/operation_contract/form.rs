@@ -119,6 +119,21 @@ pub(crate) const FORM_ELEMENT_KINDS: &[FormElementKind] = &[
         ],
     },
     FormElementKind {
+        kind: "TextDocumentField",
+        aliases: &["TextDocumentField"],
+        keys: with_common_flags![
+            "path",
+            "title",
+            "tooltip",
+            "tooltipRepresentation",
+            "titleLocation",
+            "width",
+            "height",
+            "autoMaxWidth",
+            "autoMaxHeight",
+        ],
+    },
+    FormElementKind {
         kind: "Label",
         aliases: &["Label", "LabelDecoration"],
         keys: with_common_flags![
@@ -391,10 +406,10 @@ fn element_item_schema(kinds: &[&str]) -> Value {
             );
             // Без `type` элемент — поле ввода: другие виды требуют его явно,
             // и стандартный валидатор схемы выбирает тот же вариант.
-            let required: &[&str] = if kind.kind == "InputField" {
-                &["name"]
-            } else {
-                &["name", "type"]
+            let required: &[&str] = match kind.kind {
+                "InputField" => &["name"],
+                "TextDocumentField" => &["name", "type", "path"],
+                _ => &["name", "type"],
             };
             object(&fields, required)
         })
@@ -457,7 +472,7 @@ const FORM_SLOTS: [&str; 13] = [
 ];
 
 impl OperationContract {
-    /// Контракты операций формы; `formCommand.add` — из #1439.
+    /// Контракты операций формы; `command.add` — из #1439.
     pub(crate) fn form(op: &str) -> Option<Self> {
         let at = || ("at", text(true));
         let (schema, target, effect, notes, example_args) = match op {
@@ -469,7 +484,7 @@ impl OperationContract {
                 ], &["name"])}))], &["items"]),
                 "The form owner: <source-set>:<Kind>.<Name>. Read its Form branch before choosing a new name.",
                 "Create an empty form with its descriptor, Form.xml and module, register it in the owner and fill the owner's empty default slot of its purpose. ListForm, ChoiceForm and RecordForm/RecordSetForm have their own purpose; ObjectForm, SettingsForm, FolderForm and Generic all create an object-purpose form and fill DefaultObjectForm (DefaultForm for a report or data processor): point other slots with form.set.",
-                "Fill the new form with item.add, formAttribute.add and event.bind at its address after the plan is executed; within one apply call a later operation may already address it.",
+                "Fill the new form with item.add, attribute.add and event.bind at its address after the plan is executed; within one apply call a later operation may already address it.",
                 json!({"items":[{"name":"Sample","type":"ObjectForm"}]}),
             ),
             "form.set" => {
@@ -509,14 +524,14 @@ impl OperationContract {
                 "The item is named by its address; the operation takes no other arguments.",
                 json!({}),
             ),
-            "formAttribute.add" => (
+            "attribute.add" => (
                 object(&[at(), ("items", json!({"type":"array","minItems":1,"items":attribute_item_schema()}))], &["items"]),
                 "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Attribute branch before choosing names.",
                 "Add form attributes with the listed properties.",
                 "View, edit, functional options, use-always fields, save, value type, dynamic-list settings and role-specific visibility are not written by this operation and are refused.",
                 json!({"items":[{"name":"Sample","type":"String"}]}),
             ),
-            "formCommand.add" => (
+            "command.add" => (
                 object(
                     &[
                         at(),
@@ -687,6 +702,24 @@ mod tests {
     }
 
     #[test]
+    fn text_document_field_requires_a_binding_path_in_the_closed_contract() {
+        let contract = OperationContract::form("item.add").unwrap();
+        let valid = json!({"name":"Protocol","type":"TextDocumentField","path":"ProtocolValue"});
+        assert!(contract
+            .normalize(&json!({"items":[valid]}), "args")
+            .is_ok());
+        for item in [
+            json!({"name":"Protocol","type":"TextDocumentField"}),
+            json!({"name":"Protocol","type":"TextDocumentField","path":""}),
+        ] {
+            let error = contract
+                .normalize(&json!({"items":[item]}), "args")
+                .unwrap_err();
+            assert_eq!(error.path, "args.items[0].path");
+        }
+    }
+
+    #[test]
     fn form_contracts_accept_their_examples() {
         for op in [
             "form.add",
@@ -694,9 +727,9 @@ mod tests {
             "form.remove",
             "item.add",
             "item.remove",
-            "formAttribute.add",
+            "attribute.add",
             "event.bind",
-            "formCommand.add",
+            "command.add",
         ] {
             let contract = OperationContract::form(op).unwrap();
             assert!(
@@ -710,7 +743,7 @@ mod tests {
 
     #[test]
     fn form_attribute_add_refuses_properties_it_does_not_write() {
-        let contract = OperationContract::form("formAttribute.add").unwrap();
+        let contract = OperationContract::form("attribute.add").unwrap();
         for key in [
             "view",
             "edit",
