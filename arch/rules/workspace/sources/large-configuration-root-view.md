@@ -8,6 +8,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::a_file_changed_during_its_parse_is_not_retained
   - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::every_payload_file_invalidates_the_retained_root
   - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::a_poisoned_slot_is_emptied_and_reused
+  - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::a_poisoned_retained_index_is_rebuilt
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::replaced_support_marker_never_reaches_a_retained_root_with_the_old_state
   - crates/unica-coder/src/infrastructure/daemon/invocation_service.rs::logical_read_retains_root_artifacts_across_calls_and_isolates_sources
 gap: https://github.com/IngvarConsulting/unica/issues/1119

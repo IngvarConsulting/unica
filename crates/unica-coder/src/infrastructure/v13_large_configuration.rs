@@ -317,8 +317,10 @@ impl RegistrationCache {
             .open_relative_regular_nofollow(std::path::Path::new("Configuration.xml"))
             .map_err(unreadable)?;
         let stamp = FileStamp::of(&file).map_err(unreadable)?;
+        // A retained index whose scratch files were poisoned by a panicking
+        // reader counts as absent and is rebuilt.
         if let Some((cached, index)) = slot(&self.registrations).as_ref() {
-            if *cached == stamp {
+            if *cached == stamp && !index.inner.is_poisoned() {
                 return Ok(Arc::clone(index));
             }
         }
@@ -1683,6 +1685,30 @@ mod tests {
                 "Ext/CommandInterface.xml",
             ]
         );
+    }
+
+    #[test]
+    fn a_poisoned_retained_index_is_rebuilt() {
+        let fixture = artifact_root("First");
+        let cache = settled_cache();
+        let poisoned = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        let holder = Arc::clone(&poisoned);
+        std::thread::spawn(move || {
+            let _files = holder.inner.lock().unwrap();
+            panic!("poison the retained index");
+        })
+        .join()
+        .unwrap_err();
+        assert!(poisoned
+            .contains("CommonModule", "First", &|| Ok(()))
+            .is_err());
+
+        let rebuilt = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(!Arc::ptr_eq(&poisoned, &rebuilt));
+        assert!(holds(&rebuilt, "First"));
+        assert_eq!(cache.registration_builds_for_test(), 2);
+        let retained = cache.registrations(&fixture.root, &|| Ok(())).unwrap();
+        assert!(Arc::ptr_eq(&rebuilt, &retained));
     }
 
     #[test]
