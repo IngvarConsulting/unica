@@ -987,7 +987,7 @@ mod windows_anchor_tests {
     }
 
     #[test]
-    fn windows_private_stage_cleanup_requires_parent_relative_root_absence() {
+    fn windows_private_stage_cleanup_unlinks_root_while_another_handle_is_open() {
         let root = unique_temp_root("private-stage-root-absence");
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
@@ -996,23 +996,19 @@ mod windows_anchor_tests {
         let private_root = stage.root.clone();
         let extra_root_handle = open_directory_nofollow(&private_root).unwrap();
 
-        let error = stage
-            .cleanup_now()
-            .expect_err("a delete-pending root is not proven absent");
-
-        assert!(
-            error.contains("absen") || error.contains("pending"),
-            "{error}"
-        );
-        assert!(!stage.root_removed);
-        assert!(stage.cleanup_on_drop);
-        drop(extra_root_handle);
-
         stage.cleanup_now().unwrap();
 
         assert!(stage.root_removed);
         assert!(!stage.cleanup_on_drop);
         assert!(!private_root.exists());
+        assert!(
+            read_directory_names(&target_parent.directory)
+                .unwrap()
+                .into_iter()
+                .all(|name| name != private_root.file_name().unwrap()),
+            "POSIX-удаление должно убрать имя приватного корня до закрытия чужого дескриптора"
+        );
+        drop(extra_root_handle);
         fs::remove_dir_all(root).unwrap();
     }
 

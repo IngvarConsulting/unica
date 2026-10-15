@@ -5311,6 +5311,7 @@ pub(crate) fn form_edit_apply_definition(
     require_form_root(edited_root).map_err(|error| format!("[ERROR] {error}"))?;
     form_edit_validate_surviving_removal_references(edited_root, &planned_removals)?;
     form_edit_validate_emitted_type_qnames(edited_root, &emitted_type_qnames)?;
+    form_validate_requested_text_document_bindings(edited_root, defn)?;
 
     Ok(FormEditApplied {
         added_elements,
@@ -7130,6 +7131,7 @@ pub(crate) fn form_edit_element_summary(element: &Value) -> Option<String> {
         FormEditElementDefinitionKind::CheckBox => "CheckBox",
         FormEditElementDefinitionKind::InputField => "Input",
         FormEditElementDefinitionKind::HtmlDocumentField => "HTMLDocumentField",
+        FormEditElementDefinitionKind::TextDocumentField => "TextDocumentField",
         FormEditElementDefinitionKind::AutoCommandBar => return None,
     };
     let name = form_edit_element_display_name(element)?;
@@ -7668,8 +7670,26 @@ pub(crate) fn form_edit_validate_emitted_type_qnames(
 ) -> Result<(), String> {
     for value in emitted_type_qnames {
         if value.contains(':') {
-            require_form_type_qname_binding(root, value)
-                .map_err(|error| format!("[ERROR] Emitted Type \"{value}\": {error}"))?;
+            // Особые типы объявляют префикс локально на `v8:Type`.
+            // Проверяем узел, который несёт QName, а не корень формы.
+            let nodes = root
+                .descendants()
+                .filter(|node| {
+                    node.is_element()
+                        && node.tag_name().name() == "Type"
+                        && form_is_data_type_declaration_type_node(*node)
+                        && node.text().is_some_and(|text| text.trim() == value)
+                })
+                .collect::<Vec<_>>();
+            if nodes.is_empty() {
+                return Err(format!(
+                    "[ERROR] Emitted Type \"{value}\" is absent after edit"
+                ));
+            }
+            for node in nodes {
+                require_form_type_qname_binding(node, value)
+                    .map_err(|error| format!("[ERROR] Emitted Type \"{value}\": {error}"))?;
+            }
         }
     }
     Ok(())
@@ -7807,7 +7827,7 @@ pub(crate) fn emit_form_edit_attribute_item(
     Ok(())
 }
 
-/// One form `<Command>` for both the form compiler and `formCommand.add`.
+/// One form `<Command>` for both the form compiler and `command.add`.
 /// Properties follow the platform's FormCommand XDTO order: Title, ToolTip,
 /// Use, Shortcut, Picture, Action, FunctionalOptions, Representation, ...
 /// The element shapes match 8.3.27 dumps: multilingual Title and ToolTip,
@@ -7898,6 +7918,7 @@ enum FormEditElementDefinitionKind {
     CheckBox,
     InputField,
     HtmlDocumentField,
+    TextDocumentField,
     AutoCommandBar,
 }
 
@@ -7920,6 +7941,11 @@ impl FormEditElementDefinitionKind {
             (Self::CheckBox, "check", object.contains_key("check")),
             (Self::InputField, "input", object.contains_key("input")),
             (Self::HtmlDocumentField, "html", object.contains_key("html")),
+            (
+                Self::TextDocumentField,
+                "textDoc",
+                object.contains_key("textDoc"),
+            ),
             (
                 Self::AutoCommandBar,
                 "autoCmdBar/autoCommandBar",
@@ -7974,6 +8000,7 @@ impl FormEditElementDefinitionKind {
             Self::CheckBox => FormElementKind::CheckBoxField,
             Self::InputField => FormElementKind::InputField,
             Self::HtmlDocumentField => FormElementKind::HtmlDocumentField,
+            Self::TextDocumentField => FormElementKind::TextDocumentField,
         }
     }
 
@@ -7990,6 +8017,7 @@ impl FormEditElementDefinitionKind {
             Self::CheckBox => (&["check"], "checkbox"),
             Self::InputField => (&["input"], "input"),
             Self::HtmlDocumentField => (&["html"], "HTML document field"),
+            Self::TextDocumentField => (&["textDoc"], "text document field"),
             Self::AutoCommandBar => (&["autoCmdBar", "autoCommandBar"], "auto command bar"),
         };
         form_edit_definition_element_name(object, keys, description)
@@ -8011,10 +8039,113 @@ fn form_edit_definition_element_name<'a>(
         .ok_or_else(|| format!("Form {description} is missing name"))
 }
 
+fn form_validate_requested_text_document_bindings(
+    root: roxmltree::Node<'_, '_>,
+    definition: &Value,
+) -> Result<(), String> {
+    let Some(elements) = definition.get("elements").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for element in elements.iter().filter_map(Value::as_object) {
+        let Some(name) = element.get("textDoc").and_then(Value::as_str) else {
+            continue;
+        };
+        let path = element
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "TextDocumentField '{name}' requires non-empty path bound to a TextDocument attribute"
+                )
+            })?;
+        let path = strip_form_binding_prefixes(path);
+        let resolved_path = if let Some(rest) = path.strip_prefix("Items.") {
+            let (table_name, column) = rest.split_once(".CurrentData.").ok_or_else(|| {
+                format!("TextDocumentField '{name}' has unsupported binding path '{path}'")
+            })?;
+            let table = form_edit_find_element_nodes(root, table_name)
+                .into_iter()
+                .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Table")));
+            let table_path = table
+                .and_then(|node| form_child(node, "DataPath"))
+                .and_then(|node| node.text())
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    format!("TextDocumentField '{name}' table '{table_name}' has no DataPath")
+                })?;
+            format!("{}.{}", strip_form_binding_prefixes(table_path), column)
+        } else {
+            path.clone()
+        };
+        let mut parts = resolved_path.split('.');
+        let first = parts.next().unwrap_or_default();
+        let mut attribute = form_child(root, "Attributes").and_then(|items| {
+            items.children().find(|node| {
+                node.is_element()
+                    && node.tag_name().name() == "Attribute"
+                    && node.attribute("name") == Some(first)
+            })
+        });
+        for part in parts {
+            attribute = attribute.and_then(|owner| {
+                form_child(owner, "Columns").and_then(|columns| {
+                    columns.children().find(|node| {
+                        node.is_element()
+                            && node.tag_name().name() == "Column"
+                            && node.attribute("name") == Some(part)
+                    })
+                })
+            });
+        }
+        let valid = attribute
+            .and_then(|node| form_child(node, "Type"))
+            .is_some_and(|type_node| {
+                let types = type_node
+                    .descendants()
+                    .filter(|node| node.has_tag_name((FORM_V8_NS, "Type")))
+                    .collect::<Vec<_>>();
+                !types.is_empty()
+                    && types.iter().all(|node| {
+                        node.text()
+                            .and_then(|value| value.trim().split_once(':'))
+                            .is_some_and(|(prefix, local)| {
+                                local == "TextDocument"
+                                    && node.lookup_namespace_uri(Some(prefix))
+                                        == Some("http://v8.1c.ru/8.1/data/txtedt")
+                            })
+                    })
+            });
+        if !valid {
+            return Err(format!(
+                "TextDocumentField '{name}' path '{path}' requires a TextDocument attribute"
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn form_compile_xml(
     defn: &Value,
     format_version: &str,
 ) -> Result<(String, FormCompileStats), String> {
+    fn contains_text_document_field(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.contains_key("textDoc") || object.values().any(contains_text_document_field)
+            }
+            Value::Array(items) => items.iter().any(contains_text_document_field),
+            _ => false,
+        }
+    }
+    if contains_text_document_field(defn) {
+        return Err(
+            "TextDocumentField is created only by item.add; the retired form compiler does not support it"
+                .to_string(),
+        );
+    }
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_attribute_columns(attributes)?;
     }
@@ -8464,6 +8595,7 @@ fn form_compile_binding_property_supported(
             kind,
             FormEditElementDefinitionKind::Table
                 | FormEditElementDefinitionKind::HtmlDocumentField
+                | FormEditElementDefinitionKind::TextDocumentField
                 | FormEditElementDefinitionKind::LabelField
                 | FormEditElementDefinitionKind::CheckBox
                 | FormEditElementDefinitionKind::InputField
@@ -9082,7 +9214,13 @@ fn form_compile_validate_element_property_tree(elements: &[Value]) -> Result<(),
                 )?;
             }
             FormEditElementDefinitionKind::InputField
-            | FormEditElementDefinitionKind::HtmlDocumentField => {
+            | FormEditElementDefinitionKind::HtmlDocumentField
+            | FormEditElementDefinitionKind::TextDocumentField => {
+                if kind == FormEditElementDefinitionKind::TextDocumentField
+                    && object.contains_key("editMode")
+                {
+                    return Err("TextDocumentField property editMode is unsupported".to_string());
+                }
                 form_compile_validate_normalized_element_enum(
                     object,
                     "titleLocation",
@@ -9333,9 +9471,24 @@ fn emit_form_element_with_context(
         FormEditElementDefinitionKind::InputField => {
             emit_form_input(lines, object, kind.name(object)?, indent, ids, lang)
         }
-        FormEditElementDefinitionKind::HtmlDocumentField => {
-            emit_form_html_document_field(lines, object, kind.name(object)?, indent, ids, lang)
-        }
+        FormEditElementDefinitionKind::HtmlDocumentField => emit_form_document_field(
+            lines,
+            object,
+            kind.name(object)?,
+            indent,
+            ids,
+            lang,
+            "HTMLDocumentField",
+        ),
+        FormEditElementDefinitionKind::TextDocumentField => emit_form_document_field(
+            lines,
+            object,
+            kind.name(object)?,
+            indent,
+            ids,
+            lang,
+            "TextDocumentField",
+        ),
         FormEditElementDefinitionKind::AutoCommandBar => Ok(()),
     }
 }
@@ -10120,25 +10273,22 @@ fn emit_form_decoration_title(
     Ok(())
 }
 
-fn emit_form_html_document_field(
+fn emit_form_document_field(
     lines: &mut Vec<String>,
     element: &Map<String, Value>,
     name: &str,
     indent: &str,
     ids: &mut FormIdAllocator,
     lang: Option<&str>,
+    field_tag: &str,
 ) -> Result<(), String> {
     let id = ids.next()?;
     lines.push(format!(
-        "{indent}<HTMLDocumentField name=\"{}\" id=\"{id}\">",
+        "{indent}<{field_tag} name=\"{}\" id=\"{id}\">",
         escape_xml(name)
     ));
     let inner = format!("{indent}\t");
     emit_form_binding_path_property(lines, element, "path", "DataPath", &inner);
-    if let Some(title) = element.get("title").and_then(Value::as_str) {
-        emit_form_mltext(lines, &inner, "Title", title, lang)?;
-    }
-    emit_form_element_tooltip(lines, element, &inner, lang)?;
     for key in [
         "visible",
         "hidden",
@@ -10149,10 +10299,19 @@ fn emit_form_html_document_field(
     ] {
         form_compile_validate_element_boolean(element, key)?;
     }
+    if field_tag == "TextDocumentField" && element.contains_key("skipOnInput") {
+        return Err("TextDocumentField property skipOnInput is unsupported".to_string());
+    }
     emit_form_common_flags(lines, element, &inner);
-    form_compile_validate_element_boolean(element, "skipOnInput")?;
-    if let Some(value) = element.get("skipOnInput").and_then(Value::as_bool) {
-        lines.push(format!("{inner}<SkipOnInput>{value}</SkipOnInput>"));
+    // Выгрузка 8.3.27 ставит SkipOnInput после Visible/Enabled/ReadOnly.
+    if field_tag == "HTMLDocumentField" {
+        form_compile_validate_element_boolean(element, "skipOnInput")?;
+        if let Some(value) = element.get("skipOnInput").and_then(Value::as_bool) {
+            lines.push(format!("{inner}<SkipOnInput>{value}</SkipOnInput>"));
+        }
+    }
+    if let Some(title) = element.get("title").and_then(Value::as_str) {
+        emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
     if let Some(value) = element.get("titleLocation").and_then(Value::as_str) {
         let location = form_compile_title_location(value).unwrap_or(value);
@@ -10161,18 +10320,22 @@ fn emit_form_html_document_field(
             escape_xml(location)
         ));
     }
+    emit_form_element_tooltip(lines, element, &inner, lang)?;
     for (key, tag, auto_key, auto_tag) in [
         ("width", "Width", "autoMaxWidth", "AutoMaxWidth"),
         ("height", "Height", "autoMaxHeight", "AutoMaxHeight"),
     ] {
         if let Some(value) = element.get(key) {
             let number = value.as_u64().filter(|number| *number <= u32::MAX as u64)
-                .ok_or_else(|| format!("form HTML field property {key} must be an integer in 0..=4294967295 for 8.3.27"))?;
-            lines.push(format!("{inner}<{tag}>{number}</{tag}>"));
+                .ok_or_else(|| format!("form document field property {key} must be an integer in 0..=4294967295 for 8.3.27"))?;
+            if key != "height" || number != 10 {
+                lines.push(format!("{inner}<{tag}>{number}</{tag}>"));
+            }
         }
         form_compile_validate_element_boolean(element, auto_key)?;
-        if let Some(value) = element.get(auto_key).and_then(Value::as_bool) {
-            lines.push(format!("{inner}<{auto_tag}>{value}</{auto_tag}>"));
+        // true — значение по умолчанию: платформа его не выгружает.
+        if let Some(false) = element.get(auto_key).and_then(Value::as_bool) {
+            lines.push(format!("{inner}<{auto_tag}>false</{auto_tag}>"));
         }
     }
     emit_form_companion(
@@ -10190,7 +10353,7 @@ fn emit_form_html_document_field(
         ids,
     )?;
     emit_form_element_events(lines, element, name, &inner);
-    lines.push(format!("{indent}</HTMLDocumentField>"));
+    lines.push(format!("{indent}</{field_tag}>"));
     Ok(())
 }
 
@@ -16248,7 +16411,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Each command key `formCommand.add` publishes is written exactly as an
+    /// Each command key `command.add` publishes is written exactly as an
     /// 8.3.27 dump writes it (#1439). Every expected block repeats, with
     /// neutral names and texts, the shape of a `<Command>` from a platform
     /// dump that carries only the keys under test: tabs, element order,
@@ -16382,7 +16545,7 @@ pub(crate) mod tests {
         "\t\t</Command>",
     );
 
-    /// The form compiler and `formCommand.add` share one command writer:
+    /// The form compiler and `command.add` share one command writer:
     /// a compiled form carries the same `<Command>` block, ToolTip included.
     #[test]
     fn form_compile_writes_the_same_command_block_as_form_command_add() {
@@ -19299,14 +19462,81 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn text_document_binding_uses_the_qname_namespace_and_requires_a_path() {
+        let xml = format!(
+            r#"<Form xmlns="{FORM_LOGFORM_NS}" xmlns:v8="{FORM_V8_NS}"><ChildItems><TextDocumentField name="Field"><DataPath>Protocol</DataPath></TextDocumentField></ChildItems><Attributes><Attribute name="Protocol"><Type><v8:Type xmlns:txt="http://v8.1c.ru/8.1/data/txtedt">txt:TextDocument</v8:Type></Type></Attribute></Attributes></Form>"#
+        );
+        let document = Document::parse(&xml).unwrap();
+        let definition = json!({"elements":[{"textDoc":"Field","path":"Protocol"}]});
+        assert!(form_validate_requested_text_document_bindings(
+            document.root_element(),
+            &definition
+        )
+        .is_ok());
+        assert!(form_edit_validate_emitted_type_qnames(
+            document.root_element(),
+            &["txt:TextDocument".to_string()]
+        )
+        .is_ok());
+
+        let without_path = json!({"elements":[{"textDoc":"Field"}]});
+        let error =
+            form_validate_requested_text_document_bindings(document.root_element(), &without_path)
+                .unwrap_err();
+        assert!(error.contains("requires non-empty path"), "{error}");
+
+        let union = xml.replace(
+            "</Type>",
+            "<v8:Type xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">xs:string</v8:Type></Type>",
+        );
+        let union = Document::parse(&union).unwrap();
+        let error =
+            form_validate_requested_text_document_bindings(union.root_element(), &definition)
+                .unwrap_err();
+        assert!(
+            error.contains("requires a TextDocument attribute"),
+            "{error}"
+        );
+
+        let wrong_namespace = xml.replace(
+            "http://v8.1c.ru/8.1/data/txtedt",
+            "http://www.w3.org/2001/XMLSchema",
+        );
+        let wrong_namespace = Document::parse(&wrong_namespace).unwrap();
+        let error = form_validate_requested_text_document_bindings(
+            wrong_namespace.root_element(),
+            &definition,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("requires a TextDocument attribute"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn retired_form_compiler_does_not_accept_text_document_field() {
+        let error = form_compile_xml(
+            &json!({
+                "attributes":[{"name":"Protocol","type":"d5p1:TextDocument"}],
+                "elements":[{"textDoc":"Field","path":"Protocol"}]
+            }),
+            "2.20",
+        )
+        .unwrap_err();
+        assert!(error.contains("only by item.add"), "{error}");
+    }
+
+    #[test]
     fn html_document_field_matches_platform_fixture_and_preserves_requested_properties() {
         let (xml, _) = form_compile_xml(
             &json!({
                 "attributes": [{"name": "АдресHTML", "type": "string"}],
                 "elements": [{"html": "ПолеHTML", "path": "АдресHTML",
                     "title": "Описание & детали", "titleLocation": "none",
+                    "tooltip": "Подсказка", "tooltipRepresentation": "Button",
                     "skipOnInput": true, "width": 1, "height": 2,
-                    "autoMaxWidth": false, "autoMaxHeight": true,
+                    "autoMaxWidth": false, "autoMaxHeight": false,
                     "visible": false, "enabled": false, "readOnly": true,
                     "on": ["OnClick", "DocumentComplete"],
                 "handlers": {"OnClick": "ПолеHTMLПриНажатии", "DocumentComplete": "ПолеHTMLДокументСформирован"}}]
@@ -19350,6 +19580,31 @@ pub(crate) mod tests {
             .filter(|node| node.is_element())
             .map(|node| node.tag_name().name())
             .collect::<Vec<_>>();
+        // Канон ревью #1389 задаёт общий порядок HTML- и TextDocumentField.
+        // Положение SkipOnInput после ReadOnly подтверждено живым кругом
+        // 8.3.27.2074 при ревью #1389; выгрузка HTML ниже сверяет значения
+        // DataPath, SkipOnInput, TitleLocation и companions.
+        assert_eq!(
+            child_names,
+            [
+                "DataPath",
+                "Visible",
+                "Enabled",
+                "ReadOnly",
+                "SkipOnInput",
+                "Title",
+                "TitleLocation",
+                "ToolTip",
+                "ToolTipRepresentation",
+                "Width",
+                "AutoMaxWidth",
+                "Height",
+                "AutoMaxHeight",
+                "ContextMenu",
+                "ExtendedTooltip",
+                "Events",
+            ]
+        );
         let binding_order = |node: roxmltree::Node<'_, '_>| {
             node.children()
                 .filter(|child| child.is_element())
@@ -19373,7 +19628,7 @@ pub(crate) mod tests {
             ("Width", "1"),
             ("Height", "2"),
             ("AutoMaxWidth", "false"),
-            ("AutoMaxHeight", "true"),
+            ("AutoMaxHeight", "false"),
             ("Visible", "false"),
             ("Enabled", "false"),
             ("ReadOnly", "true"),

@@ -36,7 +36,7 @@ allowed-tools:
 
 | Адрес `at` | Операции |
 |---|---|
-| `<набор>:<Вид>.<Имя>.Form.<Форма>` | `item.add` в корень формы, `formAttribute.add`, `formCommand.add`, `form.remove` |
+| `<набор>:<Вид>.<Имя>.Form.<Форма>` | `item.add` в корень формы, `attribute.add`, `command.add`, `form.remove` |
 | `….Form.<Форма>.Item.<Группа>[.Item.<Вложенная>…]` — контейнер | `item.add` внутрь контейнера, `item.remove` самого контейнера |
 | `….Item.<Поле>` — поле, декорация, кнопка | `item.remove` |
 | `….Item.<ФормаКоманднаяПанель>`, `….Item.<Таблица>.Item.<ТаблицаКоманднаяПанель>` | `item.add` кнопки в автоматическую командную панель |
@@ -71,7 +71,7 @@ allowed-tools:
 принимает только кнопки: её контракт публикует один вид `Button`. Группа и поле в ней добавляются в одном вызове
 двумя операциями: вторая адресует группу через `args.at`.
 
-`formAttribute.add` пишет `name`, `title` (строка), `type`, `main`,
+`attribute.add` пишет `name`, `title` (строка), `type`, `main`,
 `savedData`, `fillChecking` и `columns` реквизита-таблицы. Проверка
 заполнения `"fillChecking": "ShowError"` записывается тегом `<FillCheck>`;
 без ключа проверки нет. Просмотр и редактирование (`view`, `edit`),
@@ -84,17 +84,24 @@ allowed-tools:
 и `values.name` у `item.remove`, `values.element` и `values.event`
 у `event.bind`. Вызов с ними получает
 `bad_value`, а `next` ведёт к адресу узла, который называло значение.
-Прежние имена `element.add` и `element.remove` тоже сняты: вызов получает
-`bad_value` без записи. Если `item.add` или `item.remove` исполнима на
-адресе вызова или на его предке, `next` ведёт к её контракту
-`<узел>.Can.item.*` на ближайшем таком узле. Если такого узла нет —
-например, `element.remove` на самой форме или на автоматической командной
-панели, — отказ называет форму адреса, а `next` ведёт к словарю узла.
+Прежние имена `element.add`, `element.remove`, `formAttribute.add`
+и `formCommand.add` тоже сняты: вызов получает `bad_value` без записи.
+Если заменившая (`item.add`, `item.remove`, `attribute.add` или
+`command.add` формы) исполнима на адресе вызова или на его предке, `next`
+ведёт к её контракту `<узел>.Can.<операция>` на ближайшем таком узле.
+Если такого узла нет — например, `element.remove` на самой форме или
+на автоматической командной панели, — отказ называет форму адреса,
+а `next` ведёт к словарю узла.
 
-`formCommand.add` добавляет команды формы. Элемент `items[]` принимает
+Реквизит и команда формы добавляются теми же именами, что у объекта
+метаданных: `attribute.add` и `command.add` на адресе формы пишут в форму,
+а на адресе объекта — в его описание. Контракт по адресу
+`<форма>.Can.attribute.add` — контракт реквизита формы.
+
+`command.add` добавляет команды формы. Элемент `items[]` принимает
 `name`, `title`, `tooltip`, `action`, `shortcut`, `picture`,
 `representation`; другой ключ отклоняется до записи. Контракт —
-`<форма>.Can.formCommand.add`.
+`<форма>.Can.command.add`.
 
 ## MCP вызов
 
@@ -196,7 +203,7 @@ Preview и apply возвращают одинаковую типизирова�
 ### Типы элементов
 
 В `item.add` каждый `items[]` задаёт `name` и `type`; без `type`
-создаётся поле ввода. Словарь создаёт одиннадцать видов. Кроме ключей
+создаётся поле ввода. Словарь создаёт двенадцать видов. Кроме ключей
 таблицы, каждый вид принимает `after` и флаги `visible`, `hidden`,
 `userVisible` (только `false`), `enabled`, `disabled`, `readOnly`.
 
@@ -204,6 +211,7 @@ Preview и apply возвращают одинаковую типизирова�
 |------|---------|------------|------------|
 | `InputField` | InputField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `inputHint`, `width`, `height`, кнопки и флаги поля | ContextMenu, ExtendedTooltip |
 | `HTMLDocumentField` | HTMLDocumentField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight`, `skipOnInput` | ContextMenu, ExtendedTooltip |
+| `TextDocumentField` | TextDocumentField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight` | ContextMenu, ExtendedTooltip |
 | `CheckBox` | CheckBoxField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `checkBoxType`, `footerDataPath` | ContextMenu, ExtendedTooltip |
 | `Label` | LabelDecoration | `title` (строка или `{text, formatted}`), `formatted`, `hyperlink`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight`, `tooltipRepresentation` | ContextMenu, ExtendedTooltip |
 | `LabelField` | LabelField | `path`, `tooltip`, `tooltipRepresentation`, `footerDataPath` | ContextMenu, ExtendedTooltip |
@@ -232,7 +240,7 @@ Preview и apply возвращают одинаковую типизирова�
 HTML-поле привязывается через `path` к строковому реквизиту формы.
 Публичный `items[]` задаёт `name` и `type: "HTMLDocumentField"`;
 внутренний ключ `html` здесь отклоняется, в том числе вместе с `type`.
-Сначала создайте его через `formAttribute.add`, если реквизита ещё нет.
+Сначала создайте его через `attribute.add`, если реквизита ещё нет.
 Затем запросите план добавления поля и примените его отдельным вызовом
 `unica.apply` только с `executionToken` из `data.executionToken` ответа:
 
@@ -260,10 +268,24 @@ DOM-свойство `Document` относится к выполнению 1С �
 `after` задаёт соседний элемент. Полученную форму
 прочитайте через `unica.view` и проверьте через `unica.check`.
 
+### Поле текстового документа
+
+Поле текстового документа задаётся в `item.add` через `name`,
+`type: "TextDocumentField"` и `path`. Путь должен вести к реквизиту формы
+типа `d5p1:TextDocument`; при необходимости сначала создайте реквизит через
+`attribute.add`. Внутренний ключ `textDoc` публичная операция отклоняет.
+
+Поддержаны общие свойства размещения и оформления из контракта
+`<адрес формы>.Can.item.add`; `skipOnInput` и `editMode` не поддержаны.
+Событие `OnChange` привязывается отдельной операцией `event.bind` по адресу
+поля. Для размещения в группе вызывайте `item.add` на адресе группы.
+Результат применяйте отдельным вызовом с `executionToken`, затем прочитайте
+поле через `unica.view` и проверьте форму через `unica.check`.
+
 ### Чего словарь не пишет
 
 Остальные виды платформенных полей и декораций **поверхность не создаёт**:
-поля картинки, текстового, табличного и форматированного документа,
+поля картинки, табличного и форматированного документа,
 диаграммы и сводной диаграммы, диаграммы Ганта, календаря, периода,
 индикатора, ползунка, географической схемы, дендрограммы, планировщика,
 радиокнопки, а также декоративную картинку и поле поиска.
@@ -394,7 +416,7 @@ BSL с неподтверждёнными именами. Пробел чтен�
 `Override`) на адресе события формы или элемента. У обычной формы
 `callType` не задаётся. Событие нового элемента привязывает `event.bind`
 на его адресе: `{"values": {"handler": "Расш1_ПолеПриИзмененииПосле",
-"callType": "After"}}`. `formCommand.add` `callType` и `actions`
+"callType": "After"}}`. `command.add` `callType` и `actions`
 не принимает: перехват действия команды формы расширения —
 `event.implement` с `callType` на адресе
 `….Form.<Форма>.Command.<Команда>.Event.Execute`.
