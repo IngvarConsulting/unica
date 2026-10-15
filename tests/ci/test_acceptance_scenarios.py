@@ -524,13 +524,13 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
     def test_corpus_is_uniquely_numbered_and_not_missing_steps(self) -> None:
         scenarios = self.corpus["scenarios"]
-        self.assertEqual(len(scenarios), 417)
+        self.assertEqual(len(scenarios), 440)
         # Исполнение apply следует за планированием с сохранением токена.
-        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1089,
-            "a wire step went missing: the corpus freezes 1089 steps",
+        self.assertEqual(sum(len(scenario["wire"]) for scenario in scenarios), 1212,
+            "a wire step went missing: the corpus freezes 1212 steps",
         )
         identifiers = [scenario["id"] for scenario in scenarios]
-        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 418)])
+        self.assertEqual(identifiers, [f"S{index:03d}" for index in range(1, 441)])
 
     def test_all_scenarios_have_an_executable_profile(self) -> None:
         source = {s["id"] for s in select_profile(self.corpus, "source")["scenarios"]}
@@ -550,7 +550,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                {self.corpus["workspace"], "tests/fixtures/acceptance/workspace-predefined", FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing", "tests/fixtures/acceptance/workspace-docs-8.3.26", "tests/fixtures/acceptance/workspace-docs-8.3.27", "tests/fixtures/acceptance/workspace-resolve", "tests/fixtures/acceptance/workspace-form-names", "tests/fixtures/acceptance/workspace-incomplete-borrowed", "tests/fixtures/acceptance/workspace-invalid-borrowing", "tests/fixtures/acceptance/workspace-english", "tests/fixtures/acceptance/workspace-borrowed"},
+                {self.corpus["workspace"], "tests/fixtures/acceptance/workspace-predefined", FORMAT_WORKSPACE, BARE_WORKSPACE, SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, "tests/fixtures/acceptance/workspace-dcs", "tests/fixtures/acceptance/workspace-mxl", "tests/fixtures/acceptance/workspace-code", "tests/fixtures/acceptance/workspace-metadata-warning", "tests/fixtures/acceptance/workspace-metadata-values", "tests/fixtures/acceptance/workspace-external", "tests/fixtures/acceptance/workspace-external-invalid", "tests/fixtures/acceptance/workspace-external-linked", "tests/fixtures/acceptance/workspace-external-missing", "tests/fixtures/acceptance/workspace-docs-8.3.26", "tests/fixtures/acceptance/workspace-docs-8.3.27", "tests/fixtures/acceptance/workspace-docs-standards-unreachable", "tests/fixtures/acceptance/workspace-form-command-representation", "tests/fixtures/acceptance/workspace-resolve", "tests/fixtures/acceptance/workspace-form-names", "tests/fixtures/acceptance/workspace-incomplete-borrowed", "tests/fixtures/acceptance/workspace-invalid-borrowing", "tests/fixtures/acceptance/workspace-english", "tests/fixtures/acceptance/workspace-borrowed"},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):

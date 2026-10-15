@@ -108,9 +108,11 @@ fn declared_namespace(opening: &str, prefix: Option<&str>) -> bool {
         if name == wanted {
             return true;
         }
-        let quote = bytes[i];
+        let Some(&quote) = bytes.get(i) else {
+            break;
+        };
         i += 1;
-        while bytes[i] != quote {
+        while bytes.get(i).is_some_and(|byte| *byte != quote) {
             i += 1;
         }
         i += 1;

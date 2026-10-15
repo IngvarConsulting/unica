@@ -220,12 +220,55 @@ ProbeResult = "ERROR" + Символы.Таб + СтрЗаменить(Опис�
     return ET.tostring(root, encoding="utf-8", xml_declaration=True), module
 
 
+
+def compact_report(report: dict) -> dict:
+    """Deduplicate literal XML fragments without changing observed outcomes."""
+    fragments = {}
+    compact_cases = []
+    for case in report["cases"]:
+        case = dict(case)
+        xml = case.pop("sourceXml")
+        # Split only between adjacent tags; values and whitespace stay verbatim.
+        parts = re.split(r"(?<=>)(?=<)", xml)
+        case["sourceParts"] = [fragments.setdefault(part, len(fragments)) for part in parts]
+        compact_cases.append(case)
+    result = {key: value for key, value in report.items()
+              if key not in {"ibcmdSha256", "clientSha256", "installSha256", "installFileCount"}}
+    result.update(schemaVersion=2, sourceXmlFragments=list(fragments), cases=compact_cases)
+    return result
+
+
+def report_json(report: dict) -> str:
+    text = json.dumps(report, ensure_ascii=False, indent=2)
+    # Keep each sourceParts index list on one line, while retaining readable cases.
+    return re.sub(r'("sourceParts": )(\[\s*\d+(?:,\s*\d+)*\s*\])',
+                  lambda match: match[1] + json.dumps(json.loads(match[2])), text) + "\n"
+
+
+def check_fixture(path: Path) -> None:
+    report = json.loads(path.read_text())
+    if report["schemaVersion"] != 2:
+        raise ValueError("expected compact fixture schemaVersion 2")
+    for case in report["cases"]:
+        restored = "".join(report["sourceXmlFragments"][part] for part in case["sourceParts"])
+        generated = form_source(case)[0].decode("utf-8")
+        if restored != generated:
+            raise ValueError(f"source XML differs for {case['form']}")
+    print(f"exact source XML reconstruction: {len(report['cases'])} cases")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ibcmd", required=True, type=Path)
-    parser.add_argument("--client", required=True, type=Path)
-    parser.add_argument("--work-dir", required=True, type=Path)
+    parser.add_argument("--check-fixture", type=Path, help="verify compact inputs without running 1C")
+    parser.add_argument("--ibcmd", type=Path)
+    parser.add_argument("--client", type=Path)
+    parser.add_argument("--work-dir", type=Path)
     args = parser.parse_args()
+    if args.check_fixture is not None:
+        check_fixture(args.check_fixture)
+        return
+    if any(value is None for value in (args.ibcmd, args.client, args.work_dir)):
+        parser.error("--ibcmd, --client and --work-dir are required for a platform probe")
     work = args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
     if any(work.iterdir()):
@@ -355,7 +398,7 @@ def main():
                 raise RuntimeError(f"post-move subtree changed: {case['form']} cycle {cycle}")
         current = exported
     after = verifier.capture_platform_install_inventory(args.ibcmd)
-    if after["sha256"] != inventory["sha256"]:
+    if (after["sha256"], after["fileCount"]) != (inventory["sha256"], inventory["fileCount"]):
         raise RuntimeError("platform installation changed during probe")
     report = {"schemaVersion": 1, "platformVersion": version, "ibcmdSha256": binary_hashes[str(args.ibcmd)],
               "clientSha256": binary_hashes[str(args.client)], "installSha256": inventory["sha256"],
@@ -389,7 +432,7 @@ def main():
         shutil.copy2(current / "CommonForms" / case["form"] / "Ext" / "Form.xml", work / "postmove" / f"{name}.xml")
     report["postMoveRoundtrip"]["exportedFormDigests"] = digests
     report["postMoveRoundtrip"]["representatives"] = [{"form": case["form"], "path": f"postmove/{name}.xml"} for name, case in representatives.items()]
-    (work / "observations.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    (work / "observations.json").write_text(report_json(compact_report(report)))
     (work / "commands.json").write_text(json.dumps(commands, ensure_ascii=False, indent=2) + "\n")
     print(f"observed {len(matrix)} cases; report: {work / 'observations.json'}")
 

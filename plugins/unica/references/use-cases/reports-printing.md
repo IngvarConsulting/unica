@@ -24,7 +24,7 @@ Runtime идёт через `unica.run`: вызов без `op` отдаёт с�
 
 - Read schemas and layouts through `unica.view`, change them through
   `unica.apply`, and validate the template through `unica.check`.
-  Every node answer lists its operations in `can`. For a DCS operation, `mxl.set` or `template.add`, read its argument contract at the operation's own address `<node>.Can.<op>`:
+  Every node answer lists its operations in `can`. For a DCS operation, `area.add`, `mxl.set` or `template.add`, read its argument contract at the operation's own address `<node>.Can.<op>`:
 
   ```json
   {"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query.Can.query.set"}
@@ -55,11 +55,24 @@ layouts.
 
 ## Composing and changing a DCS
 
-Find the template through `unica.view`, then read its properties, `DataSet`
-and `Setting` branches. Request `can` on the actual target and the contract
+Find the template through `unica.view`, then read its properties and its
+`DataSource`, `DataSet`, `CalculatedField`, `Total`, `Parameter` and `Setting`
+branches. Request `can` on the actual target and the contract
 of the operation you need. The DCS Template is a writable target for schema
-components; an existing dataset is the target for its fields and query;
-an existing setting is the target for its selection, filters and structure.
+components; an existing dataset is the target for adding fields;
+an existing field `DataSet.<name>.Field.<dataPath>` is the target for its
+mapping, title and role; an existing parameter `Parameter.<name>` is the
+target for its properties and rename; an existing source
+`DataSource.<name>`, calculated field `CalculatedField.<dataPath>` and total
+`Total.<dataPath>` are the targets for their changes and removal; an
+existing setting is the target for its presentation, selection, filters
+and structure, and for its removal.
+Creation stays at the parent: `dataSource.add`, `calculatedField.add`,
+`total.add`, `field.add`, `parameter.add` and `variant.add` name the new
+node in `items`. A name argument that duplicated the address
+(`values.name`, `values.field`) is refused, and `next` names the node's
+address. A field with a composite `dataPath` escapes the dot in its address:
+`DataSet.<name>.Field.Owner\.Code`.
 Use names returned by the reader. A variant need not be named `Основной`.
 
 To create a schema, use the owner's `template.add` contract with
@@ -80,8 +93,14 @@ Choose the dataset kind for the data actually supplied to the schema:
   Union's address. Nested members are addressed by repeating
   `DataSet.<name>` in the logical path.
 
-Links between datasets, calculated expressions and totals are separate
-schema components. A calculated expression derives a field; a total
+A field is addressed by its `dataPath`: `DataSet.<name>.Field.<dataPath>`.
+A dot inside a composite `dataPath` is escaped in the address as `\.`, for
+example `Field.Контрагент\.ИНН` (`"Контрагент\\.ИНН"` in JSON). Take the
+address from the `items[].at` of the dataset's `Field` branch.
+
+Links between datasets, calculated fields and totals are separate
+schema components. Links stay rows of the Template's `Item` branch and are
+selected by their endpoints and expressions. A calculated expression derives a field; a total
 aggregates a field, optionally for a specified group. Adding or removing
 these components does not rewrite their references or variant settings.
 Plan those changes explicitly in the same batch.
@@ -111,25 +130,38 @@ values represent a named period or a Custom period with dates; obtain the
 accepted value shape from `can`.
 
 Configure selection, filters, order, conditional appearance and output
-parameters through their own operations. Adding a filter does not clear
+parameters through their own operations. Call them at the settings
+container they change: the variant `Setting.<name>` or a named structure
+item `Setting.<name>.Item.<item>[.Item.<child>…]`. A `group` argument is
+refused, and `next` names the item's address. Data parameters belong to the
+variant only. Rows inside a collection keep their keys: a filter is selected
+by its field, selection, order and appearance items by the index read from
+`Setting.<name>.Property`. Adding a filter does not clear
 existing filters. Setting a selected filter or data parameter patches the
 supplied properties and keeps unspecified settings. A `clear` operation
 clears its whole selected collection; use an individual removal operation
 when its contract is available and only one item should be removed.
 
-Read `Setting.<name>.Item` to see grouping structure in document order.
-Each row gives `index`, `parentIndex`, `axis`, `kind`, `name` and `groupBy`.
-Indices identify rows within that variant, not logical nodes. Names may be
-absent or repeated, and rows have no `at`. Use an exact, uniquely named
-item as a selector; unknown or ambiguous names fail before publication.
-`structure.patch` takes the item's `name` separately from its `groupBy`.
-Both `structure.set` and `structure.patch` take the variant from the
-`Setting.<name>` address; a `variant` argument is refused and `next` names
-the variant's address.
+Read `Setting.<name>.Item` to see the grouping structure in document order.
+A named item that is unique among its siblings is a node with `at`
+(`Setting.<name>.Item.<item>`), `kind`, `axis` and `groupBy`, and its own
+`Item` branch lists its children. An unnamed item has no address: it is a
+row with `index`, `parentIndex`, `axis`, `kind` and `groupBy`, and the named
+items under it are addressed from the nearest named ancestor. Items with a
+repeated name on one level stay rows and cannot be targeted until renamed.
+An item name is written as stored, spaces and brackets included
+(`Item.По периодам`); a dot inside it is escaped as `\.`.
+`structure.patch` and `structure.remove` are called at the item's address;
+`structure.set` replaces the whole structure at `Setting.<name>`. A `name`,
+`parent` or `variant` argument is refused, and `next` names the item's
+address; a name repeated in several branches leads to the `Item` branch and
+to each matching item.
 
 Compose nested structure by adding each named group, table or chart
-separately. Select its parent explicitly; a table's row/column or a chart's
-point/series axis selects where its grouping belongs. Two `groupBy` fields
+separately with `structure.add` at its parent's address: the variant or an
+existing item. Execute or batch the parent first; a table's row/column or a
+chart's point/series axis selects where its grouping belongs. A new name must
+be unique in the variant. Two `groupBy` fields
 form one group by both fields, not two nested groups. `structure.set`
 replaces the variant's structure; with `details:true` it adds detail records
 under that group. Empty `groupBy` means detail records. Choose a targeted
@@ -186,31 +218,35 @@ Read actual names instead of inferring them from visible
 labels. A tabular document's `ПолучитьОбласть` can combine a row and a
 column area by their names; this does not make column areas editable.
 
-For exact arguments, read `<Template>.Can.mxl.set` at the Template or
-`<owner>.Can.template.add` at its owner. Creation must be executed before the new
-Template is addressed. An addressed parameter or text-template cell becomes
+For exact arguments, read `<Template>.Area.<name>.Can.mxl.set` at an
+existing area, `<Template>.Can.area.add` at the Template or
+`<owner>.Can.template.add` at its owner. `mxl.set` writes only an existing
+area: a missing area is refused with `not_found`, and `next` leads to the
+Template, where `area.add` creates new areas with their initial cells. An area
+argument at the Template is refused with the area's address in `next`.
+Creation must be executed before the new Template is addressed. An addressed parameter or text-template cell becomes
 ordinary text when written. Unaddressed neighbors should be verified after
 publication. Width can grow but the operation does not shrink it.
 
-Reading does not establish writability. The current writer cannot preserve
-all platform constructs: drawings, non-Rows areas, outside rows, overlapping
-or differently ordered areas, identified/multiple column sets and
-multilingual text/format collections refuse before writing. Such a refusal
-requires editing in the Designer; do not bypass it with manual XML writes.
-Support-state rules of the metadata owner also apply.
+The writer changes only the addressed cells, rows and areas of
+`Template.xml`; drawings, merges, other areas, rows outside areas, other
+column sets, translations and the bytes around the edit stay as they were.
+New cells have no own format, so they take the row and column formatting.
+`area.add` appends the area after every used row. A written row below an
+area grows it only when nothing follows the area; otherwise create another
+area with `area.add`. Some addressed nodes still refuse before writing: a
+non-Rows area, an area without rows, a cell inside a merge that does not
+start there, a cell holding a value or control, and a cell that takes a
+parameter or template fill from its row, column, column-set or document
+format. Edit these in the Designer; do not
+bypass a refusal with manual XML writes. Support-state rules of the metadata
+owner also apply.
 
-Full JSON-DSL compilation/decompilation, font/style definitions, rowStyle,
-merges, palettes and page properties are not public operations. The DSL
-reference preserves their format knowledge and historical conversion
-models, including generated font/style names and recognition of uniformly
-styled empty cells. Historical generated font names include `default`, `bold`,
-`header`, `small`, `italic`; style names describe properties, for example
-`bordered-center`, `bold-right`, `border-top`. Uniformly formatted cells with
-no parameter or text become `rowStyle` in the internal conversion model
-and are omitted from its explicit cells. These are format rules, not
-new canonical view fields. It is not a payload accepted by `mxl.set`, nor a JSON
-round-trip produced by `view`. An image may inform layout structure, but
-cannot supply capabilities missing from the public contract.
+Fonts, styles, merges, palettes and page properties are not public inputs:
+`mxl.set` writes text only. A `null` value is empty text; it does not create
+an absent cell. `view` returns a node projection, not a document to send
+back. An image may inform layout structure, but cannot
+supply capabilities missing from the public contract.
 
 Execute only the preview's own `executionToken`; reread Area/Body/Parameter
 and run `check` on the Template. Check infers `mxl` from the template kind.
@@ -220,6 +256,5 @@ Observe a returned Task to terminal state without repeating the mutation.
 
 - `../specs/1c-dcs-spec.md`
 - `../specs/1c-spreadsheet-spec.md`
-- `../specs/mxl-dsl-spec.md`
 - `../specs/1c-epf-spec.md`
 - `../specs/1c-erf-spec.md`

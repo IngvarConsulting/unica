@@ -2524,8 +2524,8 @@ mod tests {
         );
     }
 
-    /// The generated cache is not source. `source_roots` and `source_revision`
-    /// already skip `.build` while walking, and
+    /// The generated cache is not source. `source_roots` already skips
+    /// `.build` while walking, and
     /// `source_generation_ignores_generated_build_cache_but_tracks_bsl_source`
     /// names `<sourceRoot>/.build/bsl-graph.db` as the artefact they skip. The
     /// lexical corpus has to agree: `.build` sorts before every metadata

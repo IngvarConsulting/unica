@@ -415,9 +415,7 @@ IN_SCOPE_TOOLS = {
     "form-compile": "unica.apply",
     "form-edit": "unica.apply",
     "interface-edit": "unica.apply",
-    "subsystem-compile": "unica.apply",
     "subsystem-edit": "unica.apply",
-    "role-compile": "unica.apply",
     "role-edit": "unica.apply",
 }
 
@@ -828,10 +826,7 @@ TASK_EXAMPLE_ARGUMENT_KEYS = {
     "form-compile": ["at", "ops"],
     "form-edit": ["at", "ops"],
     "interface-edit": ["at", "ops"],
-    "subsystem-compile": ["at", "ops"],
     "subsystem-edit": ["at", "ops"],
-    # Читающий макет адресуется логически: файлового селектора у `view` нет.
-    "role-compile": ["at", "ops"],
     "role-edit": ["at", "ops"],
 }
 
@@ -841,16 +836,14 @@ SCENARIO_PRESERVING_MIN_MCP_CALLS = {
     "meta-info": 3,
     "form-compile": 4,
     "interface-edit": 3,
-    "subsystem-compile": 3,
-    "subsystem-edit": 2,
-    "role-edit": 1,
-    "role-compile": 4,
+    "subsystem-edit": 4,
+    "role-edit": 6,
 }
 
 ALLOWED_ADDITIONAL_MCP_TOOL_NAMES = {
     "cfe-borrow": {"unica.view"},
     "form-compile": {"unica.view", "unica.check"},
-    "role-compile": {"unica.view", "unica.check"},
+    "role-edit": {"unica.view", "unica.check"},
     "meta-info": {"unica.check"},
 }
 
@@ -912,7 +905,7 @@ SCENARIO_PRESERVING_TOKENS = {
         '"name": "unica.check"',
     ],
     "form-compile": [
-        '"op": "form.create"',
+        '"op": "form.add"',
         '"op": "formAttribute.add"',
     ],
     # Действие стало именем операции. `hide` и `show` свелись к одному
@@ -926,24 +919,22 @@ SCENARIO_PRESERVING_TOKENS = {
         '"visible": false',
         '"visible": true',
     ],
-    # Определение стало типизированными операциями, а родитель — адресом:
-    # JSON-строки внутри JSON и путей к XML на канонической поверхности нет.
-    "subsystem-compile": [
-        '"op": "subsystem.create"',
-        'CommonPicture.Продажи',
-        '"at": "main:Subsystem.Продажи"',
-    ],
     # Операция стала именем операции, а не значением поля `Operation`.
+    # Создание подсистемы перешло сюда из снятого `subsystem-compile`:
+    # определение стало типизированными операциями, а родитель — адресом.
     "subsystem-edit": [
+        '"op": "subsystem.create"',
         '"op": "content.add"',
         '"op": "content.remove"',
         '"op": "childSubsystem.add"',
         '"op": "props.set"',
+        '"at": "main:Subsystem.Продажи"',
     ],
-    # Пресет разворачивает скилл: инструмент принимает одно право за
-    # операцию, и предпросмотр показывает их поимённо, а не имя пресета.
-    "role-compile": [
+    # Создание роли перешло сюда из снятого `role-compile`. Типовой набор
+    # прав разворачивает скилл: предпросмотр показывает права поимённо.
+    "role-edit": [
         '"op": "role.create"',
+        '"op": "right.add"',
         '"op": "right.set"',
         '"name": "unica.check"',
         '"name": "unica.view"',
@@ -1394,14 +1385,23 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         previews = 0
         for call in calls:
             params = call["params"]
-            self.assertEqual(params["name"], "unica.apply")
             arguments = params["arguments"]
+            if params["name"] in {"unica.view", "unica.check"}:
+                # Проверка и чтение созданной роли идут по её адресу.
+                self.assertEqual(set(arguments), {"at"})
+                self.assertRegex(arguments["at"], r"^[^:]+:Role\.[^.]+$")
+                continue
+            self.assertEqual(params["name"], "unica.apply")
             if "executionToken" in arguments:
                 self.assertEqual(set(arguments), {"executionToken"})
                 self.assertTrue(arguments["executionToken"])
                 continue
-            # Роль называет адрес; ни набора, ни пути в аргументах нет.
-            self.assertRegex(arguments["at"], r"^[^:]+:Role\.[^.]+$")
+            # Роль или её запись прав называет адрес, новую роль — корень
+            # конфигурации; ни набора, ни пути в аргументах нет.
+            self.assertRegex(
+                arguments["at"],
+                r"^[^:]+:(Configuration|Role\.[^.]+(\.Right\.[^.]+_[^.]+)?)$",
+            )
             self.assertNotIn("sourceSet", arguments)
             self.assertNotIn("metadataPath", arguments)
             previews += 1
@@ -1409,9 +1409,25 @@ class UnicaSkillRoutingTests(unittest.TestCase):
             self.assertNotIn("ifRev", arguments)
             self.assertTrue(arguments["ops"])
             for operation in arguments["ops"]:
-                self.assertEqual(operation["op"], "right.set")
+                self.assertIn(operation["op"], {"role.create", "right.set", "right.add"})
+                if operation["op"] == "role.create":
+                    # Создание метит в корень конфигурации, имя — в значениях.
+                    self.assertRegex(operation["args"]["at"], r"^[^:]+:Configuration$")
+                    self.assertTrue(operation["args"]["values"]["name"])
+                    continue
+                if operation["op"] == "right.add":
+                    # Запись создаёт роль: объект и начальные права.
+                    self.assertRegex(operation["args"]["at"], r"^[^:]+:Role\.[^.]+$")
+                    for item in operation["args"]["items"]:
+                        self.assertIn("object", item)
+                        self.assertTrue(item["rights"])
+                    continue
+                # Объект записи называет её адрес, а не аргумент (#1354).
+                self.assertRegex(
+                    operation["args"]["at"], r"^[^:]+:Role\.[^.]+\.Right\.[^.]+_[^.]+$"
+                )
                 values = operation["args"]["values"]
-                self.assertIn("object", values)
+                self.assertNotIn("object", values)
                 self.assertIn("right", values)
                 # Одно из двух обязано быть: право без значения и без
                 # ограничения ничего не говорит.
@@ -2087,19 +2103,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                 self.assertIn("expr_start = esc_xml", text)
                 self.assertIn("expr_end = esc_xml", text)
                 self.assertNotRegex(text, r"<expression>\{esc_xml\('&' \+ param_name")
-
-        subsystem_compile = (
-            self.unica_reference_models_root()
-            / "subsystem-compile"
-            / "scripts"
-            / "subsystem-compile.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("subsystem-compile v1.8", subsystem_compile)
-        self.assertIn("import subprocess", subsystem_compile)
-        self.assertIn("subsystem-validate.py", subsystem_compile)
-        self.assertIn("subprocess.run([sys.executable, validate_script, \"-SubsystemPath\", target_xml])", subsystem_compile)
-        self.assertNotIn("powershell.exe", subsystem_compile)
-        self.assertNotIn("subsystem-validate.ps1", subsystem_compile)
 
 
     def test_form_skills_track_upstream_dsl_features_through_unica_boundary(self) -> None:

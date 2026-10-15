@@ -4,6 +4,11 @@
 
 use serde_json::{json, Map, Value};
 
+mod form;
+#[cfg(test)]
+pub(crate) use form::{form_element_enum, FORM_ELEMENT_KINDS};
+pub(crate) use form::{FORM_DYNAMIC_LIST_KEYS, FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
+
 pub(crate) const MXL_MAX_ROW: i64 = 10_000;
 pub(crate) const MXL_MAX_COLUMN: i64 = 1_000;
 
@@ -56,6 +61,7 @@ pub(crate) struct OperationContract {
 
 const REPORTS_HELP: &str = "references/use-cases/reports-printing.md";
 const METADATA_HELP: &str = "skills/meta-edit/SKILL.md";
+const ROLE_HELP: &str = "skills/role-edit/SKILL.md";
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct ContractError {
@@ -114,31 +120,13 @@ fn field_head(names: &[&str], required: &[&str]) -> Value {
 }
 
 impl OperationContract {
-    pub(crate) fn form_move(item_address: bool) -> Self {
-        let placement = [("into", text(true)), ("after", text(true))];
-        let (key, operand, example_args) = if item_address {
-            (
-                "values",
-                object(&placement, &[]),
-                json!({"values":{"into":"Destination"}}),
-            )
-        } else {
-            let mut fields = vec![("name", text(true))];
-            fields.extend(placement);
-            let mut operand = items(object(&fields, &["name"]));
-            operand["minItems"] = json!(1);
-            (
-                "items",
-                operand,
-                json!({"items":[{"name":"Existing","into":"Destination"}]}),
-            )
-        };
+    pub(crate) fn form_move() -> Self {
         Self {
-            schema: object(&[("at", text(true)), (key, operand)], &[key]),
-            target: "A managed Form, or its existing Item at the full current Item path. At an Item the address alone selects the source; at a Form each items entry names its source regardless of nesting.",
-            effect: "Move existing XML subtrees in order, preserving IDs, properties, events and contained companions. Incompatible placements are refused without conversion.",
-            notes: "Names are exact. Omit into for the form root and after for the end. after must be a direct child of the selected container and cannot name the source. Exact placement is a no-op. All operations see earlier staged changes; a failure publishes nothing.",
-            example_args,
+            schema: object(&[("at", text(true)), ("values", object(&[("into", json!({"anyOf":[text(true), {"type":"null"}]})), ("after", text(true))], &["into"]))], &["values"]),
+            target: "The existing Item at its full current path: Owner.Name.Form.F.Item.A[.Item.B…]. The address alone selects the source.",
+            effect: "Move an existing XML subtree, preserving IDs, properties, events and contained companions. Incompatible placements are refused without conversion.",
+            notes: "Names are exact. into is required: use a container name, or null for the form root. Omit after for the end. after must be a direct child of the destination and cannot name the source. Exact placement is a no-op. A failure publishes nothing.",
+            example_args: json!({"values":{"into":"Destination"}}),
             help: "skills/form-edit/SKILL.md",
         }
     }
@@ -147,7 +135,14 @@ impl OperationContract {
         let schema_target = "The DCS Template itself. Read the template props and its DataSet/Setting branches before choosing selectors.";
         let data_target = "Existing DCS Template.DataSet.<name>; repeat DataSet.<name> for a nested Union member.";
         let query_target = "The query of an existing dataset: Template.DataSet.<name>.Query; repeat DataSet.<name> for a nested Union member. The address names the dataset; there is no dataset argument.";
-        let setting_target = "Existing DCS Template.Setting.<name>; the address names the variant. Optional group selects a unique named structure item; read Setting.Item first.";
+        let setting_target = "Existing DCS Template.Setting.<name>; the address names the variant.";
+        let container_target = "Existing DCS Template.Setting.<name> or its named structure item Setting.<name>.Item.<item>[.Item.<child>…]; the address names the settings container. A named item under unnamed groups is addressed from its nearest named ancestor; read Setting.<name>.Item first.";
+        let structure_target = "Existing named structure item Template.Setting.<name>.Item.<item>[.Item.<child>…]; the address names the item. Read Setting.<name>.Item first.";
+        let data_source_target = "Existing DCS Template.DataSource.<name>; the address names the source. Create a source with dataSource.add on the template.";
+        let calculated_target = "Existing DCS Template.CalculatedField.<dataPath>; the address names the calculated field. A dataPath dot is escaped: CalculatedField.A\\.B.";
+        let total_target = "Existing DCS Template.Total.<dataPath>; the address names the total. A dataPath dot is escaped: Total.A\\.B.";
+        let field_target = "Existing DCS field Template.DataSet.<name>.Field.<dataPath>; repeat DataSet.<name> for a nested Union member. The address names the field; there is no field argument. A composite dataPath escapes its dot: Field.Owner\\.Code.";
+        let parameter_target = "Existing DCS Template.Parameter.<name>; the address names the parameter. A missing parameter is refused; create it with parameter.add on the template.";
         let title = json!({"anyOf":[{"type":"string"},{"type":"object","additionalProperties":{"type":"string"}}]});
         let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
         let localized_value =
@@ -181,7 +176,6 @@ impl OperationContract {
                         ),
                         ("userSettingID", text(true)),
                         ("userSettingPresentation", text(false)),
-                        ("group", text(true)),
                     ],
                     &[],
                 ),
@@ -197,7 +191,6 @@ impl OperationContract {
                         json!({"type":"string","enum":["group","table","chart"],"default":"group"}),
                     ),
                     ("groupBy", strings.clone()),
-                    ("parent", text(true)),
                     (
                         "axis",
                         json!({"type":"string","enum":["row","column","point","series"]}),
@@ -247,12 +240,12 @@ impl OperationContract {
             )
         };
         let (key, inner, target, effect, example_args) = match op {
-            "dataSource.add" | "dataSource.set" => {
-                let mut kind = json!({"type":"string","enum":["Local","External"]});
-                if op.ends_with("add") {kind["default"]=json!("Local");}
-                (if op.ends_with("add"){"items"}else{"values"},object(&[("name",text(true)),("kind",kind)],if op.ends_with("add"){&["name"][..]}else{&["name","kind"][..]}),schema_target,if op.ends_with("add"){"Add a new named source; an existing name is refused."}else{"Change only the kind of an existing named source. A missing name is refused; create it with dataSource.add."},if op.ends_with("add"){json!({"items":[{"name":"Database"}]})}else{json!({"values":{"name":"Database","kind":"Local"}})})
+            "dataSource.add" => {
+                let kind = json!({"type":"string","enum":["Local","External"],"default":"Local"});
+                ("items",object(&[("name",text(true)),("kind",kind)],&["name"]),schema_target,"Add a new named source; an existing name is refused. Change it later at Template.DataSource.<name>.",json!({"items":[{"name":"Database"}]}))
             }
-            "dataSource.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove an unused named source; a referenced source is refused.",json!({"values":{"name":"Unused"}})),
+            "dataSource.set" => ("values",object(&[("kind",json!({"type":"string","enum":["Local","External"]}))],&["kind"]),data_source_target,"Change only the kind of the addressed source.",json!({"values":{"kind":"Local"}})),
+            "dataSource.remove" => ("",json!({}),data_source_target,"Remove the addressed source; a source still referenced by a dataset is refused.",json!({})),
             "dataSet.add" => {
                 let inner=object(&[("name",text(true)),("kind",json!({"type":"string","enum":["Query","Object","Union"],"default":"Query"})),("dataSource",text(true)),("query",text(true)),("objectName",text(true))],&["name"]);
                 ("items",inner,"DCS Template adds a top-level dataset; an existing Union DataSet adds one member.","Create one Query/Object/Union dataset. Query requires dataSource and query; Object requires dataSource and objectName; Union members are separate dataSet.add operations. Add fields separately.",json!({"items":[{"name":"Data","kind":"Query","dataSource":"ИсточникДанных1","query":"ВЫБРАТЬ 1 КАК Amount"}]}))
@@ -266,59 +259,74 @@ impl OperationContract {
                 ("items",inner,data_target,"Add dataset fields. Existing dataPath is unchanged. Selection is a separate operation.",json!({"items":[{"dataPath":"Added","title":"Added [шт]"}]}))
             }
             "field.set" => {
-                let mut inner=field_head(&["field","dataPath","name"],&[]);inner["properties"]["title"]=title.clone();
-                for key in ["useRestriction","attributeUseRestriction"]{inner["properties"][key]=restriction.clone();}
-                inner["properties"]["presentationExpression"]=text(false);inner["properties"]["sourceField"]=text(true);
-                ("values",inner,data_target,"Update only supplied field mapping/title/type/restrictions/presentation expression. Query fields derive their type from query; field.set removes stale valueType on the selected Query field. Other field data remains.",json!({"values":{"field":"Amount","title":{"ru":"Сумма","en":"Amount"}}}))
+                let mut inner=object(&[("type",text(false)),("title",title.clone()),("useRestriction",restriction.clone()),("attributeUseRestriction",restriction.clone()),("presentationExpression",text(false)),("sourceField",text(true))],&[]);
+                inner["minProperties"]=json!(1);
+                ("values",inner,field_target,"Update only supplied field mapping/title/type/restrictions/presentation expression. Query fields derive their type from query; field.set removes stale valueType on the addressed Query field. Other field data remains.",json!({"values":{"title":{"ru":"Сумма","en":"Amount"}}}))
             }
-            "field.remove" | "parameter.remove" => ("",json!({}),if op=="field.remove"{data_target}else{schema_target},"Remove only the named terminal Field or Parameter. References and selections are separate operations.",json!({})),
+            "field.remove" | "parameter.remove" => ("",json!({}),if op=="field.remove"{field_target}else{parameter_target},"Remove only the named terminal Field or Parameter. References and selections are separate operations.",json!({})),
             "fieldRole.set" => {
                 let flags=object(&DCS_ROLE_KEYS.iter().map(|key|(*key,if DCS_ROLE_FLAGS.contains(key){json!({"type":"boolean"})}else{text(true)})).collect::<Vec<_>>(),&[]);
-                ("values",aliases(object(&[("field",text(true)),("dataPath",text(true)),("name",text(true)),("role",flags)],&["role"]),&["field","dataPath","name"]),data_target,"Replace field role with the supplied object. Values are validated against platform types; omitted role entries are removed.",json!({"values":{"field":"Amount","role":{"dimension":true}}}))
+                ("values",object(&[("role",flags)],&["role"]),field_target,"Replace the addressed field's role with the supplied object. Values are validated against platform types; omitted role entries are removed.",json!({"values":{"role":{"dimension":true}}}))
             }
-            "parameter.add" | "parameter.set" => (if op.ends_with("add"){"items"}else{"values"},parameter(),schema_target,if op.ends_with("add"){"Add a new schema parameter. Parameters for dates and their expressions are explicit separate operations."}else{"Patch only supplied properties of an existing schema parameter. A missing parameter is refused; create it with parameter.add."},if op.ends_with("add"){json!({"items":[{"name":"Period","type":"date"}]})}else{json!({"values":{"name":"Period","title":"Period"}})}),
-            "parameter.rename" => ("values",object(&[("name",text(true)),("newName",text(true))],&["name","newName"]),schema_target,"Rename the parameter declaration only. References are explicit query/expression operations in the same batch.",json!({"values":{"name":"Period","newName":"ReportPeriod"}})),
+            "parameter.add" => ("items",parameter(),schema_target,"Add a new schema parameter. Parameters for dates and their expressions are explicit separate operations.",json!({"items":[{"name":"Period","type":"date"}]})),
+            "parameter.set" => {
+                let mut inner=parameter();
+                inner["properties"].as_object_mut().expect("parameter properties").remove("name");
+                inner["required"]=json!([]);
+                inner["minProperties"]=json!(1);
+                ("values",inner,parameter_target,"Patch only supplied properties of the addressed schema parameter.",json!({"values":{"title":"Period"}}))
+            }
+            "parameter.rename" => ("values",object(&[("newName",text(true))],&["newName"]),parameter_target,"Rename the addressed parameter declaration only. References are explicit query/expression operations in the same batch.",json!({"values":{"newName":"ReportPeriod"}})),
             "parameter.reorder" => ("items",object(&[("name",text(true))],&["name"]),schema_target,"Reorder all schema parameter elements by the supplied complete unique list. Comments and all other nodes stay in their original slots.",json!({"items":[{"name":"Period"}]})),
             "calculatedField.add" => {
                 let mut inner=aliases(object(&[("name",text(true)),("dataPath",text(true)),("expression",text(true)),("title",title.clone()),("type",text(false))],&["expression"]),&["name","dataPath"]);
                 inner["properties"]["useRestriction"]=restriction.clone();
-                ("items",inner,schema_target,"Add a calculated field; selection is independent.",json!({"items":[{"name":"DoubleAmount","expression":"Amount * 2"}]}))
+                ("items",inner,schema_target,"Add a calculated field; selection is independent. Change it later at Template.CalculatedField.<dataPath>.",json!({"items":[{"name":"DoubleAmount","expression":"Amount * 2"}]}))
             }
-            "total.add" => ("items",aliases(object(&[("field",text(true)),("dataPath",text(true)),("expression",text(false)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&[]),&["field","dataPath"]),schema_target,"Add a total with explicit expression/group. Omitted expression is Сумма(field).",json!({"items":[{"field":"Amount","expression":"Сумма(Amount)"}]})),
-            "total.remove" | "calculatedField.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove the named schema total/calculation only.",json!({"values":{"name":"Amount"}})),
-            "variant.add" | "variant.set" => (if op.ends_with("add"){"items"}else{"values"},optional_aliases(object(&[("name",text(true)),("title",title.clone()),("presentation",title.clone())],&["name"]),&["title","presentation"]),schema_target,if op.ends_with("add"){"Create an empty settings variant. Configure selection and structure separately."}else{"Change the presentation of an existing settings variant. A missing variant is refused; create it with variant.add."},if op.ends_with("add"){json!({"items":[{"name":"Additional","title":"Additional"}]})}else{json!({"values":{"name":"Additional","title":"Report"}})}),
-            "variant.remove" => ("values",object(&[("name",text(true))],&["name"]),schema_target,"Remove the selected variant.",json!({"values":{"name":"Additional"}})),
+            "total.add" => ("items",aliases(object(&[("field",text(true)),("dataPath",text(true)),("expression",text(false)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&[]),&["field","dataPath"]),schema_target,"Add a total with explicit expression/group. Omitted expression is Сумма(field). Change it later at Template.Total.<dataPath>.",json!({"items":[{"field":"Amount","expression":"Сумма(Amount)"}]})),
+            "calculatedField.remove" => ("",json!({}),calculated_target,"Remove the addressed calculated field only; references to it are separate operations.",json!({})),
+            "total.remove" => ("",json!({}),total_target,"Remove the addressed total only.",json!({})),
+            "variant.add" => ("items",optional_aliases(object(&[("name",text(true)),("title",title.clone()),("presentation",title.clone())],&["name"]),&["title","presentation"]),schema_target,"Create an empty settings variant. Configure selection and structure separately.",json!({"items":[{"name":"Additional","title":"Additional"}]})),
+            "variant.set" => ("values",optional_aliases(object(&[("title",title.clone()),("presentation",title.clone())],&[]),&["title","presentation"]),setting_target,"Change the presentation of the addressed settings variant. A missing variant is refused; create it with variant.add on the template.",json!({"values":{"title":"Report"}})),
+            "variant.remove" => ("",json!({}),setting_target,"Remove the addressed variant.",json!({})),
             "query.set" => ("values",aliases(object(&[("query",text(true)),("text",text(true))],&[]),&["query","text"]),query_target,"Replace query text. Supply literal text, not @file.",json!({"values":{"query":"ВЫБРАТЬ 1 КАК Amount"}})),
             "query.patch" => ("values",object(&[("find",text(true)),("replace",json!({"type":"string","default":""})),("once",json!({"type":"boolean","default":false}))],&["find"]),query_target,"Patch decoded query text. No matches fail; once=true requires exactly one. Comments/PI are preserved; a marker within replaced text anchors to replacement start.",json!({"values":{"find":"1 КАК Amount","replace":"2 КАК Amount","once":true}})),
-            "filter.add" | "filter.set" => (if op.ends_with("add"){"items"}else{"values"},filter(),setting_target,"Add a filter or patch one uniquely selected by field. Literal strings retain @, brackets and comparison words. Set requires a unique match.",if op.ends_with("add"){json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]})}else{json!({"values":{"field":"Amount","comparison":"Greater","value":1}})}),
-            "filter.remove" => ("values",object(&[("field",text(true)),("group",text(true))],&["field"]),setting_target,"Remove one uniquely selected filter; multiple matches fail.",json!({"values":{"field":"Amount"}})),
+            "filter.add" | "filter.set" => (if op.ends_with("add"){"items"}else{"values"},filter(),container_target,"Add a filter or patch one uniquely selected by field in the addressed settings container. Literal strings retain @, brackets and comparison words. Set requires a unique match.",if op.ends_with("add"){json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]})}else{json!({"values":{"field":"Amount","comparison":"Greater","value":1}})}),
+            "filter.remove" => ("values",object(&[("field",text(true))],&["field"]),container_target,"Remove one uniquely selected filter; multiple matches fail.",json!({"values":{"field":"Amount"}})),
             "selection.add" | "order.add" => {
-                let mut inner=optional_aliases(object(&[("field",text(true)),("dataPath",text(true)),("kind",json!({"type":"string","enum":["Field","Auto"],"default":"Field"})),("group",text(true))],&[]),&["field","dataPath"]);
+                let mut inner=optional_aliases(object(&[("field",text(true)),("dataPath",text(true)),("kind",json!({"type":"string","enum":["Field","Auto"],"default":"Field"}))],&[]),&["field","dataPath"]);
                 if op=="order.add" {inner["properties"]["direction"]=json!({"type":"string","enum":["Asc","Desc"],"default":"Asc"});}
-                ("items",inner,setting_target,"Add one explicit Field or Auto selection/order item. Field requires field; Auto has no field. Use index selectors for anonymous Auto items.",json!({"items":[{"field":"Amount"}]}))
+                ("items",inner,container_target,"Add one explicit Field or Auto selection/order item. Field requires field; Auto has no field. Use index selectors for anonymous Auto items.",json!({"items":[{"field":"Amount"}]}))
             }
-            "filter.clear" | "selection.clear" | "order.clear" | "conditionalAppearance.clear" => ("values",object(&[("group",text(true))],&[]),setting_target,"Clear the selected collection's elements. The collection's attributes/comments stay; an absent collection is unchanged.",json!({"values":{}})),
-            "dataParameter.add" | "dataParameter.set" | "outputParameter.set" => (if op=="dataParameter.add"{"items"}else{"values"},object(&[("name",text(true)),("value",typed_value.clone()),("valueType",text(true)),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",title.clone()),("group",text(true))],if op=="dataParameter.add"{&["name","value"][..]}else{&["name"][..]}),setting_target,"Set only supplied variant data/output parameter properties. Typed defaults, NULL, periods, references and localized values preserve their platform type; schema parameter declarations remain separate.",if op=="dataParameter.add"{json!({"items":[{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}]})}else{json!({"values":{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}})}),
+            "filter.clear" | "selection.clear" | "order.clear" | "conditionalAppearance.clear" => ("values",object(&[],&[]),container_target,"Clear the selected collection's elements. The collection's attributes/comments stay; an absent collection is unchanged.",json!({"values":{}})),
+            "dataParameter.add" | "dataParameter.set" | "outputParameter.set" => (if op=="dataParameter.add"{"items"}else{"values"},object(&[("name",text(true)),("value",typed_value.clone()),("valueType",text(true)),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",title.clone())],if op=="dataParameter.add"{&["name","value"][..]}else{&["name"][..]}),if op=="outputParameter.set"{container_target}else{setting_target},"Set only supplied variant data/output parameter properties. Typed defaults, NULL, periods, references and localized values preserve their platform type; schema parameter declarations remain separate.",if op=="dataParameter.add"{json!({"items":[{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}]})}else{json!({"values":{"name":"Period","value":"2026-01-01T00:00:00","valueType":"xs:dateTime"}})}),
             "conditionalAppearance.add" => {
                 let mut condition = filter();
-                condition["properties"].as_object_mut().unwrap().remove("group");
                 condition["properties"]["comparison"]["default"] = json!("Equal");
-                ("items",object(&[("fields",strings.clone()),("filter",json!({"type":"array","items":condition})),("use",json!({"type":"boolean"})),("appearance",json!({"type":"object","minProperties":1,"additionalProperties":appearance_value.clone()})),("group",text(true))],&["fields","appearance"]),setting_target,"Add conditional appearance with explicit use, comparisons and typed value atoms. Formatting does not change field values.",json!({"items":[{"fields":["Amount"],"use":false,"appearance":{"Формат":{"valueType":"v8:LocalStringType","value":{"ru":"ЧДЦ=2"}}}}]}))
+                ("items",object(&[("fields",strings.clone()),("filter",json!({"type":"array","items":condition})),("use",json!({"type":"boolean"})),("appearance",json!({"type":"object","minProperties":1,"additionalProperties":appearance_value.clone()}))],&["fields","appearance"]),container_target,"Add conditional appearance with explicit use, comparisons and typed value atoms. Formatting does not change field values.",json!({"items":[{"fields":["Amount"],"use":false,"appearance":{"Формат":{"valueType":"v8:LocalStringType","value":{"ru":"ЧДЦ=2"}}}}]}))
             }
-            "structure.add" => ("items",structure(),setting_target,"Add one named group/table/chart; parent selects an existing unique item, axis selects its row/column/point/series. Add each child with a separate operation.",json!({"items":[{"name":"ByAmount","kind":"group","groupBy":["Amount"]}]})),
+            "structure.add" => ("items",structure(),container_target,"Add one named group/table/chart into the addressed variant or structure item; axis selects the row/column/point/series of an addressed table/chart. The name must be new in the variant. Add each child with a separate operation at its parent's address.",json!({"items":[{"name":"ByAmount","kind":"group","groupBy":["Amount"]}]})),
             "structure.set" => ("values",object(&[("name",text(true)),("groupBy",json!({"type":"array","items":text(true),"default":[]})),("details",json!({"type":"boolean","default":true}))],&[]),setting_target,"Replace the variant structure with one group and optional nested details. groupBy=[] is a details group; use structure.add for tables/charts and nested composition.",json!({"values":{"name":"ByAmount","groupBy":["Amount"],"details":true}})),
-            "structure.patch" => ("values",object(&[("name",text(true)),("groupBy",strings.clone())],&["name","groupBy"]),setting_target,"Patch groupBy of one uniquely named group. Other structure and settings are preserved. Names and fields are separate operands.",json!({"values":{"name":"ExistingGroup","groupBy":["Amount"]}})),
-            "structure.remove" => ("values",object(&[("name",text(true))],&["name"]),setting_target,"Remove a unique named structure item and its children.",json!({"values":{"name":"ExistingGroup"}})),
-            "calculatedField.set" => ("values",object(&[("name",text(true)),("expression",text(true)),("title",title.clone()),("type",text(true)),("useRestriction",restriction.clone())],&["name"]),schema_target,"Patch only supplied calculation properties.",json!({"values":{"name":"DoubleAmount","expression":"Amount * 3"}})),
-            "total.set" => ("values",object(&[("field",text(true)),("expression",text(true)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&["field"]),schema_target,"Patch supplied total expression/group.",json!({"values":{"field":"Amount","expression":"Максимум(Amount)"}})),
-            "selection.set" | "order.set" => {
-                let mut inner=object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0})),("group",text(true)),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",text(false))],&[]);
-                if op=="order.set"{inner["properties"]["direction"]=json!({"type":"string","enum":["Asc","Desc"]});}
-                ("values",inner,setting_target,"Patch one uniquely selected field item, preserving unspecified settings.",json!({"values":{"field":"Amount","use":false}}))
+            "structure.patch" => ("values",object(&[("groupBy",strings.clone())],&[]),structure_target,"Patch groupBy and supplied view properties of the addressed structure item. Other structure and settings are preserved.",json!({"values":{"groupBy":["Amount"]}})),
+            "structure.remove" => ("",json!({}),structure_target,"Remove the addressed structure item and its children.",json!({})),
+            "calculatedField.set" => {
+                let mut inner=object(&[("expression",text(true)),("title",title.clone()),("type",text(true)),("useRestriction",restriction.clone())],&[]);
+                inner["minProperties"]=json!(1);
+                ("values",inner,calculated_target,"Patch only supplied properties of the addressed calculated field.",json!({"values":{"expression":"Amount * 3"}}))
             }
-            "selection.remove" | "order.remove" => ("values",object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0})),("group",text(true))],&[]),setting_target,"Remove one uniquely selected field item.",json!({"values":{"field":"Amount"}})),
-            "dataParameter.remove" | "outputParameter.remove" => ("values",object(&[("name",text(true)),("group",text(true))],&["name"]),setting_target,"Remove the uniquely named settings parameter.",json!({"values":{"name":"Period"}})),
-            "conditionalAppearance.remove" => ("values",object(&[("index",json!({"type":"integer","minimum":0})),("group",text(true))],&["index"]),setting_target,"Remove the zero-based appearance item from the captured settings image; read props before selecting.",json!({"values":{"index":0}})),
+            "total.set" => {
+                let mut inner=object(&[("expression",text(true)),("group",json!({"anyOf":[text(true),strings.clone()]}))],&[]);
+                inner["minProperties"]=json!(1);
+                ("values",inner,total_target,"Patch supplied expression or grouping list of the addressed total.",json!({"values":{"expression":"Максимум(Amount)"}}))
+            }
+            "selection.set" | "order.set" => {
+                let mut inner=object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0})),("use",json!({"type":"boolean"})),("viewMode",json!({"type":"string","enum":["Normal","Inaccessible","QuickAccess"]})),("userSettingID",text(true)),("userSettingPresentation",text(false))],&[]);
+                if op=="order.set"{inner["properties"]["direction"]=json!({"type":"string","enum":["Asc","Desc"]});}
+                ("values",inner,container_target,"Patch one uniquely selected field item, preserving unspecified settings.",json!({"values":{"field":"Amount","use":false}}))
+            }
+            "selection.remove" | "order.remove" => ("values",object(&[("field",text(true)),("index",json!({"type":"integer","minimum":0}))],&[]),container_target,"Remove one uniquely selected field item.",json!({"values":{"field":"Amount"}})),
+            "dataParameter.remove" | "outputParameter.remove" => ("values",object(&[("name",text(true))],&["name"]),if op=="outputParameter.remove"{container_target}else{setting_target},"Remove the uniquely named settings parameter.",json!({"values":{"name":"Period"}})),
+            "conditionalAppearance.remove" => ("values",object(&[("index",json!({"type":"integer","minimum":0}))],&["index"]),container_target,"Remove the zero-based appearance item from the captured settings image; read props before selecting.",json!({"values":{"index":0}})),
             "dataSetLink.set" | "dataSetLink.remove" => ("values",object(&[("selector",object(&[("source",text(true)),("destination",text(true)),("sourceExpression",text(true)),("destinationExpression",text(true))],&["source","destination","sourceExpression","destinationExpression"])),("parameter",text(true)),("parameterListAllowed",json!({"type":"boolean"})),("required",json!({"type":"boolean"})),("condition",text(false)),("startExpression",text(false))],&["selector"]),schema_target,"Select one unique dataset link by its endpoints and expressions. Patch only supplied properties or remove the selected link.",json!({"values":{"selector":{"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount"},"condition":"Amount > 0"}})),
             "dataSetLink.add" => ("items",object(&[("source",text(true)),("destination",text(true)),("sourceExpression",text(true)),("destinationExpression",text(true)),("parameter",text(true)),("parameterListAllowed",json!({"type":"boolean"})),("required",json!({"type":"boolean"})),("condition",text(false)),("startExpression",text(false))],&["source","destination","sourceExpression","destinationExpression"]),schema_target,"Add one dataset link between existing top-level datasets.",json!({"items":[{"source":"Left","destination":"Right","sourceExpression":"Amount","destinationExpression":"Amount"}]})),
             _ => return None,
@@ -358,7 +366,7 @@ impl OperationContract {
             props.insert("userSettingID".into(), text(true));
             props.insert("userSettingPresentation".into(), title.clone());
             if op == "structure.patch" {
-                inner["required"] = json!(["name"]);
+                inner["minProperties"] = json!(1);
             }
         }
         let inner = if key == "items" { items(inner) } else { inner };
@@ -380,18 +388,27 @@ impl OperationContract {
     pub(crate) fn mxl(op: &str) -> Option<Self> {
         let scalar = json!({"anyOf":[{"type":"string"},{"type":"number"},{"type":"boolean"},{"type":"null"}]});
         let (schema, target, effect, notes, example_args) = match op {
-            "mxl.set" => {
+            "mxl.set" | "area.add" => {
                 let cells = json!({"type":"object","minProperties":1,
                     "propertyNames":{"type":"string","format":"unica-mxl-cell-address",
                         "description":format!("R<row>C<column>, 1-based inside the area; row <= {MXL_MAX_ROW}, column <= {MXL_MAX_COLUMN}; leading zeros and plus are accepted")},
                     "additionalProperties":scalar});
-                (object(&[("at",text(true)),("values",object(&[("area",text(true)),
-                    ("cells",cells),("columns",json!({"type":"integer","format":"unica-json-i64","minimum":1,"maximum":i64::MAX,
-                        "description":"Positive JSON integer serialized without a decimal point or exponent, in the signed 64-bit range; 1 is accepted, 1.0 and 1e0 are refused."}))], &["area","cells"]))], &["values"]),
-                "The existing SpreadsheetDocument Template itself: <source-set>:<Owner>.<name>.Template.<name>; not its Area or Body child.",
-                "Update an existing named Rows area or append a new area. Addressed parameter/template cells become ordinary text. Unaddressed cells and areas remain. Width grows to max(existing width, written column, columns); it never shrinks.",
-                "Read Template -> Area -> Body for ordered nonempty text cells; Body index is a reading ordinal, not RnCn. Parameter lists parameter names. Readability is broader than editability: drawings, non-Rows areas, overlapping/reordered areas, outside rows, multiple column sets and multilingual content the writer cannot preserve are refused before writing. Strings remain text; numbers/booleans are serialized as text; null is empty text. Full DSL, fonts, styles, merges and page properties are not public inputs. Create and execute template.add before addressing a new template.",
-                json!({"values":{"area":"Header","columns":4,"cells":{"R1C1":"Item","R1C2":"Amount","R2C1":true,"R2C2":null}}}))
+                let columns = json!({"type":"integer","format":"unica-json-i64","minimum":1,"maximum":i64::MAX,
+                    "description":"Positive JSON integer serialized without a decimal point or exponent, in the signed 64-bit range; 1 is accepted, 1.0 and 1e0 are refused."});
+                let notes = "Read Template -> Area -> Body for ordered nonempty text cells; Body index is a reading ordinal, not RnCn. Parameter lists parameter names. The writer changes only the addressed cells, rows and areas; other content and bytes stay. A new cell has no own format. Refused before writing: a non-Rows or rowless area, a cell inside a merge it does not start, a cell holding a value or control, a cell that takes a parameter or template fill from its row, column, column-set or document format. Strings remain text; numbers/booleans are serialized as text; null is empty text and writes no new cell. Fonts, styles, merges and page properties are not public inputs. Create and execute template.add before addressing a new template.";
+                if op == "mxl.set" {
+                    (object(&[("at",text(true)),("values",object(&[("cells",cells),("columns",columns)], &["cells"]))], &["values"]),
+                    "An existing named area of a SpreadsheetDocument Template: <source-set>:<Owner>.<name>.Template.<name>.Area.<area>. The address names the area; a missing area is refused, create it with area.add on the template.",
+                    "Update cells of the existing named Rows area. Addressed parameter/template cells become ordinary text. Unaddressed cells and areas remain. A row below the area grows the area only when nothing follows it. Width grows to max(existing width, written column, columns); it never shrinks.",
+                    notes,
+                    json!({"values":{"columns":4,"cells":{"R1C1":"Item","R1C2":"Amount","R2C1":true,"R2C2":null}}}))
+                } else {
+                    (object(&[("at",text(true)),("items",json!({"type":"array","minItems":1,"items":object(&[("name",text(true)),("cells",cells),("columns",columns)], &["name","cells"])}))], &["items"]),
+                    "The existing SpreadsheetDocument Template itself: <source-set>:<Owner>.<name>.Template.<name>. Read its Area collection before choosing a new area name.",
+                    "Append new named Rows areas after every used row with their initial cells. An existing area name is refused; change it with mxl.set at its Area address. Width grows to max(existing width, written column, columns); it never shrinks.",
+                    notes,
+                    json!({"items":[{"name":"Header","columns":4,"cells":{"R1C1":"Item","R1C2":"Amount"}}]}))
+                }
             }
             "template.add" => {
                 let kinds: Vec<_> = crate::domain::metadata::MetaTemplateKind::ALL
@@ -403,7 +420,7 @@ impl OperationContract {
                     ("name",text(true)),("templateType",kind),("synonym",json!({}))], &["name"])}))], &["items"]),
                 "An existing metadata owner that exposes template.add in can. Read its Template collection before choosing a new valid 1C identifier.",
                 "Register a new template and its initial content. The new address exists only after execution of the saved plan; preview does not create it.",
-                "The kind vocabulary comes from MetaTemplateKind. Current initial-content synthesis supports SpreadsheetDocument and DataCompositionSchema; HTMLDocument, TextDocument and BinaryData are typed refusals (tracked gap #992). Missing or non-string templateType uses SpreadsheetDocument for compatibility. synonym is accepted but currently ignored. A new DCS has no dataset. For MXL, execute creation first, then preview/execute mxl.set; view returns a node projection, not a round-trip JSON DSL.",
+                "The kind vocabulary comes from MetaTemplateKind. Current initial-content synthesis supports SpreadsheetDocument and DataCompositionSchema; HTMLDocument, TextDocument and BinaryData are typed refusals (tracked gap #992). Missing or non-string templateType uses SpreadsheetDocument for compatibility. synonym is accepted but currently ignored. A new DCS has no dataset. For MXL, add areas with area.add on the template, then change their cells with mxl.set at Template.<name>.Area.<area>; view returns a node projection, not a round-trip JSON DSL.",
                 json!({"items":[{"name":"PrintLayout","templateType":"SpreadsheetDocument"}]}))
             }
             _ => return None,
@@ -731,6 +748,63 @@ impl OperationContract {
     }
 }
 
+impl OperationContract {
+    /// Права роли (#1354): `right.add` создаёт записи на роли, `right.set`
+    /// меняет одно право существующей записи по её адресу.
+    pub(crate) fn role(op: &str) -> Option<Self> {
+        let (schema, target, effect, notes, example_args) = match op {
+            "right.add" => (
+                object(
+                    &[
+                        ("at", text(true)),
+                        (
+                            "items",
+                            json!({"type":"array","minItems":1,"items":object(&[
+                                ("object",json!({"type":"string","pattern":r"^[^.\s]+\.[^.\s]+(\.[^.\s]+\.[^.\s]+)*$",
+                                    "description":"A metadata object `Kind.Name` (or `Configuration.Name`), or a nested one such as `Kind.Name.Command.C`, without a rights entry in the role yet."})),
+                                ("rights",json!({"type":"object","minProperties":1,"additionalProperties":{"type":"boolean"},
+                                    "description":"Initial rights by platform name, e.g. Read, View, Use; values different from the role default for new objects are stored."})),
+                            ], &["object","rights"])}),
+                        ),
+                    ],
+                    &["items"],
+                ),
+                "The existing role itself: <source-set>:Role.<Name>. Read its Right branch before choosing objects without an entry.",
+                "Create rights entries for objects the role does not list yet, each with its initial rights. An object that already has an entry is refused; change it with right.set at Role.<Name>.Right.<Kind>_<Name>.",
+                "An entry whose rights all equal the role default would stay empty and is refused. Restrict records with right.set on the new entry in the same batch. A nested object (command, attribute) is one entry whose further dots are escaped: Role.<Name>.Right.<Kind>_<Name>\\.Command\\.<C>.",
+                json!({"items":[{"object":"Catalog.Sample","rights":{"Read":true,"View":true}}]}),
+            ),
+            "right.set" => {
+                let mut values = object(
+                    &[
+                        ("right", text(true)),
+                        ("value", json!({"type":"boolean"})),
+                        ("rls", text(true)),
+                    ],
+                    &["right"],
+                );
+                values["anyOf"] = json!([{"required":["value"]},{"required":["rls"]}]);
+                (
+                    object(&[("at", text(true)), ("values", values)], &["values"]),
+                    "An existing rights entry by its canonical name: <source-set>:Role.<Name>.Right.<Kind>_<Name>. The address names the object; a missing entry is refused, create it with right.add on the role.",
+                    "Set one right of the addressed entry and/or its record restriction. A value equal to the role default removes the right with its restriction; an emptied entry is removed.",
+                    "rls alone also grants the right. Restriction templates are preserved but not created.",
+                    json!({"values":{"right":"Read","value":true}}),
+                )
+            }
+            _ => return None,
+        };
+        Some(Self {
+            schema,
+            target,
+            effect,
+            notes,
+            example_args,
+            help: ROLE_HELP,
+        })
+    }
+}
+
 fn error(path: &str, message: impl Into<String>) -> ContractError {
     ContractError {
         path: path.into(),
@@ -760,14 +834,14 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
         return Err(error(path, format!("expected {}", schema["type"])));
     }
     if let Some(minimum) = schema["minimum"].as_i64() {
-        if !value.as_i64().is_some_and(|number| number >= minimum) {
+        if value.as_i64().is_none_or(|number| number < minimum) {
             return Err(error(path, "integer is below the supported minimum"));
         }
     }
     if schema["format"] == "unica-mxl-cell-address"
-        && !value
+        && value
             .as_str()
-            .is_some_and(|key| parse_mxl_cell_address(key).is_some())
+            .is_none_or(|key| parse_mxl_cell_address(key).is_none())
     {
         return Err(error(
             path,
@@ -793,6 +867,32 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
                 "value is not one of the supported alternatives",
             ));
         }
+    }
+    // Различитель выбирает вариант по значению ключа (вид элемента формы):
+    // ошибка варианта называет точный путь, а не «ни одна альтернатива».
+    // Без ключа выбирается вариант, у которого различитель имеет `default`.
+    if let (Some(alternatives), Some(key), Some(object)) = (
+        schema["anyOf"].as_array(),
+        schema["x-unica-discriminator"].as_str(),
+        value.as_object(),
+    ) {
+        let selected = object.get(key);
+        let variant = alternatives.iter().find(|variant| {
+            let discriminator = &variant["properties"][key];
+            match selected {
+                Some(selected) => discriminator["enum"]
+                    .as_array()
+                    .is_some_and(|values| values.contains(selected)),
+                None => discriminator.get("default").is_some(),
+            }
+        });
+        return match variant {
+            Some(variant) => validate(variant, value, path),
+            None => Err(error(
+                &format!("{path}.{key}"),
+                "value is not one of the supported alternatives",
+            )),
+        };
     }
     if let Some(alternatives) = schema["anyOf"].as_array() {
         if !alternatives
@@ -923,7 +1023,7 @@ mod tests {
     #[test]
     fn mxl_and_template_contracts_cover_examples_and_keep_legacy_value_grammar() {
         let registry = OperationRegistry::closed();
-        for name in ["mxl.set", "template.add"] {
+        for name in ["mxl.set", "area.add", "template.add"] {
             let descriptor = registry
                 .descriptors()
                 .iter()
@@ -934,6 +1034,70 @@ mod tests {
         }
     }
 
+    /// Контракт прав публикует ту же форму, что принимает планировщик
+    /// (#1354): объект — только `Kind.Name`, право — значение или
+    /// ограничение, объект записи прав не аргумент `right.set`.
+    #[test]
+    fn role_contracts_publish_the_entry_shape() {
+        let registry = OperationRegistry::closed();
+        for op in ["right.add", "right.set"] {
+            let contract = registry.lookup(op).unwrap().argument_contract().unwrap();
+            assert!(
+                contract.normalize(&contract.example_args, "args").is_ok(),
+                "{op}"
+            );
+        }
+        assert!(registry
+            .lookup("role.create")
+            .unwrap()
+            .argument_contract()
+            .is_none());
+        let add = OperationContract::role("right.add").unwrap();
+        for (args, path) in [
+            (json!({"items":[]}), "args.items"),
+            (
+                json!({"items":[{"object":"Catalog.A","rights":{}}]}),
+                "args.items[0].rights",
+            ),
+            (
+                json!({"items":[{"object":"Catalog.A","rights":{"Read":"yes"}}]}),
+                "args.items[0].rights.Read",
+            ),
+            (
+                json!({"items":[{"object":"DataProcessor.A.Command","rights":{"Use":true}}]}),
+                "args.items[0].object",
+            ),
+            (
+                json!({"items":[{"object":"Catalog.A","rights":{"Read":true},"rls":"x"}]}),
+                "args.items[0].rls",
+            ),
+        ] {
+            let error = add.normalize(&args, "args").unwrap_err();
+            assert_eq!(error.path, path, "{args}");
+        }
+        // Вложенный объект — одна запись роли (#1356).
+        assert!(add
+            .normalize(
+                &json!({"items":[{"object":"DataProcessor.A.Command.B","rights":{"Use":true}}]}),
+                "args"
+            )
+            .is_ok());
+        let set = OperationContract::role("right.set").unwrap();
+        assert!(set
+            .normalize(
+                &json!({"values":{"right":"Read","rls":"ГДЕ ИСТИНА"}}),
+                "args"
+            )
+            .is_ok());
+        for args in [
+            json!({"values":{"right":"Read"}}),
+            json!({"values":{"object":"Catalog.A","right":"Read","value":true}}),
+            json!({"values":{"right":"Read","value":"true"}}),
+        ] {
+            assert!(set.normalize(&args, "args").is_err(), "{args}");
+        }
+    }
+
     #[test]
     fn mxl_contract_checks_dynamic_keys_scalars_and_exact_integer_values() {
         let contract = OperationContract::mxl("mxl.set").unwrap();
@@ -941,7 +1105,7 @@ mod tests {
             assert!(
                 contract
                     .normalize(
-                        &json!({"values":{"area":"A","cells":{key:null},"columns":1001}}),
+                        &json!({"values":{"cells":{key:null},"columns":1001}}),
                         "args"
                     )
                     .is_ok(),
@@ -949,17 +1113,17 @@ mod tests {
             );
         }
         for values in [
-            json!({"area":"A","cells":[]}),
-            json!({"area":"A","cells":{}}),
-            json!({"area":"A","cells":{"R0C1":"x"}}),
-            json!({"area":"A","cells":{"R10001C1":"x"}}),
-            json!({"area":"A","cells":{"R1C1001":"x"}}),
-            json!({"area":"A","cells":{"R1C1":{}}}),
-            json!({"area":"A","cells":{"R1C1":"x"},"columns":0}),
-            json!({"area":"A","cells":{"R1C1":"x"},"columns":1.0}),
-            serde_json::from_str(r#"{"area":"A","cells":{"R1C1":"x"},"columns":1e0}"#).unwrap(),
-            json!({"area":"A","cells":{"R1C1":"x"},"columns":u64::MAX}),
-            json!({"area":"A","cells":{"R1C1":"x"},"style":"bold"}),
+            json!({"cells":[]}),
+            json!({"cells":{}}),
+            json!({"cells":{"R0C1":"x"}}),
+            json!({"cells":{"R10001C1":"x"}}),
+            json!({"cells":{"R1C1001":"x"}}),
+            json!({"cells":{"R1C1":{}}}),
+            json!({"cells":{"R1C1":"x"},"columns":0}),
+            json!({"cells":{"R1C1":"x"},"columns":1.0}),
+            serde_json::from_str(r#"{"cells":{"R1C1":"x"},"columns":1e0}"#).unwrap(),
+            json!({"cells":{"R1C1":"x"},"columns":u64::MAX}),
+            json!({"cells":{"R1C1":"x"},"style":"bold"}),
         ] {
             assert!(
                 contract
@@ -968,13 +1132,39 @@ mod tests {
                 "{values}"
             );
         }
-        assert!(contract.normalize(&json!({"values":{"area":"A","cells":{"R1C1":"x","R1C2":42,"R1C3":true,"R1C4":null}}}), "args").is_ok());
         assert!(contract
             .normalize(
-                &json!({"values":{"area":"A","cells":{"R1C1":"x"},"columns":i64::MAX}}),
+                &json!({"values":{"cells":{"R1C1":"x","R1C2":42,"R1C3":true,"R1C4":null}}}),
                 "args"
             )
             .is_ok());
+        assert!(contract
+            .normalize(
+                &json!({"values":{"cells":{"R1C1":"x"},"columns":i64::MAX}}),
+                "args"
+            )
+            .is_ok());
+        // Область называет адрес (#1354): ключ, который её называл, снят.
+        let error = contract
+            .normalize(&json!({"values":{"area":"A","cells":{"R1C1":"x"}}}), "args")
+            .unwrap_err();
+        assert_eq!(error.path, "args.values.area");
+        // `area.add` называет новую область и её начальные ячейки.
+        let area = OperationContract::mxl("area.add").unwrap();
+        assert!(area
+            .normalize(
+                &json!({"items":[{"name":"A","cells":{"R1C1":"x"},"columns":2}]}),
+                "args"
+            )
+            .is_ok());
+        for args in [
+            json!({"items":[]}),
+            json!({"items":[{"name":"A"}]}),
+            json!({"items":[{"cells":{"R1C1":"x"}}]}),
+            json!({"items":[{"name":"A","cells":{"R0C1":"x"}}]}),
+        ] {
+            assert!(area.normalize(&args, "args").is_err(), "{args}");
+        }
         let creation = OperationContract::mxl("template.add").unwrap();
         for kind in [
             Value::Null,
@@ -1008,30 +1198,21 @@ mod tests {
 
     #[test]
     fn form_move_contract_selects_one_source_and_preserves_exact_names() {
-        for (item_address, args, accepted) in [
+        for (args, accepted) in [
             (
-                false,
-                json!({"items":[{"name":" Field ","into":" Group ","after":" Previous "}]}),
+                json!({"values":{"into":" Group ","after":" Previous "}}),
                 true,
             ),
-            (
-                false,
-                json!({"items":[{"name":"A"},{"name":"A","into":"G"}]}),
-                true,
-            ),
-            (true, json!({"values":{}}), true),
-            (true, json!({"values":{"into":"G","after":"A"}}), true),
-            (false, json!({"items":[]}), false),
-            (false, json!({"items":[{"name":" "}]}), false),
-            (false, json!({"items":[{"name":"A","into":""}]}), false),
-            (false, json!({"items":[{"name":"A","after":null}]}), false),
-            (false, json!({"items":[{"name":"A","before":"B"}]}), false),
-            (false, json!({"values":{"into":"G"}}), false),
-            (true, json!({"values":{"name":"A"}}), false),
-            (true, json!({"values":{},"items":[{"name":"A"}]}), false),
-            (true, json!({"values":{},"moveElements":[]}), false),
+            (json!({"values":{"into":null}}), true),
+            (json!({"values":{}}), false),
+            (json!({"values":{"into":false}}), false),
+            (json!({"values":{"into":""}}), false),
+            (json!({"values":{"into":"G","name":"A"}}), false),
+            (json!({"items":[{"name":"A","into":"G"}]}), false),
+            (json!({"values":{"into":"G","after":null}}), false),
+            (json!({"values":{"into":"G","before":"A"}}), false),
         ] {
-            let contract = OperationContract::form_move(item_address);
+            let contract = OperationContract::form_move();
             let validator = jsonschema::validator_for(&contract.schema).unwrap();
             assert_eq!(validator.is_valid(&args), accepted, "{args}");
             let normalized = contract.normalize(&args, "ops[3].args");
@@ -1040,10 +1221,10 @@ mod tests {
                 assert_eq!(normalized.unwrap(), args);
             }
         }
-        let error = OperationContract::form_move(false)
-            .normalize(&json!({"items":[{"name":"A","into":false}]}), "ops[3].args")
+        let error = OperationContract::form_move()
+            .normalize(&json!({"values":{"into":false}}), "ops[3].args")
             .unwrap_err();
-        assert_eq!(error.path, "ops[3].args.items[0].into");
+        assert_eq!(error.path, "ops[3].args.values.into");
     }
 
     #[test]
@@ -1095,6 +1276,21 @@ mod tests {
                 json!({"variant":"V","name":"G","groupBy":["A"]}),
                 "variant",
             ),
+            // Подузел называет адрес (П3, #1354).
+            ("variant.set", json!({"name":"V","title":"T"}), "name"),
+            ("parameter.set", json!({"name":"P","title":"T"}), "name"),
+            (
+                "parameter.rename",
+                json!({"name":"P","newName":"Q"}),
+                "name",
+            ),
+            ("field.set", json!({"field":"F","title":"T"}), "field"),
+            ("field.set", json!({"dataPath":"F","title":"T"}), "dataPath"),
+            (
+                "fieldRole.set",
+                json!({"field":"F","role":{"dimension":true}}),
+                "field",
+            ),
         ] {
             let error = OperationContract::dcs(op)
                 .unwrap()
@@ -1127,14 +1323,25 @@ mod tests {
             json!({"parentDimension":"Parent","accountField":"Account"}),
         ] {
             assert!(role
-                .normalize(&json!({"values":{"field":"Amount","role":value}}), "args")
+                .normalize(&json!({"values":{"role":value}}), "args")
                 .is_ok());
         }
         assert!(role
-            .normalize(
-                &json!({"values":{"field":"Amount","role":"dimension"}}),
-                "args"
-            )
+            .normalize(&json!({"values":{"role":"dimension"}}), "args")
+            .is_err());
+        // Правка без свойств ничего не меняет и отвергается.
+        for op in ["field.set", "parameter.set"] {
+            assert!(
+                OperationContract::dcs(op)
+                    .unwrap()
+                    .normalize(&json!({"values":{}}), "args")
+                    .is_err(),
+                "{op}"
+            );
+        }
+        assert!(OperationContract::dcs("variant.remove")
+            .unwrap()
+            .normalize(&json!({"values":{"name":"V"}}), "args")
             .is_err());
     }
 }

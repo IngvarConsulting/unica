@@ -343,22 +343,43 @@ pub(crate) fn parse_code_plan_operation(
 
     match operation {
         "code.insert" => {
-            if addressed
-                .as_ref()
-                .is_some_and(|(_, site)| !matches!(site, CodeProjection::ModuleBody))
-            {
-                return Err(bad_code_arg(
-                    &at_path,
-                    "code.insert requires a module or its Body",
-                ));
-            }
-            let selector = object
+            // Метод задаётся адресом `…Method.M`, место — `position`
+            // относительно него (#1354).
+            let method = match addressed.as_ref().map(|(_, site)| site) {
+                None | Some(CodeProjection::ModuleBody) => None,
+                Some(CodeProjection::Method(name)) => Some(CodeSelector::Method(name.clone())),
+                Some(CodeProjection::MethodBody(_)) => {
+                    return Err(bad_code_arg(
+                        &at_path,
+                        "code.insert requires a module, its Body or a Method",
+                    ))
+                }
+            };
+            let addressed_method = method.is_some();
+            let selector = match object
                 .get("selector")
                 .map(|value| parse_code_selector(value, &format!("{base}.selector")))
-                .transpose()?;
+                .transpose()?
+            {
+                Some(CodeSelector::Method(name)) => {
+                    return Err(bad_code_arg(
+                        format!("{base}.selector.method"),
+                        format!(
+                            "code.insert addresses a method: `{at}.Method.{name}` with `position`"
+                        ),
+                    ))
+                }
+                selector => selector.or(method),
+            };
             let position_path = format!("{base}.position");
             let position = match (selector.is_some(), object.get("position")) {
                 (true, Some(value)) => Some(parse_code_position(value, &position_path)?),
+                (true, None) if addressed_method => {
+                    return Err(bad_code_arg(
+                        position_path,
+                        "code.insert at a method needs `position`: before or after it",
+                    ))
+                }
                 (true, None) => {
                     return Err(bad_code_arg(
                         position_path,
@@ -465,7 +486,7 @@ fn parse_code_selector(value: &Value, path: &str) -> Result<CodeSelector, ApplyP
     if object.len() != 1 {
         return Err(bad_code_arg(
             path,
-            "selector must contain exactly one method or anchor",
+            "selector must contain exactly one anchor; address a method by `…Method.<Name>`",
         ));
     }
     let (name, value) = object.iter().next().expect("one selector field");
@@ -479,7 +500,7 @@ fn parse_code_selector(value: &Value, path: &str) -> Result<CodeSelector, ApplyP
         "anchor" => Ok(CodeSelector::Anchor(canonicalize_eol(value))),
         _ => Err(bad_code_arg(
             field_path,
-            "selector accepts only method or anchor",
+            "selector accepts only anchor; address a method by `…Method.<Name>`",
         )),
     }
 }
@@ -833,6 +854,11 @@ fn plan_code_postimage(
                 return Err(bad_code_arg(&text_path, "text must be a non-empty string"));
             }
             let selector = args.selector.as_ref().map(legacy_selector);
+            // Метод, названный адресом, ищется так же, но отказ называет `at`.
+            let addressed_method = matches!(
+                code_projection(&args.at),
+                Some((_, CodeProjection::Method(_)))
+            );
             let site = match (&selector, args.position) {
                 (Some(selector), Some(position)) => locate_selector_typed(
                     &snapshot,
@@ -840,7 +866,13 @@ fn plan_code_postimage(
                     selector,
                     &indexed.methods,
                 )
-                .map_err(|error| code_selector_error(error, op_index, selector))?,
+                .map_err(|error| {
+                    if addressed_method {
+                        addressed_selector_error(error, &at_path)
+                    } else {
+                        code_selector_error(error, op_index, selector)
+                    }
+                })?,
                 (Some(_), None) => {
                     return Err(bad_code_arg(
                         format!("ops[{op_index}].args.position"),
@@ -4087,14 +4119,9 @@ pub(super) mod tests {
                 if dry_run { "poison-dry" } else { "poison-real" },
                 b"Procedure Base()\nEndProcedure\n",
             );
-            let service = fixture
-                .actor
-                .source_revision_service(&fixture.binding)
-                .unwrap();
             let source_before = snapshot_staged_code_tree(&fixture.source);
             let cache = fixture.root.join(".build/unica");
             let cache_before = snapshot_staged_code_tree(&cache);
-            let machine_before = service.machine_state_for_test();
             let admitted = fixture
                 .actor
                 .admit_apply(
@@ -4127,7 +4154,6 @@ pub(super) mod tests {
             assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
             assert_eq!(snapshot_staged_code_tree(&fixture.source), source_before);
             assert_eq!(snapshot_staged_code_tree(&cache), cache_before);
-            assert_eq!(service.machine_state_for_test(), machine_before);
             assert!(!cache.join("state.json").exists());
             fixture.cleanup();
         }
@@ -4736,6 +4762,61 @@ pub(super) mod tests {
         }
     }
 
+    /// Метод, названный адресом, — место вставки до или после него (#1354):
+    /// текст встаёт рядом с методом, повтор ничего не меняет, а
+    /// отсутствующий метод отвечает `not_found` по адресу.
+    #[test]
+    fn insertion_around_an_addressed_method_needs_a_position_and_the_method() {
+        let before = "Procedure First()\nEndProcedure\n\nProcedure Second()\nEndProcedure\n";
+        let fixture = staged_code_fixture("around", before.as_bytes());
+        let insert = |at: &str, position: &str| {
+            parse_code_plan_operation(
+                "code.insert",
+                &json!({"at": at, "text": "Procedure Added()\nEndProcedure\n", "position": position}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap()
+        };
+        for (method, position, earlier, later) in [
+            (
+                "Second",
+                "before",
+                "Procedure Added()",
+                "Procedure Second()",
+            ),
+            ("First", "after", "Procedure First()", "Procedure Added()"),
+        ] {
+            let operation = insert(
+                &format!("main:CommonModule.Sample.Method.{method}"),
+                position,
+            );
+            let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+            let text = std::str::from_utf8(&post.after).unwrap();
+            let start = |needle: &str| text.find(needle).unwrap_or_else(|| panic!("{needle}"));
+            assert!(start(earlier) < start(later), "{position} {method}");
+            assert_eq!(text.matches("Procedure Added()").count(), 1);
+            let repeated = plan_code_postimage(&post.after, &operation, 0).unwrap();
+            assert!(repeated.no_op, "{position} {method}");
+        }
+        // Без `position` метод не место: отказ называет именно её.
+        let error = parse_code_plan_operation(
+            "code.insert",
+            &json!({"at": "main:CommonModule.Sample.Method.First", "text": "x"}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap_err();
+        assert_eq!(error.path(), Some("ops[0].args.position"));
+        assert!(error.to_string().contains("at a method needs `position`"));
+        let missing = insert("main:CommonModule.Sample.Method.Third", "after");
+        let Err(error) = plan_code_postimage(before.as_bytes(), &missing, 0) else {
+            panic!("a missing method is not a place to insert");
+        };
+        assert_eq!(error.kind(), ApplyPlanErrorKind::NotFound);
+        assert_eq!(error.path(), Some("ops[0].args.at"));
+    }
+
     #[test]
     fn staged_code_args_report_exact_paths_and_reject_legacy_fields() {
         let fixture = staged_code_fixture("args", b"Procedure Base()\nEndProcedure\n");
@@ -4750,6 +4831,26 @@ pub(super) mod tests {
         )
         .expect("placeholder parser rejected the valid closed code.insert shape");
         assert!(matches!(valid, CodePlanOperation::Insert(_)));
+        // Метод, названный адресом, становится местом вставки до или после.
+        let addressed = parse_code_plan_operation(
+            "code.insert",
+            &json!({
+                "at": "main:CommonModule.Sample.Method.Base",
+                "text": "Procedure Added()\nEndProcedure",
+                "position": "before"
+            }),
+            0,
+            &fixture.binding,
+        )
+        .expect("a method address with a position is a place to insert");
+        let CodePlanOperation::Insert(addressed) = addressed else {
+            panic!("code.insert parses as an insertion");
+        };
+        assert_eq!(
+            addressed.selector,
+            Some(CodeSelector::Method("Base".to_string()))
+        );
+        assert_eq!(addressed.position, Some(CodePosition::Before));
 
         let cases = [
             ("code.insert", json!(null), "ops[1].args"),
@@ -4811,8 +4912,30 @@ pub(super) mod tests {
             ),
             (
                 "code.insert",
-                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}}),
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"anchor": "Run"}}),
                 "ops[1].args.position",
+            ),
+            // Метод называет адрес (#1354): селектор метода снят, а у
+            // адресованного метода место — обязательная `position`.
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": "after"}),
+                "ops[1].args.selector.method",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample.Method.Run", "text": "x"}),
+                "ops[1].args.position",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample.Method.Run", "text": "x", "selector": {"anchor": "Run"}, "position": "after"}),
+                "ops[1].args.selector",
+            ),
+            (
+                "code.insert",
+                json!({"at": "main:CommonModule.Sample.Method.Run.Body", "text": "x"}),
+                "ops[1].args.at",
             ),
             (
                 "code.insert",
@@ -4821,12 +4944,12 @@ pub(super) mod tests {
             ),
             (
                 "code.insert",
-                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": 1}),
+                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"anchor": "Run"}, "position": 1}),
                 "ops[1].args.position",
             ),
             (
                 "code.insert",
-                json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"method": "Run"}, "position": "middle"}),
+                json!({"at": "main:CommonModule.Sample.Method.Run", "text": "x", "position": "middle"}),
                 "ops[1].args.position",
             ),
             (

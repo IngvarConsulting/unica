@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -210,13 +211,17 @@ def validate_v8_runner_failed_partial_receipt(
     if not isinstance(steps, list) or len(steps) != 1:
         errors.append("producer smoke must contain exactly one failed partial step")
         return errors
+    # С 0.15.1 шаг называет, дошёл ли он до конфигурации базы данных
+    # (`applied`): отказавшая загрузка ничего не применила.
     step = closed_mapping(
         steps[0],
-        {"source_set", "mode", "ok", "message", "duration_ms"},
+        {"source_set", "mode", "ok", "applied", "message", "duration_ms"},
         "build step",
     )
     if step is None:
         return errors
+    if step["applied"] is not False:
+        errors.append("failed partial step must report applied=false")
     step_duration = step["duration_ms"]
     if (
         isinstance(step_duration, bool)
@@ -283,10 +288,23 @@ def check_v8_runner_partial_load_contract(runner: Path, target: str) -> list[str
         object_root.mkdir(parents=True)
         work_path.mkdir()
         infobase_path.mkdir()
-        (object_root / "ObjectModule.bsl").write_text(
-            "Procedure Проверка()\nEndProcedure\n",
-            encoding="utf-8",
+        module = object_root / "ObjectModule.bsl"
+        # #1272: модуль восстанавливают из сохранённой копии, и копирование
+        # оставляет ему прежнее время изменения. Время задано заранее и старше
+        # любой отметки памяти раннера; временная правка и восстановленный
+        # оригинал одной длины получают ровно его же.
+        restored_mtime = int(time.time()) - 600
+        original_module = "Procedure Проверка()\nEndProcedure\n"
+        temporary_module = "Procedure ВремТест()\nEndProcedure\n"
+        assert len(original_module.encode("utf-8")) == len(
+            temporary_module.encode("utf-8")
         )
+
+        def write_with_restored_mtime(text: str) -> None:
+            module.write_text(text, encoding="utf-8")
+            os.utime(module, (restored_mtime, restored_mtime))
+
+        write_with_restored_mtime(original_module)
         (object_root / "ObjectModule.xml").write_text(
             "<MetaDataObject />\n",
             encoding="utf-8",
@@ -391,44 +409,52 @@ fn main() {
         if initial.returncode != 0:
             detail = (initial.stderr or initial.stdout).strip()
             return [f"{label}: baseline push exited with {initial.returncode}: {detail}"]
-        captured_list.unlink(missing_ok=True)
-        (object_root / "ObjectModule.bsl").write_text(
-            "Procedure Проверка()\n    // Изменено после baseline\nEndProcedure\n",
-            encoding="utf-8",
-        )
-        result = subprocess.run(
-            command,
-            cwd=root,
-            env=environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
-            return [f"{label}: runner exited with {result.returncode}: {detail}"]
-        if not captured_list.is_file():
-            return [f"{label}: platform stub did not receive a partial-load list"]
-        try:
-            envelope = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
-            return [f"{label}: runner returned invalid JSON: {error}"]
-        steps = envelope.get("data", {}).get("steps", [])
-        if not steps or "partial" not in json.dumps(steps[0].get("mode", "")).lower():
+        expected_path = str(Path("Catalogs.Товары") / "ObjectModule.bsl")
+
+        def partial_push(stage: str) -> list[str]:
+            captured_list.unlink(missing_ok=True)
+            result = subprocess.run(
+                command,
+                cwd=root,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout).strip()
+                return [f"{label}: {stage}: runner exited with {result.returncode}: {detail}"]
+            try:
+                envelope = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                return [f"{label}: {stage}: runner returned invalid JSON: {error}"]
+            steps = envelope.get("data", {}).get("steps", [])
+            if not steps or "partial" not in json.dumps(steps[0].get("mode", "")).lower():
+                return [
+                    f"{label}: {stage}: runner did not select partial build mode: "
+                    f"{json.dumps(steps, ensure_ascii=False)}"
+                ]
+            if not captured_list.is_file():
+                return [f"{label}: {stage}: platform stub did not receive a partial-load list"]
             return [
-                f"{label}: runner did not select partial build mode: "
-                f"{json.dumps(steps, ensure_ascii=False)}"
+                f"{label}: {stage}: {error}"
+                for error in validate_v8_runner_partial_load_list(
+                    captured_list.read_bytes(),
+                    expected_path,
+                )
             ]
 
-        expected_path = str(Path("Catalogs.Товары") / "ObjectModule.bsl")
-        errors = [
-            f"{label}: {error}"
-            for error in validate_v8_runner_partial_load_list(
-                captured_list.read_bytes(),
-                expected_path,
-            )
-        ]
+        # Временная правка той же длины с прежним временем изменения — уже
+        # изменение: раннер сравнивает содержимое, а не время и размер.
+        write_with_restored_mtime(temporary_module)
+        errors = partial_push("temporary edit with the remembered mtime")
+        if errors:
+            return errors
+        # Восстановленный оригинал с прежним временем изменения грузится,
+        # а не пропускается как «no changes» (#1272).
+        write_with_restored_mtime(original_module)
+        errors = partial_push("restored bytes with the remembered mtime")
         if errors:
             return errors
 

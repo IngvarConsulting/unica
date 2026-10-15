@@ -1,4 +1,6 @@
+use super::actor_capacity_tests::direct_v5;
 use super::*;
+use crate::application::invocation_store::ToolIdentity;
 
 #[test]
 fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
@@ -67,17 +69,16 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     };
     let at = "main:Document.Order.Form.Main";
     apply_pair(
-        at,
-        serde_json::json!([{"op":"form.create","args":{"values":{"type":"ObjectForm"}}}]),
+        "main:Document.Order",
+        serde_json::json!([{"op":"form.add","args":{"items":[{"name":"Main","type":"ObjectForm"}]}}]),
     );
     apply_pair(
         at,
         serde_json::json!([
             {"op":"formAttribute.add","args":{"items":[{"name":"Text","type":"String"}]}},
-            {"op":"element.add","args":{"items":[
-                {"name":"Existing","type":"Group"},
-                {"name":"Input","type":"InputField","path":"Text","into":"Existing","on":["OnChange"]}
-            ]}}
+            {"op":"element.add","args":{"items":[{"name":"Existing","type":"Group"}]}},
+            {"op":"element.add","args":{"at":format!("{at}.Item.Existing"),"items":[{"name":"Input","type":"InputField","path":"Text"}]}},
+            {"op":"event.bind","args":{"at":format!("{at}.Item.Existing.Item.Input.Event.OnChange"),"values":{"handler":"InputПриИзменении"}}}
         ]),
     );
     let form_path = source.join("Documents/Order/Forms/Main/Ext/Form.xml");
@@ -95,14 +96,11 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     apply_pair(
         at,
         serde_json::json!([
-            {"op":"element.add","args":{"items":[
-                {"name":"Tabs","type":"Pages"},
-                {"name":"Primary","type":"Page","into":"Tabs"},
-                {"name":"Secondary","type":"Page","into":"Tabs"},
-                {"name":"Stationary","type":"Group","into":"Secondary"}
-            ]}},
-            {"op":"element.move","args":{"items":[{"name":"Existing","into":"Primary"}]}},
-            {"op":"event.bind","args":{"values":{"element":"Input","event":"StartChoice","handler":"MovedInputChoice"}}}
+            {"op":"element.add","args":{"items":[{"name":"Tabs","type":"Pages"}]}},
+            {"op":"element.add","args":{"at":format!("{at}.Item.Tabs"),"items":[{"name":"Primary","type":"Page"},{"name":"Secondary","type":"Page"}]}},
+            {"op":"element.add","args":{"at":format!("{at}.Item.Tabs.Item.Secondary"),"items":[{"name":"Stationary","type":"Group"}]}},
+            {"op":"element.move","args":{"at":format!("{at}.Item.Existing"),"values":{"into":"Primary"}}},
+            {"op":"event.bind","args":{"at":format!("{at}.Item.Tabs.Item.Primary.Item.Existing.Item.Input.Event.StartChoice"),"values":{"handler":"MovedInputChoice"}}}
         ]),
     );
     let after = std::fs::read_to_string(&form_path).unwrap();
@@ -160,8 +158,8 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     let refused = call(
         ToolIdentity::Apply,
         serde_json::json!({"at":at,"ops":[
-            {"op":"element.move","args":{"items":[{"name":"Existing","into":"Secondary"}]}},
-            {"op":"element.move","args":{"items":[{"name":"Missing","into":"Secondary"}]}}
+            {"op":"element.move","args":{"at":format!("{at}.Item.Tabs.Item.Primary.Item.Existing"),"values":{"into":"Secondary"}}},
+            {"op":"element.move","args":{"at":format!("{at}.Item.Missing"),"values":{"into":"Secondary"}}}
         ]}),
     );
     assert!(!refused.ok, "{refused:?}");
@@ -198,12 +196,35 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     let stale = call(
         ToolIdentity::Apply,
         serde_json::json!({"at":at,"ops":[
-            {"op":"element.move","args":{"items":[{"name":"Existing","into":"Secondary"}]}},
+            {"op":"element.move","args":{"at":format!("{at}.Item.Tabs.Item.Primary.Item.Existing"),"values":{"into":"Secondary"}}},
             {"op":"element.move","args":{"at":item_at,"values":{"into":"Primary"}}}
         ]}),
     );
     assert!(!stale.ok, "stale source path accepted: {stale:?}");
     assert_eq!(stale.at.as_deref(), Some("ops[1].args.at"));
+    assert_eq!(std::fs::read(&form_path).unwrap(), no_bom.as_bytes());
+    for args in [
+        serde_json::json!({"values":{}}),
+        serde_json::json!({"values":{"into":false}}),
+        serde_json::json!({"values":{"into":"MisspelledContainer"}}),
+        serde_json::json!({"items":[{"name":"Existing","into":"Primary"}]}),
+    ] {
+        let refused = call(
+            ToolIdentity::Apply,
+            serde_json::json!({"at":item_at,"ops":[{"op":"element.move","args":args}]}),
+        );
+        assert!(!refused.ok, "invalid destination accepted: {refused:?}");
+        assert_eq!(std::fs::read(&form_path).unwrap(), no_bom.as_bytes());
+    }
+    // The root must be requested explicitly. The second move addresses the
+    // new path, proving that each operation observes preceding staged moves.
+    apply_pair(
+        at,
+        serde_json::json!([
+            {"op":"element.move","args":{"at":item_at,"values":{"into":null}}},
+            {"op":"element.move","args":{"at":format!("{at}.Item.Existing"),"values":{"into":"Primary"}}}
+        ]),
+    );
     assert_eq!(std::fs::read(&form_path).unwrap(), no_bom.as_bytes());
     let noop = call(
         ToolIdentity::Apply,
@@ -227,10 +248,8 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     let restored = call(
         ToolIdentity::Apply,
         serde_json::json!({"at":at,"ops":[
-            {"op":"element.move","args":{"items":[
-                {"name":"Existing","into":"Secondary"},
-                {"name":"Existing","into":"Primary"}
-            ]}}
+            {"op":"element.move","args":{"at":item_at,"values":{"into":"Secondary"}}},
+            {"op":"element.move","args":{"at":format!("{at}.Item.Tabs.Item.Secondary.Item.Existing"),"values":{"into":"Primary"}}}
         ]}),
     );
     assert!(restored.ok, "{restored:?}");
@@ -258,7 +277,7 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     let invalid_noop = call(
         ToolIdentity::Apply,
         serde_json::json!({"at":at,"ops":[
-            {"op":"element.move","args":{"items":[{"name":"Existing","into":"Primary"}]}}
+            {"op":"element.move","args":{"at":item_at,"values":{"into":"Primary"}}}
         ]}),
     );
     assert!(

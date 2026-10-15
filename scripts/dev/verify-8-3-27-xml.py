@@ -1214,7 +1214,7 @@ def verify_corpus(manifest_path: Path | str, profile: dict, runtime: dict, edt: 
                 declaration = bool(edt and edt.get("declarations", {}).get(family["edtDeclaration"]))
                 checks.append({"name": "edtDeclaration", "status": "pass" if declaration else "unavailable"})
             result = "fail" if any(check["status"] == "fail" for check in checks) else "inconclusive"
-            next_evidence = "platform 8.3.27.* load/dump roundtrip"
+            next_evidence = "platform 8.3.27.2074 load/dump roundtrip"
             inconclusive |= result == "inconclusive"
         rows.append(_file_row(entry, qname, coverage, checks, result, next_evidence))
     exit_code = 1 if violation or any(row["result"] == "fail" for row in rows) else (3 if inconclusive else 0)
@@ -1331,7 +1331,7 @@ def verified_edt(path: Path | str, profile: dict, runner=subprocess.run) -> dict
     return {
         "provided": True, "sha256": actual_hash,
         "bundleSymbolicName": expected["symbolicName"], "bundleVersion": expected["version"],
-        "evidenceScope": "8.3.27-line declaration evidence; not proof of a platform roundtrip",
+        "evidenceScope": "8.3.27-line declaration evidence; not proof of patch build 8.3.27.2074",
         "identityStatement": "Configured SHA-256 proves identity with approved local evidence, not download provenance.",
         "declarations": declarations,
     }

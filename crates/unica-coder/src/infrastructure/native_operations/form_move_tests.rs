@@ -51,6 +51,20 @@ fn rejected(xml: &str, name: &str, into: Option<&str>, after: Option<&str>, fiel
     assert!(!error.message.is_empty());
 }
 
+fn fixture_source(fixture: &serde_json::Value, case: &serde_json::Value) -> String {
+    assert_eq!(fixture["schemaVersion"], 2);
+    case["sourceParts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|index| {
+            fixture["sourceXmlFragments"][index.as_u64().unwrap() as usize]
+                .as_str()
+                .unwrap()
+        })
+        .collect()
+}
+
 #[test]
 fn compact_subtree_moves_without_losing_adjacent_siblings_or_references() {
     let subtree = r#"<UsualGroup name="Move" id="2"><Title>Title &amp; text</Title><ChildItems><InputField name="Field" id="3"><DataPath>Object.Code</DataPath><Events><Event name="OnChange">Handle</Event></Events><ContextMenu name="FieldMenu" id="4"/><ExtendedTooltip name="Tip" id="5"/></InputField></ChildItems></UsualGroup>"#;
@@ -283,7 +297,8 @@ fn placement_matrix_matches_observed_platform_kinds_bindings_and_parents() {
             not_instantiated += 1;
             continue;
         }
-        let xml = case["sourceXml"].as_str().unwrap();
+        let xml = fixture_source(&fixture, case);
+        let xml = xml.as_str();
         let doc = Document::parse(xml).unwrap();
         let source = named(&doc, "MovedChild");
         let parent = case["parent"].as_str().unwrap();
@@ -400,7 +415,8 @@ fn uninstantiated_columns_have_an_explicit_temporary_cross_table_refusal() {
         .iter()
         .filter(|case| case["outcome"] == "sourceNotInstantiated")
     {
-        let xml = case["sourceXml"].as_str().unwrap();
+        let xml = fixture_source(&fixture, case);
+        let xml = xml.as_str();
         let request = FormElementMove {
             name: "MovedChild".into(),
             source_path: None,

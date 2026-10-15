@@ -1,5 +1,6 @@
 use crate::domain::source_target::{metadata_address_kind_matches, xml_ncname_is_valid};
 use serde::{Deserialize, Serialize, Serializer};
+use std::borrow::Cow;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,7 +72,12 @@ pub(crate) enum NodeKind {
     DataSet,
     Field,
     Query,
-    Calculation,
+    /// Источник данных схемы компоновки: `Template.T.DataSource.<имя>`.
+    DataSource,
+    /// Вычисляемое поле схемы: `Template.T.CalculatedField.<dataPath>`.
+    CalculatedField,
+    /// Итог (ресурс) схемы: `Template.T.Total.<dataPath>`.
+    Total,
     Setting,
     Area,
     /// Группа командного интерфейса: место, куда платформа кладёт команду.
@@ -194,7 +200,9 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::DataSet, &["НаборДанных"]),
     spelling(NodeKind::Field, &["Поле"]),
     spelling(NodeKind::Query, &["Запрос"]),
-    spelling(NodeKind::Calculation, &["Вычисление"]),
+    spelling(NodeKind::DataSource, &["ИсточникДанных"]),
+    spelling(NodeKind::CalculatedField, &["ВычисляемоеПоле"]),
+    spelling(NodeKind::Total, &["Итог"]),
     spelling(NodeKind::Setting, &["Настройка"]),
     spelling(NodeKind::Area, &["Область"]),
     spelling(NodeKind::Module, &["Модуль"]),
@@ -223,6 +231,20 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Can, &[]),
 ];
 
+/// Сегменты до элемента структуры варианта СКД: `…Setting.V[.Item.I…]` —
+/// после именованного `Setting` идут только именованные `Item`.
+fn structure_item_route(owners: &[AddressSegment]) -> bool {
+    owners
+        .iter()
+        .rposition(|owner| owner.kind == NodeKind::Setting)
+        .is_some_and(|position| {
+            owners[position].name.is_some()
+                && owners[position + 1..]
+                    .iter()
+                    .all(|owner| owner.kind == NodeKind::Item && owner.name.is_some())
+        })
+}
+
 const fn spelling(kind: NodeKind, aliases: &'static [&'static str]) -> V13KindSpelling {
     V13KindSpelling { kind, aliases }
 }
@@ -241,6 +263,48 @@ impl NodeKind {
     /// любого вида. См. `arch/rules/mcp/qualified-logical-address.md`.
     pub(crate) const fn takes_name(self) -> bool {
         !matches!(self, Self::Configuration | Self::Interface)
+    }
+
+    /// Может ли имя узла этого вида в этом месте адреса содержать точку.
+    ///
+    /// Имена объектов метаданных и их членов — идентификаторы платформы,
+    /// точки в них не бывает. Точку несут данные внутри документов, и решает
+    /// маршрут, а не один вид: составной `dataPath` поля, параметр и область
+    /// внутри макета, вычисляемое поле, итог и элемент структуры варианта
+    /// СКД, группа интерфейса `CommandGroup.X`, тип и свойство
+    /// пакета XDTO, запись права роли на вложенный объект. Тот же `Parameter`
+    /// у формы или операции веб-сервиса — член метаданных, и экранированная
+    /// точка в нём — не имя, а склейка нескольких сегментов, которую разбор
+    /// отклоняет. `owners` — сегменты адреса до этого.
+    pub(crate) fn name_may_contain_dot(self, owners: &[AddressSegment]) -> bool {
+        let first = owners.first().map(AddressSegment::kind);
+        let previous = owners.last().map(AddressSegment::kind);
+        // Тело макета: СКД или табличный документ внутри именованного макета
+        // объекта или общего макета.
+        let inside_template = first == Some(Self::CommonTemplate)
+            || owners
+                .iter()
+                .any(|owner| owner.kind == Self::Template && owner.name.is_some());
+        match self {
+            Self::Field | Self::Parameter | Self::Area => inside_template,
+            // Путь вычисляемого поля и итога — `dataPath` схемы; имя элемента
+            // структуры варианта — строка данных настроек.
+            Self::CalculatedField | Self::Total => inside_template,
+            Self::Item => inside_template && structure_item_route(owners),
+            Self::Group => previous == Some(Self::Interface),
+            Self::Type | Self::Property => first == Some(Self::XdtoPackage),
+            Self::Right => first == Some(Self::Role) && owners.len() == 1,
+            _ => false,
+        }
+    }
+
+    /// Может ли имя узла этого вида в этом месте адреса быть свободным
+    /// текстом: с пробелами, скобками и другими знаками вне грамматики
+    /// идентификатора. Такое имя носит только элемент структуры варианта
+    /// СКД: платформа хранит его строкой настроек («По периодам»), а не
+    /// идентификатором. Точка в нём по-прежнему экранируется `\.` (#1357).
+    pub(crate) fn name_is_free_text(self, owners: &[AddressSegment]) -> bool {
+        self == Self::Item && self.name_may_contain_dot(owners)
     }
 
     // Параметр назван `token`, а не `raw`: `&raw` — это спеллинг оператора
@@ -335,7 +399,9 @@ impl NodeKind {
             Self::DataSet => "DataSet",
             Self::Field => "Field",
             Self::Query => "Query",
-            Self::Calculation => "Calculation",
+            Self::DataSource => "DataSource",
+            Self::CalculatedField => "CalculatedField",
+            Self::Total => "Total",
             Self::Setting => "Setting",
             Self::Area => "Area",
             Self::Group => "Group",
@@ -397,7 +463,13 @@ impl QualifiedAddress {
         raw: &str,
         available_source_sets: &[&str],
     ) -> Result<Self, AddressError> {
-        if raw.contains(':') {
+        // Двоеточие отделяет набор исходников, только если префикс до него —
+        // имя набора: без точки или один из доступных. Имя элемента структуры
+        // СКД — свободный текст и может содержать двоеточие (#1357).
+        let qualified = raw.split_once(':').is_some_and(|(prefix, _)| {
+            !prefix.contains('.') || available_source_sets.contains(&prefix)
+        });
+        if qualified {
             return Self::parse(raw);
         }
         match available_source_sets {
@@ -432,7 +504,11 @@ impl QualifiedAddress {
                 "qualified logical address has no logical path",
             ));
         }
-        let parts = logical_path.split('.').collect::<Vec<_>>();
+        // `\.` — буквальная точка имени, остальные точки разделяют сегменты.
+        // Вид и имя сравниваются по снятому экранированию; имя операции
+        // за `Can` собирается из исходных частей и экранирования не знает.
+        let (raw_parts, unescaped) = split_segments(logical_path)?;
+        let parts = unescaped.iter().map(String::as_str).collect::<Vec<_>>();
         if parts.iter().any(|part| part.is_empty()) {
             return Err(AddressError::new(
                 AddressErrorCode::EmptySegment,
@@ -448,7 +524,7 @@ impl QualifiedAddress {
             // Имя операции содержит точку, поэтому `Can` забирает весь
             // остаток адреса и всегда последний.
             if kind == NodeKind::Can {
-                let operation = parts[index..].join(".");
+                let operation = raw_parts[index..].join(".");
                 index = parts.len();
                 if !operation.is_empty() && !xml_ncname_is_valid(&operation) {
                     return Err(AddressError::new(
@@ -497,7 +573,20 @@ impl QualifiedAddress {
                 }
                 None
             };
-            if name.is_some_and(|name| !xml_ncname_is_valid(name)) {
+            if let Some(name) = name.filter(|name| name.contains('.')) {
+                if !kind.name_may_contain_dot(&segments) {
+                    return Err(AddressError::new(
+                        AddressErrorCode::InvalidName,
+                        format!(
+                            "a `{}` name has no dot; `{name}` joins several segments",
+                            kind.as_str()
+                        ),
+                    ));
+                }
+            }
+            if name.is_some_and(|name| {
+                !xml_ncname_is_valid(name) && !kind.name_is_free_text(&segments)
+            }) {
                 return Err(AddressError::new(
                     AddressErrorCode::InvalidName,
                     format!("invalid application name `{}`", name.unwrap_or_default()),
@@ -560,6 +649,12 @@ impl QualifiedAddress {
         render_segments(&self.segments)
     }
 
+    /// Член коллекции `self` с именем `name`: адрес ветви и имя, где точка
+    /// имени экранирована. Ошибка — имя не годится в адрес.
+    pub(crate) fn member(&self, name: &str) -> Result<Self, AddressError> {
+        Self::parse(&member_address(self, name))
+    }
+
     /// Вопрос к словарю операций: узел, чей словарь спрашивают, и имя
     /// операции (`None` у голого `<узел>.Can`). `None` — адрес не про словарь.
     pub(crate) fn operation_query(&self) -> Option<(Self, Option<&str>)> {
@@ -577,12 +672,71 @@ impl QualifiedAddress {
     }
 }
 
+/// Делит логический путь на сегменты по неэкранированной точке.
+///
+/// Возвращает исходные части (для имени операции за `Can`) и части со
+/// снятым экранированием. `\.` — буквальная точка имени; другой символ
+/// после `\` и `\` в конце отклоняются: имя — XML NCName, обратной косой
+/// черты в нём не бывает, и второго вида экранирования грамматика не знает.
+fn split_segments(logical_path: &str) -> Result<(Vec<&str>, Vec<String>), AddressError> {
+    let mut raw = Vec::new();
+    let mut unescaped = Vec::new();
+    let mut start = 0;
+    let mut current = String::new();
+    let mut characters = logical_path.char_indices();
+    while let Some((index, character)) = characters.next() {
+        match character {
+            '\\' => match characters.next() {
+                Some((_, '.')) => current.push('.'),
+                _ => {
+                    return Err(AddressError::new(
+                        AddressErrorCode::InvalidName,
+                        "`\\` in a logical address escapes only a literal dot of a name: `\\.`",
+                    ))
+                }
+            },
+            '.' => {
+                raw.push(&logical_path[start..index]);
+                unescaped.push(std::mem::take(&mut current));
+                start = index + 1;
+            }
+            other => current.push(other),
+        }
+    }
+    raw.push(&logical_path[start..]);
+    unescaped.push(current);
+    Ok((raw, unescaped))
+}
+
+/// Имя сегмента в записи адреса: буквальная точка экранируется `\.`.
+///
+/// Единственное место, где имя превращается в текст адреса: и печать
+/// `QualifiedAddress`, и адреса, которые собираются строкой от уже
+/// напечатанного адреса, проходят здесь. Имя без точки не меняется.
+pub(crate) fn escape_name(name: &str) -> Cow<'_, str> {
+    if name.contains('.') {
+        Cow::Owned(name.replace('.', "\\."))
+    } else {
+        Cow::Borrowed(name)
+    }
+}
+
+/// Адрес члена коллекции: напечатанный адрес ветви и имя члена.
+pub(crate) fn member_address(branch: &impl fmt::Display, name: &str) -> String {
+    format!("{branch}.{}", escape_name(name))
+}
+
 fn render_segments(segments: &[AddressSegment]) -> String {
     let mut rendered = Vec::with_capacity(segments.len() * 2);
     for segment in segments {
-        rendered.push(segment.kind.as_str());
+        rendered.push(Cow::Borrowed(segment.kind.as_str()));
         if let Some(name) = segment.name() {
-            rendered.push(name);
+            // Имя операции за `Can` — остаток адреса со своими точками.
+            rendered.push(if segment.kind == NodeKind::Can {
+                Cow::Borrowed(name)
+            } else {
+                escape_name(name)
+            });
         }
     }
     rendered.join(".")
@@ -834,6 +988,158 @@ mod tests {
         );
     }
 
+    /// Точку в имени разрешает маршрут, а не вид сегмента: `Parameter`
+    /// макета и области несёт точку, `Parameter` формы и операции
+    /// веб-сервиса — член метаданных и её не несёт; то же для поля, области,
+    /// группы, типа, свойства и записи права вне своего документа.
+    #[test]
+    fn an_escaped_dot_is_a_name_only_on_document_routes() {
+        for accepted in [
+            r"main:Report.R.Template.S.DataSet.D.Field.A\.B",
+            r"main:Report.R.Template.S.Parameter.A\.B",
+            r"main:CommonTemplate.S.Parameter.A\.B",
+            r"main:CommonTemplate.S.DataSet.D.Field.A\.B",
+            r"main:Report.R.Template.P.Area.A\.B",
+            r"main:Report.R.Template.P.Area.A\.B.Parameter.C\.D",
+            r"main:Report.R.Template.S.CalculatedField.A\.B",
+            r"main:Report.R.Template.S.Total.A\.B",
+            r"main:Report.R.Template.S.Setting.V.Item.A\.B.Item.C\.D",
+            r"main:Report.R.Template.S.Setting.V.Item.По периодам (итог).Item.1 группа",
+            r"main:CommonTemplate.S.Setting.V.Item.По периодам",
+            r"main:Subsystem.S.Interface.Group.CommandGroup\.X",
+            r"main:XDTOPackage.P.Type.T\.U.Property.A\.B.Property.C\.D",
+            r"main:XDTOPackage.P.Property.A\.B",
+            r"main:Role.R.Right.Catalog_X\.Command\.Y",
+        ] {
+            let at = QualifiedAddress::parse(accepted)
+                .unwrap_or_else(|error| panic!("{accepted}: {error:?}"));
+            assert_eq!(at.to_string(), accepted);
+        }
+        for rejected in [
+            r"main:WebService.Exchange.Operation.Send.Parameter.A\.B",
+            r"main:Catalog.Items.Form.Main.Parameter.Key\.X",
+            r"main:CommonForm.Main.Parameter.Key\.X",
+            r"main:Catalog.Items.Form.Main.Group.G\.H",
+            r"main:Report.R.Template.S.DataSource.A\.B",
+            r"main:Report.R.Template.S.Item.A\.B",
+            r"main:Report.R.Template.S.Setting.По периодам",
+            r"main:Report.R.Template.S.Setting.V.Property.P.Item.A B",
+            r"main:Report.R.Template.S.DataSet.D.Field.A B",
+            r"main:Catalog.Items.Form.Main.Item.A B",
+            r"main:Catalog.Items.Template.T\.U",
+            r"main:Catalog.Items.Field.A\.B",
+            r"main:Catalog.Items.Area.A\.B",
+            r"main:Catalog.Items.Type.A\.B",
+            r"main:Catalog.Items.Property.A\.B",
+            r"main:Catalog.Items.Right.A\.B",
+            r"main:Subsystem.S.Group.A\.B",
+            r"main:XDTOPackage.P\.Q.Type.T",
+        ] {
+            assert_eq!(
+                QualifiedAddress::parse(rejected)
+                    .map(|at| at.to_string())
+                    .unwrap_err()
+                    .code(),
+                AddressErrorCode::InvalidName,
+                "{rejected}"
+            );
+        }
+    }
+
+    /// Точка внутри имени экранируется `\.`: составной `dataPath` поля
+    /// схемы, имя группы `CommandGroup.X`, свойство XDTO с точкой — один
+    /// сегмент, а не переход к виду. Печать возвращает то же написание, и
+    /// разбор напечатанного адреса даёт тот же адрес; имена без точки
+    /// пишутся как прежде.
+    #[test]
+    fn an_escaped_dot_stays_inside_one_name_and_round_trips() {
+        let raw = r"main:Report.R.Template.S.DataSet.D.Field.Контрагент\.ИНН";
+        let at = QualifiedAddress::parse(raw).unwrap();
+        let last = at.segments().last().unwrap();
+        assert_eq!(
+            (last.kind(), last.name()),
+            (NodeKind::Field, Some("Контрагент.ИНН"))
+        );
+        assert_eq!(at.segments().len(), 4);
+        assert_eq!(at.to_string(), raw);
+        assert_eq!(QualifiedAddress::parse(&at.to_string()).unwrap(), at);
+
+        // Строитель члена экранирует имя сам: ветвь и имя дают тот же адрес.
+        let branch = QualifiedAddress::parse("main:Subsystem.S.Interface.Group").unwrap();
+        let group = branch.member("CommandGroup.Печать").unwrap();
+        assert_eq!(
+            group.to_string(),
+            r"main:Subsystem.S.Interface.Group.CommandGroup\.Печать"
+        );
+        assert_eq!(
+            group.segments().last().unwrap().name(),
+            Some("CommandGroup.Печать")
+        );
+        assert_eq!(super::member_address(&"x", "plain"), "x.plain");
+
+        // Без экранирования та же запись — переход к виду, которого нет.
+        assert_eq!(
+            QualifiedAddress::parse("main:Report.R.Template.S.DataSet.D.Field.Контрагент.ИНН")
+                .unwrap_err()
+                .code(),
+            AddressErrorCode::UnknownKind
+        );
+        // Несколько точек и точка в конце имени.
+        let deep = QualifiedAddress::parse(r"main:Role.R.Right.Catalog_X\.Command\.Y\.").unwrap();
+        assert_eq!(deep.segments()[1].name(), Some("Catalog_X.Command.Y."));
+        assert_eq!(
+            deep.to_string(),
+            r"main:Role.R.Right.Catalog_X\.Command\.Y\."
+        );
+
+        // Имя объекта метаданных и его члена точки не несёт: экранированная
+        // точка там склеивает сегменты, а не входит в имя.
+        for glued in [
+            r"main:Catalog.Валюты\.Form\.ФормаЭлемента",
+            r"main:Catalog.Валюты.Attribute.Код\.X",
+            r"main:Catalog.Валюты.Form.Ф\.Э",
+        ] {
+            assert_eq!(
+                QualifiedAddress::parse(glued).unwrap_err().code(),
+                AddressErrorCode::InvalidName,
+                "{glued}"
+            );
+        }
+
+        // Другого экранирования нет, и пустое имя остаётся пустым сегментом.
+        for invalid in [
+            r"main:Catalog.A\B",
+            r"main:Catalog.A\",
+            r"main:Catalog.A\\.B",
+        ] {
+            assert_eq!(
+                QualifiedAddress::parse(invalid).unwrap_err().code(),
+                AddressErrorCode::InvalidName,
+                "{invalid}"
+            );
+        }
+        assert_eq!(
+            QualifiedAddress::parse(r"main:Catalog.\.A")
+                .unwrap_err()
+                .code(),
+            AddressErrorCode::InvalidName,
+            "имя обязано начинаться как XML NCName"
+        );
+
+        // Экранированное имя перед `Can` не мешает вопросу к словарю, а
+        // имя операции за `Can` печатается без экранирования.
+        let question =
+            QualifiedAddress::parse(r"main:Report.R.Template.S.DataSet.D.Field.A\.B.Can.field.set")
+                .unwrap();
+        let (owner, op) = question.operation_query().unwrap();
+        assert_eq!(owner.segments().last().unwrap().name(), Some("A.B"));
+        assert_eq!(op, Some("field.set"));
+        assert_eq!(
+            question.to_string(),
+            r"main:Report.R.Template.S.DataSet.D.Field.A\.B.Can.field.set"
+        );
+    }
+
     use super::{AddressErrorCode, NodeKind, QualifiedAddress};
     use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use serde::Deserialize;
@@ -982,6 +1288,46 @@ mod tests {
                 Err(error) => assert_eq!(Some(error.code()), case.error, "{}", case.case),
             }
         }
+    }
+
+    /// Имя элемента структуры СКД — свободный текст: двоеточие в нём не
+    /// делает неполный адрес квалифицированным, а в полном адресе набор
+    /// отделяет только первое двоеточие.
+    #[test]
+    fn a_colon_in_a_free_text_item_name_is_not_a_source_set_separator() {
+        let unqualified = "Report.R.Template.S.Setting.V.Item.Итоги: по периодам";
+        let qualified = "main:Report.R.Template.S.Setting.V.Item.Итоги: по периодам";
+        assert_eq!(
+            QualifiedAddress::resolve_input(unqualified, &["main"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(qualified, &["main"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(qualified, &["main", "ext"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(unqualified, &["main", "ext"])
+                .unwrap_err()
+                .code(),
+            AddressErrorCode::AmbiguousAddress
+        );
+        // Набор с точкой в имени по-прежнему квалифицирует адрес.
+        assert_eq!(
+            QualifiedAddress::resolve_input("ext.v2:Catalog.Items", &["main", "ext.v2"])
+                .unwrap()
+                .to_string(),
+            "ext.v2:Catalog.Items"
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 ---
 name: form-edit
-description: Добавление, перенос и удаление элементов, реквизитов и команд в существующей управляемой форме 1С. Используй когда нужно точечно модифицировать готовую форму
+description: Добавление и удаление элементов, реквизитов и команд в существующей управляемой форме 1С. Используй когда нужно точечно модифицировать готовую форму
 allowed-tools:
   - Bash
   - Read
@@ -23,27 +23,77 @@ allowed-tools:
 - Поддержку объекта проверяет сама операция; заблокированный поставщиком
   объект правится через расширение, а не правкой метаданных поддержки.
 
-Добавляет, переносит и удаляет элементы существующей управляемой формы,
-добавляет реквизиты и команды. При создании идентификаторы и companion-элементы
-(`ContextMenu`, `ExtendedTooltip` и прочие) собирает сама операция; при переносе
-существующее поддерево сохраняется вместе с ними и привязками событий.
+Добавляет и удаляет элементы, реквизиты и команды существующей управляемой
+формы. Идентификаторы, companion-элементы (`ContextMenu`, `ExtendedTooltip` и
+прочие) и привязки событий собирает сама операция.
 
 ## Адрес и операции
 
-Цель — узел формы: `<набор>:<Вид>.<Имя>.Form.<Форма>`. Имя набора даёт
+Предмет операции задаёт адрес `at`: форма, её элемент любой вложенности или
+событие формы и элемента. Адреса элементов и событий берутся из ответа
+`unica.view` на узле формы и в ветвях `Item` и `Event`; имя набора даёт
 `unica.view {}`, адрес по имени объекта — `unica.search {corpus: "names"}`.
 
-| Операция | Что делает |
+| Адрес `at` | Операции |
 |---|---|
-| `element.add` | добавляет элементы; `items[]` несёт то же описание, что раздел «JSON формат» ниже |
-| `element.move` | переносит существующий элемент целиком; на форме источник задаётся в `items`, на элементе назначение задаётся в `values` |
-| `element.remove` | удаляет элемент, названный адресом (`…Form.Ф.Item.X`) или списком `items` |
-| `formAttribute.add` | добавляет реквизит формы |
-| `formCommand.add` | добавляет команду формы |
-| `event.bind` | привязывает обработчик к событию формы или элемента |
-| `form.add`, `form.set`, `form.remove` | состав форм объекта и их свойства |
+| `<набор>:<Вид>.<Имя>.Form.<Форма>` | `element.add` в корень формы, `formAttribute.add`, `formCommand.add`, `form.remove` |
+| `….Form.<Форма>.Item.<Группа>[.Item.<Вложенная>…]` — контейнер | `element.add` внутрь контейнера, `element.remove` самого контейнера |
+| `….Item.<Поле>` — поле, декорация, кнопка | `element.remove` |
+| `….Item.<ФормаКоманднаяПанель>`, `….Item.<Таблица>.Item.<ТаблицаКоманднаяПанель>` | `element.add` кнопки в автоматическую командную панель |
+| `….Form.<Форма>[.Item.<Элемент>…].Event.<Событие>` | `event.bind`, `event.implement` |
+| `<набор>:<Вид>.<Имя>` | `form.add`, `form.set` |
+
+Контейнер — группа, страницы, страница, таблица, командная панель, группа
+кнопок, подменю. Автоматическая командная панель формы и таблицы видна
+элементом `Item` и принимает кнопки; удаляется она только вместе с
+владельцем. Точный набор операций узла — в его словаре `can`. Колонки
+внутри группы колонок таблицы (`ColumnGroup`) `view` пока не показывает:
+их адреса нет, и правка таких колонок — пробел контракта Unica MCP.
+
+### Закрытый контракт операции
+
+Подробный контракт операции читается адресом `<узел>.Can.<операция>`,
+например `main:Catalog.Номенклатура.Form.ФормаЭлемента.Can.element.add`.
+Он перечисляет ровно те ключи, которые записывает писатель операции.
+Ключ вне контракта, значение не того типа или вне перечисления получают
+`bad_value` с точным путём (`ops[0].args.items[0].backColor`) до записи:
+операция не теряет его молча.
+
+`element.add` добавляет один элемент без вложенного содержимого. Ключи
+элемента зависят от его `type`: например, `backColor` и `font` пишет только
+кнопка, а `title` не пишут таблица и поле надписи. Вложенный элемент
+добавляется отдельным `element.add` на адресе контейнера
+(`….Item.<Группа>`), обработчик — `event.bind` на адресе события
+(`….Item.<Элемент>.Event.<Событие>`) с явным именем. Ключи `children`,
+`columns`, `elements`, `commandBar`, `autoCmdBar`, `autoCommandBar`,
+`contextMenu`, `extendedTooltip`, `html`, `on` и `handlers` получают
+`bad_value`, а `next` ведёт к контракту `element.add`. Командная панель
+принимает только кнопки: её контракт публикует один вид `Button`. Группа и поле в ней добавляются в одном вызове
+двумя операциями: вторая адресует группу через `args.at`.
+
+`formAttribute.add` пишет `name`, `title` (строка), `type`, `main`,
+`savedData`, `fillChecking` и `columns` реквизита-таблицы. Проверка
+заполнения `"fillChecking": "ShowError"` записывается тегом `<FillCheck>`;
+без ключа проверки нет. Просмотр и редактирование (`view`, `edit`),
+функциональные опции, `useAlways`, `save`, `valueType`, настройки
+динамического списка и видимость по ролям этой операцией не пишутся
+и получают `bad_value`.
+
+Прежние аргументы, которые называли элемент или событие, сняты:
+`items[].into` у `element.add`, `items[].name`, элемент-строка `items[]`
+и `values.name` у `element.remove`, `values.element` и `values.event`
+у `event.bind`. Вызов с ними получает
+`bad_value`, а `next` ведёт к адресу узла, который называло значение.
+
+`formCommand.add` добавляет команды формы. Элемент `items[]` принимает
+`name`, `title`, `tooltip`, `action`, `shortcut`, `picture`,
+`representation`; другой ключ отклоняется до записи. Контракт —
+`<форма>.Can.formCommand.add`.
 
 ## MCP вызов
+
+Поле в группу шапки — `element.add` на адресе группы. Сосед `after`
+называет элемент того же контейнера, после которого встаёт новый:
 
 ```json
 {
@@ -52,13 +102,13 @@ allowed-tools:
   "params": {
     "name": "unica.apply",
     "arguments": {
-      "at": "main:Catalog.Номенклатура.Form.ФормаЭлемента",
+      "at": "main:Catalog.Номенклатура.Form.ФормаЭлемента.Item.ГруппаШапка",
       "ops": [
         {
           "op": "element.add",
           "args": {
             "items": [
-              {"name": "Артикул", "type": "InputField", "path": "Объект.Артикул", "into": "ГруппаШапка"}
+              {"name": "Артикул", "type": "InputField", "path": "Объект.Артикул", "after": "Код"}
             ]
           }
         }
@@ -68,159 +118,56 @@ allowed-tools:
 }
 ```
 
+Обработчик события элемента — `event.bind` на адресе события. `values`
+несут `handler` и, для формы расширения, `callType` (`Before`, `After`,
+`Override`):
+
+```json
+{
+  "at": "main:Catalog.Номенклатура.Form.ФормаЭлемента.Item.ГруппаШапка.Item.Банк.Event.OnChange",
+  "ops": [{"op": "event.bind", "args": {"values": {"handler": "БанкПриИзменении"}}}]
+}
+```
+
+Событие формы адресуется так же: `….Form.ФормаЭлемента.Event.OnOpen`.
+Имя события в адресе — английское, как в ветви `Event` узла.
+`event.implement` на том же адресе пишет и привязку, и процедуру в модуле.
+
+В одном вызове операции исполняются по порядку над промежуточным
+результатом: группа, добавленная первой операцией, принимает элементы
+следующей, если та адресует её через `args.at`.
+
 Применение — вызов только с `executionToken` из `data.executionToken` успешного плана.
 
-## JSON формат
+### Позиционирование элементов
 
-```json
-{
-  "into": "ГруппаШапка",
-  "after": "Контрагент",
-  "elements": [
-    { "input": "Склад", "path": "Объект.Склад", "on": ["OnChange"] }
-  ],
-  "attributes": [
-    { "name": "СуммаИтого", "type": "decimal(15,2)" }
-  ],
-  "commands": [
-    { "name": "Рассчитать", "action": "РассчитатьОбработка" }
-  ]
-}
-```
-
-### Расширения (extension-формы)
-
-Для заимствованных форм (с `<BaseForm>`) автоматически активируется extension-режим: ID начинаются с 1000000+. Доступны дополнительные секции:
-
-```json
-{
-  "formEvents": [
-    { "name": "OnCreateAtServer", "handler": "Расш1_ПриСозданииПосле", "callType": "After" },
-    { "name": "OnOpen", "handler": "Расш1_ПриОткрытии", "callType": "Before" }
-  ],
-  "elementEvents": [
-    { "element": "Банк", "name": "OnChange", "handler": "Расш1_БанкПриИзменении", "callType": "Before" }
-  ],
-  "commands": [
-    { "name": "Подбор", "action": "Расш1_ПодборПосле", "callType": "After" },
-    { "name": "Запрос", "actions": [
-      { "callType": "Before", "handler": "Расш1_ЗапросПеред" },
-      { "callType": "After", "handler": "Расш1_ЗапросПосле" }
-    ]}
-  ],
-  "elements": [
-    { "input": "Поле", "path": "Объект.Поле", "on": [{ "event": "OnChange", "callType": "After" }] }
-  ]
-}
-```
-
-### Позиционирование добавляемых элементов
-
-| Ключ | По умолчанию | Описание |
-|------|-------------|----------|
-| `into` | корневой ChildItems | Имя группы/таблицы/страницы или автоматической командной панели, куда вставлять |
-| `after` | в конец | Имя элемента, после которого вставлять |
-
-Имена в `into` и `after` ищутся по всей рабочей форме, включая корневую
-и табличные `AutoCommandBar`; сохранённая `BaseForm` в поиск не входит.
-Если имя встречается дважды, операция отклоняется без записи.
-
-`into` с именем автоматической командной панели кладёт элемент в её
-`ChildItems` и создаёт секцию, если её нет. `Button` внутри командной панели
-записывается как `CommandBarButton`. `after` называет элемент, который лежит
-прямо в `ChildItems`, например кнопку панели; саму панель `after` не принимает.
-Повторное такое же добавление ничего не меняет.
-
-### Перенос существующих элементов
-
-Сочетания контейнеров, видов кнопок и табличных привязок описаны в
-[матрице совместимости](../../references/specs/form-move-spec.md).
-
-`element.move` меняет расположение исходного XML-поддерева. Идентификаторы,
-свойства, события, вложенные элементы и companions остаются с владельцем.
-Операция сохраняет смысл пространств имён, при необходимости добавляя
-объявления `xmlns` на переносимый узел. Она не пересоздаёт элемент и не меняет
-его тип, привязки данных, команды или BSL.
-
-На адресе формы передай непустой список `args.items`, в котором каждая запись
-содержит `name` и необязательные `into`/`after`. Например, создать вкладки
-и перенести существующую группу одним планом:
-
-```json
-{
-  "at": "main:Catalog.Идеи.Form.Идея",
-  "ops": [
-    {"op": "element.add", "args": {"items": [
-      {"name": "Вкладки", "type": "Pages"},
-      {"name": "Основные", "type": "Page", "into": "Вкладки"}
-    ]}},
-    {"op": "element.move", "args": {"items": [
-      {"name": "ГруппаЧасы", "into": "Основные"}
-    ]}}
-  ]
-}
-```
-
-На адресе конкретного элемента источник уже выбран; передай только назначение:
-
-```json
-{
-  "at": "main:Catalog.Идеи.Form.Идея.Item.Вкладки.Item.Основные.Item.ГруппаЧасы",
-  "ops": [{"op": "element.move", "args": {"values": {
-    "into": "Основные"
-  }}}]
-}
-```
-
-- Без `into` назначение — корневой `ChildItems`; без `after` — конец контейнера.
-  Пустой `values: {}` переносит выбранный адресом элемент в конец корня.
-- Адрес элемента содержит полную текущую цепочку `Item` от формы.
-  Неверный или уже изменившийся родитель отклоняется. На адресе формы
-  `items[].name` выбирает элемент по точному имени независимо от вложенности.
-- `after` называет непосредственного ребёнка выбранного контейнера.
-  Оба аргумента учитываются одновременно; указание самого источника в `after`
-  отклоняется.
-- Имена сравниваются точно, включая регистр и пробелы. Пустые имена,
-  неизвестные поля, отсутствующие и неоднозначные цели отклоняются.
-  На адресе элемента нельзя повторно задавать источник через `name` или `items`.
-- Можно перемещать только элемент рабочего дерева, непосредственно вложенный
-  в `ChildItems`. `BaseForm`, корневая автоматическая командная панель
-  и companions защищены от отдельного переноса. Перенос в себя или потомка
-  запрещён. Несовместимое назначение отклоняется без автоматического
-  преобразования содержимого.
-- `ops` и записи `items` последовательны: следующий шаг видит созданные
-  контейнеры и уже перенесённые элементы. Ошибка любого шага отклоняет весь план.
-- Точное повторение текущего положения успешно и сохраняет исходные байты.
-  Проверка формы выполняется и при таком no-op. Планирование не пишет файлы;
-  исполнение по `executionToken` публикует только проверенный результат.
-  Если итоговый файл не изменился, событие `FormChanged` не создаётся.
-
-Ответ использует штатный краткий план `unica.apply`; отдельного `moved[]`
-или XML-diff нет. После исполнения проверь форму через `unica.check` и
-расположение элементов через `unica.view`.
+Новый элемент встаёт в конец контейнера, названного адресом. `after`
+называет соседа в том же контейнере; элемент другого контейнера
+отклоняется без записи. Командная панель принимает кнопки: `Button` в ней
+записывается как `CommandBarButton`. Если в форме два элемента носят одно
+имя, операция отклоняется без записи. Повторное такое же добавление ничего
+не меняет.
 
 ### Удаление элементов
 
-`element.remove` называет цель адресом — `…Form.<Форма>.Item.<Имя>` — либо
-списком имён в `items`:
+`element.remove` удаляет элемент, названный адресом
+`…Form.<Форма>.Item.<Группа>.Item.<Имя>`; аргументов у операции нет:
 
 ```json
 {
-  "op": "element.remove",
-  "args": {"items": [{"name": "Товары"}]}
+  "at": "main:Catalog.Номенклатура.Form.ФормаЭлемента.Item.Товары",
+  "ops": [{"op": "element.remove"}]
 }
 ```
 
-Ключ `removeElements` — внутренняя форма описания, в которую операция
-разворачивает эти имена; аргументом `element.remove` он не является и в вызове
-отклоняется как неизвестное поле. Гарантии ниже описаны для обеих форм.
+Каждый элемент удаляется своей операцией со своим адресом.
 
 - Элемент сопоставляется с атрибутом XML `name` точно, с учётом регистра и пробелов. Поиск по префиксу и нормализация имени не выполняются.
-- В записи разрешено только строковое непустое поле `name`. Параметров `includeCompanions` и `ifMissing` нет: они отклоняются как неизвестные поля.
+- Параметров `includeCompanions` и `ifMissing` нет: аргументы операции отклоняются.
 - Удаляется всё структурное XML-поддерево элемента. Вложенные элементы и contained companions (`ContextMenu`, `ExtendedTooltip`, `AutoCommandBar` и другие узлы внутри поддерева) удаляются вместе с владельцем и перечисляются в результате с `reason: "contained"`.
-- По умолчанию отсутствующая цель завершает весь вызов ошибкой `FORM_ELEMENT_NOT_FOUND`; повторное удаление отсутствующего элемента не является idempotent no-op.
+- Отсутствующая цель завершает весь вызов отказом `not_found`; `next` ведёт к родителю. Повторное удаление отсутствующего элемента не является idempotent no-op.
 - Удалять можно только публичный элемент рабочего дерева формы, непосредственно принадлежащий контейнеру `ChildItems`. Корневой `AutoCommandBar`, отдельный companion внутри владельца, baseline внутри `BaseForm` и другие именованные узлы вне рабочего дерева защищены; неоднозначные и перекрывающиеся цели также отклоняются.
-- До публикации проверяются конфликты с тем же `definition` (`elements`, вложенные `children`/`columns`, `into`, `after`, `elementEvents`) и поддерживаемые ссылки в остающемся рабочем XML: binding paths вида `Items.<name>.CurrentData...` (включая имена с точками), `Form.Item.<name>.StandardCommand.*` и `AdditionSource/Item`.
+- До публикации проверяются поддерживаемые ссылки в остающемся рабочем XML: binding paths вида `Items.<name>.CurrentData...` (включая имена с точками), `Form.Item.<name>.StandardCommand.*` и `AdditionSource/Item`.
 - Если сохраняемый элемент ссылается на удаляемый contained companion, весь вызов завершается атомарной ошибкой `FORM_EDIT_REMOVE_SURVIVING_REFERENCE`: companion не отделяется от владельца и не удаляется частично. Ссылки из baseline `BaseForm` не блокируют изменение рабочего дерева, а сам baseline не редактируется.
 - Проверка ссылок намеренно не анализирует BSL и не переписывает обращения к элементу в `Module.bsl`. Такие ссылки нужно найти и изменить отдельно до удаления.
 - Весь batch атомарен: планирование, проверки ссылок и полная валидация спроецированного XML завершаются до фиксации транзакции. Apply дополнительно повторяет проверку формы (`unica.check` на узле формы) после записи внутри транзакции; при любой ошибке Form.xml не меняется.
@@ -242,25 +189,37 @@ Preview и apply возвращают одинаковую типизирова�
 
 ### Типы элементов
 
-В `element.add` каждый `items[]` задаёт `name` и `type` (платформенный XML-тег
-из таблицы). Короткие ключи ниже относятся к внутреннему описанию элементов.
-Словарь создаёт одиннадцать видов:
+В `element.add` каждый `items[]` задаёт `name` и `type`; без `type`
+создаётся поле ввода. Словарь создаёт одиннадцать видов. Кроме ключей
+таблицы, каждый вид принимает `after` и флаги `visible`, `hidden`,
+`userVisible` (только `false`), `enabled`, `disabled`, `readOnly`.
 
-| Ключ | XML тег | Companions |
-|------|---------|------------|
-| `input` | InputField | ContextMenu, ExtendedTooltip |
-| `html` | HTMLDocumentField | ContextMenu, ExtendedTooltip |
-| `check` | CheckBoxField | ContextMenu, ExtendedTooltip |
-| `label` | LabelDecoration | ContextMenu, ExtendedTooltip |
-| `labelField` | LabelField | ContextMenu, ExtendedTooltip |
-| `group` | UsualGroup | ExtendedTooltip |
-| `table` | Table | ContextMenu, AutoCommandBar, Search*, ViewStatus* |
-| `pages` | Pages | ExtendedTooltip |
-| `page` | Page | ExtendedTooltip |
-| `button` | Button | ExtendedTooltip |
-| `commandBar` | CommandBar | — |
+| `type` | XML тег | Ключи вида | Companions |
+|------|---------|------------|------------|
+| `InputField` | InputField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `inputHint`, `width`, `height`, кнопки и флаги поля | ContextMenu, ExtendedTooltip |
+| `HTMLDocumentField` | HTMLDocumentField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight`, `skipOnInput` | ContextMenu, ExtendedTooltip |
+| `CheckBox` | CheckBoxField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `checkBoxType`, `footerDataPath` | ContextMenu, ExtendedTooltip |
+| `Label` | LabelDecoration | `title` (строка или `{text, formatted}`), `formatted`, `hyperlink`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight`, `tooltipRepresentation` | ContextMenu, ExtendedTooltip |
+| `LabelField` | LabelField | `path`, `tooltip`, `tooltipRepresentation`, `footerDataPath` | ContextMenu, ExtendedTooltip |
+| `Group` | UsualGroup | `title`, `orientation`, `behavior`, `collapsed`, `representation`, `titleDataPath`, `currentRowUse`, `showTitle`, `showLeftMargin` | ExtendedTooltip |
+| `Table` | Table | `path`, `representation`, `autoInsertNewRow`, `commandBarLocation`, `initialTreeView`, `enableDrag`, `rowPictureDataPath`, `tableAutofill`, `_dynList` и ключи динамического списка | ContextMenu, AutoCommandBar, Search*, ViewStatus* |
+| `Pages` | Pages | `title`, `pagesRepresentation`, `currentRowUse` | ExtendedTooltip |
+| `Page` | Page | `title`, `orientation`, `showTitle`, `titleDataPath` | ExtendedTooltip |
+| `Button` | Button | `command`, `commandName` или `stdCommand`, `title`, `tooltip`, `tooltipRepresentation`, `representation`, `defaultButton`, `picture`, `locationInCommandBar`, `backColor`, `font` | ExtendedTooltip |
+| `CommandBar` | CommandBar | `commandSource`, `autofill` | — |
 
-Группы и таблицы поддерживают `children`/`columns` для вложенных элементов.
+Перечисления (`titleLocation`, `orientation`, `representation` и другие)
+принимают значения платформы с заглавной буквы: `None`, `Horizontal`,
+`GroupBox`. Полный список ключей и значений — в контракте
+`<адрес>.Can.element.add`. Ключи динамического списка (`autoRefresh`,
+`autoRefreshPeriod`, `choiceFoldersAndItems`, `restoreCurrentRow`,
+`showRoot`, `allowRootChoice`, `updateOnDataChange`,
+`allowGettingCurrentRowURL`) пишутся только с `_dynList: true`; кнопка
+принимает одну команду. Флаги поля ввода `clearButton`, `spinButton`,
+`dropListButton`, `markIncomplete`, `skipOnInput`, `horizontalStretch`,
+`verticalStretch` и `autofill` командной панели принимают только `true`:
+явный `false` платформа отличает от умолчания, а операция его пока
+не пишет.
 
 ### Поле HTML-документа
 
@@ -276,9 +235,8 @@ HTML-поле привязывается через `path` к строковом
   "at": "main:Catalog.ТехническиеПроекты.Form.ФормаЭлемента",
   "ops": [{"op": "element.add", "args": {"items": [{
     "name": "ПолеОписания", "type": "HTMLDocumentField",
-    "path": "СтраницаРедактораОписания", "titleLocation": "none",
-    "width": 1, "height": 1, "autoMaxWidth": false, "skipOnInput": true,
-    "on": ["OnClick", "DocumentComplete"]
+    "path": "СтраницаРедактораОписания", "titleLocation": "None",
+    "width": 1, "height": 1, "autoMaxWidth": false, "skipOnInput": true
   }]}}]
 }
 ```
@@ -287,15 +245,14 @@ HTML-поле привязывается через `path` к строковом
 (целые `0..4294967295`), `autoMaxWidth`/`autoMaxHeight`, `skipOnInput`,
 `visible`, `userVisible`, `enabled`, `readOnly` и синонимы `hidden`/`disabled`.
 Булевы параметры принимают JSON boolean. События — только `OnClick` и
-`DocumentComplete`; имена обработчиков можно задать в `handlers` вместе с `on`.
-Для существующего поля используйте `event.bind` по адресу `…Form.ФормаЭлемента.Item.ПолеОписания`.
+`DocumentComplete`: привяжите их `event.bind` по адресу события
+`…Form.ФормаЭлемента.Item.ПолеОписания.Event.DocumentComplete` с явным
+именем обработчика, в том же вызове после `element.add` или позже.
 DOM-свойство `Document` относится к выполнению 1С и не записывается в XML.
 
-Для помещения HTML-поля в группу задайте `into` в отдельном `items[]`;
-`after` задаёт соседний элемент. Вложенный typed-объект с
-`type: "HTMLDocumentField"` в `children`/`columns` отклоняется с подсказкой
-использовать отдельный item. Полученную форму прочитайте через `unica.view`
-и проверьте через `unica.check`.
+Чтобы поместить HTML-поле в группу, вызовите `element.add` на адресе группы;
+`after` задаёт соседний элемент. Полученную форму
+прочитайте через `unica.view` и проверьте через `unica.check`.
 
 ### Чего словарь не пишет
 
@@ -405,9 +362,9 @@ BSL с неподтверждёнными именами. Пробел чтен�
 заполнение, загрузку, пересчёт, удаление строк, сортировку, изменение цен,
 скидок, НДС и аналогичные действия.
 
-### Допустимые события (`on`)
+### Допустимые события элемента
 
-Editor до записи проверяет событие по единой платформенной матрице. Недопустимое сочетание возвращает `ok=false` и код `FORM_EVENT_*`, не меняя файл. Основные сочетания:
+`event.bind` до записи проверяет событие по единой платформенной матрице. Недопустимое сочетание возвращает `ok=false` и код `FORM_EVENT_*`, не меняя файл. Основные сочетания:
 
 - **input**: `OnChange`, `StartChoice`, `ChoiceProcessing`, `Clearing`, `AutoComplete`, `TextEditEnd`, `Opening`, `Creating`, `EditTextChange`
 - **check**: `OnChange`
@@ -417,7 +374,7 @@ Editor до записи проверяет событие по единой п�
 - **pages**: `OnCurrentPageChange`
 - **page/button/group/command bar**: события не поддерживаются
 
-События `table` требуют непустой привязки: `path` для нового элемента или прямого `DataPath` у существующего `Table`. Платформа удаляет обработчики событий у несвязанной таблицы при загрузке/выгрузке конфигурации.
+События `table` требуют непустой привязки: прямого `DataPath` у `Table`. Платформа удаляет обработчики событий у несвязанной таблицы при загрузке/выгрузке конфигурации.
 
 `OnReadAtServer`, `BeforeWrite`, `BeforeWriteAtServer`, `OnWriteAtServer`, `AfterWriteAtServer` и `AfterWrite` разрешены только при подтверждённом persistent object/record типе главного реквизита. Для `DataProcessorObject`, `ReportObject`, `DynamicList` и неизвестного контекста они отклоняются. `NewWriteProcessing` и `FillCheckProcessingAtServer` являются общими событиями формы и этим ограничением не связаны.
 
@@ -425,23 +382,46 @@ Editor до записи проверяет событие по единой п�
 
 `string`, `string(100)`, `decimal(15,2)`, `boolean`, `date`, `dateTime`, `CatalogRef.XXX`, `DocumentObject.XXX`, `ValueTable`, `DynamicList`, `Type1 | Type2` (составной).
 
-### Секции расширений
+### События форм расширения
 
-| Секция | Назначение |
-|--------|-----------|
-| `formEvents` | События уровня формы; `callType` только для расширения |
-| `elementEvents` | События существующих элементов; `callType` только для расширения |
-| `callType` на `commands` | callType на Action команды |
-| `callType` на `on` | callType на событиях новых элементов (объектный формат) |
-
-Все extension-секции опциональны — без них навык работает как с обычными формами.
+У формы расширения `event.bind` принимает `callType` (`Before`, `After`,
+`Override`) на адресе события формы или элемента. У обычной формы
+`callType` не задаётся. Событие нового элемента привязывает `event.bind`
+на его адресе: `{"values": {"handler": "Расш1_ПолеПриИзмененииПосле",
+"callType": "After"}}`. `formCommand.add` `callType` и `actions`
+не принимает: перехват действия команды формы расширения —
+`event.implement` с `callType` на адресе
+`….Form.<Форма>.Command.<Команда>.Event.Execute`.
 
 Повтор идентичного binding является явным idempotent no-op. Конфликт обработчика/`callType`, duplicate, отсутствующий элемент и любой недопустимый event отклоняют весь batch до мутации; планирование использует тот же planner.
 
 ## Workflow
 
-1. `unica.view` на узле формы — текущая структура и словарь `can`
-2. Собрать `ops` по описанию ниже
+1. `unica.view` на узле формы и в ветвях `Item` и `Event` — адреса узлов и их словари `can`
+2. Собрать `ops` на адресах узлов по описанию выше
 3. `unica.apply` с `at` и `ops` — план и `data.executionToken`
 4. `unica.apply` только с `executionToken` — применение
 5. `unica.check` на узле формы — проверка, затем `unica.view` — убедиться, что структура изменилась правильно
+
+## Перенос существующего элемента
+
+`element.move` выполняется на полном текущем адресе элемента:
+`main:Document.Заказ.Form.ФормаДокумента.Item.Группа.Item.Поле`.
+В `values.into` обязательно укажите точное имя контейнера назначения;
+для корня формы явно передайте `null`. Без `after` элемент становится
+последним; `after` называет непосредственного соседа в контейнере назначения.
+Пропуск `into` отклоняется. Несколько переносов задаются отдельными `ops`;
+каждая следующая операция использует адрес после предыдущего переноса.
+
+Пример проверяется сценарием S356 на приёмочной фикстуре репозитория:
+
+```json
+{"at":"main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное","ops":[{"op":"element.move","args":{"values":{"into":"ГруппаСлужебная"}}}]}
+```
+
+Перенос сохраняет исходное поддерево, ID, свойства, события, вложенные элементы
+и companions. Точный повтор положения сохраняет байты файла.
+Несовместимые размещения отклоняются без преобразования типа и привязок.
+[Матрица совместимости](../../references/specs/form-move-spec.md) описывает
+допустимые контейнеры и ограничения табличных колонок.
+Сначала проверьте preview, затем примените полученный `executionToken`.

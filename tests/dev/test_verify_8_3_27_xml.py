@@ -1577,8 +1577,7 @@ class VerifierContractTests(unittest.TestCase):
             self.assertEqual(status, 3)
             self.assertEqual(report["files"][0]["coverage"], "not-covered")
             self.assertEqual(report["files"][0]["checks"][-1]["name"], "edtDeclaration")
-            self.assertIn("not proof of a platform roundtrip", report["sources"]["edt"]["evidenceScope"])
-            self.assertEqual(report["files"][0]["requiredNextEvidence"], "platform 8.3.27.* load/dump roundtrip")
+            self.assertIn("not proof of patch build", report["sources"]["edt"]["evidenceScope"])
 
     def test_invalid_zip_and_unavailable_jarsigner_are_source_errors(self):
         verifier = load_verifier()

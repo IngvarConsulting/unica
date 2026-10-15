@@ -1,8 +1,4 @@
 use crate::domain::cancellation::{cancelled_error, CancellationToken, CANCELLED_PREFIX};
-#[cfg(test)]
-use crate::domain::code_intelligence::ProviderDeadline;
-#[cfg(test)]
-use crate::domain::source_revision::SourceRevision;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::platform::filesystem::{
@@ -14,8 +10,6 @@ use crate::infrastructure::platform::{
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::rlm_generation_collection::spawn_stale_rlm_generation_collection;
-#[cfg(test)]
-use crate::infrastructure::source_revision::SourceRevisionService;
 #[cfg(test)]
 use crate::infrastructure::source_roots::source_generation;
 use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
@@ -37,8 +31,6 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const INDEX_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(test)]
-const REVISION_VERIFY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 const LOCK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const LOCK_SCHEMA_VERSION: u32 = 1;
@@ -48,10 +40,6 @@ const RLM_PYTHON_UTF8: &str = "1";
 const RLM_PYTHON_IO_ENCODING: &str = "utf-8:surrogateescape";
 const STATUS_FILE_NAME: &str = "bsl_index_status.json";
 const LOCK_FILE_NAME: &str = "bsl_index.lock";
-#[cfg(test)]
-pub(crate) const SOURCE_REVISION_GENERATION_ARG: &str = "__sourceRevisionGeneration";
-#[cfg(test)]
-pub(crate) const SOURCE_REVISION_ARG: &str = "__sourceRevision";
 #[cfg(test)]
 pub(crate) const SOURCE_GENERATION_STALE_STATUS: &str = "stale (source generation)";
 
@@ -269,12 +257,6 @@ pub struct BslIndexStatus {
     #[cfg(test)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_generation: Option<u64>,
-    #[cfg(test)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub indexed_revision: Option<SourceRevision>,
-    #[cfg(test)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observed_revision: Option<SourceRevision>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,10 +333,6 @@ pub struct IndexBackgroundJob {
     pub source_root: PathBuf,
     #[cfg(test)]
     pub source_generation: u64,
-    #[cfg(test)]
-    pub source_revision: Option<SourceRevision>,
-    #[cfg(test)]
-    pub(crate) source_revision_service: Option<Arc<SourceRevisionService>>,
     pub(crate) root_capability: Option<Arc<RetainedDirectoryCapability>>,
     pub primary: IndexCommand,
     pub info: IndexCommand,
@@ -374,8 +352,6 @@ struct IndexStartSpec {
     warning: &'static str,
     #[cfg(test)]
     source_generation: u64,
-    #[cfg(test)]
-    source_revision: Option<SourceRevision>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,8 +400,6 @@ pub static SYSTEM_INDEX_RUNNER: SystemIndexRunner = SystemIndexRunner { tracker:
 
 pub struct WorkspaceIndexService<'a> {
     runner: &'a dyn IndexRunner,
-    #[cfg(test)]
-    source_revision_service: Option<Arc<SourceRevisionService>>,
     bound_source_root: Option<Arc<RetainedDirectoryCapability>>,
     state_scope: WorkspaceStateScope,
     /// Memoises the source-generation walk for the lifetime of one service
@@ -505,8 +479,6 @@ impl<'a> WorkspaceIndexService<'a> {
                 warning: "rlm index build started",
                 #[cfg(test)]
                 source_generation: 0,
-                #[cfg(test)]
-                source_revision: None,
             },
         )
     }
@@ -514,8 +486,6 @@ impl<'a> WorkspaceIndexService<'a> {
     pub fn new() -> Self {
         Self {
             runner: &SYSTEM_INDEX_RUNNER,
-            #[cfg(test)]
-            source_revision_service: None,
             bound_source_root: None,
             state_scope: WorkspaceStateScope::LegacyPhysical,
             #[cfg(test)]
@@ -526,22 +496,11 @@ impl<'a> WorkspaceIndexService<'a> {
     pub(crate) fn with_runner(runner: &'a dyn IndexRunner) -> Self {
         Self {
             runner,
-            #[cfg(test)]
-            source_revision_service: None,
             bound_source_root: None,
             state_scope: WorkspaceStateScope::LegacyPhysical,
             #[cfg(test)]
             generation: RefCell::new(None),
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_source_revision_service(
-        mut self,
-        service: Arc<SourceRevisionService>,
-    ) -> Self {
-        self.source_revision_service = Some(service);
-        self
     }
 
     pub(crate) fn with_bound_source_root(
@@ -613,18 +572,9 @@ impl<'a> WorkspaceIndexService<'a> {
         // Observed before `info` runs: a change during the probe leaves the
         // generation older than the sources, which only ever reads as stale.
         // The execution boundary in `handle_rlm_mcp` is what gates actual reads.
-        let source_revision = revision_from_args(args);
-        let generation = source_revision
-            .as_ref()
-            .map(|revision| revision.generation)
-            .or_else(|| revision_generation(args))
-            .unwrap_or_else(|| self.source_generation(&source_root));
+        let generation = self.source_generation(&source_root);
         let matching_failed = match failed_status_for_source(context, &source_root, generation) {
             Ok(status) => status,
-            Err(error) => return unavailable_start_report(error),
-        };
-        let prefer_update = match status_prefers_update(context, &source_root) {
-            Ok(prefer_update) => prefer_update,
             Err(error) => return unavailable_start_report(error),
         };
 
@@ -684,7 +634,6 @@ impl<'a> WorkspaceIndexService<'a> {
             context,
             &source_root,
             generation,
-            source_revision.as_ref(),
             readiness_from_info(&info),
         );
         match readiness {
@@ -696,19 +645,6 @@ impl<'a> WorkspaceIndexService<'a> {
                     };
                 }
                 match other {
-                    IndexReadiness::Missing if prefer_update => self.start_background(
-                        context,
-                        IndexStartSpec {
-                            action: "update",
-                            source_root,
-                            primary: commands.update,
-                            info: commands.info,
-                            recovery_build: Some(commands.build),
-                            warning: "rlm index building",
-                            source_generation: generation,
-                            source_revision: source_revision.clone(),
-                        },
-                    ),
                     IndexReadiness::Missing => self.start_background(
                         context,
                         IndexStartSpec {
@@ -719,7 +655,6 @@ impl<'a> WorkspaceIndexService<'a> {
                             recovery_build: None,
                             warning: "rlm index build started",
                             source_generation: generation,
-                            source_revision: source_revision.clone(),
                         },
                     ),
                     IndexReadiness::Stale { .. } => self.start_background(
@@ -732,7 +667,6 @@ impl<'a> WorkspaceIndexService<'a> {
                             recovery_build: Some(commands.build),
                             warning: "rlm index building",
                             source_generation: generation,
-                            source_revision: source_revision.clone(),
                         },
                     ),
                     IndexReadiness::Incomplete => self.start_background(
@@ -745,7 +679,6 @@ impl<'a> WorkspaceIndexService<'a> {
                             recovery_build: Some(commands.build),
                             warning: "rlm index recovery started",
                             source_generation: generation,
-                            source_revision: source_revision.clone(),
                         },
                     ),
                     IndexReadiness::Building => IndexStartReport {
@@ -800,12 +733,7 @@ impl<'a> WorkspaceIndexService<'a> {
             Err(error) => return IndexReadiness::Unavailable(error),
         };
         let context = &state_context;
-        let source_revision = revision_from_args(args);
-        let generation = source_revision
-            .as_ref()
-            .map(|revision| revision.generation)
-            .or_else(|| revision_generation(args))
-            .unwrap_or_else(|| self.source_generation(&source_root));
+        let generation = self.source_generation(&source_root);
         let matching_failed = match failed_status_for_source(context, &source_root, generation) {
             Ok(status) => status,
             Err(error) => return IndexReadiness::Unavailable(error),
@@ -848,7 +776,6 @@ impl<'a> WorkspaceIndexService<'a> {
             context,
             &source_root,
             generation,
-            source_revision.as_ref(),
             readiness_from_info(&output),
         ) {
             IndexReadiness::Ready { db_path } => IndexReadiness::Ready { db_path },
@@ -964,8 +891,6 @@ impl<'a> WorkspaceIndexService<'a> {
             warning,
             #[cfg(test)]
             source_generation,
-            #[cfg(test)]
-            source_revision,
         } = spec;
         let isolated_build = isolated_build_id(&primary).is_some();
         let lock = match lock_path(context, &source_root) {
@@ -1025,10 +950,6 @@ impl<'a> WorkspaceIndexService<'a> {
             source_root,
             #[cfg(test)]
             source_generation,
-            #[cfg(test)]
-            source_revision,
-            #[cfg(test)]
-            source_revision_service: self.source_revision_service.clone(),
             root_capability: self.bound_source_root.clone(),
             primary,
             info,
@@ -1059,18 +980,6 @@ impl<'a> WorkspaceIndexService<'a> {
     }
 }
 
-#[cfg(test)]
-fn revision_generation(args: &Map<String, Value>) -> Option<u64> {
-    args.get(SOURCE_REVISION_GENERATION_ARG)
-        .and_then(Value::as_u64)
-        .filter(|generation| *generation > 0)
-}
-
-#[cfg(test)]
-fn revision_from_args(args: &Map<String, Value>) -> Option<SourceRevision> {
-    serde_json::from_value(args.get(SOURCE_REVISION_ARG)?.clone()).ok()
-}
-
 impl Default for WorkspaceIndexService<'_> {
     fn default() -> Self {
         Self::new()
@@ -1095,10 +1004,6 @@ impl BslIndexStatus {
             failure_class: None,
             #[cfg(test)]
             source_generation: None,
-            #[cfg(test)]
-            indexed_revision: None,
-            #[cfg(test)]
-            observed_revision: None,
             build_id: None,
             next_action: None,
             updated_at: now_secs(),
@@ -1115,10 +1020,6 @@ impl BslIndexStatus {
             failure_class: None,
             #[cfg(test)]
             source_generation: None,
-            #[cfg(test)]
-            indexed_revision: None,
-            #[cfg(test)]
-            observed_revision: None,
             build_id: None,
             next_action: None,
             updated_at: now_secs(),
@@ -1135,10 +1036,6 @@ impl BslIndexStatus {
             failure_class: Some(BslIndexFailureClass::Retryable),
             #[cfg(test)]
             source_generation: None,
-            #[cfg(test)]
-            indexed_revision: None,
-            #[cfg(test)]
-            observed_revision: None,
             build_id: None,
             next_action: None,
             updated_at: now_secs(),
@@ -1156,10 +1053,6 @@ impl BslIndexStatus {
             failure_class: Some(BslIndexFailureClass::Terminal),
             #[cfg(test)]
             source_generation: None,
-            #[cfg(test)]
-            indexed_revision: None,
-            #[cfg(test)]
-            observed_revision: None,
             build_id: None,
             next_action: None,
             updated_at: now_secs(),
@@ -1177,10 +1070,6 @@ impl BslIndexStatus {
             failure_class: None,
             #[cfg(test)]
             source_generation: None,
-            #[cfg(test)]
-            indexed_revision: None,
-            #[cfg(test)]
-            observed_revision: None,
             build_id: None,
             next_action: None,
             updated_at: now_secs(),
@@ -1199,26 +1088,8 @@ impl BslIndexStatus {
         self
     }
 
-    #[cfg(test)]
-    fn with_indexed_revision(mut self, revision: Option<SourceRevision>) -> Self {
-        self.indexed_revision = revision;
-        self
-    }
-
-    #[cfg(test)]
-    fn with_observed_revision(mut self, revision: SourceRevision) -> Self {
-        self.observed_revision = Some(revision);
-        self
-    }
-
     fn with_build_id(mut self, build_id: String) -> Self {
         self.build_id = Some(build_id);
-        self
-    }
-
-    #[cfg(test)]
-    fn with_next_action(mut self, action: BslIndexNextAction) -> Self {
-        self.next_action = Some(action);
         self
     }
 }
@@ -1501,7 +1372,7 @@ where
             {
                 write_background_status(
                     &job,
-                    ready_status_after_revision_verification(&job, &db_path, primary_metrics),
+                    ready_status_after_build(&job, &db_path, primary_metrics),
                 );
             } else {
                 write_background_status(
@@ -1606,11 +1477,7 @@ where
                     if db_path_belongs_to_command_generation(&job.info, &db_path) {
                         write_background_status(
                             &job,
-                            ready_status_after_revision_verification(
-                                &job,
-                                &db_path,
-                                recovery_metrics,
-                            ),
+                            ready_status_after_build(&job, &db_path, recovery_metrics),
                         );
                     } else {
                         write_background_status(
@@ -1659,7 +1526,7 @@ where
 }
 
 #[cfg(test)]
-fn ready_status_after_revision_verification(
+fn ready_status_after_build(
     job: &IndexBackgroundJob,
     db_path: &Path,
     metrics: BslIndexRunMetrics,
@@ -1669,49 +1536,13 @@ fn ready_status_after_revision_verification(
             .with_build_id(build_id)
             .with_last_run(metrics);
     }
-    let Some(captured) = job.source_revision.as_ref() else {
-        return BslIndexStatus::ready(&job.source_root, db_path)
-            .with_source_generation(job.source_generation)
-            .with_last_run(metrics);
-    };
-    let current = job
-        .source_revision_service
-        .as_ref()
-        .ok_or_else(|| "captured source revision service is unavailable".to_string())
-        .and_then(|service| {
-            let deadline = ProviderDeadline::from_budget(REVISION_VERIFY_TIMEOUT);
-            match job.root_capability.as_deref() {
-                Some(root) => service.snapshot_retained(root, deadline, &job.primary.cancellation),
-                None => service.snapshot(deadline, &job.primary.cancellation),
-            }
-        });
-    match current {
-        Ok(current) if &current == captured => BslIndexStatus::ready(&job.source_root, db_path)
-            .with_source_generation(job.source_generation)
-            .with_indexed_revision(Some(captured.clone()))
-            .with_last_run(metrics),
-        Ok(current) => BslIndexStatus::failed(
-            format!("source revision changed during {}", job.action).as_str(),
-            Some(&job.source_root),
-        )
-        .with_source_generation(current.generation)
-        .with_observed_revision(current)
-        .with_next_action(BslIndexNextAction::Update)
-        .with_last_run(metrics),
-        Err(error) => BslIndexStatus::failed(
-            format!(
-                "source revision verification failed after {}: {error}",
-                job.action
-            )
-            .as_str(),
-            Some(&job.source_root),
-        )
-        .with_last_run(metrics),
-    }
+    BslIndexStatus::ready(&job.source_root, db_path)
+        .with_source_generation(job.source_generation)
+        .with_last_run(metrics)
 }
 
 #[cfg(not(test))]
-fn ready_status_after_revision_verification(
+fn ready_status_after_build(
     job: &IndexBackgroundJob,
     db_path: &Path,
     metrics: BslIndexRunMetrics,
@@ -2024,57 +1855,6 @@ pub fn bsl_index_is_ready(context: &WorkspaceContext) -> bool {
 }
 
 #[cfg(test)]
-pub(crate) fn ready_index_for_source_revision(
-    context: &WorkspaceContext,
-    source_root: &Path,
-    revision: &SourceRevision,
-) -> IndexReadiness {
-    match active_lock(context, source_root) {
-        Ok(true) => return IndexReadiness::Building,
-        Ok(false) => {}
-        Err(error) => return IndexReadiness::Unavailable(error),
-    }
-    let readiness = match read_bsl_index_status(context, source_root) {
-        Ok(Some(status)) if stored_path_matches(status.source_root.as_deref(), source_root) => {
-            match status.status.as_str() {
-                "ready" if status.indexed_revision.as_ref() == Some(revision) => {
-                    match status.db_path.map(PathBuf::from) {
-                        Some(db_path) if db_path.is_file() => {
-                            match db_path_belongs_to_generation(context, source_root, &db_path) {
-                                Ok(true) => IndexReadiness::Ready { db_path },
-                                Ok(false) => source_generation_stale_readiness(),
-                                Err(error) => IndexReadiness::Unavailable(error),
-                            }
-                        }
-                        _ => source_generation_stale_readiness(),
-                    }
-                }
-                "building" => IndexReadiness::Building,
-                "incomplete" => IndexReadiness::Incomplete,
-                "failed" => IndexReadiness::Failed(
-                    status
-                        .message
-                        .unwrap_or_else(|| "rlm index failed".to_string()),
-                ),
-                "unavailable" => IndexReadiness::Unavailable(
-                    status
-                        .message
-                        .unwrap_or_else(|| "rlm index unavailable".to_string()),
-                ),
-                _ => source_generation_stale_readiness(),
-            }
-        }
-        Ok(_) => source_generation_stale_readiness(),
-        Err(error) => IndexReadiness::Unavailable(error),
-    };
-    match active_lock(context, source_root) {
-        Ok(true) => IndexReadiness::Building,
-        Ok(false) => readiness,
-        Err(error) => IndexReadiness::Unavailable(error),
-    }
-}
-
-#[cfg(test)]
 fn source_generation_stale_readiness() -> IndexReadiness {
     IndexReadiness::Stale {
         status: SOURCE_GENERATION_STALE_STATUS.to_string(),
@@ -2365,7 +2145,6 @@ fn bind_readiness_to_source_generation(
     context: &WorkspaceContext,
     source_root: &Path,
     generation: u64,
-    revision: Option<&SourceRevision>,
     readiness: IndexReadiness,
 ) -> IndexReadiness {
     let IndexReadiness::Ready { db_path } = readiness else {
@@ -2382,7 +2161,6 @@ fn bind_readiness_to_source_generation(
     let matches = status.is_some_and(|status| {
         status.status == "ready"
             && status.source_generation == Some(generation)
-            && revision.is_none_or(|revision| status.indexed_revision.as_ref() == Some(revision))
             && stored_path_matches(status.source_root.as_deref(), source_root)
             && stored_path_matches(status.db_path.as_deref(), &db_path)
             && db_is_in_generation
@@ -2439,19 +2217,6 @@ fn failed_status_for_source(
         return Ok(None);
     }
     Ok(status.message)
-}
-
-#[cfg(test)]
-fn status_prefers_update(context: &WorkspaceContext, source_root: &Path) -> Result<bool, String> {
-    Ok(
-        read_bsl_index_status(context, source_root)?.is_some_and(|status| {
-            status.status == "failed"
-                && status.failure_class == Some(BslIndexFailureClass::Retryable)
-                && status.next_action == Some(BslIndexNextAction::Update)
-                && status.observed_revision.is_some()
-                && stored_path_matches(status.source_root.as_deref(), source_root)
-        }),
-    )
 }
 
 fn stored_path_matches(stored: Option<&str>, current: &Path) -> bool {
@@ -2516,12 +2281,7 @@ fn new_lock_id() -> String {
 mod tests {
     use super::*;
     use crate::domain::cancellation::CancellationToken;
-    use crate::domain::code_intelligence::ProviderDeadline;
-    use crate::infrastructure::platform::source_revision_fence::{
-        FenceCapability, FenceError, FenceOutcome, SourceRevisionFence,
-    };
     use crate::infrastructure::platform::{filesystem::path_starts_with_host_root, testing};
-    use crate::infrastructure::source_revision::{SourceRevisionService, WorkspaceStateScope};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::ffi::OsString;
@@ -2654,7 +2414,7 @@ mod tests {
     }
 
     #[test]
-    fn safe_root_failure_is_unavailable_at_revision_read_and_start_boundaries() {
+    fn safe_root_failure_is_unavailable_at_the_start_boundary() {
         let mut context = test_context("safe-root-boundaries");
         let source_root = default_source_root(&context);
         fs::create_dir_all(&source_root).unwrap();
@@ -2669,22 +2429,11 @@ mod tests {
             .expect("the platform that created the first link must expose the second fixture")
             .unwrap();
         context.cache_root = first;
-        let revision = SourceRevision {
-            generation: 1,
-            digest: "safe-root-boundary".to_string(),
-            algorithm: crate::domain::source_revision::SOURCE_REVISION_ALGORITHM.to_string(),
-        };
         let runner = RecordingIndexRunner::default();
         let service = WorkspaceIndexService::with_runner(&runner);
 
-        let readiness = ready_index_for_source_revision(&context, &source_root, &revision);
         let report = service.start_for_workspace(&context, &Map::new(), false);
 
-        assert!(matches!(
-            readiness,
-            IndexReadiness::Unavailable(message)
-                if message.contains("failed to resolve existing path ancestor")
-        ));
         assert!(report.warnings.iter().any(|warning| {
             warning.starts_with("rlm index unavailable:")
                 && warning.contains("failed to resolve existing path ancestor")
@@ -3114,49 +2863,6 @@ mod tests {
     }
 
     #[test]
-    fn ready_revision_rejects_a_builder_14_db_reached_through_generation_alias() {
-        let context = test_context("ready-generation-alias-to-builder-14");
-        let source_root = default_source_root(&context);
-        fs::create_dir_all(&source_root).unwrap();
-        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
-        let legacy = pair_root.join("rlm-tools-bsl/index");
-        fs::create_dir_all(&legacy).unwrap();
-        let legacy_db = legacy.join("bsl_index.db");
-        fs::write(&legacy_db, b"builder-14-db").unwrap();
-        let revision = SourceRevision {
-            generation: 9,
-            digest: "aliased-builder-14".to_string(),
-            algorithm: crate::domain::source_revision::SOURCE_REVISION_ALGORITHM.to_string(),
-        };
-        write_status(
-            &context,
-            BslIndexStatus::ready(
-                &source_root,
-                &pair_root.join("rlm-bsl/index-v17/bsl_index.db"),
-            )
-            .with_indexed_revision(Some(revision.clone())),
-        )
-        .unwrap();
-        let alias = pair_root.join("rlm-bsl/index-v17");
-        fs::create_dir_all(alias.parent().unwrap()).unwrap();
-        let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
-            cleanup(&context);
-            return;
-        };
-        link.unwrap();
-
-        let readiness = ready_index_for_source_revision(&context, &source_root, &revision);
-
-        assert!(matches!(
-            readiness,
-            IndexReadiness::Unavailable(message)
-                if message.contains("symbolic link or reparse point")
-        ));
-        assert_eq!(fs::read(&legacy_db).unwrap(), b"builder-14-db");
-        cleanup(&context);
-    }
-
-    #[test]
     fn start_rejects_status_generation_alias_without_writing_legacy_target() {
         let context = test_context("status-generation-alias");
         let source_root = default_source_root(&context);
@@ -3442,18 +3148,10 @@ mod tests {
         let source_root = context.workspace_root.join("src");
         fs::create_dir_all(source_root.join("CommonModules")).unwrap();
         let legacy_path = context.cache_root.join("caches").join(STATUS_FILE_NAME);
-        let observed = SourceRevision {
-            generation: 7,
-            digest: "a".repeat(64),
-            algorithm: crate::domain::source_revision::SOURCE_REVISION_ALGORITHM.to_string(),
-        };
-        write_status_path(
-            &legacy_path,
-            BslIndexStatus::failed("legacy retryable update", Some(&source_root))
-                .with_observed_revision(observed)
-                .with_next_action(BslIndexNextAction::Update),
-        )
-        .unwrap();
+        let mut legacy_status =
+            BslIndexStatus::failed("legacy retryable update", Some(&source_root));
+        legacy_status.next_action = Some(BslIndexNextAction::Update);
+        write_status_path(&legacy_path, legacy_status).unwrap();
         let legacy_bytes = fs::read(&legacy_path).unwrap();
         assert!(super::read_bsl_index_status(&context, &source_root)
             .unwrap()
@@ -3526,91 +3224,6 @@ mod tests {
             .with_source_generation(42);
 
         assert_eq!(status.source_generation, Some(42));
-    }
-
-    #[test]
-    fn rlm_readiness_requires_the_complete_source_revision_tuple() {
-        let context = test_context("exact-source-revision");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        let db_path = generation_db_path(&context, "test/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "ready").unwrap();
-        let indexed = SourceRevision {
-            generation: 7,
-            digest: "a".repeat(64),
-            algorithm: crate::domain::source_revision::SOURCE_REVISION_ALGORITHM.to_string(),
-        };
-        write_status(
-            &context,
-            BslIndexStatus::ready(&source_root, &db_path)
-                .with_source_generation(indexed.generation)
-                .with_indexed_revision(Some(indexed.clone())),
-        )
-        .unwrap();
-
-        assert_eq!(
-            ready_index_for_source_revision(&context, &source_root, &indexed),
-            IndexReadiness::Ready {
-                db_path: db_path.clone()
-            }
-        );
-
-        let mismatches = [
-            (
-                "source root",
-                context.workspace_root.join("other-src"),
-                indexed.clone(),
-            ),
-            (
-                "generation",
-                source_root.clone(),
-                SourceRevision {
-                    generation: indexed.generation + 1,
-                    ..indexed.clone()
-                },
-            ),
-            (
-                "digest",
-                source_root.clone(),
-                SourceRevision {
-                    digest: "b".repeat(64),
-                    ..indexed.clone()
-                },
-            ),
-            (
-                "algorithm",
-                source_root.clone(),
-                SourceRevision {
-                    algorithm: "unica-source-sha256-v2".to_string(),
-                    ..indexed.clone()
-                },
-            ),
-        ];
-        for (component, requested_source_root, requested_revision) in mismatches {
-            assert_eq!(
-                ready_index_for_source_revision(
-                    &context,
-                    &requested_source_root,
-                    &requested_revision,
-                ),
-                source_generation_stale_readiness(),
-                "a mismatched {component} must make the index stale"
-            );
-        }
-
-        write_status(
-            &context,
-            BslIndexStatus::ready(&source_root, &db_path)
-                .with_source_generation(indexed.generation),
-        )
-        .unwrap();
-        assert_eq!(
-            ready_index_for_source_revision(&context, &source_root, &indexed),
-            source_generation_stale_readiness(),
-            "legacy numeric markers cannot prove which source corpus was indexed"
-        );
-        cleanup(&context);
     }
 
     #[test]
@@ -4985,8 +4598,6 @@ source-set:
             context: context.clone(),
             source_root: context.workspace_root.join("src"),
             source_generation: 42,
-            source_revision: None,
-            source_revision_service: None,
             root_capability: None,
             primary: print_lines_command(
                 &context.workspace_root,
@@ -5170,246 +4781,6 @@ source-set:
     }
 
     #[test]
-    fn background_job_does_not_publish_ready_for_a_revision_changed_during_build() {
-        let context = test_context("captured-generation");
-        let source_root = context.workspace_root.join("src");
-        let module = source_root.join("CommonModules/SmokeModule.bsl");
-        fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        let revision_service = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
-        );
-        let captured = revision_service
-            .snapshot(
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let mut job = test_background_job(&context, "build");
-        job.source_generation = captured.generation;
-        job.source_revision = Some(captured.clone());
-        job.source_revision_service = Some(Arc::clone(&revision_service));
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-
-        run_background_job_with(job, |command, _lease| {
-            if command.args.get(1).is_some_and(|arg| arg == "build") {
-                fs::write(&module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
-                Ok(IndexOutput::success("Index built"))
-            } else {
-                Ok(IndexOutput::success(format!(
-                    "Index: {}\n  Status:   fresh\n",
-                    db_path.display()
-                )))
-            }
-        });
-
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_ne!(status.status, "ready");
-        assert_eq!(status.indexed_revision, None);
-        assert!(
-            status
-                .message
-                .as_deref()
-                .is_some_and(|message| message.contains("source revision changed during build")),
-            "{status:?}"
-        );
-
-        let current = revision_service
-            .snapshot(
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_eq!(status.observed_revision.as_ref(), Some(&current));
-        assert_eq!(status.next_action, Some(BslIndexNextAction::Update));
-        fs::write(
-            &module,
-            "Процедура Smoke(ЕщёОдинПараметр)\nКонецПроцедуры\n",
-        )
-        .unwrap();
-        let newer = revision_service
-            .snapshot(
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        assert_ne!(newer, current);
-        let mut args = Map::new();
-        args.insert(
-            SOURCE_REVISION_ARG.to_string(),
-            serde_json::to_value(&newer).unwrap(),
-        );
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index not found: /tmp/bsl_index.db",
-            )]),
-            ..Default::default()
-        };
-        let report =
-            WorkspaceIndexService::with_runner(&runner).start_for_workspace(&context, &args, false);
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert_eq!(runner.backgrounds.borrow().len(), 1);
-        assert_eq!(runner.backgrounds.borrow()[0].action, "update");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn bound_background_job_verifies_unsupported_fence_before_ready_publication() {
-        struct UnsupportedFence;
-
-        impl SourceRevisionFence for UnsupportedFence {
-            fn capability(&self) -> FenceCapability {
-                FenceCapability::Unsupported
-            }
-
-            fn flush(
-                &self,
-                _deadline: ProviderDeadline,
-                _cancellation: &CancellationToken,
-            ) -> Result<FenceOutcome, FenceError> {
-                panic!("the unsupported fence must not be flushed")
-            }
-        }
-
-        let context = test_context("bound-unsupported-index-verification");
-        let source_root = context.workspace_root.join("src");
-        let module = source_root.join("CommonModules/SmokeModule.bsl");
-        fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        let retained_root = Arc::new(
-            RetainedDirectoryCapability::open(&normalize_path_identity(&source_root).unwrap())
-                .unwrap(),
-        );
-        let revision_service = Arc::new(
-            SourceRevisionService::new_with_fence_for_test(
-                &context,
-                &source_root,
-                WorkspaceStateScope::LegacyPhysical,
-                Arc::new(UnsupportedFence),
-            )
-            .unwrap(),
-        );
-        let captured = revision_service
-            .snapshot_retained(
-                &retained_root,
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "ready index").unwrap();
-        let mut job = test_background_job(&context, "build");
-        job.root_capability = Some(retained_root);
-        job.source_generation = captured.generation;
-        job.source_revision = Some(captured.clone());
-        job.source_revision_service = Some(revision_service);
-
-        run_background_job_with(job, |command, _lease| {
-            if command.args.get(1).is_some_and(|arg| arg == "info") {
-                Ok(IndexOutput::success(format!(
-                    "Index: {}\n  Status:   fresh\n",
-                    db_path.display()
-                )))
-            } else {
-                Ok(IndexOutput::success("Index built"))
-            }
-        });
-
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "ready", "{status:?}");
-        assert_eq!(status.indexed_revision, Some(captured));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn successful_update_makes_the_unchanged_generation_ready_again() {
-        let context = test_context("updated-generation-ready");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        let mut job = test_background_job(&context, "update");
-        let revision_service = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
-        );
-        let captured = revision_service
-            .snapshot(
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        job.source_generation = captured.generation;
-        job.source_revision = Some(captured.clone());
-        job.source_revision_service = Some(revision_service);
-        run_background_job_with(job, |command, _lease| {
-            if command.args.get(1).is_some_and(|arg| arg == "info") {
-                Ok(IndexOutput::success(format!(
-                    "Index: {}\n  Status:   fresh\n",
-                    db_path.display()
-                )))
-            } else {
-                Ok(IndexOutput::success("Index updated"))
-            }
-        });
-        let readiness = ready_index_for_source_revision(&context, &source_root, &captured);
-
-        assert_eq!(readiness, IndexReadiness::Ready { db_path });
-        assert_eq!(
-            read_bsl_index_status(&context).unwrap().indexed_revision,
-            Some(captured)
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn background_job_reuses_the_revision_service_that_captured_its_generation() {
-        let context = test_context("shared-revision-service");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        fs::write(source_root.join("Module.bsl"), "Процедура Smoke()\n").unwrap();
-        let revision_service = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&context, &source_root).unwrap(),
-        );
-        let captured = revision_service
-            .snapshot(
-                ProviderDeadline::from_budget(Duration::from_secs(5)),
-                &CancellationToken::new(),
-            )
-            .unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        let mut job = test_background_job(&context, "build");
-        job.source_generation = captured.generation;
-        job.source_revision = Some(captured.clone());
-        job.source_revision_service = Some(Arc::clone(&revision_service));
-        let cache_blocker = context.workspace_root.join("cache-blocker");
-        fs::write(&cache_blocker, "not a directory").unwrap();
-        job.context.cache_root = cache_blocker.join("child");
-
-        run_background_job_with(job, |command, _lease| {
-            if command.args.get(1).is_some_and(|arg| arg == "info") {
-                Ok(IndexOutput::success(format!(
-                    "Index: {}\n  Status:   fresh\n",
-                    db_path.display()
-                )))
-            } else {
-                Ok(IndexOutput::success("Index built"))
-            }
-        });
-
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "ready", "{status:?}");
-        assert_eq!(status.indexed_revision, Some(captured));
-        cleanup(&context);
-    }
-
-    #[test]
     fn cancelled_index_info_returns_promptly() {
         let context = test_context("cancelled-info");
         let cancellation = CancellationToken::new();
@@ -5535,8 +4906,6 @@ source-set:
             context: context.clone(),
             source_root: context.workspace_root.join("src"),
             source_generation: source_generation(&context.workspace_root.join("src")),
-            source_revision: None,
-            source_revision_service: None,
             root_capability: None,
             primary: print_lines_command(
                 &context.workspace_root,
@@ -5853,8 +5222,6 @@ source-set:
             context: context.clone(),
             source_root: context.workspace_root.join("src"),
             source_generation: source_generation(&context.workspace_root.join("src")),
-            source_revision: None,
-            source_revision_service: None,
             root_capability: None,
             primary: inert_index_command(context, action),
             info: inert_index_command(context, "info"),
@@ -6107,7 +5474,6 @@ source-set:
         let marker = read_bsl_index_status(&context).unwrap();
         assert_eq!(marker.build_id.as_deref(), Some(candidate_id.as_str()));
         assert_eq!(marker.source_generation, None);
-        assert_eq!(marker.indexed_revision, None);
         cleanup(&context);
     }
 

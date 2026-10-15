@@ -187,6 +187,7 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
         "СКД, MXL и вставка BSL проверяются на отдельных `workspace-dcs/`, `workspace-mxl/` и `workspace-code/`; точное расположение узлов — на `workspace-resolve/`; "
         "заимствованные объекты из выгрузки платформы — на `workspace-borrowed/`; "
         "неоднозначное имя командной панели формы — на `workspace-form-names/`; "
+        "отображение команды формы из набора кнопки — на `workspace-form-command-representation/`; "
         "агентные сценарии выбираются большим набором `tests/agent_evaluation/`. "
         "Источник истины — JSON корпуса; этот документ — его "
         "рендер для людей, и проверка на расхождение входит в тот же тест."
@@ -280,9 +281,21 @@ def render(corpus: dict, registry: list[tuple[str, str, str, str]], implemented:
     out("")
     out("## Покрытие реестра `apply`")
     out("")
+    def operations(count: int) -> str:
+        """Число с винительным падежом слова «операция»: 1 операцию, 2 операции, 5 операций."""
+        if count % 10 == 1 and count % 100 != 11:
+            word = "операцию"
+        elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+            word = "операции"
+        else:
+            word = "операций"
+        return f"**{count}** {word}"
+
+    covered_count = len(registry) - len(uncovered)
+    implemented_count = len(registry) - len(not_implemented)
     out(
-        f"Закрытый реестр держит **{len(registry)} операций**; сценарии покрывают "
-        f"**{len(registry) - len(uncovered)}**, помечены реализованными **{len(registry) - len(not_implemented)}**. "
+        f"Закрытый реестр содержит {operations(len(registry))}; сценарии покрывают "
+        f"{operations(covered_count)}, реализованными помечены {operations(implemented_count)}. "
         "Операция без сценария — первая кандидатура для новой задачи."
     )
     out("")

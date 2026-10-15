@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{ErrorKind, Read};
+#[cfg(test)]
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -158,8 +159,9 @@ pub(crate) enum RegistrationStatus {
 /// Exact replacement required to turn the original bytes into planned bytes.
 ///
 /// Applying `after` to `byte_range` of the original file reproduces the planned
-/// registration file byte-for-byte.  `before` is included so callers can render
-/// or verify a dry-run preview without reading the target again.
+/// registration file byte-for-byte.  Tests use it to verify the planned
+/// registration without reading the target again.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RegistrationDiff {
     pub(crate) path: PathBuf,
@@ -198,10 +200,52 @@ pub(crate) enum RetainedApplyValidationErrorKind {
     Invariant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplyInputRole {
+    SourceWrite,
+    ReadOnly,
+    SharedCache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ApplyInputContext {
+    relative_path: PathBuf,
+    role: ApplyInputRole,
+}
+
+impl ApplyInputContext {
+    fn for_entry(entry: &PlannedRetainedApplyChange, source_participant: bool) -> Self {
+        Self {
+            relative_path: entry.relative_path.clone(),
+            role: if !source_participant {
+                ApplyInputRole::SharedCache
+            } else if entry.original == entry.current {
+                ApplyInputRole::ReadOnly
+            } else {
+                ApplyInputRole::SourceWrite
+            },
+        }
+    }
+
+    fn explain(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self.role {
+            ApplyInputRole::SourceWrite => "source write target; the plan retains its original state to prevent overwriting changes",
+            ApplyInputRole::ReadOnly => "read-only input; the plan was prepared using this input",
+            ApplyInputRole::SharedCache => "shared cache input; the plan retains its original state for atomic publication of source and cache changes",
+        };
+        write!(
+            formatter,
+            "; input `{}`: {reason}",
+            self.relative_path.display()
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RetainedApplyValidationError {
     kind: RetainedApplyValidationErrorKind,
     message: String,
+    input: Option<ApplyInputContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +262,7 @@ pub(crate) enum RetainedApplyPublishErrorKind {
 pub(crate) struct RetainedApplyPublishError {
     kind: RetainedApplyPublishErrorKind,
     message: String,
+    input: Option<ApplyInputContext>,
 }
 
 impl RetainedApplyPublishError {
@@ -225,7 +270,13 @@ impl RetainedApplyPublishError {
         Self {
             kind,
             message: message.into(),
+            input: None,
         }
+    }
+
+    fn with_input(mut self, input: ApplyInputContext) -> Self {
+        self.input = Some(input);
+        self
     }
 
     pub(crate) fn kind(&self) -> RetainedApplyPublishErrorKind {
@@ -258,13 +309,21 @@ impl From<RetainedApplyValidationError> for RetainedApplyPublishError {
             }
             RetainedApplyValidationErrorKind::Invariant => RetainedApplyPublishErrorKind::Invariant,
         };
-        Self::new(kind, error.to_string())
+        Self {
+            kind,
+            message: error.message,
+            input: error.input,
+        }
     }
 }
 
 impl std::fmt::Display for RetainedApplyPublishError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.message.fmt(formatter)
+        self.message.fmt(formatter)?;
+        if let Some(input) = &self.input {
+            input.explain(formatter)?;
+        }
+        Ok(())
     }
 }
 
@@ -295,7 +354,13 @@ impl RetainedApplyValidationError {
         Self {
             kind,
             message: message.into(),
+            input: None,
         }
+    }
+
+    fn with_input(mut self, input: ApplyInputContext) -> Self {
+        self.input = Some(input);
+        self
     }
 
     pub(crate) fn kind(&self) -> RetainedApplyValidationErrorKind {
@@ -305,7 +370,11 @@ impl RetainedApplyValidationError {
 
 impl std::fmt::Display for RetainedApplyValidationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.message.fmt(formatter)
+        self.message.fmt(formatter)?;
+        if let Some(input) = &self.input {
+            input.explain(formatter)?;
+        }
+        Ok(())
     }
 }
 
@@ -490,6 +559,7 @@ impl PlannedRegistration {
         self.original != self.updated
     }
 
+    #[cfg(test)]
     fn diff(&self) -> Option<RegistrationDiff> {
         self.changed()
             .then(|| byte_diff(&self.path, &self.original, &self.updated))
@@ -541,15 +611,20 @@ pub(super) struct RetainedApplyChangeBinding {
 }
 
 /// An unchanged input inspected by a retained apply planner. It keeps the
-/// physical route and a content fingerprint, but never keeps the file body.
+/// physical identities of its route and a content fingerprint, but neither the
+/// file body nor an open descriptor: a reference scan over a whole
+/// configuration must not hold one descriptor per inspected file. The check
+/// walks the route from the retained root again and proves the same physical
+/// objects and bytes. Without a held descriptor a filesystem may reuse an
+/// identity for a recreated object; the bytes are still rehashed, so only a
+/// recreation with identical content passes, which changes no planned input.
 #[derive(Debug)]
 pub(super) struct RetainedApplyReadGuardBinding {
     pub(super) root: Arc<RetainedDirectoryCapability>,
     pub(super) relative_path: PathBuf,
-    pub(super) ancestor: RetainedDirectoryCapability,
-    pub(super) name: OsString,
-    pub(super) original_file:
-        crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+    /// Physical identity of each directory between the root and the file.
+    pub(super) route_identities: Vec<crate::infrastructure::platform::filesystem::FileIdentity>,
+    pub(super) file_identity: crate::infrastructure::platform::filesystem::FileIdentity,
     pub(super) expected_len: u64,
     pub(super) expected_sha256: [u8; 32],
     pub(super) deadline: crate::domain::code_intelligence::ProviderDeadline,
@@ -828,14 +903,20 @@ impl CompileTransaction {
                 "retained apply entries cannot mix with ambient transaction entries",
             ));
         }
-        for entry in &self.retained_apply {
+        for (index, entry) in self.retained_apply.iter().enumerate() {
             entry.root.validate_named_identity().map_err(|error| {
                 RetainedApplyValidationError::new(
                     RetainedApplyValidationErrorKind::ContainmentIdentity,
                     format!("retained apply source-root physical identity changed: {error}"),
                 )
             })?;
-            validate_retained_apply_preimage_typed(entry)?;
+            validate_retained_apply_preimage_typed(entry).map_err(|error| {
+                error.with_input(ApplyInputContext::for_entry(
+                    entry,
+                    self.retained_apply_cache_start
+                        .is_none_or(|start| index < start),
+                ))
+            })?;
             if let Some(bytes) = &entry.current {
                 validate_xml_when_applicable(&entry.root.path().join(&entry.relative_path), bytes)
                     .map_err(|error| {
@@ -851,7 +932,12 @@ impl CompileTransaction {
 
     fn validate_retained_apply_read_guards(&self) -> Result<(), RetainedApplyValidationError> {
         for guard in &self.retained_apply_read_guards {
-            validate_retained_apply_read_guard(guard)?;
+            validate_retained_apply_read_guard(guard).map_err(|error| {
+                error.with_input(ApplyInputContext {
+                    relative_path: guard.relative_path.clone(),
+                    role: ApplyInputRole::ReadOnly,
+                })
+            })?;
         }
         Ok(())
     }
@@ -1024,9 +1110,12 @@ impl CompileTransaction {
             }
             #[cfg(test)]
             run_retained_apply_before_postimages_hook();
-            for entry in &self.retained_apply {
+            for (index, entry) in self.retained_apply.iter().enumerate() {
                 final_gate.checkpoint("prepared apply postimage validation")?;
                 validate_retained_apply_postimage(entry, &entry.current, &created_directories)
+                    .map_err(|error| {
+                        error.with_input(ApplyInputContext::for_entry(entry, index < cache_start))
+                    })
                     .map_err(retained_apply_publish_publication_error)?;
             }
             #[cfg(test)]
@@ -1713,6 +1802,7 @@ impl CompileTransaction {
             .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn registration_diffs(&self) -> Vec<RegistrationDiff> {
         self.registrations
             .values()
@@ -1728,79 +1818,6 @@ impl CompileTransaction {
         self.registrations
             .get(&identity)
             .map(|registration| registration.updated.clone())
-    }
-
-    /// Stable, compact `changes` entries suitable for a dry-run result.
-    pub(crate) fn dry_run_changes(&self) -> Vec<String> {
-        let mut changes = self
-            .creates
-            .iter()
-            .map(|file| {
-                format!(
-                    "would create {} ({} bytes)",
-                    file.path.display(),
-                    file.bytes.len()
-                )
-            })
-            .collect::<Vec<_>>();
-        changes.extend(self.registration_diffs().into_iter().map(|diff| {
-            format!(
-                "would update {} bytes {}..{} ({} replacement bytes)",
-                diff.path.display(),
-                diff.byte_range.start,
-                diff.byte_range.end,
-                diff.after.len()
-            )
-        }));
-        changes.extend(
-            self.removals
-                .iter()
-                .map(|removal| format!("would remove {}", removal.path.display())),
-        );
-        changes
-    }
-
-    /// Human-readable preview with hexadecimal before/after fragments. Hex is
-    /// used deliberately so CR/LF, BOM, and non-ASCII bytes remain exact.
-    pub(crate) fn dry_run_stdout(&self) -> String {
-        let mut lines = self
-            .creates
-            .iter()
-            .map(|file| {
-                format!(
-                    "[DRY-RUN] would create {} ({} bytes)",
-                    file.path.display(),
-                    file.bytes.len()
-                )
-            })
-            .collect::<Vec<_>>();
-        for diff in self.registration_diffs() {
-            lines.push(format!("[DRY-RUN] would update {}", diff.path.display()));
-            lines.push(format!(
-                "@@ bytes {}..{} @@",
-                diff.byte_range.start, diff.byte_range.end
-            ));
-            lines.push(format!(
-                "  before-utf8: {:?}",
-                String::from_utf8_lossy(&diff.before)
-            ));
-            lines.push(format!(
-                "  after-utf8:  {:?}",
-                String::from_utf8_lossy(&diff.after)
-            ));
-            lines.push(format!("  before-hex: {}", bytes_hex(&diff.before)));
-            lines.push(format!("  after-hex:  {}", bytes_hex(&diff.after)));
-        }
-        lines.extend(
-            self.removals
-                .iter()
-                .map(|removal| format!("[DRY-RUN] would remove {}", removal.path.display())),
-        );
-        if lines.is_empty() {
-            "[DRY-RUN] no file changes\n".to_string()
-        } else {
-            format!("{}\n", lines.join("\n"))
-        }
     }
 
     /// Stage, publish, validate, and finalize every planned change as one
@@ -2462,6 +2479,82 @@ fn validate_retained_apply_preimage_typed(
     Ok(())
 }
 
+impl RetainedApplyReadGuardBinding {
+    /// Walk the guarded route from the retained root again and retain the
+    /// file it names now. Every directory and the file must be the physical
+    /// objects observed while planning; the descriptors of this walk are
+    /// released when the returned capability is dropped.
+    pub(super) fn retain_named_route(
+        &self,
+    ) -> Result<
+        crate::infrastructure::platform::filesystem::RetainedRegularFileCapability,
+        RetainedApplyValidationError,
+    > {
+        let components = self
+            .relative_path
+            .components()
+            .map(|component| match component {
+                std::path::Component::Normal(name) => Ok(name),
+                _ => Err(RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::Invariant,
+                    "reference input path is not relative",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let Some((name, parents)) = components.split_last() else {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Invariant,
+                "reference input path is empty",
+            ));
+        };
+        if parents.len() != self.route_identities.len() {
+            return Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::Invariant,
+                "reference input route does not match its identities",
+            ));
+        }
+        let mut parent = self.root.as_ref().clone();
+        for (component, expected) in parents.iter().zip(&self.route_identities) {
+            if self.cancellation.is_cancelled() {
+                return Err(RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::Cancelled,
+                    "retained apply reference check cancelled",
+                ));
+            }
+            if self.deadline.is_elapsed() {
+                return Err(RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::Deadline,
+                    "retained apply reference check deadline elapsed",
+                ));
+            }
+            parent = match parent.retain_immediate_child_nofollow(component) {
+                Ok(RetainedChildCapability::Directory(child)) if child.identity() == *expected => {
+                    child
+                }
+                _ => {
+                    return Err(RetainedApplyValidationError::new(
+                        RetainedApplyValidationErrorKind::ContainmentIdentity,
+                        format!(
+                            "reference input parent changed: {}",
+                            self.relative_path.display()
+                        ),
+                    ));
+                }
+            };
+        }
+        match parent.retain_immediate_child_nofollow(name) {
+            Ok(RetainedChildCapability::RegularFile(file)) => Ok(file),
+            _ => Err(RetainedApplyValidationError::new(
+                RetainedApplyValidationErrorKind::ContainmentIdentity,
+                format!(
+                    "reference input is no longer a regular file: {}",
+                    self.relative_path.display()
+                ),
+            )),
+        }
+    }
+}
+
 fn validate_retained_apply_read_guard(
     guard: &RetainedApplyReadGuardBinding,
 ) -> Result<(), RetainedApplyValidationError> {
@@ -2487,24 +2580,7 @@ fn validate_retained_apply_read_guard(
             format!("reference input root changed: {error}"),
         )
     })?;
-    guard.ancestor.validate_named_identity().map_err(|error| {
-        RetainedApplyValidationError::new(
-            RetainedApplyValidationErrorKind::ContainmentIdentity,
-            format!("reference input parent changed: {error}"),
-        )
-    })?;
-    let observed = match guard.ancestor.retain_immediate_child_nofollow(&guard.name) {
-        Ok(RetainedChildCapability::RegularFile(file)) => file,
-        _ => {
-            return Err(RetainedApplyValidationError::new(
-                RetainedApplyValidationErrorKind::ContainmentIdentity,
-                format!(
-                    "reference input is no longer a regular file: {}",
-                    guard.relative_path.display()
-                ),
-            ));
-        }
-    };
+    let observed = guard.retain_named_route()?;
     if observed.hard_link_count().map_err(|error| {
         RetainedApplyValidationError::new(
             RetainedApplyValidationErrorKind::UnsupportedProvider,
@@ -2520,7 +2596,7 @@ fn validate_retained_apply_read_guard(
             ),
         ));
     }
-    if observed.identity() != guard.original_file.identity() {
+    if observed.identity() != guard.file_identity {
         return Err(RetainedApplyValidationError::new(
             RetainedApplyValidationErrorKind::ConcurrentRevision,
             format!(
@@ -2529,15 +2605,12 @@ fn validate_retained_apply_read_guard(
             ),
         ));
     }
-    let mut file = guard
-        .original_file
-        .open_named_identity_for_read()
-        .map_err(|error| {
-            RetainedApplyValidationError::new(
-                RetainedApplyValidationErrorKind::ConcurrentRevision,
-                format!("reference input cannot be reopened: {error}"),
-            )
-        })?;
+    let mut file = observed.open_named_identity_for_read().map_err(|error| {
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ConcurrentRevision,
+            format!("reference input cannot be reopened: {error}"),
+        )
+    })?;
     let mut hash = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     let mut length = 0_u64;
@@ -2581,15 +2654,13 @@ fn validate_retained_apply_read_guard(
     }
     #[cfg(test)]
     run_retained_apply_after_reference_stream_hook();
-    guard
-        .original_file
-        .validate_named_identity()
-        .map_err(|error| {
-            RetainedApplyValidationError::new(
-                RetainedApplyValidationErrorKind::ConcurrentRevision,
-                format!("reference input identity changed during content check: {error}"),
-            )
-        })?;
+    drop(file);
+    observed.validate_named_identity().map_err(|error| {
+        RetainedApplyValidationError::new(
+            RetainedApplyValidationErrorKind::ConcurrentRevision,
+            format!("reference input identity changed during content check: {error}"),
+        )
+    })?;
     Ok(())
 }
 
@@ -3038,6 +3109,16 @@ fn retained_apply_displacement_error_kind(error: &std::io::Error) -> RetainedApp
 }
 
 fn publish_retained_apply_change(
+    entry: &PlannedRetainedApplyChange,
+    journal: &mut Vec<PublishedRetainedApplyChange>,
+    created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
+    source_participant: bool,
+) -> Result<(), RetainedApplyPublishError> {
+    publish_retained_apply_change_inner(entry, journal, created_directories, source_participant)
+        .map_err(|error| error.with_input(ApplyInputContext::for_entry(entry, source_participant)))
+}
+
+fn publish_retained_apply_change_inner(
     entry: &PlannedRetainedApplyChange,
     journal: &mut Vec<PublishedRetainedApplyChange>,
     created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
@@ -5771,6 +5852,7 @@ fn string_diff_bounds(before: &str, after: &str) -> (usize, usize, usize) {
     (prefix, before.len() - suffix, after.len() - suffix)
 }
 
+#[cfg(test)]
 fn byte_diff(path: &Path, before: &[u8], after: &[u8]) -> RegistrationDiff {
     let prefix = common_prefix_len(before, after);
     let suffix = common_suffix_len(&before[prefix..], &after[prefix..]);
@@ -5797,16 +5879,6 @@ fn common_suffix_len(left: &[u8], right: &[u8]) -> usize {
         .zip(right.iter().rev())
         .take_while(|(left, right)| left == right)
         .count()
-}
-
-fn bytes_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }
 
 #[cfg(test)]
@@ -6235,9 +6307,7 @@ fn failpoint_post_write_validation() -> Result<(), String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::application::UnicaApplication;
     use crate::infrastructure::platform::testing;
-    use serde_json::{Map, Value};
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -6335,88 +6405,6 @@ pub(crate) mod tests {
         root
     }
 
-    fn public_compile_workspace(name: &str) -> PathBuf {
-        let root = temp_root(name);
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        fs::create_dir_all(&src).unwrap();
-        fs::write(
-            workspace.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        fs::write(
-            src.join("Configuration.xml"),
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
-  <Configuration uuid="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa">
-    <InternalInfo>
-      <xr:ContainedObject><xr:ClassId>9cd510cd-abfc-11d4-9434-004095e12fc7</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000002</xr:ObjectId></xr:ContainedObject>
-      <xr:ContainedObject><xr:ClassId>9fcd25a0-4822-11d4-9414-008048da11f9</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000003</xr:ObjectId></xr:ContainedObject>
-      <xr:ContainedObject><xr:ClassId>e3687481-0a87-462c-a166-9f34594f9bba</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000004</xr:ObjectId></xr:ContainedObject>
-      <xr:ContainedObject><xr:ClassId>9de14907-ec23-4a07-96f0-85521cb6b53b</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000005</xr:ObjectId></xr:ContainedObject>
-      <xr:ContainedObject><xr:ClassId>51f2d5d8-ea4d-4064-8892-82951750031e</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000006</xr:ObjectId></xr:ContainedObject>
-      <xr:ContainedObject><xr:ClassId>e68182ea-4237-4383-967f-90c1e3370bc7</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000007</xr:ObjectId></xr:ContainedObject>
-      <xr:ContainedObject><xr:ClassId>fb282519-d103-4dd3-bc12-cb271d631dfc</xr:ClassId><xr:ObjectId>00000000-0000-0000-0000-000000000008</xr:ObjectId></xr:ContainedObject>
-    </InternalInfo>
-    <Properties>
-      <Name>Demo</Name>
-      <ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>
-      <DefaultLanguage>Language.English</DefaultLanguage>
-    </Properties>
-    <ChildObjects><Language>English</Language><Catalog>Items</Catalog></ChildObjects>
-  </Configuration>
-</MetaDataObject>"#,
-        )
-        .unwrap();
-        fs::create_dir_all(src.join("Languages")).unwrap();
-        fs::write(src.join("Languages/English.xml"), b"language marker").unwrap();
-        root
-    }
-
-    #[test]
-    fn public_role_compile_rolls_back_after_object_files_failure() {
-        let root = public_compile_workspace("public-role-rollback");
-        let workspace = root.join("workspace");
-        let src = workspace.join("src");
-        let config_path = src.join("Configuration.xml");
-        let config_before = fs::read(&config_path).unwrap();
-        let role_json = workspace.join("rollback-user.json");
-        fs::write(
-            &role_json,
-            r#"{
-  "name": "RollbackUser",
-  "synonym": "Rollback user",
-  "objects": ["Catalog.Items: @view"]
-}"#,
-        )
-        .unwrap();
-        let mut args = Map::new();
-        args.insert(
-            "cwd".to_string(),
-            Value::String(workspace.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-        args.insert(
-            "JsonPath".to_string(),
-            Value::String(role_json.display().to_string()),
-        );
-        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-
-        let result = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
-            UnicaApplication::new()
-                .call_tool("unica.role.compile", &args)
-                .unwrap()
-        });
-
-        assert!(!result.ok, "{result:?}");
-        assert!(result.errors.join("\n").contains("after object files"));
-        assert_eq!(fs::read(&config_path).unwrap(), config_before);
-        assert!(!src.join("Roles").exists());
-
-        let _ = fs::remove_dir_all(root);
-    }
-
     fn configuration_bytes() -> Vec<u8> {
         let text = concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n",
@@ -6505,11 +6493,6 @@ pub(crate) mod tests {
         let mut reconstructed = original.clone();
         reconstructed.splice(diff.byte_range.clone(), diff.after.clone());
         assert_eq!(transaction.planned_updated_paths(), vec![config.clone()]);
-        assert!(transaction.dry_run_changes()[0].starts_with("would update "));
-        let preview = transaction.dry_run_stdout();
-        assert!(preview.contains("@@ bytes"), "{preview}");
-        assert!(preview.contains("<Role>Reader</Role>\\r\\n"), "{preview}");
-        assert!(preview.contains("after-hex"), "{preview}");
 
         let report = transaction.commit().expect("transaction must commit");
         assert!(report.created.is_empty());

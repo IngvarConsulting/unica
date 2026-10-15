@@ -1013,7 +1013,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 69)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 66)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -1037,7 +1037,7 @@ class CorpusAdapterTests(unittest.TestCase):
         verifier = load_verifier()
         self.assertEqual(
             verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "a149b026b2f686ca0ee560997f9bb2722d8163fbedffe553ec9a01b4b6a56099",
+            "bbd782e757485d65be77ebd9c2b0d7602b1ad2634c6ae7045397c88aa5598a4c",
         )
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
@@ -2319,24 +2319,30 @@ class CommandRunnerTests(unittest.TestCase):
             ):
                 verifier.CommandRunner(timeout_seconds=timeout)
 
-    def test_platform_version_accepts_numeric_8_3_27_builds_only(self):
+    def test_platform_version_must_equal_exact_8_3_27_build(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            exact = self.make_executable(root, 'print("8.3.27.2074")\n', "exact")
+            wrong = self.make_executable(root, 'print("8.3.27.9999")\n', "wrong")
             runner = verifier.CommandRunner(timeout_seconds=15)
-            for version in ("8.3.27.2074", "8.3.27.2214", "8.3.27.9999"):
-                with self.subTest(version=version):
-                    executable = self.make_executable(root, f"print({version!r})\n")
-                    record = verifier.verify_platform_version(executable, runner, root)
-                    self.assertEqual(record["version"], version)
-                    self.assertEqual(record["ibcmdSha256"], sha256(executable.read_bytes()))
-            for version in ("8.3.26.2074", "8.3.28.1", "8.3.27", "8.3.27.2214-beta", "8.3.27.2214\nextra", "8.3.27.٢٢١٤"):
-                with self.subTest(version=version):
-                    executable = self.make_executable(root, f"print({version!r})\n")
-                    with self.assertRaises(verifier.PlatformVersionError):
-                        verifier.verify_platform_version(executable, runner, root)
 
-    def test_platform_binary_hash_must_match_explicit_run_identity(self):
+            version_record = verifier.verify_platform_version(
+                exact,
+                runner,
+                root,
+                expected_sha256=sha256(exact.read_bytes()),
+            )
+            self.assertEqual(version_record["version"], "8.3.27.2074")
+            with self.assertRaisesRegex(verifier.SourceError, "8.3.27.2074"):
+                verifier.verify_platform_version(
+                    wrong,
+                    runner,
+                    root,
+                    expected_sha256=sha256(wrong.read_bytes()),
+                )
+
+    def test_platform_binary_hash_must_match_the_pinned_8_3_27_binary(self):
         verifier = load_verifier()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2369,6 +2375,14 @@ class PlatformInstallInventoryTests(unittest.TestCase):
         (install / "locale/messages.res").write_bytes(b"resource-one")
         snapshot = verifier.capture_platform_install_inventory(ibcmd)
         return verifier, install, ibcmd, snapshot
+
+    def test_checked_in_8_3_27_2074_install_inventory_pin_is_exact(self):
+        verifier = load_verifier()
+        self.assertEqual(verifier.EXPECTED_PLATFORM_INSTALL_FILE_COUNT, 4337)
+        self.assertEqual(
+            verifier.EXPECTED_PLATFORM_INSTALL_SHA256,
+            "5eb8897c4f7e95876572f2f36943439b0d57e47688314b622f5771e5a22df0ef",
+        )
 
     def test_inventory_is_recursive_deterministic_and_relative(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3537,6 +3551,16 @@ class ParallelGateTests(unittest.TestCase):
         evidence.mkdir()
         report = root / "platform-report.json"
         fake = CheckpointExecutionTests().fake_ibcmd(root, "pass")
+        for name in (
+            "EXPECTED_IBCMD_SHA256",
+            "EXPECTED_PLATFORM_INSTALL_SHA256",
+            "EXPECTED_PLATFORM_INSTALL_FILE_COUNT",
+        ):
+            self.addCleanup(setattr, verifier, name, getattr(verifier, name))
+        verifier.EXPECTED_IBCMD_SHA256 = sha256(fake.read_bytes())
+        inventory = verifier.capture_platform_install_inventory(fake)
+        verifier.EXPECTED_PLATFORM_INSTALL_SHA256 = inventory["sha256"]
+        verifier.EXPECTED_PLATFORM_INSTALL_FILE_COUNT = inventory["fileCount"]
         return verifier, manifest, evidence, report, fake
 
     def execute(self, verifier, manifest, evidence, report, fake, **kwargs):
@@ -3654,6 +3678,16 @@ class GateAndReportTests(unittest.TestCase):
         evidence.mkdir()
         report = root / "platform-report.json"
         fake = CheckpointExecutionTests().fake_ibcmd(root, fake_mode)
+        for name in (
+            "EXPECTED_IBCMD_SHA256",
+            "EXPECTED_PLATFORM_INSTALL_SHA256",
+            "EXPECTED_PLATFORM_INSTALL_FILE_COUNT",
+        ):
+            self.addCleanup(setattr, verifier, name, getattr(verifier, name))
+        verifier.EXPECTED_IBCMD_SHA256 = sha256(fake.read_bytes())
+        inventory = verifier.capture_platform_install_inventory(fake)
+        verifier.EXPECTED_PLATFORM_INSTALL_SHA256 = inventory["sha256"]
+        verifier.EXPECTED_PLATFORM_INSTALL_FILE_COUNT = inventory["fileCount"]
         return verifier, manifest, evidence, report, fake
 
     def test_full_tree_snapshot_covers_non_xml_and_rejects_symlinks(self):
@@ -3812,7 +3846,6 @@ class GateAndReportTests(unittest.TestCase):
             root = Path(tmp)
             verifier, manifest, evidence, report_path, ibcmd = self.synthetic_gate(root)
             before = verifier.snapshot_regular_tree(manifest.parent)
-            inventory = verifier.capture_platform_install_inventory(ibcmd)
 
             with mock.patch.object(
                 verifier,
@@ -3832,7 +3865,7 @@ class GateAndReportTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(report["status"], "pass")
-            self.assertEqual(report["expectedPlatformVersion"], "8.3.27.*")
+            self.assertEqual(report["expectedPlatformVersion"], "8.3.27.2074")
             self.assertEqual(report["observedPlatformVersion"], "8.3.27.2074")
             self.assertEqual(report["platformVersion"], "8.3.27.2074")
             self.assertEqual(report["summary"]["pass"], 1)
@@ -3851,13 +3884,13 @@ class GateAndReportTests(unittest.TestCase):
             self.assertEqual(
                 platform_install,
                 {
-                    "expectedSha256": inventory["sha256"],
-                    "expectedFileCount": inventory["fileCount"],
-                    "beforeSha256": inventory["sha256"],
-                    "beforeFileCount": inventory["fileCount"],
+                    "expectedSha256": verifier.EXPECTED_PLATFORM_INSTALL_SHA256,
+                    "expectedFileCount": verifier.EXPECTED_PLATFORM_INSTALL_FILE_COUNT,
+                    "beforeSha256": verifier.EXPECTED_PLATFORM_INSTALL_SHA256,
+                    "beforeFileCount": verifier.EXPECTED_PLATFORM_INSTALL_FILE_COUNT,
                     "beforeDirectoryCount": 1,
-                    "afterSha256": inventory["sha256"],
-                    "afterFileCount": inventory["fileCount"],
+                    "afterSha256": verifier.EXPECTED_PLATFORM_INSTALL_SHA256,
+                    "afterFileCount": verifier.EXPECTED_PLATFORM_INSTALL_FILE_COUNT,
                     "afterDirectoryCount": 1,
                     "unchanged": True,
                     "verified": True,
@@ -3869,51 +3902,30 @@ class GateAndReportTests(unittest.TestCase):
             self.assertTrue(report_path.read_bytes().endswith(b"\n"))
             self.assertNotIn(str(root), json.dumps(report))
 
-    def test_gate_accepts_new_build_and_captures_its_actual_inventory(self):
+    def test_gate_rejects_an_unpinned_executable_before_running_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             verifier, manifest, evidence, report_path, ibcmd = self.synthetic_gate(root)
-            ibcmd.write_text(ibcmd.read_text().replace("8.3.27.2074", "8.3.27.2214"))
-            (ibcmd.parent / "another-library.dylib").write_bytes(b"new build library")
-            inventory = verifier.capture_platform_install_inventory(ibcmd)
-            digest = sha256(ibcmd.read_bytes())
+            verifier.EXPECTED_IBCMD_SHA256 = "0" * 64
+
             exit_code, report = verifier.execute_gate(
-                ibcmd=ibcmd, corpus_manifest=manifest, report_path=report_path,
-                evidence_dir=evidence, timeout_seconds=15, repo_root=ROOT,
-                home_root=Path.home(), mandatory_case_ids={"cf-init-default"},
+                ibcmd=ibcmd,
+                corpus_manifest=manifest,
+                report_path=report_path,
+                evidence_dir=evidence,
+                timeout_seconds=15,
+                repo_root=ROOT,
+                home_root=Path.home(),
+                mandatory_case_ids={"cf-init-default"},
             )
-            self.assertEqual(exit_code, 0)
-            self.assertEqual(report["platformVersion"], "8.3.27.2214")
-            self.assertEqual(report["provenance"]["ibcmdSha256"], digest)
-            self.assertEqual(report["provenance"]["expectedIbcmdSha256"], digest)
-            installed = report["provenance"]["platformInstall"]
-            self.assertEqual(installed["beforeSha256"], inventory["sha256"])
-            self.assertEqual(installed["afterSha256"], inventory["sha256"])
-            self.assertEqual(installed["expectedFileCount"], inventory["fileCount"])
-            self.assertTrue(installed["verified"])
 
-    def test_gate_rejects_executable_changed_after_inventory_before_version(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            verifier, manifest, evidence, report_path, ibcmd = self.synthetic_gate(Path(tmp))
-            capture = verifier.capture_platform_install_inventory
-            original_digest = sha256(ibcmd.read_bytes())
-
-            def capture_then_replace(path):
-                inventory = capture(path)
-                ibcmd.write_bytes(ibcmd.read_bytes() + b"\n# changed after capture\n")
-                return inventory
-
-            with mock.patch.object(verifier, "capture_platform_install_inventory", side_effect=capture_then_replace):
-                exit_code, report = verifier.execute_gate(
-                    ibcmd=ibcmd, corpus_manifest=manifest, report_path=report_path,
-                    evidence_dir=evidence, timeout_seconds=15, repo_root=ROOT,
-                    home_root=Path.home(), mandatory_case_ids={"cf-init-default"},
-                )
             self.assertEqual(exit_code, 2)
+            self.assertEqual(report["status"], "source-error")
             self.assertEqual(report["sourceError"]["code"], "platform-binary-mismatch")
+            self.assertIsNone(report["observedPlatformVersion"])
+            self.assertIsNone(report["provenance"]["versionCheck"])
+            self.assertEqual(report["provenance"]["ibcmdSha256"], sha256(ibcmd.read_bytes()))
             self.assertEqual(report["summary"]["versionCommandCount"], 0)
-            self.assertEqual(report["provenance"]["expectedIbcmdSha256"], original_digest)
-            self.assertFalse(report["provenance"]["platformInstall"]["verified"])
 
     def test_gate_rejects_ibcmd_replacement_after_the_version_probe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3921,7 +3933,7 @@ class GateAndReportTests(unittest.TestCase):
             verifier, manifest, evidence, report_path, ibcmd = self.synthetic_gate(
                 root, fake_mode="swap-after-version"
             )
-            pinned_hash = sha256(ibcmd.read_bytes())
+            pinned_hash = verifier.EXPECTED_IBCMD_SHA256
 
             exit_code, report = verifier.execute_gate(
                 ibcmd=ibcmd,
@@ -3946,7 +3958,6 @@ class GateAndReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             verifier, manifest, evidence, report_path, ibcmd = self.synthetic_gate(root)
-            inventory = verifier.capture_platform_install_inventory(ibcmd)
             (ibcmd.parent / "runtime.dylib").write_bytes(b"substituted-dynamic-library")
 
             exit_code, report = verifier.execute_gate(
@@ -3954,8 +3965,6 @@ class GateAndReportTests(unittest.TestCase):
                 corpus_manifest=manifest,
                 report_path=report_path,
                 evidence_dir=evidence,
-                expected_platform_install_sha256=inventory["sha256"],
-                expected_platform_install_file_count=inventory["fileCount"],
                 timeout_seconds=15,
                 repo_root=ROOT,
                 home_root=Path.home(),
@@ -4561,7 +4570,7 @@ class GateAndReportTests(unittest.TestCase):
             self.assertEqual(exit_code, 2)
             self.assertEqual(report["status"], "source-error")
             self.assertEqual(report["sourceError"]["code"], "platform-version-mismatch")
-            self.assertEqual(report["expectedPlatformVersion"], "8.3.27.*")
+            self.assertEqual(report["expectedPlatformVersion"], "8.3.27.2074")
             self.assertEqual(report["observedPlatformVersion"], "8.3.28.1")
             self.assertEqual(report["platformVersion"], "8.3.28.1")
             version = report["provenance"]["versionCheck"]

@@ -101,7 +101,7 @@ fn content_operations() -> Vec<(&'static str, Value, &'static str)> {
     vec![
         (
             "ext:Role.SalesReader",
-            json!({"op":"right.set","args":{"values":{"object":"DataProcessor.Обработка","right":"Use","value":true}}}),
+            json!({"op":"right.add","args":{"items":[{"object":"DataProcessor.Обработка","rights":{"Use":true}}]}}),
             "ext:Role.SalesReader",
         ),
         (
@@ -121,7 +121,7 @@ fn content_operations() -> Vec<(&'static str, Value, &'static str)> {
         ),
         (
             "ext:DataProcessor.Обработка.Template.Макет",
-            json!({"op":"mxl.set","args":{"values":{}}}),
+            json!({"op":"area.add","args":{"items":[{"name":"Шапка","cells":{"R1C1":"x"}}]}}),
             "ext:DataProcessor.Обработка",
         ),
         (
@@ -180,7 +180,7 @@ fn inherited_refusal_needs_a_borrowed_object_without_its_file() {
         (
             &own_role,
             "ext:Role.SalesReader",
-            json!({"op":"right.set","args":{"values":{"object":"DataProcessor.Обработка","right":"Use","value":true}}}),
+            json!({"op":"right.add","args":{"items":[{"object":"DataProcessor.Обработка","rights":{"Use":true}}]}}),
         ),
     ] {
         let (planned, _) = plan(prepare, at, op);
@@ -199,7 +199,7 @@ fn inherited_refusal_needs_a_borrowed_object_without_its_file() {
     let (planned, _) = plan(
         &with_rights,
         "ext:Role.SalesReader",
-        json!({"op":"right.set","args":{"values":{"object":"DataProcessor.Обработка","right":"Use","value":true}}}),
+        json!({"op":"right.add","args":{"items":[{"object":"DataProcessor.Обработка","rights":{"Use":true}}]}}),
     );
     assert!(
         planned.is_ok(),

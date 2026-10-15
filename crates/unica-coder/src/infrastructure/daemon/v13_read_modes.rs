@@ -1,6 +1,7 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{
-    OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat, IMPLEMENTED_APPLY_OPERATIONS,
+    FormItemRole, OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat,
+    IMPLEMENTED_APPLY_OPERATIONS,
 };
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::metadata_kinds::metadata_kind;
@@ -87,22 +88,28 @@ pub(super) fn configuration_context() -> CanContext {
     )
 }
 
-/// The node's address and template format, read from the projected node
-/// data. `None` means the dictionary is not computed for this node: the kind
-/// or the address is unknown to the grammar.
+/// The node's address, template format and form item role, read from the
+/// projected node data. `None` means the dictionary is not computed for this
+/// node: the kind or the address is unknown to the grammar.
 fn node_site(
     data: &Map<String, Value>,
     context: CanContext,
-) -> Option<(QualifiedAddress, Option<TemplateFormat>)> {
+) -> Option<(
+    QualifiedAddress,
+    Option<TemplateFormat>,
+    Option<FormItemRole>,
+)> {
     NodeKind::parse(data.get("kind")?.as_str()?).ok()?;
     let at = QualifiedAddress::parse(data.get("at")?.as_str()?).ok()?;
     OperationSite::new(&at, context)?;
-    let format = data
-        .get("props")
-        .and_then(|props| props.get("format"))
-        .and_then(Value::as_str)
-        .map(TemplateFormat::parse);
-    Some((at, format))
+    let prop = |key: &str| {
+        data.get("props")
+            .and_then(|props| props.get(key))
+            .and_then(Value::as_str)
+    };
+    let format = prop("format").map(TemplateFormat::parse);
+    let item = prop("tag").map(FormItemRole::from_tag);
+    Some((at, format, item))
 }
 
 /// The borrowed node carries no companion file of its own: its content is the
@@ -121,7 +128,7 @@ fn inherited_node(data: &Map<String, Value>) -> bool {
 /// for this node: the answer then carries no `can`. A computed dictionary
 /// may be empty (`[]`): nothing applies at this node, which is an answer.
 fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Option<Vec<Value>> {
-    let (at, format) = node_site(data, context)?;
+    let (at, format, item) = node_site(data, context)?;
     let site = OperationSite::new(&at, context)?;
     // Содержимое заимствованного узла без своего файла принадлежит
     // родителю: операции, которые пишут это содержимое, `apply` отвергнет,
@@ -131,12 +138,12 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
         OperationRegistry::closed()
             .descriptors()
             .iter()
-            .filter(|descriptor| descriptor.applies_to_node(&site, format))
+            .filter(|descriptor| descriptor.applies_to_node(&site, format, item))
             .filter(|descriptor| !inherited || descriptor.content_resource().is_none())
             .map(|descriptor| {
                 json!({
                     "op": descriptor.name(),
-                    "args": descriptor.skeleton_key_at(&site),
+                    "args": descriptor.skeleton_key(),
                     "implemented": IMPLEMENTED_APPLY_OPERATIONS.contains(&descriptor.name()),
                 })
             })
@@ -167,7 +174,7 @@ pub(super) fn operation_node(
     let data = data
         .as_object()
         .ok_or_else(|| ReadModeError::bad_value("operation details require object node data"))?;
-    let (owner, format) = node_site(data, context).ok_or_else(|| {
+    let (owner, format, item) = node_site(data, context).ok_or_else(|| {
         let kind = data.get("kind").and_then(Value::as_str).unwrap_or_default();
         ReadModeError::unsupported_section(format!(
             "the operation dictionary is not computed for kind `{kind}` yet"
@@ -186,7 +193,7 @@ pub(super) fn operation_node(
             "operation `{operation}` writes content this borrowed node inherits from the parent; read the parent named by props.extends"
         )));
     }
-    if !descriptor.applies_to_node(&site, format) {
+    if !descriptor.applies_to_node(&site, format, item) {
         let kind = owner
             .segments()
             .last()
@@ -196,7 +203,19 @@ pub(super) fn operation_node(
         )));
     }
     let implemented = IMPLEMENTED_APPLY_OPERATIONS.contains(&operation);
-    let contract = descriptor.argument_contract_at(&site);
+    let mut contract = descriptor.argument_contract_at(&site);
+    // Командная панель принимает только кнопки: её контракт `element.add`
+    // публикует один вид, как и отвечает писатель (#1447).
+    let command_bar = data
+        .get("props")
+        .and_then(|props| props.get("tag"))
+        .and_then(Value::as_str)
+        .is_some_and(|tag| tag.starts_with("[AutoCommandBar") || tag.starts_with("[CmdBar"));
+    if operation == "element.add" && command_bar {
+        contract = Some(
+            crate::domain::operation_contract::OperationContract::form_element_add_in_command_bar(),
+        );
+    }
     if implemented && contract.is_none() {
         return Err(ReadModeError::unsupported_section(format!(
             "detailed argument contract for `{operation}` is not available yet"
@@ -208,7 +227,7 @@ pub(super) fn operation_node(
         "title": operation,
         "props": {
             "op": operation,
-            "args": descriptor.skeleton_key_at(&site),
+            "args": descriptor.skeleton_key(),
             "implemented": implemented,
             "contract": contract.map(|contract| contract.details()),
         },
@@ -234,41 +253,6 @@ mod operation_dictionary_tests {
     fn can_of(mut data: Value) -> Value {
         attach_can(&mut data, super::configuration_context());
         data
-    }
-
-    #[test]
-    fn element_move_can_selects_operands_from_the_address() {
-        for (at, kind, key) in [
-            ("main:Catalog.Goods.Form.Main", "Form", "items"),
-            ("main:Catalog.Goods.Form.Main.Item.Value", "Item", "values"),
-            (
-                "main:Catalog.Goods.Form.Main.Item.Tabs.Item.Page.Item.Value",
-                "Item",
-                "values",
-            ),
-        ] {
-            let data = json!({"at":at,"kind":kind});
-            let brief = can_of(data.clone());
-            let entry = brief["can"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|entry| entry["op"] == "element.move")
-                .expect("move is available on forms and items");
-            assert_eq!(entry["args"], key);
-            let detailed = operation_node(
-                &data,
-                "element.move",
-                &format!("{at}.Can.element.move"),
-                super::configuration_context(),
-            )
-            .unwrap();
-            assert_eq!(detailed["props"]["args"], key);
-            assert_eq!(
-                detailed["props"]["contract"]["argsSchema"]["required"],
-                json!([key])
-            );
-        }
     }
 
     #[test]
@@ -312,8 +296,8 @@ mod operation_dictionary_tests {
     #[test]
     fn dcs_and_mxl_template_can_follow_the_actual_body_format() {
         for (format, accepted, rejected) in [
-            ("DataCompositionSchema", "dataSet.add", "mxl.set"),
-            ("SpreadsheetDocument", "mxl.set", "dataSet.add"),
+            ("DataCompositionSchema", "dataSet.add", "area.add"),
+            ("SpreadsheetDocument", "area.add", "dataSet.add"),
         ] {
             let data = json!({"at":"cf:Report.F05Report.Template.Layout","kind":"Template","title":"Layout","props":{"format":format}});
             let listed = can_of(data.clone());
@@ -533,9 +517,9 @@ mod inherited_can_tests {
         let own = json!({"at":"ext:Role.R","kind":"Role","title":"R","props":{}});
         let inherited =
             json!({"at":"ext:Role.R","kind":"Role","title":"R","props":{"content":"inherited"}});
-        assert!(ops(&own).iter().any(|op| op == "right.set"));
+        assert!(ops(&own).iter().any(|op| op == "right.add"));
         let inherited_ops = ops(&inherited);
-        assert!(!inherited_ops.iter().any(|op| op == "right.set"));
+        assert!(!inherited_ops.iter().any(|op| op == "right.add"));
         assert!(inherited_ops.iter().any(|op| op == "props.set"));
 
         let form = json!({"at":"ext:DataProcessor.D.Form.F","kind":"Form","title":"F","props":{"content":"inherited"}});
@@ -545,11 +529,11 @@ mod inherited_can_tests {
             .any(|op| op == "element.add" || op == "event.bind"));
         assert!(form_ops.iter().any(|op| op == "form.remove"));
 
-        let at = "ext:Role.R.Can.right.set";
-        let refused = operation_node(&inherited, "right.set", at, extension())
+        let at = "ext:Role.R.Can.right.add";
+        let refused = operation_node(&inherited, "right.add", at, extension())
             .expect_err("a content writer is not readable through Can");
         assert!(refused.to_string().contains("inherits from the parent"));
-        if let Err(error) = operation_node(&own, "right.set", at, extension()) {
+        if let Err(error) = operation_node(&own, "right.add", at, extension()) {
             assert!(!error.to_string().contains("inherits from the parent"));
         }
         if let Err(error) = operation_node(

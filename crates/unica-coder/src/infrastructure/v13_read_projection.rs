@@ -1,5 +1,5 @@
 use crate::application::v13::view::ViewError;
-use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
+use crate::domain::address::{member_address, AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::module_projection::EventProjection;
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
@@ -290,7 +290,7 @@ fn form_collection(
         .flatten()
         .filter_map(|item| {
             let name = item_identity(item)?;
-            let child = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
+            let child = address.member(name).ok()?;
             serde_json::to_value(form_node(&child, kind, item, semantic_events)).ok()
         })
         .collect();
@@ -362,27 +362,22 @@ fn project_dcs(
         )));
     }
     if suffix.len() == 1 && suffix[0].kind() == NodeKind::Item && suffix[0].name().is_none() {
-        let mut rows = Vec::new();
-        for source in payload
-            .get("dataSources")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            rows.push(serde_json::json!({"kind":"DataSource","name":source["name"],"sourceType":source["kind"]}));
-        }
-        for (index, link) in payload
+        // Связи наборов не имеют устойчивой идентичности: они остаются
+        // строками, выбираемыми составным ключом. Источники данных
+        // адресуются сами: `DataSource.<имя>` (#1357).
+        let rows = payload
             .get("links")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .enumerate()
-        {
-            let mut row = link.as_object().cloned().unwrap_or_default();
-            row.insert("kind".into(), serde_json::json!("DataSetLink"));
-            row.insert("index".into(), serde_json::json!(index));
-            rows.push(Value::Object(row));
-        }
+            .map(|(index, link)| {
+                let mut row = link.as_object().cloned().unwrap_or_default();
+                row.insert("kind".into(), serde_json::json!("DataSetLink"));
+                row.insert("index".into(), serde_json::json!(index));
+                Value::Object(row)
+            })
+            .collect();
         return Ok(NodeViewData::Collection(CollectionView::new(
             NodeView::new(address.to_string(), "Item", "Item", Map::new()),
             rows,
@@ -414,37 +409,14 @@ fn project_dcs(
             )));
         }
     }
+    if let [total] = suffix {
+        if total.kind() == NodeKind::Total {
+            return project_dcs_totals(address, payload, total.name());
+        }
+    }
     let dataset_segment = &suffix[0];
     if dataset_segment.kind() == NodeKind::Setting && suffix.len() > 1 {
-        let [setting, item] = suffix else {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "DCS setting structure does not have addressable children",
-            ));
-        };
-        if item.kind() != NodeKind::Item || item.name().is_some() {
-            return Err(ViewError::new(
-                RefusalCode::NotFound,
-                "DCS structure items are rows of Setting.<name>.Item, not named logical nodes",
-            ));
-        }
-        let variant = setting
-            .name()
-            .and_then(|name| {
-                payload
-                    .get("variants")
-                    .and_then(|variants| select_named(variants, name))
-            })
-            .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "DCS setting was not found"))?;
-        let rows = variant
-            .get("structureItems")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "Item", "Item", Map::new()),
-            rows,
-        )));
+        return project_dcs_structure(address, payload, &suffix[0], &suffix[1..]);
     }
     if dataset_segment.kind() != NodeKind::DataSet {
         return project_known_suffix(LogicalReader::Dcs, address, payload, suffix);
@@ -543,6 +515,293 @@ fn project_dcs(
         name,
         reader_node_props(LogicalReader::Dcs, detail.kind(), item),
     )))
+}
+
+/// Строки структуры варианта, чей ближайший именованный предок — элемент
+/// `scope` (`None` — сам вариант). Безымянный элемент прозрачен: его потомки
+/// принадлежат ближайшему именованному предку, поэтому именованная группа под
+/// безымянной адресуется от варианта (#1357).
+pub(crate) fn dcs_structure_scope(rows: &[Value], scope: Option<usize>) -> Vec<usize> {
+    let named = |index: usize| {
+        rows.get(index)
+            .and_then(|row| row.get("name"))
+            .and_then(Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+    };
+    let parent = |index: usize| {
+        rows.get(index)
+            .and_then(|row| row.get("parentIndex"))
+            .and_then(Value::as_u64)
+            .and_then(|parent| usize::try_from(parent).ok())
+    };
+    (0..rows.len())
+        .filter(|index| {
+            let mut current = parent(*index);
+            // Глубина ограничена числом строк: испорченный `parentIndex`
+            // не зацикливает обход.
+            for _ in 0..rows.len() {
+                match current {
+                    Some(ancestor) if !named(ancestor) => current = parent(ancestor),
+                    _ => break,
+                }
+            }
+            current == scope
+        })
+        .collect()
+}
+
+/// Имя строки структуры, которое адресует её в области: непустое и
+/// единственное среди строк этой области.
+fn dcs_structure_address_name<'a>(
+    rows: &'a [Value],
+    scope: &[usize],
+    index: usize,
+) -> Option<&'a str> {
+    let name = rows[index]
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())?;
+    (scope
+        .iter()
+        .filter(|other| rows[**other].get("name").and_then(Value::as_str) == Some(name))
+        .count()
+        == 1)
+        .then_some(name)
+}
+
+/// Строка в области `scope` по имени сегмента адреса. Отсутствующее и
+/// повторённое имя одинаково не дают узла: адрес не выбирает за читателя.
+pub(crate) fn dcs_structure_child(
+    rows: &[Value],
+    scope: Option<usize>,
+    name: &str,
+) -> Option<usize> {
+    let members = dcs_structure_scope(rows, scope);
+    members
+        .iter()
+        .copied()
+        .find(|index| dcs_structure_address_name(rows, &members, *index) == Some(name))
+}
+
+/// Пути от варианта до элементов структуры с именем `name`: цепочки имён
+/// именованных предков и самого элемента. Пусто — элемента нет; в ответ
+/// входят только те, чей путь адресует именно их (имя единственно на каждом
+/// уровне), а `found` — сколько элементов с этим именем есть всего.
+pub(crate) fn dcs_structure_paths(rows: &[Value], name: &str) -> (Vec<Vec<String>>, usize) {
+    let row_name = |index: usize| {
+        rows.get(index)
+            .and_then(|row| row.get("name"))
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+    };
+    let parent = |index: usize| {
+        rows.get(index)
+            .and_then(|row| row.get("parentIndex"))
+            .and_then(Value::as_u64)
+            .and_then(|parent| usize::try_from(parent).ok())
+    };
+    let mut found = 0;
+    let mut paths = Vec::new();
+    for index in (0..rows.len()).filter(|index| row_name(*index) == Some(name)) {
+        found += 1;
+        let mut chain = vec![name.to_string()];
+        let mut current = parent(index);
+        for _ in 0..rows.len() {
+            let Some(ancestor) = current else { break };
+            if let Some(ancestor_name) = row_name(ancestor) {
+                chain.push(ancestor_name.to_string());
+            }
+            current = parent(ancestor);
+        }
+        chain.reverse();
+        let mut scope = None;
+        for step in &chain {
+            scope = dcs_structure_child(rows, scope, step);
+            if scope.is_none() {
+                break;
+            }
+        }
+        if scope == Some(index) {
+            paths.push(chain);
+        }
+    }
+    (paths, found)
+}
+
+fn dcs_structure_props(row: &Value) -> Map<String, Value> {
+    row.as_object()
+        .into_iter()
+        .flatten()
+        .filter(|(key, value)| {
+            !value.is_null() && !matches!(key.as_str(), "index" | "parentIndex" | "name")
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn dcs_structure_node(address: &QualifiedAddress, rows: &[Value], index: usize) -> NodeView {
+    let name = rows[index]
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("Item");
+    let count = dcs_structure_scope(rows, Some(index)).len();
+    let branches = (count > 0)
+        .then(|| BranchRef::new(format!("{address}.Item"), count))
+        .into_iter()
+        .collect();
+    NodeView::new(
+        address.to_string(),
+        "Item",
+        name,
+        dcs_structure_props(&rows[index]),
+    )
+    .with_branches(branches)
+}
+
+/// Число строк структуры, которые показывает ветвь `Setting.V.Item`.
+fn dcs_structure_root_count(variant: &Value) -> usize {
+    variant
+        .get("structureItems")
+        .and_then(Value::as_array)
+        .map_or(0, |rows| dcs_structure_scope(rows, None).len())
+}
+
+/// Элементы структуры варианта: `Setting.V.Item[.<имя>[.Item.<имя>…]]`.
+/// Именованный элемент, единственный по имени в своей области, — узел с
+/// адресом; безымянные и повторённые остаются строками данных.
+fn project_dcs_structure(
+    address: &QualifiedAddress,
+    payload: &Value,
+    setting: &AddressSegment,
+    rest: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    let variant = setting
+        .name()
+        .and_then(|name| {
+            payload
+                .get("variants")
+                .and_then(|variants| select_named(variants, name))
+        })
+        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "DCS setting was not found"))?;
+    let rows = variant
+        .get("structureItems")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut scope = None;
+    for (position, segment) in rest.iter().enumerate() {
+        if segment.kind() != NodeKind::Item {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "DCS setting structure is addressed by `Item.<name>` segments",
+            ));
+        }
+        let Some(name) = segment.name() else {
+            if position + 1 != rest.len() {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the structure collection has no addressed children",
+                ));
+            }
+            let members = dcs_structure_scope(rows, scope);
+            let items = members
+                .iter()
+                .map(|index| {
+                    dcs_structure_address_name(rows, &members, *index)
+                        .and_then(|name| address.member(name).ok())
+                        .and_then(|at| {
+                            serde_json::to_value(dcs_structure_node(&at, rows, *index)).ok()
+                        })
+                        .unwrap_or_else(|| rows[*index].clone())
+                })
+                .collect();
+            return Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(address.to_string(), "Item", "Item", Map::new()),
+                items,
+            )));
+        };
+        scope = Some(dcs_structure_child(rows, scope, name).ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                format!(
+                    "DCS structure item `{name}` was not found uniquely; read the Item collection of its parent"
+                ),
+            )
+        })?);
+    }
+    let index = scope.ok_or_else(|| {
+        ViewError::new(
+            RefusalCode::NotFound,
+            "DCS setting structure is addressed by `Item.<name>` segments",
+        )
+    })?;
+    Ok(NodeViewData::Node(dcs_structure_node(address, rows, index)))
+}
+
+/// Итоги схемы: `Template.T.Total[.<dataPath>]`. Итог адресуется путём
+/// поля, только если этот путь единственный: итоги одного поля по разным
+/// группировкам остаются строками и адрес за читателя не выбирают (#1357).
+fn project_dcs_totals(
+    address: &QualifiedAddress,
+    payload: &Value,
+    name: Option<&str>,
+) -> Result<NodeViewData, ViewError> {
+    let totals = payload
+        .get("totalFields")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let path = |item: &Value| {
+        item.get("dataPath")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let unique = |wanted: &str| {
+        totals
+            .iter()
+            .filter(|item| path(item).as_deref() == Some(wanted))
+            .count()
+            == 1
+    };
+    let Some(name) = name else {
+        let items = totals
+            .iter()
+            .map(|item| match path(item) {
+                Some(data_path) if unique(&data_path) => {
+                    collection_item(LogicalReader::Dcs, address, NodeKind::Total, item)
+                }
+                _ => Value::Object(reader_node_props_with_path(item)),
+            })
+            .collect();
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Total", "Total", Map::new()),
+            items,
+        )));
+    };
+    let item = totals
+        .iter()
+        .find(|item| path(item).as_deref() == Some(name))
+        .filter(|_| unique(name))
+        .ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                format!("DCS total `{name}` was not found uniquely; read the Total collection"),
+            )
+        })?;
+    Ok(NodeViewData::Node(known_reader_node(
+        LogicalReader::Dcs,
+        address,
+        NodeKind::Total,
+        item,
+    )))
+}
+
+fn reader_node_props_with_path(item: &Value) -> Map<String, Value> {
+    let mut props = reader_node_props(LogicalReader::Dcs, NodeKind::Total, item);
+    if let Some(path) = item.get("dataPath") {
+        props.insert("dataPath".into(), path.clone());
+    }
+    props
 }
 
 fn project_mxl(
@@ -678,11 +937,24 @@ fn project_mxl(
                 .flatten()
                 .filter_map(Value::as_str)
                 .map(|name| {
-                    json!({
-                        "at": format!("{address}.{name}"),
-                        "kind": "Parameter",
-                        "title": name,
-                    })
+                    // Параметр шаблона показывается как `Имя [tpl]`: это
+                    // подпись, а не имя, и адрес из неё грамматика отвергает.
+                    // Такой элемент выдаётся без `at`, как и другие
+                    // неадресуемые элементы (#1467).
+                    let at = member_address(address, name);
+                    if QualifiedAddress::parse(&at).is_ok() {
+                        json!({
+                            "at": at,
+                            "kind": "Parameter",
+                            "title": name,
+                        })
+                    } else {
+                        json!({
+                            "kind": "Parameter",
+                            "title": name,
+                            "addressable": false,
+                        })
+                    }
                 })
                 .collect(),
         )));
@@ -841,7 +1113,7 @@ fn project_registered_metadata_branch_names_inner<'a>(
     let items = names
         .map(|name| {
             serde_json::to_value(NodeView::new(
-                format!("{}.{name}", address),
+                member_address(address, name),
                 kind.as_str(),
                 name,
                 Map::new(),
@@ -1085,7 +1357,9 @@ fn reader_branch_fields(reader: LogicalReader, kind: NodeKind) -> &'static [&'st
         (LogicalReader::Dcs, NodeKind::DataSet) => &["dataSets", "items"],
         (LogicalReader::Dcs, NodeKind::Field) => &["fields"],
         (LogicalReader::Dcs, NodeKind::Query) => &["query"],
-        (LogicalReader::Dcs, NodeKind::Calculation) => &["calculatedFields", "totalFields"],
+        (LogicalReader::Dcs, NodeKind::DataSource) => &["dataSources"],
+        (LogicalReader::Dcs, NodeKind::CalculatedField) => &["calculatedFields"],
+        (LogicalReader::Dcs, NodeKind::Total) => &["totalFields"],
         (LogicalReader::Dcs, NodeKind::Parameter) => &["parameters"],
         (LogicalReader::Dcs, NodeKind::Setting) => &["variants"],
         (LogicalReader::Mxl, NodeKind::Area) => &["areas"],
@@ -1558,7 +1832,7 @@ fn metadata_items(address: &QualifiedAddress, kind: NodeKind, value: &Value) -> 
         .flatten()
         .filter_map(|item| {
             let name = item.get("name")?.as_str()?;
-            let child = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
+            let child = address.member(name).ok()?;
             serde_json::to_value(metadata_item_node(&child, kind, item)).ok()
         })
         .collect()
@@ -1790,7 +2064,7 @@ fn subsystem_children(
         .flatten()
         .filter_map(Value::as_str)
         .filter_map(|name| {
-            let child = QualifiedAddress::parse(&format!("{branch}.{name}")).ok()?;
+            let child = QualifiedAddress::parse(&member_address(&branch, name)).ok()?;
             Some((child, name.to_string()))
         })
         .collect()
@@ -2024,7 +2298,7 @@ fn project_interface_groups(
                 .enumerate()
                 .map(|(index, group)| {
                     json!({
-                        "at": format!("{address}.{group}"),
+                        "at": member_address(address, group),
                         "kind": "Group",
                         "title": group,
                         "order": index + 1,
@@ -2189,6 +2463,12 @@ fn project_xdto(
         )
     })?;
     if suffix.len() == 1 {
+        if segment.kind() == NodeKind::Property {
+            return Ok(NodeViewData::Node(
+                xdto_property_node(address, name, item)
+                    .with_branches(xdto_property_branch(address, item)?),
+            ));
+        }
         let mut props = reader_node_props(LogicalReader::Xdto, segment.kind(), item);
         if let Some(base) = item.get("base") {
             props.insert(
@@ -2196,46 +2476,100 @@ fn project_xdto(
                 Value::String(serde_json::to_string(base).unwrap_or_default()),
             );
         }
-        let branches = item
-            .get("properties")
-            .and_then(Value::as_array)
-            .filter(|items| !items.is_empty())
-            .map(|items| vec![BranchRef::new(format!("{}.Property", address), items.len())])
-            .unwrap_or_default();
+        let branches = xdto_property_branch(address, item)?;
         return Ok(NodeViewData::Node(
             NodeView::new(address.to_string(), segment.kind().as_str(), name, props)
                 .with_branches(branches),
         ));
     }
-    let property = &suffix[1];
-    if suffix.len() != 2 {
-        return Err(ViewError::new(
-            RefusalCode::NotFound,
-            "XDTO property projection did not consume the complete suffix",
-        ));
+    // Свойство любой вложенности: `Type.T.Property.A.Property.B` спускается
+    // через вложенный анонимный тип (`typeDef`) каждого свойства цепочки.
+    let mut current = item;
+    for (index, property) in suffix[1..].iter().enumerate() {
+        if property.kind() != NodeKind::Property {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "XDTO type has only Property child nodes",
+            ));
+        }
+        let properties = xdto_nested_properties(current)?.ok_or_else(|| {
+            ViewError::new(RefusalCode::NotFound, "XDTO node has no nested properties")
+        })?;
+        let last = index + 2 == suffix.len();
+        let Some(property_name) = property.name() else {
+            if !last {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "XDTO property collection cannot have children",
+                ));
+            }
+            return Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(address.to_string(), "Property", "Properties", Map::new()),
+                collection_items(LogicalReader::Xdto, address, NodeKind::Property, properties),
+            )));
+        };
+        current = select_named(properties, property_name).ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                format!("XDTO property `{property_name}` was not found"),
+            )
+        })?;
+        if last {
+            return Ok(NodeViewData::Node(
+                xdto_property_node(address, property_name, current)
+                    .with_branches(xdto_property_branch(address, current)?),
+            ));
+        }
     }
-    let properties = item
-        .get("properties")
-        .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "XDTO type has no properties"))?;
-    if property.name().is_none() {
-        return Ok(NodeViewData::Collection(CollectionView::new(
-            NodeView::new(address.to_string(), "Property", "Properties", Map::new()),
-            collection_items(LogicalReader::Xdto, address, NodeKind::Property, properties),
-        )));
+    Err(ViewError::new(
+        RefusalCode::NotFound,
+        "XDTO property projection did not consume the complete suffix",
+    ))
+}
+
+/// Свойства узла XDTO: у типа — свои, у свойства — его вложенного
+/// анонимного типа. `None` — вложенных свойств нет. Два вложенных
+/// определения у одного свойства — конфликт источника, который не
+/// разрешается выбором одного из них.
+fn xdto_nested_properties(node: &Value) -> Result<Option<&Value>, ViewError> {
+    if let Some(properties) = node.get("properties").filter(|value| !value.is_null()) {
+        return Ok(Some(properties));
     }
-    let property_name = property.name().unwrap();
-    let property = select_named(properties, property_name).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("XDTO property `{property_name}` was not found"),
-        )
-    })?;
-    Ok(NodeViewData::Node(NodeView::new(
-        address.to_string(),
-        "Property",
-        property_name,
-        reader_node_props(LogicalReader::Xdto, NodeKind::Property, property),
-    )))
+    match node
+        .get("typeDefs")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        None | Some([]) => Ok(None),
+        Some([definition]) => Ok(definition
+            .get("properties")
+            .filter(|value| !value.is_null())),
+        Some(_) => Err(ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "XDTO property has more than one nested type definition",
+        )),
+    }
+}
+
+fn xdto_property_branch(
+    address: &QualifiedAddress,
+    node: &Value,
+) -> Result<Vec<BranchRef>, ViewError> {
+    Ok(xdto_nested_properties(node)?
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .map(|items| vec![BranchRef::new(format!("{address}.Property"), items.len())])
+        .unwrap_or_default())
+}
+
+fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
+    let props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
+    let limits = ["type", "reference", "bounds"]
+        .into_iter()
+        .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
+        .map(|key| format!("XDTO property {key} exceeds the compact property limit of {MAX_COMPACT_PROP_BYTES} bytes"))
+        .collect();
+    NodeView::new(address.to_string(), "Property", name, props).with_limits(limits)
 }
 
 /// Свойства объекта метаданных — это `props` его узла.
@@ -2382,7 +2716,9 @@ fn branch_field_names(kind: NodeKind) -> &'static [&'static str] {
         NodeKind::DataSet => &["dataSets", "items"],
         NodeKind::Field => &["fields", "calculatedFields", "totalFields"],
         NodeKind::Query => &["query"],
-        NodeKind::Calculation => &["calculatedFields", "totalFields"],
+        NodeKind::DataSource => &["dataSources"],
+        NodeKind::CalculatedField => &["calculatedFields"],
+        NodeKind::Total => &["totalFields"],
         NodeKind::Setting => &["variants", "settings"],
         NodeKind::Area => &["areas"],
         NodeKind::Namespace => &["imports", "targetNamespace"],
@@ -2445,13 +2781,18 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
             &["type", "isMain", "mainTable"]
         }
         (LogicalReader::Form, NodeKind::Parameter) => &["type", "isKey"],
-        (LogicalReader::Form, NodeKind::Command) => &["shortcut"],
+        (LogicalReader::Form, NodeKind::Command) => {
+            &["title", "tooltip", "shortcut", "picture", "representation"]
+        }
         (LogicalReader::Dcs, NodeKind::DataSet) => &["kind", "objectName", "dataSource"],
         (LogicalReader::Dcs, NodeKind::Field) => &["field", "title"],
         (LogicalReader::Dcs, NodeKind::Parameter) => {
             &["type", "value", "restricted", "availableAsField"]
         }
         (LogicalReader::Dcs, NodeKind::Setting) => &["presentation", "filters"],
+        (LogicalReader::Dcs, NodeKind::DataSource) => &["kind"],
+        (LogicalReader::Dcs, NodeKind::CalculatedField) => &["expression", "title"],
+        (LogicalReader::Dcs, NodeKind::Total) => &["expression", "group"],
         (LogicalReader::Mxl, NodeKind::Area) => &[
             "kind",
             "beginRow",
@@ -2475,7 +2816,15 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         }
         (LogicalReader::Xdto, NodeKind::Type) => &["kind", "abstract", "mixed"],
         (LogicalReader::Xdto, NodeKind::Property) => {
-            &["type", "minOccurs", "maxOccurs", "nillable"]
+            return ["type", "reference", "bounds"]
+                .into_iter()
+                .filter_map(|key| {
+                    value
+                        .get(key)
+                        .and_then(|value| bounded_prop(key, value))
+                        .map(|value| (key.to_string(), value))
+                })
+                .collect();
         }
         _ => &[],
     };
@@ -2493,6 +2842,26 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
     props
 }
 
+/// Ветви макета-схемы: адресуемые источники, наборы, вычисляемые поля,
+/// итоги, параметры и варианты; связи наборов — строки ветви `Item`.
+pub(crate) fn dcs_template_branches(payload: &Value) -> Vec<(NodeKind, usize)> {
+    let count = |key: &str| {
+        payload
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    vec![
+        (NodeKind::DataSource, count("dataSources")),
+        (NodeKind::DataSet, count("dataSets")),
+        (NodeKind::CalculatedField, count("calculatedFields")),
+        (NodeKind::Total, count("totalFields")),
+        (NodeKind::Parameter, count("parameters")),
+        (NodeKind::Setting, count("variants")),
+        (NodeKind::Item, count("links")),
+    ]
+}
+
 fn known_reader_node(
     reader: LogicalReader,
     address: &QualifiedAddress,
@@ -2502,18 +2871,11 @@ fn known_reader_node(
     let mut node = node_from_value(reader, address, kind, value);
     let mut branches = known_reader_branches(reader, address, value);
     if matches!(reader, LogicalReader::Dcs) && kind == NodeKind::Template {
-        let count = ["dataSources", "links"]
-            .iter()
-            .map(|key| {
-                value
-                    .get(*key)
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len)
-            })
-            .sum();
-        if count > 0 {
-            branches.push(BranchRef::new(format!("{address}.Item"), count));
-        }
+        branches = dcs_template_branches(value)
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(kind, count)| BranchRef::new(format!("{address}.{}", kind.as_str()), count))
+            .collect();
     }
     node = node.with_branches(branches);
     node
@@ -2531,14 +2893,16 @@ fn known_reader_branches(
             .is_some_and(|segment| segment.kind() == NodeKind::Setting && segment.name().is_some())
     {
         let mut branches = Vec::new();
-        for (key, kind) in [("structureItems", "Item"), ("settingItems", "Property")] {
-            if let Some(items) = value
-                .get(key)
-                .and_then(Value::as_array)
-                .filter(|items| !items.is_empty())
-            {
-                branches.push(BranchRef::new(format!("{address}.{kind}"), items.len()));
-            }
+        let structure = dcs_structure_root_count(value);
+        if structure > 0 {
+            branches.push(BranchRef::new(format!("{address}.Item"), structure));
+        }
+        if let Some(items) = value
+            .get("settingItems")
+            .and_then(Value::as_array)
+            .filter(|items| !items.is_empty())
+        {
+            branches.push(BranchRef::new(format!("{address}.Property"), items.len()));
         }
         return branches;
     }
@@ -2555,7 +2919,6 @@ fn known_reader_branches(
             NodeKind::DataSet,
             NodeKind::Field,
             NodeKind::Query,
-            NodeKind::Calculation,
             NodeKind::Parameter,
             NodeKind::Setting,
         ],
@@ -2625,8 +2988,7 @@ fn collection_item(
             data_row(value)
         };
     };
-    let at = format!("{address}.{name}");
-    let Ok(at) = QualifiedAddress::parse(&at) else {
+    let Ok(at) = address.member(name) else {
         return Value::Object(reader_node_props(reader, kind, value));
     };
     serde_json::to_value(known_reader_node(reader, &at, kind, value))
@@ -2644,10 +3006,48 @@ fn data_row(value: &Value) -> Value {
 #[cfg(test)]
 mod dcs_structure_tests {
     use super::*;
+    /// Итоги одного поля по разным группировкам адреса не получают: строка
+    /// ветви без `at`, а адрес `Total.<путь>` их не выбирает (#1357).
+    #[test]
+    fn repeated_total_paths_stay_rows_and_are_not_chosen() {
+        let base = "cf:Report.F05Report.Template.F05Schema";
+        let payload = json!({"totalFields":[
+            {"dataPath":"Amount","expression":"Сумма(Amount)","group":null},
+            {"dataPath":"Amount","expression":"Сумма(Amount)","group":"Category"},
+            {"dataPath":"Owner.Count","expression":"Сумма(Owner.Count)","group":null}
+        ]});
+        let read = |suffix: &str| {
+            let address = QualifiedAddress::parse(&format!("{base}.{suffix}")).unwrap();
+            let tail: Vec<_> = address.segments().iter().skip(2).cloned().collect();
+            project_dcs(&address, &payload, &tail)
+        };
+        let branch = serde_json::to_value(read("Total").unwrap()).unwrap();
+        let items = branch["items"].as_array().unwrap();
+        assert!(items[0].get("at").is_none());
+        assert!(items[1].get("at").is_none());
+        assert_eq!(items[1]["dataPath"], "Amount");
+        assert_eq!(items[2]["at"], json!(format!("{base}.Total.Owner\\.Count")));
+        let node = serde_json::to_value(read("Total.Owner\\.Count").unwrap()).unwrap();
+        assert_eq!(node["props"]["expression"], "Сумма(Owner.Count)");
+        assert_eq!(
+            read("Total.Amount").unwrap_err().code(),
+            RefusalCode::NotFound
+        );
+    }
+
+    /// Именованный элемент, единственный по имени на своём уровне, — узел
+    /// с адресом; безымянный прозрачен и остаётся строкой, а одноимённые
+    /// элементы одного уровня адреса не получают и не выбираются (#1357).
     #[test]
     fn setting_structure_rows_never_fabricate_or_choose_named_addresses() {
         let base = "cf:Report.F05Report.Template.F05Schema";
-        let rows = json!([{"index":0,"parentIndex":null,"axis":null,"kind":"Group","name":null,"groupBy":[]}, {"index":1,"parentIndex":0,"axis":null,"kind":"Group","name":"Repeated","groupBy":["Amount"]}, {"index":2,"parentIndex":null,"axis":"row","kind":"Group","name":"Repeated","groupBy":[]}]);
+        let rows = json!([
+            {"index":0,"parentIndex":null,"axis":null,"kind":"Group","name":null,"groupBy":[]},
+            {"index":1,"parentIndex":0,"axis":null,"kind":"Group","name":"Repeated","groupBy":["Amount"]},
+            {"index":2,"parentIndex":null,"axis":"row","kind":"Group","name":"Repeated","groupBy":[]},
+            {"index":3,"parentIndex":0,"axis":null,"kind":"Group","name":"Unique (group)","groupBy":["Category"]},
+            {"index":4,"parentIndex":3,"axis":null,"kind":"Group","name":"Nested.Name","groupBy":[]}
+        ]);
         let payload = json!({"variants":[{"name":"Variant","structureItems":rows}]});
         let read = |suffix: &str| {
             let address = QualifiedAddress::parse(&format!("{base}.{suffix}")).unwrap();
@@ -2655,20 +3055,39 @@ mod dcs_structure_tests {
             project_dcs(&address, &payload, &tail)
         };
         let projected = serde_json::to_value(read("Setting.Variant.Item").unwrap()).unwrap();
-        assert_eq!(projected["items"], rows);
-        assert!(projected["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|row| row.get("at").is_none()));
+        let unique = format!("{base}.Setting.Variant.Item.Unique (group)");
+        assert_eq!(
+            projected["items"],
+            json!([
+                rows[0],
+                rows[1],
+                rows[2],
+                {"at":unique,"kind":"Item","title":"Unique (group)","props":{"kind":"Group","groupBy":["Category"]},
+                 "branches":[{"at":format!("{unique}.Item"),"count":1}]}
+            ])
+        );
         let setting = serde_json::to_value(read("Setting.Variant").unwrap()).unwrap();
         assert_eq!(
             setting["branches"],
-            json!([{"at":format!("{base}.Setting.Variant.Item"),"count":3}])
+            json!([{"at":format!("{base}.Setting.Variant.Item"),"count":4}])
         );
+        let nested =
+            serde_json::to_value(read("Setting.Variant.Item.Unique (group).Item").unwrap())
+                .unwrap();
+        assert_eq!(
+            nested["items"][0]["at"],
+            json!(format!("{unique}.Item.Nested\\.Name"))
+        );
+        let node = serde_json::to_value(
+            read("Setting.Variant.Item.Unique (group).Item.Nested\\.Name").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(node["title"], "Nested.Name");
         for suffix in [
             "Setting.Variant.Item.Repeated",
             "Setting.Variant.Item.Group",
+            "Setting.Variant.Item.Nested\\.Name",
+            "Setting.Variant.Item.Unique (group).Item.Repeated",
             "Setting.Variant.Item.Repeated.Item",
             "Setting.Missing.Item",
         ] {
@@ -2678,6 +3097,22 @@ mod dcs_structure_tests {
                 "{suffix}"
             );
         }
+        // Пути элементов для отказа по снятому аргументу: имя на двух
+        // уровнях даёт пути обоих адресуемых, одноимённые на одном уровне —
+        // ни одного.
+        let rows = rows.as_array().unwrap();
+        assert_eq!(
+            dcs_structure_paths(rows, "Nested.Name"),
+            (
+                vec![vec![
+                    "Unique (group)".to_string(),
+                    "Nested.Name".to_string()
+                ]],
+                1
+            )
+        );
+        assert_eq!(dcs_structure_paths(rows, "Repeated"), (Vec::new(), 2));
+        assert_eq!(dcs_structure_paths(rows, "Missing"), (Vec::new(), 0));
     }
 }
 

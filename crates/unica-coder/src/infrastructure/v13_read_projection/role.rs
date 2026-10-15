@@ -1,6 +1,6 @@
 use super::selected_scalar_props;
 use crate::application::v13::view::ViewError;
-use crate::domain::address::{AddressSegment, NodeKind, QualifiedAddress};
+use crate::domain::address::{escape_name, AddressSegment, NodeKind, QualifiedAddress};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::metadata_kinds::metadata_kind;
@@ -97,7 +97,7 @@ fn project_role_object_suffix(
                 .keys()
                 .filter_map(|name| {
                     serde_json::to_value(NodeView::new(
-                        format!("{address}.RLS.{name}"),
+                        format!("{address}.RLS.{}", escape_name(name)),
                         "RLS",
                         name,
                         Map::new(),
@@ -110,7 +110,7 @@ fn project_role_object_suffix(
             .contains_key(name)
             .then(|| {
                 NodeViewData::Node(NodeView::new(
-                    format!("{address}.RLS.{name}"),
+                    format!("{address}.RLS.{}", escape_name(name)),
                     "RLS",
                     name,
                     Map::new(),
@@ -186,7 +186,7 @@ fn is_role_right_owner_kind(kind: &str) -> bool {
 
 fn role_object_value(address: &QualifiedAddress, object: &RoleObject) -> Option<Value> {
     let name = role_object_logical_name(object)?;
-    let at = QualifiedAddress::parse(&format!("{address}.{name}")).ok()?;
+    let at = address.member(&name).ok()?;
     serde_json::to_value(role_object_node(&at, object)).ok()
 }
 
@@ -247,8 +247,10 @@ fn canonical_role_object_address(
         )
     })?;
     QualifiedAddress::parse(&format!(
-        "{}:Role.{role_name}.Right.{logical}",
-        requested.source_set()
+        "{}:Role.{}.Right.{}",
+        requested.source_set(),
+        escape_name(role_name),
+        escape_name(&logical)
     ))
     .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))
 }
