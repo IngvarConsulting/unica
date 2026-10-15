@@ -240,19 +240,27 @@ repository `muratcankoylan/Agent-Skills-for-Context-Engineering`, ref `main`,
 
 ## Приёмочные сценарии поверхности
 
-Поверхность v0.13 принимается корпусом задач разработчика:
-`tests/fixtures/acceptance/scenario-corpus.json` держит сценарии и провода
-вызовов `unica.*`, `tests/ci/test_acceptance_scenarios.py` исполняет их против
-собранного бинаря. Человекочитаемый реестр со списком всех сценариев,
-покрытием закрытого реестра операций `apply` и профилей `check` лежит в
-[`docs/acceptance-scenarios.md`](docs/acceptance-scenarios.md); он
-генерируется из корпуса и проверяется на расхождение тем же тестом.
+Поверхность v0.13 принимается корпусом задач разработчика в
+`tests/fixtures/acceptance/`; `tests/ci/test_acceptance_scenarios.py` исполняет
+его против собранного бинаря. Сценарии `S001`–`S436` лежат в
+`scenario-corpus.json` и сохраняют свои номера; этот блок закрыт. Каждый новый
+сценарий — отдельный файл `scenarios/<id>.json` с идентификатором
+`S-<issue>-<slug>`, а его шаги заморожены в `scenario-manifest/<id>.steps`
+командой `python scripts/ci/acceptance_corpus.py --freeze <id>`. Сквозного
+номера и общих счётчиков нет, поэтому изменения с разными сценариями
+не конфликтуют и могут стоять в очереди слияния вместе. Пропавший сценарий
+или шаг без правки манифеста проваливает тест корпуса.
+
+Человекочитаемый реестр со списком всех сценариев, покрытием закрытого
+реестра операций `apply` и профилей `check` собирается из корпуса вместе
+с сайтом и публикуется на странице
+[реестра приёмочных сценариев](https://ingvarconsulting.github.io/unica/acceptance-scenarios.html). Локально его печатает
+`python scripts/ci/render-acceptance-registry.py`.
 
 Идеи новых задач и операций, которых поверхность ещё не решает, — самый
 полезный вклад: откройте issue по форме
 [«Новая операция»](https://github.com/IngvarConsulting/unica/issues/new?template=new_operation.yml)
-или добавьте сценарий в корпус по инструкции из реестра и обновите документ
-командой `python scripts/ci/render-acceptance-registry.py --write`.
+или добавьте сценарий в корпус по инструкции из реестра.
 
 ## Отчёт Allure локально
 
