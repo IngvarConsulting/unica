@@ -262,6 +262,18 @@ repository `muratcankoylan/Agent-Skills-for-Context-Engineering`, ref `main`,
 [«Новая операция»](https://github.com/IngvarConsulting/unica/issues/new?template=new_operation.yml)
 или добавьте сценарий в корпус по инструкции из реестра.
 
+## Ворота pull request
+
+Основной workflow запускается при открытии, повторном открытии и новом push
+в pull request. Смена меток сама по себе его не запускает, чтобы новый пустой
+прогон не заменял для ruleset последний результат обязательной проверки
+`Unica CI` на той же вершине.
+
+Метка `ci:full` действует со следующего push в pull request (события
+`synchronize`): снимает отбор по изменённым файлам и добавляет Rust-тесты на
+macOS. Профиль остаётся `pr`, поэтому `medium`-тесты метка не включает. Снятие
+`ci:full` также меняет отбор только со следующего запуска основного workflow.
+
 ## Отчёт Allure локально
 
 Конвейер публикует отчёт линии на [сайте
