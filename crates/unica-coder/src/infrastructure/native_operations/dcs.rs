@@ -268,36 +268,57 @@ pub(crate) struct DcsInfoStructureRow {
     pub(crate) properties: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Вид элемента структуры варианта; `None` — узел не элемент структуры.
+fn dcs_structure_kind<'a>(item: roxmltree::Node<'a, '_>) -> Option<&'a str> {
+    if !(role_info_element(item, "item", Some(DCS_SETTINGS_NS)) || dcs_info_axis_structure(item)) {
+        return None;
+    }
+    let known_kind = [
+        ("StructureItemGroup", "Group"),
+        ("StructureItemTable", "Table"),
+        ("StructureItemChart", "Chart"),
+        ("StructureItemNestedObject", "NestedObject"),
+    ]
+    .into_iter()
+    .find_map(|(xml_type, kind)| xsi_type_matches(item, DCS_SETTINGS_NS, xml_type).then_some(kind));
+    let xml_type = item
+        .attribute((XML_SCHEMA_INSTANCE_NS, "type"))
+        .unwrap_or_default();
+    let local_type = xml_type.rsplit(':').next().unwrap_or_default();
+    known_kind
+        .or_else(|| dcs_info_axis_structure(item).then_some("Group"))
+        .or_else(|| {
+            (local_type.starts_with("StructureItem")
+                && xsi_type_matches(item, DCS_SETTINGS_NS, local_type))
+            .then_some(local_type)
+        })
+}
+
+/// Элементы структуры варианта в порядке строк чтения: `i`-й узел — строка
+/// `index = i` из `structureItems`. По нему правка находит элемент, который
+/// адресует чтение (#1357).
+pub(crate) fn dcs_structure_nodes<'a, 'i>(
+    settings: roxmltree::Node<'a, 'i>,
+) -> Vec<roxmltree::Node<'a, 'i>> {
+    settings
+        .descendants()
+        .filter(|node| dcs_structure_kind(*node).is_some())
+        .collect()
+}
+
+/// Строки структуры варианта, как их публикует чтение.
+pub(crate) fn dcs_structure_rows(settings: roxmltree::Node<'_, '_>) -> Vec<serde_json::Value> {
+    dcs_info_structure_rows(settings)
+        .into_iter()
+        .filter_map(|row| serde_json::to_value(row).ok())
+        .collect()
+}
+
 fn dcs_info_structure_rows(settings: roxmltree::Node<'_, '_>) -> Vec<DcsInfoStructureRow> {
     let mut rows = Vec::new();
     let mut indices = HashMap::new();
-    for item in settings.descendants().filter(|node| {
-        role_info_element(*node, "item", Some(DCS_SETTINGS_NS)) || dcs_info_axis_structure(*node)
-    }) {
-        let known_kind = [
-            ("StructureItemGroup", "Group"),
-            ("StructureItemTable", "Table"),
-            ("StructureItemChart", "Chart"),
-            ("StructureItemNestedObject", "NestedObject"),
-        ]
-        .into_iter()
-        .find_map(|(xml_type, kind)| {
-            xsi_type_matches(item, DCS_SETTINGS_NS, xml_type).then_some(kind)
-        });
-        let xml_type = item
-            .attribute((XML_SCHEMA_INSTANCE_NS, "type"))
-            .unwrap_or_default();
-        let local_type = xml_type.rsplit(':').next().unwrap_or_default();
-        let Some(kind) = known_kind
-            .or_else(|| dcs_info_axis_structure(item).then_some("Group"))
-            .or_else(|| {
-                (local_type.starts_with("StructureItem")
-                    && xsi_type_matches(item, DCS_SETTINGS_NS, local_type))
-                .then_some(local_type)
-            })
-        else {
-            continue;
-        };
+    for item in dcs_structure_nodes(settings) {
+        let kind = dcs_structure_kind(item).expect("a structure node has a kind");
         let mut parent_index = None;
         let mut axis = ["row", "column", "point", "series"]
             .iter()

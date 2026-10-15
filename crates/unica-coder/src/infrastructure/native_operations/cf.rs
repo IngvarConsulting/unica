@@ -2339,17 +2339,23 @@ pub(crate) fn edit_cf_with_data(
                             .join(format!("{obj_name_val}.xml"));
                         if !object_file.exists() {
                             let creation_hint = match type_name {
-                                "Subsystem" => format!(
-                                    "To create a new Subsystem, call MCP unica.subsystem.compile \
-                                     (or /unica:subsystem-compile) with:\n  \
-                                     {{\"Value\":\"{{\\\"name\\\":\\\"{obj_name_val}\\\"}}\",\"OutputDir\":\"<configuration directory>\",\"dryRun\":true}}"
-                                ),
-                                "Role" => (
-                                    "To create a new Role, call MCP unica.role.compile \
-                                     (or /unica:role-compile) with:\n  \
-                                     {\"JsonPath\":\"<role definition.json>\",\"OutputDir\":\"<configuration directory>\",\"dryRun\":true}"
-                                )
-                                    .to_string(),
+                                "Subsystem" | "Role" => {
+                                    let op = if type_name == "Subsystem" {
+                                        "subsystem.create"
+                                    } else {
+                                        "role.create"
+                                    };
+                                    format!(
+                                        "To create a new {type_name}, preview MCP unica.apply \
+                                         (/unica:{skill}) with:\n  \
+                                         {{\"at\":\"<sourceSet>:Configuration\",\"ops\":[{{\"op\":\"{op}\",\"args\":{{\"at\":\"<sourceSet>:Configuration\",\"values\":{{\"name\":\"{obj_name_val}\"}}}}}}]}}",
+                                        skill = if type_name == "Subsystem" {
+                                            "subsystem-edit"
+                                        } else {
+                                            "role-edit"
+                                        },
+                                    )
+                                }
                                 _ if MetadataKind::parse(type_name).is_ok() => format!(
                                     "To create a new {type_name}, call MCP unica.meta.add \
                                      (or /unica:meta-add) with:\n  \
@@ -3298,22 +3304,22 @@ pub(crate) mod cf_edit_transaction_tests {
                 "Subsystem",
                 "MissingSubsystem",
                 &[
-                    "unica.subsystem.compile",
-                    "/unica:subsystem-compile",
-                    "\"Value\":\"{\\\"name\\\":\\\"MissingSubsystem\\\"}\"",
-                    "\"OutputDir\":\"<configuration directory>\"",
-                    "\"dryRun\":true",
+                    "unica.apply",
+                    "/unica:subsystem-edit",
+                    "\"op\":\"subsystem.create\"",
+                    "\"at\":\"<sourceSet>:Configuration\"",
+                    "\"values\":{\"name\":\"MissingSubsystem\"}",
                 ][..],
             ),
             (
                 "Role",
                 "MissingRole",
                 &[
-                    "unica.role.compile",
-                    "/unica:role-compile",
-                    "\"JsonPath\":\"<role definition.json>\"",
-                    "\"OutputDir\":\"<configuration directory>\"",
-                    "\"dryRun\":true",
+                    "unica.apply",
+                    "/unica:role-edit",
+                    "\"op\":\"role.create\"",
+                    "\"at\":\"<sourceSet>:Configuration\"",
+                    "\"values\":{\"name\":\"MissingRole\"}",
                 ][..],
             ),
             ("Bot", "MissingBot", &["platform tooling"][..]),
@@ -3335,7 +3341,7 @@ pub(crate) mod cf_edit_transaction_tests {
             for token in expected {
                 assert!(error.contains(token), "{kind}: missing {token:?}: {error}");
             }
-            assert!(!error.contains("meta-compile"), "{kind}: {error}");
+            assert!(!error.contains("compile"), "{kind}: {error}");
             assert!(!error.contains("\"type\":"), "{kind}: {error}");
         }
     }

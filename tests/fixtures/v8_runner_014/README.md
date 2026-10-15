@@ -90,3 +90,17 @@ declared the same infobase by its absolute path. Then:
 - `shared-key-refused.json`: `push --dry-run` in `D` with `shared: true` added
   to `infobases.origin` of its local layer — refused `invalid_argument`
   (unknown field): 0.14.0 removed the key.
+
+## Use after the move to 0.15.1
+
+The pinned runner is 0.15.1. Its push and create envelopes are recaptured in
+`tests/fixtures/v8_runner_015`, including `push-other-copy-*`. These 0.14.0
+captures stay only where a test checks a path whose shape 0.15.1 did not change
+and that could not be recaptured on the capture machine (no Designer licence,
+the agent refused the empty infobase user): `push-infobase-busy-apply.json`,
+`shared-key-refused.json`, the `extensions` captures and the `other-copy-*`
+captures of pull, extensions and restore. The wording of the other-copy warning
+is unchanged in the 0.15.1 source and in the recaptured push envelopes. A 0.14.0
+push step lacks `applied` and a pull lacks `requested_mode`, both required by
+0.15.1: the adapter refuses such envelopes, and the pull test adds
+`requested_mode` to its captures explicitly.

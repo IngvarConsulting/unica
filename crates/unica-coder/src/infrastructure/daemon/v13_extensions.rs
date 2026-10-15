@@ -3,7 +3,7 @@
 //! Even inventory starts a platform session, so every operation is previewApply.
 
 use super::protocol::InvocationRequest;
-use super::runner_014::Runner014ProcessRunner;
+use super::runner_015::Runner015ProcessRunner;
 use super::v13_infobase_exports::{
     digest_optional_workspace_file, digest_required_workspace_file, missing_runner_rejection,
     resolve_bundled_runner, runner_rejection, runner_start_rejection, valid_1c_identifier,
@@ -149,7 +149,7 @@ impl PreparedExtensions {
     pub(super) fn execute(&self, cancellation: CancellationToken) -> DomainResult {
         match resolve_bundled_runner(&self.context.cwd) {
             Ok(resolved) => self.execute_with(
-                &Runner014ProcessRunner,
+                &Runner015ProcessRunner,
                 &resolved.tool,
                 &resolved.version,
                 cancellation,
@@ -631,7 +631,7 @@ mod tests {
         let result = prepared.execute_with(
             &SequenceRunner::new(vec![envelope(&prepared, true)]),
             &tool(root.path()),
-            super::super::runner_014::VERSION,
+            super::super::runner_015::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -650,7 +650,7 @@ mod tests {
             let result = prepared.execute_with(
                 &runner,
                 &tool,
-                super::super::runner_014::VERSION,
+                super::super::runner_015::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -666,7 +666,7 @@ mod tests {
             let result = prepared.execute_with(
                 &runner,
                 &tool,
-                super::super::runner_014::VERSION,
+                super::super::runner_015::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{op:?}: {result:?}");
@@ -695,7 +695,7 @@ mod tests {
             let preview = p.execute_with(
                 &SequenceRunner::new(vec![envelope(&p, true)]),
                 &tool,
-                super::super::runner_014::VERSION,
+                super::super::runner_015::VERSION,
                 CancellationToken::new(),
             );
             assert!(preview.ok);
@@ -721,7 +721,7 @@ mod tests {
             let version = if change == "version" {
                 "0.11.1"
             } else {
-                super::super::runner_014::VERSION
+                super::super::runner_015::VERSION
             };
             let result = p.execute_with(&runner, &tool, version, CancellationToken::new());
             assert!(result.ok, "{change}: {result:?}");
@@ -789,7 +789,7 @@ mod tests {
             let result = prepared.execute_with(
                 &SequenceRunner::new(vec![preview, applied]),
                 &tool,
-                super::super::runner_014::VERSION,
+                super::super::runner_015::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -820,7 +820,7 @@ mod tests {
             let result = prepared.execute_with(
                 &SequenceRunner::new(vec![preview, applied]),
                 &tool,
-                super::super::runner_014::VERSION,
+                super::super::runner_015::VERSION,
                 CancellationToken::new(),
             );
             assert!(result.ok, "{result:?}");
@@ -873,7 +873,7 @@ mod tests {
         let receipt = p1.execute_with(
             &SequenceRunner::new(vec![envelope(&p1, true)]),
             &tool(first.path()),
-            super::super::runner_014::VERSION,
+            super::super::runner_015::VERSION,
             CancellationToken::new(),
         );
         p2.dry_run = false;
@@ -882,7 +882,7 @@ mod tests {
         let result = p2.execute_with(
             &runner,
             &tool(second.path()),
-            super::super::runner_014::VERSION,
+            super::super::runner_015::VERSION,
             CancellationToken::new(),
         );
         assert!(
@@ -905,7 +905,7 @@ mod tests {
         let result = p.execute_with(
             &SequenceRunner::new(vec![envelope(&p, true)]),
             &tool(root.path()),
-            super::super::runner_014::VERSION,
+            super::super::runner_015::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok);
@@ -992,7 +992,7 @@ mod tests {
         let result = p.execute_with(
             &SequenceRunner::new(vec![preview.clone()]),
             &tool(root.path()),
-            super::super::runner_014::VERSION,
+            super::super::runner_015::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok, "{result:?}");
@@ -1001,7 +1001,7 @@ mod tests {
         let result = p.execute_with(
             &SequenceRunner::new(vec![preview, applied]),
             &tool(root.path()),
-            super::super::runner_014::VERSION,
+            super::super::runner_015::VERSION,
             CancellationToken::new(),
         );
         assert!(result.ok, "{result:?}");
@@ -1019,7 +1019,7 @@ mod tests {
             !p.execute_with(
                 &runner,
                 &tool(root.path()),
-                super::super::runner_014::VERSION,
+                super::super::runner_015::VERSION,
                 cancellation
             )
             .ok
@@ -1036,7 +1036,7 @@ mod tests {
         let result = p.execute_with(
             &runner,
             &tool(root.path()),
-            super::super::runner_014::VERSION,
+            super::super::runner_015::VERSION,
             CancellationToken::new(),
         );
         assert!(!result.ok);
@@ -1056,7 +1056,7 @@ mod tests {
                 "error": {"code": "invalid_argument", "message": known}
             })]),
             &tool(root.path()),
-            super::super::runner_014::VERSION,
+            super::super::runner_015::VERSION,
             CancellationToken::new(),
         );
         assert!(!exact.ok);
@@ -1075,7 +1075,7 @@ mod tests {
                     "error": {"code": code, "message": known}
                 })]),
                 &tool(root.path()),
-                super::super::runner_014::VERSION,
+                super::super::runner_015::VERSION,
                 CancellationToken::new(),
             );
             assert!(
@@ -1095,7 +1095,7 @@ mod tests {
                     "error": {"code": "invalid_argument", "message": message}
                 })]),
                 &tool(root.path()),
-                super::super::runner_014::VERSION,
+                super::super::runner_015::VERSION,
                 CancellationToken::new(),
             );
             let published = serde_json::to_string(&result).unwrap();

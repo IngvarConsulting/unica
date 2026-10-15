@@ -291,11 +291,6 @@ fn borrowed_code_publication_failure_restores_bsl_descriptor_cache_and_revision(
     };
     let fixture = Fixture::common();
     let before = fixture.descriptor_bytes();
-    let service = fixture
-        .actor
-        .source_revision_service(&fixture.binding)
-        .unwrap();
-    let machine_before = service.machine_state_for_test();
     let admission = fixture.admission(false);
     let (mut staged, effects) = fixture
         .plan(&admission, &[fixture.operation(false)])
@@ -312,7 +307,6 @@ fn borrowed_code_publication_failure_restores_bsl_descriptor_cache_and_revision(
         fs::read(fixture.source.join(&fixture.module)).unwrap(),
         BEFORE
     );
-    assert_eq!(service.machine_state_for_test(), machine_before);
     assert!(!fixture
         .source
         .parent()

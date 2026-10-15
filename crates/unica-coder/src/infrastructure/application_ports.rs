@@ -1495,10 +1495,7 @@ mod tests {
             "unica.interface.edit",
             "unica.meta.add",
             "unica.meta.edit",
-            "unica.mxl.compile",
-            "unica.role.compile",
             "unica.role.edit",
-            "unica.subsystem.compile",
             "unica.subsystem.edit",
         ];
         let expected_planned_command = [
@@ -2895,6 +2892,50 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "unsupported_source");
         assert!(recorder.seen.lock().expect("recorded request").is_empty());
+    }
+
+    /// #1419: сбой сервера стандартов отвечал общей фразой «ни один
+    /// поставщик не дал результата», и причина сбоя терялась. Отказ обязан
+    /// назвать поставщика v8std и его собственную диагностику.
+    #[test]
+    fn canonical_v13_docs_search_names_the_failing_standards_provider() {
+        let _serial = documentation_registry_serial();
+        let dir = tempfile::tempdir().expect("workspace");
+        let workspace = dir.path().to_path_buf();
+        // Закрытый порт: слушатель снят до вызова, соединение отвергается
+        // сразу и без внешней сети.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("порт")
+            .local_addr()
+            .expect("адрес")
+            .port();
+        std::fs::write(
+            workspace.join("unica.toml"),
+            format!("[providers.v8std]\nendpoint = \"http://127.0.0.1:{port}/mcp\"\n"),
+        )
+        .expect("unica.toml");
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+
+        let result = canonical_v13_docs_search(
+            &context,
+            "GetFormMethod",
+            Some("development-standard"),
+            &CancellationToken::default(),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_unavailable");
+        let message = diagnostic["message"].as_str().expect("сообщение");
+        assert!(
+            message.contains("v8std/public-standards — failed: сервер стандартов недоступен"),
+            "отказ обязан назвать поставщика и его сбой, получено {message}"
+        );
     }
 
     #[test]

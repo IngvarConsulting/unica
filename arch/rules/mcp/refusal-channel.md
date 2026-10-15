@@ -6,6 +6,7 @@ check:
   - crates/unica-coder/src/domain/invocation.rs::refusal_envelope::every_code_answers_with_one_of_the_six_outcomes
   - crates/unica-coder/src/domain/invocation.rs::refusal_envelope::the_six_outcomes_are_spelled_as_published_on_the_wire
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_temporary_named_root_validation_failure
 ---
 
 # Отказ передаётся через diagnostics и отличает устаревший план

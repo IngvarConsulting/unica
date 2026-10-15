@@ -1,7 +1,7 @@
 use super::{
     project_known_suffix, project_typed_payload, resolve_platform_xml_target,
-    review_set_before_owner_proof, LogicalViewReadAuthority, MetadataAddress, SourceTarget,
-    TargetKindPolicy, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    LogicalViewReadAuthority, MetadataAddress, SourceTarget, TargetKindPolicy,
+    PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use crate::application::result_store::ViewCursorStore;
 use crate::application::v13::find::{FindRequest, FindResult};
@@ -17,7 +17,6 @@ use crate::infrastructure::logical_tree::route_logical_address;
 use crate::infrastructure::platform::filesystem::{
     supports_retained_root_replacement_test, RetainedDirectoryCapability,
 };
-use crate::infrastructure::source_revision::SourceRevisionService;
 
 use crate::infrastructure::v13_read_port::{
     review_clear_revision_identity_hooks, review_set_revision_identity_hooks, ProviderReadAuthority,
@@ -25,7 +24,6 @@ use crate::infrastructure::v13_read_port::{
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -451,7 +449,9 @@ fn common_module_present_damage_is_not_missing() {
 fn configuration_payload(
     reader: &ProviderReadAuthority,
 ) -> Result<serde_json::Value, crate::application::v13::view::ViewError> {
-    reader.configuration_payload_with_checkpoint(&mut || Ok(()))
+    reader
+        .configuration_payload_with_checkpoint(&mut || Ok(()))
+        .map(|payload| payload.as_ref().clone())
 }
 
 #[test]
@@ -531,15 +531,11 @@ fn actor_owned_reader_never_follows_a_source_set_remap_after_admission() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -593,15 +589,11 @@ fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
     .unwrap();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -637,15 +629,11 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
     let fixture = RealReaderFixture::new();
     fs::create_dir_all(fixture.source.join("Ext")).unwrap();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let reader = ProviderReadAuthority::new(
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
         root,
-        revisions,
     );
     let sidecar = fixture.source.join("Ext/HomePageWorkArea.xml");
 
@@ -677,15 +665,11 @@ fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
 fn actor_supplied_extension_kind_preserves_extension_support_semantics() {
     let fixture = RealReaderFixture::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let reader = ProviderReadAuthority::new(
         "extension",
         "actor-fixture-extension",
         SourceSetKind::Extension,
         root,
-        revisions,
     );
 
     let payload = configuration_payload(&reader).unwrap();
@@ -841,15 +825,11 @@ fn configuration_root_carries_the_retired_cf_info_facts() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -904,15 +884,11 @@ fn configuration_root_branch_counts_match_every_reachable_collection() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -1102,15 +1078,11 @@ fn capability_bound_configuration_reader_preserves_complete_cf_info_semantics() 
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let reader = ProviderReadAuthority::new(
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
         root,
-        revisions,
     );
     reader
         .exact_revision(
@@ -1145,15 +1117,11 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -3152,6 +3120,151 @@ fn dcs_dataset_field_and_parameter_consume_the_complete_suffix() {
     }
 }
 
+/// Имя с точкой — один сегмент адреса: читатель публикует его с `\.`, и по
+/// опубликованному адресу узел читается. Составной `dataPath` поля схемы,
+/// группа `CommandGroup.X` интерфейса, право на вложенный объект роли и
+/// область с точкой в имени прежде получали адрес, который грамматика
+/// не разбирала, или не получали его вовсе.
+#[test]
+fn names_with_a_dot_are_published_escaped_and_read_back() {
+    let fixture = RealReaderFixture::new();
+    let schema = fixture
+        .source
+        .join("Reports/ParityReport/Templates/MainSchema/Ext/Template.xml");
+    let text = fs::read_to_string(&schema).unwrap();
+    write(
+        &schema,
+        &text.replacen(
+            "<field xsi:type=\"DataSetFieldField\">",
+            "<field xsi:type=\"DataSetFieldField\"><dataPath>Owner.Code</dataPath><field>Owner.Code</field></field>\n\t\t<field xsi:type=\"DataSetFieldField\">",
+            1,
+        ),
+    );
+    let rights = fixture.source.join("Roles/SalesReader/Ext/Rights.xml");
+    let text = fs::read_to_string(&rights).unwrap();
+    write(
+        &rights,
+        &text.replacen(
+            "    <object>",
+            "    <object>\n        <name>Catalog.Products.Command.Print</name>\n        <right>\n            <name>View</name>\n            <value>true</value>\n        </right>\n    </object>\n    <object>",
+            1,
+        ),
+    );
+    let print = fixture
+        .source
+        .join("Reports/ParityReport/Templates/Print/Ext/Template.xml");
+    let text = fs::read_to_string(&print).unwrap();
+    write(
+        &print,
+        &text.replace("<name>Header</name>", "<name>Header.Total</name>"),
+    );
+    write(
+        &fixture
+            .source
+            .join("Subsystems/Sales/Ext/CommandInterface.xml"),
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20">
+	<CommandsOrder>
+		<Command name="Catalog.Items.StandardCommand.OpenList">
+			<CommandGroup>CommandGroup.Pricing</CommandGroup>
+		</Command>
+	</CommandsOrder>
+	<GroupsOrder>
+		<Group>NavigationPanelImportant</Group>
+		<Group>CommandGroup.Pricing</Group>
+	</GroupsOrder>
+</CommandInterface>
+"#,
+    );
+    let service = fixture.view_service();
+    // Член коллекции по опубликованному адресу: имя и вид совпадают.
+    let member = |branch: &str, title: &str| -> String {
+        let listed = service.view(ViewRequest::new(branch).unwrap());
+        assert!(listed.ok, "{branch}: {:?}", refusal_codes(&listed));
+        let items = listed.data.as_ref().unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let at = items
+            .iter()
+            .find(|item| item["title"] == title)
+            .and_then(|item| item["at"].as_str())
+            .unwrap_or_else(|| panic!("{branch} lists `{title}` with an address"))
+            .to_string();
+        let read = service.view(ViewRequest::new(&at).unwrap());
+        assert!(read.ok, "{at}: {:?}", refusal_codes(&read));
+        assert_eq!(read.data.as_ref().unwrap()["at"], at.as_str());
+        at
+    };
+    assert_eq!(
+        member(
+            "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field",
+            "Owner.Code"
+        ),
+        r"main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field.Owner\.Code"
+    );
+    assert_eq!(
+        member("main:Role.SalesReader.Right", "Products.Command.Print"),
+        r"main:Role.SalesReader.Right.Catalog_Products\.Command\.Print"
+    );
+    assert_eq!(
+        member(
+            "main:Report.ParityReport.Template.Print.Area",
+            "Header.Total"
+        ),
+        r"main:Report.ParityReport.Template.Print.Area.Header\.Total"
+    );
+    assert_eq!(
+        member(
+            "main:Subsystem.Sales.Interface.Group",
+            "CommandGroup.Pricing"
+        ),
+        r"main:Subsystem.Sales.Interface.Group.CommandGroup\.Pricing"
+    );
+    let group = service.view(
+        ViewRequest::new(r"main:Subsystem.Sales.Interface.Group.CommandGroup\.Pricing").unwrap(),
+    );
+    assert_eq!(
+        group.data.as_ref().unwrap()["items"],
+        json!([{"order": 1, "command": "Catalog.Items.StandardCommand.OpenList"}])
+    );
+}
+
+/// Свойство XDTO любой вложенности читается по цепочке `Property`: узел
+/// свойства со вложенным анонимным типом объявляет ветвь его свойств, и
+/// каждый опубликованный адрес читается.
+#[test]
+fn xdto_properties_are_read_at_any_depth() {
+    let fixture = RealReaderFixture::new();
+    let service = fixture.view_service();
+    let owner = "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект";
+    let node = service.view(ViewRequest::new(owner).unwrap());
+    assert!(node.ok, "{:?}", refusal_codes(&node));
+    assert_eq!(
+        node.data.as_ref().unwrap()["branches"],
+        json!([{"at": format!("{owner}.Property"), "count": 1}])
+    );
+    let nested = service.view(ViewRequest::new(&format!("{owner}.Property")).unwrap());
+    assert!(nested.ok, "{:?}", refusal_codes(&nested));
+    let leaf = format!("{owner}.Property.Документ_ЗаказКлиента");
+    assert_eq!(
+        nested.data.as_ref().unwrap()["items"][0]["at"],
+        leaf.as_str()
+    );
+    let read = service.view(ViewRequest::new(&leaf).unwrap());
+    assert!(read.ok, "{:?}", refusal_codes(&read));
+    assert_eq!(read.data.as_ref().unwrap()["kind"], "Property");
+    assert!(read
+        .data
+        .as_ref()
+        .unwrap()
+        .get("branches")
+        .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty)));
+    // У свойства без вложенного типа детей нет.
+    let missing = service.view(ViewRequest::new(&format!("{leaf}.Property.Нет")).unwrap());
+    assert_eq!(refusal_codes(&missing), vec!["not_found"]);
+}
+
 #[test]
 fn mxl_area_parameter_consumes_the_complete_suffix() {
     let fixture = RealReaderFixture::new();
@@ -3598,71 +3711,75 @@ fn a_structural_template_read_never_serves_a_cached_payload_to_a_content_read() 
 /// `Body` отдаёт исходные строки с их номерами: среза по контексту у `view`
 /// нет (#1374), и клиентский код формы остаётся в ответе.
 #[test]
-fn module_body_returns_every_source_line_with_its_number() {
-    let fixture = RealReaderFixture::new();
-    let source = fs::read_to_string(
-        fixture
-            .source
-            .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl"),
-    )
-    .unwrap();
-    let expected = source
-        .trim_start_matches('\u{feff}')
-        .lines()
-        .enumerate()
-        .map(|(index, text)| json!({"line": index + 1, "text": text}))
-        .collect::<Vec<_>>();
-    assert!(!expected.is_empty());
-    let result = fixture
-        .view_service()
-        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Module.Form.Body").unwrap());
-
-    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
-    assert_eq!(result.data.as_ref().unwrap()["items"], json!(expected));
-}
-
-#[test]
-#[ignore = "blocked by #1119: BSL Body still reads the complete module under an 8 MiB file cap"]
-fn ordinary_bsl_read_over_eight_mib_reassembles_every_body_line() {
+fn module_body_returns_the_source_text_byte_for_byte() {
     let fixture = RealReaderFixture::new();
     let module = fixture
         .source
         .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
-    let mut file = std::io::BufWriter::new(fs::File::create(module).unwrap());
-    writeln!(file, "Процедура ПрочитатьБольшойМодуль()").unwrap();
-    for _ in 0..9 {
-        writeln!(file, "//{}", "я".repeat(512 * 1024)).unwrap();
-    }
-    writeln!(file, "КонецПроцедуры").unwrap();
-    file.flush().unwrap();
-    drop(file);
-
-    let service = fixture.view_service();
     let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
-    let mut cursor = None;
-    let mut observed_lines = Vec::new();
-    loop {
-        let mut request = ViewRequest::new(at).unwrap().with_limit(2).unwrap();
-        if let Some(previous) = cursor.take() {
-            request = request.with_cursor(previous);
-        }
-        let page = service.view(request);
-        assert!(page.ok, "large Body page failed");
-        for item in page.data.as_ref().unwrap()["items"].as_array().unwrap() {
-            let line = item["line"].as_u64().unwrap();
-            let text = item["text"].as_str().expect("Body line must carry text");
-            observed_lines.push(line);
-            if (2..=10).contains(&line) {
-                assert!(text.starts_with("//"));
-                assert_eq!(text.chars().count(), 2 + 512 * 1024);
-            }
-        }
-        cursor = page.cursor;
-        if cursor.is_none() {
-            break;
-        }
+    let original = fs::read_to_string(&module).unwrap();
+    // Начальные U+FEFF снимаются, CRLF, табуляция, кавычки и отсутствие
+    // разделителя в конце файла сохраняются как есть.
+    let crlf = "\u{feff}// Комментарий \"формы\".\r\nПроцедура А()\r\n\tВозврат;\r\nКонецПроцедуры";
+    for source in [original.as_str(), crlf] {
+        fs::write(&module, source).unwrap();
+        let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(result.ok, "module Body must be read");
+        assert_eq!(
+            result.source_text.as_deref(),
+            Some(source.trim_start_matches('\u{feff}'))
+        );
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["at"], at);
+        assert_eq!(data["kind"], "Body");
+        assert!(data.get("items").is_none());
+        assert!(result.cursor.is_none());
     }
-    assert_eq!(observed_lines, (1..=11).collect::<Vec<_>>());
+}
+
+#[test]
+fn view_never_returns_module_text_above_the_largest_host_budget() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    // 72 КиБ — наибольший бюджет известного хоста; число записано здесь
+    // явно, чтобы смена предела в коде была видна этой проверке.
+    let mut source = vec![b'a'; 73_728];
+    fs::write(&module, &source).unwrap();
+    let whole = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(whole.source_text.as_ref().map(String::len), Some(73_728));
+    source.push(b'a');
+    fs::write(&module, &source).unwrap();
+    let refused = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
+    assert!(refused.source_text.is_none());
+}
+
+#[test]
+fn module_body_beyond_the_limit_is_still_checked_as_utf8_in_full() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let at = "main:Report.ParityReport.Form.MainForm.Module.Form.Body";
+    let mut source = vec![b'a'; crate::application::v13::source_text::MAX_SOURCE_TEXT_BYTES + 1];
+    let valid = fixture.view_service();
+    fs::write(&module, &source).unwrap();
+    let oversized = valid.view(ViewRequest::new(at).unwrap());
+    assert_eq!(oversized.diagnostics[0]["code"], "result_too_large");
+    // Неверный байт за пределом не теряется: отказ называет испорченный
+    // исходник, а не размер.
+    source.push(0xff);
+    fs::write(&module, &source).unwrap();
+    let broken = fixture.view_service().view(ViewRequest::new(at).unwrap());
+    assert!(!broken.ok);
+    assert_ne!(
+        broken.diagnostics[0]["code"], "result_too_large",
+        "a broken byte beyond the limit must not be reported as size"
+    );
+    assert!(broken.source_text.is_none());
 }
 
 #[test]
@@ -3716,7 +3833,7 @@ fn large_configuration_root_keeps_legacy_duplicate_and_namespace_semantics() {
         PlatformProfile::v8_3_27(),
     )
     .unwrap();
-    let legacy = project_typed_payload(&route, legacy_payload).unwrap();
+    let legacy = project_typed_payload(&route, legacy_payload.as_ref().clone()).unwrap();
     let module_branch = super::module_branch_for_parent(route.at(), PlatformProfile::v8_3_27())
         .expect("Configuration has a profile module branch");
     let expected = serde_json::to_value(legacy.with_branch(module_branch)).unwrap();
@@ -3761,32 +3878,6 @@ fn large_configuration_root_rejects_malformed_tail() {
     assert!(!result.ok, "malformed XML tail escaped");
     assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
     assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
-}
-
-#[test]
-fn large_configuration_root_rejects_revision_change_during_owner_proof() {
-    let fixture = RealReaderFixture::new();
-    let root_xml = fixture.source.join("Configuration.xml");
-    let xml = fs::read_to_string(&root_xml).unwrap();
-    fs::write(
-        root_xml,
-        xml.replace(
-            "</MetaDataObject>",
-            &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024)),
-        ),
-    )
-    .unwrap();
-    let descriptor = fixture.source.join("Catalogs/Items.xml");
-    review_set_before_owner_proof(move || {
-        let mut text = fs::read_to_string(&descriptor).unwrap();
-        text.push('\n');
-        fs::write(&descriptor, text).unwrap();
-    });
-    let result = fixture
-        .view_service()
-        .view(ViewRequest::new("main:Configuration").unwrap());
-    assert!(!result.ok, "mixed-revision Configuration root escaped");
-    assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
 }
 
 #[test]
@@ -3987,9 +4078,6 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let metadata_target =
         MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
     let metadata_resolution = resolve_platform_xml_target(
@@ -4006,7 +4094,6 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4090,15 +4177,11 @@ fn websocket_client_source_view_is_an_explicit_provider_gap() {
     .unwrap();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-main",
         SourceSetKind::Configuration,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4117,15 +4200,11 @@ fn extension_platform_event_does_not_advertise_unproved_interception() {
     fixture.install_accepted_profile_sources();
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-extension",
         SourceSetKind::Extension,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4148,15 +4227,11 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
     );
     let cancellation = CancellationToken::new();
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-extension-root",
         SourceSetKind::Extension,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4166,15 +4241,11 @@ fn extension_root_platform_modules_are_owned_by_the_extension_root() {
     assert!(module.ok, "{module:?}");
 
     let source_root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let authority = LogicalViewReadAuthority::new(
         &cancellation,
         "main",
         "actor-fixture-extension-root-find",
         SourceSetKind::Extension,
-        revisions,
         source_root,
         PlatformProfile::v8_3_27(),
     );
@@ -4234,86 +4305,20 @@ fn find_walks_every_real_addressable_reader_family_without_parallel_xml_semantic
 }
 
 #[test]
-pub(crate) fn operation_lease_find_traversal_scans_once_then_confirms_once() {
-    let fixture = RealReaderFixture::new();
-    fixture.install_accepted_profile_sources();
-    let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
-    let deadline = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
-    let lease = revisions
-        .begin_retained_operation(&root, deadline, &fixture.cancellation)
-        .unwrap();
-    assert_eq!(revisions.retained_scan_count(), 1);
-    let authority = LogicalViewReadAuthority::with_read_authority(
-        &fixture.cancellation,
-        ProviderReadAuthority::new_with_revision_lease(
-            "main",
-            "actor-fixture-main",
-            SourceSetKind::Configuration,
-            Arc::clone(&root),
-            lease.clone(),
-        ),
-        PlatformProfile::v8_3_27(),
-        deadline,
-    );
-    let built = ReaderReach::new(vec![("main", &authority)]);
-    for expected in [
-        "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity",
-        "main:Report.ParityReport.Form.MainForm.Item.Goods.Item.Quantity.Event.OnChange",
-        "main:Role.SalesReader.Right.Catalog_Products.RLS.View",
-        "main:Report.ParityReport.Template.MainSchema.DataSet.MainData.Field.Code",
-        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы",
-        "main:CommonModule.РеактивныйСервер.Method.InternalService",
-    ] {
-        let found = built.find(FindRequest::new(expected).unwrap());
-        assert!(
-            !found.is_nearest()
-                && found
-                    .candidates()
-                    .iter()
-                    .any(|candidate| candidate.at() == expected),
-            "the scan-count proof did not traverse {expected}: {found:?}"
-        );
-    }
-    assert_eq!(
-        revisions.retained_scan_count(),
-        1,
-        "node snapshots and reads must use the fixed operation revision"
-    );
-    revisions
-        .confirm_retained_operation(&root, &lease, deadline, &fixture.cancellation)
-        .unwrap();
-    assert_eq!(
-        revisions.retained_scan_count(),
-        2,
-        "the only second corpus scan is final operation confirmation"
-    );
-}
-
-#[test]
-fn operation_lease_rejects_named_root_replacement_before_node_read() {
+fn read_authority_rejects_named_root_replacement_before_node_read() {
     if !supports_retained_root_replacement_test() {
         return;
     }
     let fixture = RealReaderFixture::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.source).unwrap(),
-    );
     let deadline = crate::domain::code_intelligence::ProviderDeadline::no_deadline();
-    let lease = revisions
-        .begin_retained_operation(&root, deadline, &fixture.cancellation)
-        .unwrap();
     let authority = LogicalViewReadAuthority::with_read_authority(
         &fixture.cancellation,
-        ProviderReadAuthority::new_with_revision_lease(
+        ProviderReadAuthority::new(
             "main",
             "actor-fixture-main",
             SourceSetKind::Configuration,
             root,
-            lease,
         ),
         PlatformProfile::v8_3_27(),
         deadline,
@@ -4501,19 +4506,11 @@ fn external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_amb
 fn retained_external_inventory_is_cancellable() {
     let cancelled_fixture = RealExternalReaderFixture::new();
     let root = Arc::new(RetainedDirectoryCapability::open(&cancelled_fixture.processor).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(
-            &cancelled_fixture.context,
-            &cancelled_fixture.processor,
-        )
-        .unwrap(),
-    );
     let reader = ProviderReadAuthority::new(
         "artifact_processor",
         "actor-external-cancel",
         SourceSetKind::ExternalProcessor,
         root,
-        revisions,
     );
     let cancellation = CancellationToken::new();
     let mut checkpoints = 0_usize;
@@ -4559,16 +4556,11 @@ fn add_large_external_descriptors(fixture: &RealExternalReaderFixture, count: us
 
 fn external_inventory_reader(fixture: &RealExternalReaderFixture) -> ProviderReadAuthority {
     let root = Arc::new(RetainedDirectoryCapability::open(&fixture.processor).unwrap());
-    let revisions = Arc::new(
-        SourceRevisionService::new_reconciling_for_test(&fixture.context, &fixture.processor)
-            .unwrap(),
-    );
     ProviderReadAuthority::new(
         "artifact_processor",
         "actor-external-complete",
         SourceSetKind::ExternalProcessor,
         root,
-        revisions,
     )
 }
 
@@ -4749,10 +4741,22 @@ pub(crate) fn one_read_parses_each_module_source_once_per_actor_revision() {
     );
     assert_eq!(
         authority.module_source_read_count("CommonModule.РеактивныйСервер.Module"),
-        2,
-        "a changed exact revision must receive a new projection",
+        1,
+        "one read keeps its own projection; it is not a snapshot of later edits",
     );
-    assert_eq!(authority.configuration_payload_read_count(), 2);
+    assert_eq!(authority.configuration_payload_read_count(), 1);
+    let changed_methods = ViewService::new(fixture.read_authority(), ViewCursorStore::default())
+        .view(ViewRequest::new("main:CommonModule.РеактивныйСервер.Method").unwrap());
+    assert!(
+        changed_methods.ok,
+        "a new read of the changed module must succeed"
+    );
+    assert!(
+        serde_json::to_string(&changed_methods.data)
+            .unwrap()
+            .contains("AfterRevisionChange"),
+        "a new read must parse the changed module source"
+    );
 
     let second_authority = fixture.read_authority();
     assert_reader_reaches(
@@ -4822,6 +4826,58 @@ pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
         authority.support_state_read_count(),
         1,
         "one actor-owned revision must parse Ext/ParentConfigurations.bin once, not once per owner",
+    );
+}
+
+/// A support marker replaced after an object read of the same operation
+/// must not reach the configuration root, and the retained root must never
+/// pair the new marker's stamp with the state read before it.
+#[test]
+fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
+    use crate::infrastructure::v13_large_configuration::RegistrationCache;
+
+    let fixture = RealReaderFixture::new();
+    let marker = fixture.source.join("Ext/ParentConfigurations.bin");
+    fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    fs::copy(
+        fixture_path("platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin"),
+        &marker,
+    )
+    .unwrap();
+    let reader = |artifacts: Arc<RegistrationCache>| {
+        ProviderReadAuthority::new(
+            "main",
+            "actor-fixture-main",
+            SourceSetKind::Configuration,
+            Arc::new(RetainedDirectoryCapability::open(&fixture.source).unwrap()),
+        )
+        .with_artifacts(artifacts)
+    };
+    let fresh = || reader(Arc::new(RegistrationCache::default()));
+    let supported = configuration_payload(&fresh()).unwrap()["support"].clone();
+
+    let retained = Arc::new(RegistrationCache::with_settle_window_for_test(
+        std::time::Duration::ZERO,
+    ));
+    let operation = reader(Arc::clone(&retained));
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    operation.object_support(&target, &mut || Ok(())).unwrap();
+    fs::remove_file(&marker).unwrap();
+
+    let expected = configuration_payload(&fresh()).unwrap()["support"].clone();
+    assert_ne!(
+        expected, supported,
+        "the fixture must change the support answer"
+    );
+    assert_eq!(
+        configuration_payload(&operation).unwrap()["support"],
+        expected,
+        "the root combined a removed marker with the state read before it"
+    );
+    assert_eq!(
+        configuration_payload(&reader(retained)).unwrap()["support"],
+        expected,
+        "the retained root kept the support state of a replaced marker"
     );
 }
 
@@ -4949,8 +5005,8 @@ fn support_marker_stream_preserves_terminal_errors_and_never_memoizes_interrupti
             .unwrap();
         assert_eq!(
             authority.support_state_read_count(),
-            2,
-            "absence is memoized only after a successful checkpoint"
+            0,
+            "an absent marker has nothing to parse"
         );
     }
 }
@@ -5049,15 +5105,11 @@ impl RealExternalReaderFixture {
             &self.report
         };
         let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, source).unwrap(),
-        );
         LogicalViewReadAuthority::new(
             &self.cancellation,
             source_set,
             format!("actor-{source_set}"),
             kind,
-            revisions,
             root,
             PlatformProfile::v8_3_27(),
         )
@@ -5074,22 +5126,10 @@ impl RealExternalReaderFixture {
             &self.report
         };
         let root = Arc::new(RetainedDirectoryCapability::open(source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, source).unwrap(),
-        );
         let deadline = ProviderDeadline::no_deadline();
-        let lease = revisions
-            .begin_retained_operation(&root, deadline, &self.cancellation)
-            .unwrap();
         LogicalViewReadAuthority::with_read_authority(
             &self.cancellation,
-            ProviderReadAuthority::new_with_revision_lease(
-                source_set,
-                format!("actor-{source_set}"),
-                kind,
-                root,
-                lease,
-            ),
+            ProviderReadAuthority::new(source_set, format!("actor-{source_set}"), kind, root),
             PlatformProfile::v8_3_27(),
             deadline,
         )
@@ -5542,15 +5582,11 @@ impl RealReaderFixture {
 
     fn read_authority(&self) -> LogicalViewReadAuthority<'_> {
         let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
-        );
         LogicalViewReadAuthority::new(
             &self.cancellation,
             "main",
             "actor-fixture-main",
             SourceSetKind::Configuration,
-            revisions,
             source_root,
             PlatformProfile::v8_3_27(),
         )
@@ -5558,21 +5594,14 @@ impl RealReaderFixture {
 
     fn operation_read_authority(&self) -> LogicalViewReadAuthority<'_> {
         let root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
-        );
         let deadline = ProviderDeadline::no_deadline();
-        let lease = revisions
-            .begin_retained_operation(&root, deadline, &self.cancellation)
-            .unwrap();
         LogicalViewReadAuthority::with_read_authority(
             &self.cancellation,
-            ProviderReadAuthority::new_with_revision_lease(
+            ProviderReadAuthority::new(
                 "main",
                 "actor-fixture-main",
                 SourceSetKind::Configuration,
                 root,
-                lease,
             ),
             PlatformProfile::v8_3_27(),
             deadline,
@@ -5586,15 +5615,11 @@ impl RealReaderFixture {
     /// Тот же набор, объявленный расширением: заимствование живёт только здесь.
     fn extension_read_authority(&self) -> LogicalViewReadAuthority<'_> {
         let source_root = Arc::new(RetainedDirectoryCapability::open(&self.source).unwrap());
-        let revisions = Arc::new(
-            SourceRevisionService::new_reconciling_for_test(&self.context, &self.source).unwrap(),
-        );
         LogicalViewReadAuthority::new(
             &self.cancellation,
             "main",
             "actor-fixture-extension-borrowing",
             SourceSetKind::Extension,
-            revisions,
             source_root,
             PlatformProfile::v8_3_27(),
         )
@@ -5896,23 +5921,6 @@ fn with_root_version(document: &str) -> String {
         return document.to_string();
     }
     format!("{} version=\"2.20\"{}", &document[..end], &document[end..])
-}
-
-#[test]
-fn review_rejects_revision_change_during_post_fence_owner_proof() {
-    let fixture = RealReaderFixture::new();
-    let descriptor = fixture.source.join("Catalogs/Items.xml");
-    review_set_before_owner_proof(move || {
-        let mut text = fs::read_to_string(&descriptor).unwrap();
-        text.push('\n');
-        fs::write(&descriptor, text).unwrap();
-    });
-
-    let service = fixture.view_service();
-    let result = service.view(ViewRequest::new("main:Catalog.Items").unwrap());
-
-    assert!(!result.ok, "mixed-revision read escaped: {result:?}");
-    assert_eq!(result.diagnostics[0]["code"], "stale_cursor");
 }
 
 #[test]
@@ -6219,7 +6227,9 @@ fn registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_vi
     fs::write(configuration, owner).unwrap();
     let service = fixture.view_service();
 
-    for at in ["main:Configuration", "main:Role", "main:Role.Missing"] {
+    let root = service.view(ViewRequest::new("main:Configuration").unwrap());
+    assert!(root.ok, "the root proves only Configuration.xml");
+    for at in ["main:Role", "main:Role.Missing"] {
         let result = service.view(ViewRequest::new(at).unwrap());
         assert!(
             !result.ok,

@@ -30,7 +30,7 @@ SOURCE_ROOT = REPO_ROOT / "crates" / "unica-coder" / "src"
 # рабочего пространства. Ошибки подготовки staged-исходников в `apply`
 # отвечают кодом своего вида, а нечитаемый исходник — `source_unreadable`;
 # сбой проверки границ при публикации — устаревший план (#955, #1332).
-UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 100
+UNDETAILED_PROVIDER_UNAVAILABLE_CEILING = 99
 
 TEST_TAIL = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\(crate\))?\s+)?mod\s+\w+")
 STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')

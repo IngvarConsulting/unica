@@ -240,6 +240,39 @@ pub(crate) struct SystemProcessRunner;
 struct SystemBslMcpRunner;
 
 static SYSTEM_PROCESS_RUNNER: SystemProcessRunner = SystemProcessRunner;
+
+/// Тестовый наблюдатель запусков процессов системным исполнителем: записывает
+/// программу каждого запуска, рабочий каталог которого лежит под корнем.
+#[cfg(test)]
+pub(crate) mod process_launch_probe {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static LAUNCHES: Mutex<Vec<(PathBuf, String)>> = Mutex::new(Vec::new());
+
+    fn canonical(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    pub(super) fn record(cwd: &Path, program: &std::ffi::OsStr) {
+        LAUNCHES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((canonical(cwd), program.to_string_lossy().into_owned()));
+    }
+
+    /// Programs launched so far with a working directory below `root`.
+    pub(crate) fn launches_under_for_test(root: &Path) -> Vec<String> {
+        let root = canonical(root);
+        LAUNCHES
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .filter(|(cwd, _)| cwd.starts_with(&root))
+            .map(|(_, program)| program.clone())
+            .collect()
+    }
+}
 static SYSTEM_BSL_MCP_RUNNER: SystemBslMcpRunner = SystemBslMcpRunner;
 
 pub(crate) fn system_process_runner() -> &'static (dyn ProcessRunner + Send + Sync) {
@@ -2315,6 +2348,8 @@ fn names_not_ready(text: &str) -> bool {
 
 impl ProcessRunner for SystemProcessRunner {
     fn run_staged(&self, command: &ProcessCommand) -> Result<ProcessOutput, ProcessStreamFailure> {
+        #[cfg(test)]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
         let mut child = ManagedChild::spawn_staged(managed_command(command))
             .map_err(ProcessStreamFailure::from_spawn)?;
         let output = child.wait_for_output().map_err(ProcessStreamFailure::Run)?;
@@ -2322,6 +2357,8 @@ impl ProcessRunner for SystemProcessRunner {
     }
 
     fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+        #[cfg(test)]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
         let output = ManagedChild::run(ManagedCommand {
             program: command.program.clone(),
             args: command.args.iter().map(Into::into).collect(),
@@ -2347,6 +2384,8 @@ impl ProcessRunner for SystemProcessRunner {
         &self,
         command: &ProcessCommand,
     ) -> Result<(ProcessOutput, PendingProcessHandoff), ProcessStreamFailure> {
+        #[cfg(test)]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
         let (output, handoff) = ManagedChild::run_pending_handoff_staged(managed_command(command))
             .map_err(|failure| match failure {
                 PendingRunFailure::Spawn(failure) => ProcessStreamFailure::from_spawn(failure),
@@ -2360,6 +2399,8 @@ impl ProcessRunner for SystemProcessRunner {
         command: &ProcessCommand,
         input: &[u8],
     ) -> Result<ProcessOutput, String> {
+        #[cfg(test)]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
         let output = ManagedChild::run_with_input(
             ManagedCommand {
                 program: command.program.clone(),
@@ -2396,6 +2437,8 @@ impl ProcessRunner for SystemProcessRunner {
         max_line_bytes: usize,
         on_line: &mut dyn FnMut(usize, &[u8]) -> StreamControl,
     ) -> Result<ProcessStreamOutput, ProcessStreamFailure> {
+        #[cfg(test)]
+        process_launch_probe::record(&command.cwd, command.program.as_ref());
         let mut child = ManagedChild::spawn_staged(managed_command(command))
             .map_err(ProcessStreamFailure::from_spawn)?;
         let output = child
@@ -2613,6 +2656,7 @@ impl HttpClient for NetworkHttpClient {
                 &[
                     ("Content-Type", "application/json"),
                     ("Accept", "application/json, text/event-stream"),
+                    ("User-Agent", unica_bootstrap::network::DOCS_USER_AGENT),
                 ],
                 &payload.to_string(),
                 Some(StandardsAdapter::DEFAULT_TIMEOUT),

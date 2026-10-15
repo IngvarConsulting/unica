@@ -1,7 +1,7 @@
 use super::metadata::{owner_registration_image, qualified_target};
 use super::validate_platform_xml_binding;
-use crate::domain::address::{NodeKind, QualifiedAddress};
-use crate::domain::apply::OperationFamily;
+use crate::domain::address::{member_address, NodeKind, QualifiedAddress};
+use crate::domain::apply::{FormItemRole, OperationFamily};
 use crate::domain::events::{DomainEvent, DomainEventKind};
 use crate::domain::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use crate::infrastructure::logical_event_source::attached_resource_relative;
@@ -12,6 +12,7 @@ use crate::infrastructure::native_operations::apply::{
 use crate::infrastructure::native_operations::apply_families::request::{
     IndexedPlanOperation, ProvisionalApplyEffect,
 };
+use crate::infrastructure::native_operations::form::FormInfoElement;
 use crate::infrastructure::native_operations::interface::{
     interface_order_membership, interface_text_direct_item_values, interface_text_do_group_order,
     interface_text_do_hide, interface_text_do_order, interface_text_do_place,
@@ -115,9 +116,164 @@ enum FormResourcePlanKind {
     FormEdit {
         owner: MetadataAddress,
         form: String,
+        subject: FormEditSubject,
         definitions: Vec<Value>,
     },
     Unsupported,
+}
+
+/// Узел формы, который задаёт адрес правки (#1355): цепочка элементов от
+/// формы, пустая у самой формы. Узел проверяется по прочитанной форме до
+/// записи: отсутствующий даёт `not_found`, а не правку другого узла.
+#[derive(Debug, Clone)]
+enum FormEditSubject {
+    /// Форма или элемент, на который пишется событие или реквизит.
+    Node(Vec<String>),
+    /// Форма или элемент-контейнер, куда добавляются элементы.
+    Container(Vec<String>),
+    /// Удаляемый элемент.
+    Removed(Vec<String>),
+}
+
+impl FormEditSubject {
+    fn items(&self) -> &[String] {
+        match self {
+            Self::Node(items) | Self::Container(items) | Self::Removed(items) => items,
+        }
+    }
+}
+
+/// Элемент формы по цепочке имён от корня, как её адресует `view`.
+pub(super) fn form_item_at<'a>(
+    elements: &'a [FormInfoElement],
+    chain: &[String],
+) -> Option<&'a FormInfoElement> {
+    let (first, rest) = chain.split_first()?;
+    let item = elements.iter().find(|element| &element.name == first)?;
+    if rest.is_empty() {
+        Some(item)
+    } else {
+        form_item_at(&item.children, rest)
+    }
+}
+
+/// Путь элемента с именем `name` от корня формы: один, ни одного или
+/// несколько элементов с этим именем.
+pub(super) fn form_item_path(
+    elements: &[FormInfoElement],
+    name: &str,
+) -> crate::domain::apply::NamedLookup {
+    fn collect(
+        elements: &[FormInfoElement],
+        name: &str,
+        prefix: &mut Vec<String>,
+        found: &mut Vec<Vec<String>>,
+    ) {
+        for element in elements {
+            prefix.push(element.name.clone());
+            if element.name == name {
+                found.push(prefix.clone());
+            }
+            collect(&element.children, name, prefix, found);
+            prefix.pop();
+        }
+    }
+    let mut found = Vec::new();
+    collect(elements, name, &mut Vec::new(), &mut found);
+    match found.len() {
+        0 => crate::domain::apply::NamedLookup::Missing,
+        1 => crate::domain::apply::NamedLookup::Found(found.remove(0)),
+        _ => crate::domain::apply::NamedLookup::Ambiguous(found),
+    }
+}
+
+/// Дерево элементов формы, как его читает `view`.
+pub(super) fn form_items_of(text: &str) -> Result<Vec<FormInfoElement>, String> {
+    crate::infrastructure::native_operations::form::parse_form_event_evidence_xml(text)
+        .map(|evidence| evidence.elements)
+}
+
+/// Узел правки есть в форме и подходит операции; сосед `after` нового
+/// элемента лежит в том же контейнере.
+fn check_form_edit_subject(
+    xml_text: &str,
+    subject: &FormEditSubject,
+    definitions: &[Value],
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
+    let at_path = format!("ops[{op_index}].args.at");
+    let elements = form_items_of(xml_text).map_err(|error| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error).at_path(at_path.clone())
+    })?;
+    let chain = subject.items();
+    let siblings = match chain {
+        [] => &elements[..],
+        chain => {
+            let item = form_item_at(&elements, chain).ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    format!(
+                        "form item `Item.{}` was not found; read the form items to address an existing one",
+                        chain.join(".Item.")
+                    ),
+                )
+                .at_path(at_path.clone())
+            })?;
+            let role = FormItemRole::from_tag(&item.tag);
+            match (subject, role) {
+                (FormEditSubject::Container(_), FormItemRole::Leaf) => {
+                    return Err(bad(
+                        op_index,
+                        "at",
+                        format!(
+                            "form item `{}` {} does not hold elements; element.add targets the form or a container item",
+                            item.name, item.tag
+                        ),
+                    ))
+                }
+                (FormEditSubject::Removed(_), FormItemRole::AutoCommandBar) => {
+                    return Err(bad(
+                        op_index,
+                        "at",
+                        format!(
+                            "`{}` is the automatic command bar of its owner and is removed only with it",
+                            item.name
+                        ),
+                    ))
+                }
+                _ => {}
+            }
+            &item.children[..]
+        }
+    };
+    if matches!(subject, FormEditSubject::Container(_)) {
+        // Элементы, добавленные раньше в том же `items`, к моменту
+        // следующего уже стоят в контейнере и тоже служат соседями.
+        let mut added: Vec<&str> = Vec::new();
+        for (index, definition) in definitions.iter().enumerate() {
+            if let Some(after) = definition.get("after").and_then(Value::as_str) {
+                if !siblings.iter().any(|sibling| sibling.name == after) && !added.contains(&after)
+                {
+                    return Err(bad(
+                        op_index,
+                        &format!("items[{index}].after"),
+                        format!(
+                            "`after` names a sibling inside the addressed container; `{after}` is not there"
+                        ),
+                    ));
+                }
+            }
+            added.extend(
+                definition
+                    .get("elements")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|element| element.get("name").and_then(Value::as_str)),
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -189,15 +345,48 @@ fn required_string<'a>(
 /// Разбор операций командного интерфейса.
 ///
 /// Адрес несёт интерфейс, а команда лежит в аргументах: предмет операции —
-/// пара «интерфейс и ссылка на команду», а адрес может нести только одно. Приписать факт подсистемы адресу команды,
-/// живущей в другом месте, было бы неверно.
+/// пара «интерфейс и ссылка на команду», а адрес может нести только одно.
+/// Приписать факт подсистемы адресу команды, живущей в другом месте, было бы
+/// неверно. Порядок команд принадлежит группе, и группа — узел интерфейса:
+/// `commandOrder.set` адресует `…Interface.Group.<g>`, имя с точкой
+/// экранируется (`CommandGroup\.X`).
 fn parse_command_interface_operation(
     section: &str,
     target: &QualifiedAddress,
     args: &Map<String, Value>,
     op_index: usize,
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
-    let segments = target.segments();
+    let (segments, group) = match target.segments() {
+        [interface @ .., group] if group.kind() == NodeKind::Group => match group.name() {
+            Some(name) => (interface, Some(name)),
+            // Ветвь групп — коллекция, а не группа: порядок пишется в группу.
+            None => {
+                return Err(bad(
+                    op_index,
+                    "at",
+                    format!("`{section}.set` does not target the group collection; name the group: `Subsystem.Name.Interface.Group.G`"),
+                ))
+            }
+        },
+        segments => (segments, None),
+    };
+    if (section == "commandOrder") != group.is_some() {
+        return Err(bad(
+            op_index,
+            "at",
+            if section == "commandOrder" {
+                "`commandOrder.set` targets a command group: `Subsystem.Name.Interface.Group.G`"
+                    .to_string()
+            } else {
+                format!("`{section}.set` does not target a command group")
+            },
+        ));
+    }
+    let interface = QualifiedAddress {
+        source_set: target.source_set().to_string(),
+        segments: segments.to_vec(),
+    };
+    let target = &interface;
     let (address, relative) = match segments {
         // Порядок подсистем верхнего уровня живёт в корневом документе.
         [root] if root.kind() == NodeKind::Configuration => {
@@ -309,11 +498,13 @@ fn parse_command_interface_operation(
             InterfaceEdit::Placement(values)
         }
         "commandOrder" => {
-            let values = required_values(args, op_index, &["group", "commands"])?;
-            // Порядок команд принадлежит группе: без неё нечего сравнивать
-            // с сохранённым составом.
+            let values = required_values(args, op_index, &["commands"])?;
+            // Порядок команд принадлежит группе адреса: без неё нечего
+            // сравнивать с сохранённым составом.
             InterfaceEdit::CommandOrder {
-                group: required_string(values, "group", op_index, "values")?.to_string(),
+                group: group
+                    .expect("a command order target names its group")
+                    .to_string(),
                 commands: listed_strings(values, "commands", op_index)?,
             }
         }
@@ -624,31 +815,44 @@ fn parse_role_operation(
                     ));
                 }
                 let object = required_string(item, "object", op_index, &location)?.to_string();
-                // Запись адресуется `Right.<Вид>_<Имя>`; вложенный объект
-                // (`Kind.X.Command.Y`) адресом не выражается до экранирования
-                // точки (#1356): созданную запись нечем было бы изменить.
-                match object.split('.').collect::<Vec<_>>().as_slice() {
-                    [kind, name] if role_right_owner_kind(kind) && !name.is_empty() => {}
-                    [_, _, _, ..] => {
-                        return Err(bad(
-                            op_index,
-                            &format!("{location}.object"),
-                            "a nested object (`Kind.Name.Command.C`, attribute) has no rights-entry address until #1356; only `Kind.Name` objects are supported",
-                        ))
-                    }
+                // Запись адресуется `Right.<Вид>_<Имя>`; у вложенного объекта
+                // (`Kind.X.Command.Y`) остальные точки имени экранируются.
+                match object.split_once('.') {
+                    Some((kind, name))
+                        if role_right_owner_kind(kind)
+                            && !name.is_empty()
+                            && name.split('.').all(|part| !part.is_empty()) => {}
                     _ => {
                         return Err(bad(
                             op_index,
                             &format!("{location}.object"),
-                            "`object` names a metadata object as `Kind.Name`",
+                            "`object` names a metadata object as `Kind.Name` or a nested one as `Kind.Name.Command.C`",
                         ))
                     }
+                }
+                // Вложенный объект роли — закрытый набор раскладок, которые
+                // платформа пишет в Rights.xml: команда, реквизит, стандартный
+                // реквизит, табличная часть и её реквизиты, измерение, ресурс,
+                // операция веб-сервиса, метод шаблона URL, канал сервиса
+                // интеграции, реквизит адресации задачи, вложенная подсистема.
+                // Опечатка вида (`Comand`) или вложенный объект у корня
+                // конфигурации иначе ушли бы в Rights.xml записью, которой
+                // у платформы нет.
+                let nested = object.split('.').count() > 2;
+                if nested && !crate::domain::role::nested_right_shape_is_modelled(&object) {
+                    return Err(bad(
+                        op_index,
+                        &format!("{location}.object"),
+                        format!(
+                            "`{object}` is not a nested object a role lists: use Kind.Name.Command|Attribute|StandardAttribute|TabularSection|Dimension|Resource|Operation|AddressingAttribute|IntegrationServiceChannel.X, Kind.Name.TabularSection.T.Attribute|StandardAttribute.X, HTTPService.S.URLTemplate.T.Method.M or Subsystem.S.Subsystem.X"
+                        ),
+                    ));
                 }
                 // Созданную запись `right.set` правит по адресу
                 // `Right.<Вид>_<Имя>`; адрес, который грамматика не разбирает,
                 // оставил бы запись без адреса.
                 let entry_name = object.replacen('.', "_", 1);
-                if QualifiedAddress::parse(&format!("{target}.Right.{entry_name}"))
+                if QualifiedAddress::parse(&member_address(&format!("{target}.Right"), &entry_name))
                     .ok()
                     .and_then(|address| {
                         address
@@ -698,6 +902,21 @@ fn parse_role_operation(
                         )),
                     })
                     .collect::<Result<Vec<_>, _>>()?;
+                if nested {
+                    // Право вложенного объекта — из его закрытого набора
+                    // (View/Edit, Use у операций и каналов), а не права объекта.
+                    if let Some((right, message)) = rights.iter().find_map(|(right, _)| {
+                        crate::domain::role::validate_nested_right(&object, right)
+                            .err()
+                            .map(|message| (right, message))
+                    }) {
+                        return Err(bad(
+                            op_index,
+                            &format!("{location}.rights.{right}"),
+                            message,
+                        ));
+                    }
+                }
                 entries.push(RightEntry { object, rights });
             }
             Ok(FormResourcePlanKind::RightAdd {
@@ -931,83 +1150,69 @@ fn parse_support_operation(
     }
 }
 
-/// The owner object of a form address (`Owner.Name[.Form.F[.Item.X]]`).
+/// Узел формы по адресу `Owner.Name[.Form.F[.Item.A[.Item.B…]][.Event.E]]`.
 struct FormTarget {
     owner: MetadataAddress,
-    owner_kind: String,
-    owner_name: String,
     form: Option<String>,
-    item: Option<String>,
+    /// Цепочка элементов от формы: `Item.A.Item.B` даёт `[A, B]`.
+    items: Vec<String>,
+    /// Событие формы или последнего элемента цепочки.
+    event: Option<String>,
 }
+
+const FORM_ADDRESS_SHAPE: &str =
+    "form operations address `Owner.Name`, `Owner.Name.Form.F`, `Owner.Name.Form.F.Item.A[.Item.B…]` or `….Event.E` of the form or its item";
 
 fn form_target(target: &QualifiedAddress, op_index: usize) -> Result<FormTarget, ApplyPlanError> {
     let segments = target.segments();
     let [owner, rest @ ..] = segments else {
-        return Err(bad(
-            op_index,
-            "at",
-            "form operations address a metadata owner or its form",
-        ));
+        return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE));
     };
     if owner.kind() == NodeKind::Configuration || owner.kind() == NodeKind::Form {
-        return Err(bad(
-            op_index,
-            "at",
-            "form operations address `Owner.Name`, `Owner.Name.Form.F` or `Owner.Name.Form.F.Item.X`",
-        ));
+        return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE));
     }
     let owner_name = owner
         .name()
-        .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?
-        .to_string();
-    let owner_kind = owner.kind().as_str().to_string();
+        .ok_or_else(|| bad(op_index, "at", "the form owner must be named"))?;
     let address = MetadataAddress::parse(
         PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner_kind}.{owner_name}"),
+        &format!("{}.{owner_name}", owner.kind().as_str()),
     )
     .map_err(|error| bad(op_index, "at", error.to_string()))?;
-    let mut form = None;
-    let mut item = None;
-    match rest {
-        [] => {}
-        [form_segment] if form_segment.kind() == NodeKind::Form => {
-            form = Some(
-                form_segment
-                    .name()
-                    .ok_or_else(|| bad(op_index, "at", "the form must be named"))?
-                    .to_string(),
-            );
+    let named = |segment: &crate::domain::address::AddressSegment, what: &str| {
+        segment
+            .name()
+            .map(str::to_string)
+            .ok_or_else(|| bad(op_index, "at", format!("the {what} must be named")))
+    };
+    let (form, items, event) = match rest {
+        [] => (None, Vec::new(), None),
+        [form, tail @ ..] if form.kind() == NodeKind::Form => {
+            let (items, event) = match tail {
+                [items @ .., last] if last.kind() == NodeKind::Event => {
+                    (items, Some(named(last, "form event")?))
+                }
+                items => (items, None),
+            };
+            let items = items
+                .iter()
+                .map(|item| {
+                    if item.kind() == NodeKind::Item {
+                        named(item, "form item")
+                    } else {
+                        Err(bad(op_index, "at", FORM_ADDRESS_SHAPE))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            (Some(named(form, "form")?), items, event)
         }
-        [form_segment, item_segment]
-            if form_segment.kind() == NodeKind::Form && item_segment.kind() == NodeKind::Item =>
-        {
-            form = Some(
-                form_segment
-                    .name()
-                    .ok_or_else(|| bad(op_index, "at", "the form must be named"))?
-                    .to_string(),
-            );
-            item = Some(
-                item_segment
-                    .name()
-                    .ok_or_else(|| bad(op_index, "at", "the form item must be named"))?
-                    .to_string(),
-            );
-        }
-        _ => {
-            return Err(bad(
-                op_index,
-                "at",
-                "form operations address `Owner.Name`, `Owner.Name.Form.F` or `Owner.Name.Form.F.Item.X`",
-            ))
-        }
-    }
+        _ => return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE)),
+    };
     Ok(FormTarget {
         owner: address,
-        owner_kind,
-        owner_name,
         form,
-        item,
+        items,
+        event,
     })
 }
 
@@ -1069,19 +1274,13 @@ fn form_attribute_type(type_name: &str) -> String {
 
 /// The legacy element definition for one typed v0.13 item: the discriminator
 /// key named after the element type, every other property passed through.
+/// The item has passed the closed `element.add` contract: its keys are the
+/// ones the writer of its kind writes.
 fn legacy_element_definition(
     item: &Map<String, Value>,
     op_index: usize,
     location: &str,
-) -> Result<(Value, Option<String>, Option<String>), ApplyPlanError> {
-    if item.contains_key("html") {
-        return Err(bad(
-            op_index,
-            &format!("{location}.html"),
-            "html is an internal discriminator; use name and type: HTMLDocumentField in element.add",
-        ));
-    }
-    reject_nested_typed_html(item, op_index, location)?;
+) -> Result<(Value, Option<String>), ApplyPlanError> {
     let name = required_string(item, "name", op_index, location)?.to_string();
     let kind = item
         .get("type")
@@ -1089,17 +1288,21 @@ fn legacy_element_definition(
         .unwrap_or("InputField");
     let mut definition = Map::new();
     definition.insert("name".to_string(), Value::String(name.clone()));
+    let orientation = || {
+        Value::String(
+            item.get("orientation")
+                .and_then(Value::as_str)
+                .unwrap_or("vertical")
+                .to_string(),
+        )
+    };
     match kind {
         "InputField" | "Input" | "Field" => {}
         "HTMLDocumentField" => {
             definition.insert("html".to_string(), Value::String(name.clone()));
         }
         "Group" | "UsualGroup" => {
-            let orientation = item
-                .get("orientation")
-                .and_then(Value::as_str)
-                .unwrap_or("vertical");
-            definition.insert("group".to_string(), Value::String(orientation.to_string()));
+            definition.insert("group".to_string(), orientation());
         }
         "Table" => {
             definition.insert("table".to_string(), Value::String(name.clone()));
@@ -1121,6 +1324,11 @@ fn legacy_element_definition(
         }
         "Page" => {
             definition.insert("page".to_string(), Value::String(name.clone()));
+            // Ориентацию страницы пишет её `group`; прежде `orientation`
+            // у страницы молча пропадал (#1447).
+            if item.contains_key("orientation") {
+                definition.insert("group".to_string(), orientation());
+            }
         }
         "CommandBar" => {
             definition.insert("cmdBar".to_string(), Value::String(name.clone()));
@@ -1135,210 +1343,114 @@ fn legacy_element_definition(
             ))
         }
     }
-    let mut into = None;
     let mut after = None;
     for (key, value) in item {
         match key.as_str() {
             "name" | "type" | "orientation" => {}
             "after" => after = value.as_str().map(str::to_string),
-            "into" => into = value.as_str().map(str::to_string),
-            known
-                if ELEMENT_DEFINITION_KEYS.contains(&known)
-                    || crate::infrastructure::native_operations::form::FORM_BINDING_PATH_PROPERTIES
-                        .iter()
-                        .any(|(json_key, _)| *json_key == known) =>
-            {
+            _ => {
                 definition.insert(key.clone(), value.clone());
-            }
-            unknown => {
-                return Err(bad(
-                    op_index,
-                    &format!("{location}.{unknown}"),
-                    format!("unknown form element property `{unknown}`"),
-                ))
             }
         }
     }
-    Ok((Value::Object(definition), into, after))
+    Ok((Value::Object(definition), after))
 }
 
-/// Свойства элемента, которые читают генераторы элементов формы
-/// (`form::emit_form_*`), и внутренние различители вида. Пути привязки
-/// (`path`, `headerDataPath`, …) берутся из таблицы генератора
-/// `FORM_BINDING_PATH_PROPERTIES`: её проверка даёт предметный отказ, например
-/// для `headerDataPath` у обычной группы. Неизвестный ключ
-/// отказывает: раньше он молча пропадал, и опечатка давала элемент без
-/// заказанного свойства (#1351).
-const ELEMENT_DEFINITION_KEYS: &[&str] = &[
-    // Различитель таблицы динамического списка: без него генератор не пишет
-    // блок свойств списка (`autoRefresh`, `showRoot`, …).
-    "_dynList",
-    "allowGettingCurrentRowURL",
-    "allowRootChoice",
-    "autoCmdBar",
-    "autoCommandBar",
-    "autoInsertNewRow",
-    "autoMaxHeight",
-    "autoMaxWidth",
-    "autoRefresh",
-    "autoRefreshPeriod",
-    "autofill",
-    "backColor",
-    "behavior",
-    "button",
-    "check",
-    "checkBoxType",
-    "children",
-    "choiceButton",
-    "choiceFoldersAndItems",
-    "clearButton",
-    "cmdBar",
-    "collapsed",
-    "columns",
-    "command",
-    "commandBar",
-    "commandBarLocation",
-    "commandName",
-    "commandSource",
-    "currentRowUse",
-    "defaultButton",
-    "disabled",
-    "dropListButton",
-    "elements",
-    "enableDrag",
-    "enabled",
-    "font",
-    "formatted",
-    "group",
-    "handlers",
-    "headerHorizontalAlign",
-    "height",
-    "hidden",
-    "horizontalAlign",
-    "horizontalStretch",
-    "html",
-    "hyperlink",
-    "initialTreeView",
-    "input",
-    "inputHint",
-    "label",
-    "labelField",
-    "locationInCommandBar",
-    "markIncomplete",
-    "multiLine",
-    "on",
-    "page",
-    "pages",
-    "pagesRepresentation",
-    "passwordMode",
-    "picture",
-    "readOnly",
-    "representation",
-    "restoreCurrentRow",
-    "showInHeader",
-    "showLeftMargin",
-    "showRoot",
-    "showTitle",
-    "skipOnInput",
-    "spinButton",
-    "stdCommand",
-    "table",
-    "tableAutofill",
-    "text",
-    "title",
-    "titleLocation",
-    "tooltip",
-    "tooltipRepresentation",
-    "updateOnDataChange",
-    "userVisible",
-    "verticalStretch",
-    "visible",
-    "width",
-];
-
-// Nested children still use the internal element description. Refuse a typed
-// HTML child before its `name` could make that description default to InputField.
-fn reject_nested_typed_html(
+/// Ключи, которые `element.add` снял по Р2 (#1447), и внутренние различители
+/// вида: отказ с продолжением до проверки контракта, чтобы агент получил
+/// следующий вызов, а не общий «неизвестный аргумент».
+fn refuse_nested_element_content(
+    at: &str,
     item: &Map<String, Value>,
     op_index: usize,
     location: &str,
 ) -> Result<(), ApplyPlanError> {
-    for key in ["children", "columns"] {
-        if let Some(children) = item.get(key).and_then(Value::as_array) {
-            for (index, child) in children.iter().enumerate() {
-                let Some(child) = child.as_object() else {
-                    continue;
-                };
-                let location = format!("{location}.{key}[{index}]");
-                if child.get("type").and_then(Value::as_str) == Some("HTMLDocumentField") {
-                    return Err(bad(op_index, &format!("{location}.type"),
-                        "add HTMLDocumentField as a separate element.add item with into naming its parent"));
-                }
-                reject_nested_typed_html(child, op_index, &location)?;
-            }
-        }
+    use crate::domain::operation_contract::{FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("<Element>");
+    let container = format!("{at}.Item.{}", crate::domain::address::escape_name(name));
+    let contract = serde_json::json!({
+        "tool": "unica.view",
+        "args": {"at": format!("{at}.Can.element.add")},
+        "reason": "контракт element.add: один элемент на запись, ключи по виду",
+    });
+    if item.contains_key("html") {
+        return Err(bad(
+            op_index,
+            &format!("{location}.html"),
+            "html is an internal discriminator; use name and type: HTMLDocumentField in element.add",
+        )
+        .with_next(contract));
+    }
+    if let Some(key) = FORM_ELEMENT_NESTED_KEYS
+        .iter()
+        .find(|key| item.contains_key(**key))
+    {
+        return Err(bad(
+            op_index,
+            &format!("{location}.{key}"),
+            format!(
+                "element.add adds one element without nested content; drop `{key}` and add each nested element with a separate element.add at `{container}` once this element exists"
+            ),
+        )
+        .with_next(contract));
+    }
+    if let Some(key) = FORM_ELEMENT_EVENT_KEYS
+        .iter()
+        .find(|key| item.contains_key(**key))
+    {
+        return Err(bad(
+            op_index,
+            &format!("{location}.{key}"),
+            format!(
+                "element.add does not bind events; drop `{key}` and bind each handler with event.bind at `{container}.Event.<Event>` once this element exists, naming the handler explicitly"
+            ),
+        )
+        .with_next(contract));
     }
     Ok(())
 }
 
-/// The registry spells form events in English; Russian names travel in from
-/// developers and are mapped here, unknown names pass through to the matrix.
-fn canonical_form_event(name: &str) -> &str {
-    match name {
-        "ПриОткрытии" => "OnOpen",
-        "ПриПовторномОткрытии" => "OnReopen",
-        "ПриЗакрытии" => "OnClose",
-        "ПередЗакрытием" => "BeforeClose",
-        "ПриСозданииНаСервере" => "OnCreateAtServer",
-        "ПриЧтенииНаСервере" => "OnReadAtServer",
-        "ПередЗаписью" => "BeforeWrite",
-        "ПередЗаписьюНаСервере" => "BeforeWriteAtServer",
-        "ПриЗаписиНаСервере" => "OnWriteAtServer",
-        "ПослеЗаписи" => "AfterWrite",
-        "ПослеЗаписиНаСервере" => "AfterWriteAtServer",
-        "ОбработкаВыбора" => "ChoiceProcessing",
-        "ОбработкаОповещения" => "NotificationProcessing",
-        "ОбработкаПроверкиЗаполненияНаСервере" => {
-            "FillCheckProcessingAtServer"
+/// Перекрёстные правила ключей элемента, которых схема не выражает.
+fn check_element_cross_fields(
+    item: &Map<String, Value>,
+    op_index: usize,
+    location: &str,
+) -> Result<(), ApplyPlanError> {
+    use crate::domain::operation_contract::FORM_DYNAMIC_LIST_KEYS;
+    if item.get("_dynList").and_then(Value::as_bool) != Some(true) {
+        if let Some(key) = FORM_DYNAMIC_LIST_KEYS
+            .iter()
+            .find(|key| item.contains_key(**key))
+        {
+            return Err(bad(
+                op_index,
+                &format!("{location}.{key}"),
+                format!("`{key}` is a dynamic-list table property: it is written only with `_dynList: true`"),
+            ));
         }
-        "ПриЗагрузкеДанныхИзНастроекНаСервере" => {
-            "OnLoadDataFromSettingsAtServer"
-        }
-        "ПередЗагрузкойДанныхИзНастроекНаСервере" => {
-            "BeforeLoadDataFromSettingsAtServer"
-        }
-        "ПриСохраненииДанныхВНастройкахНаСервере" => {
-            "OnSaveDataInSettingsAtServer"
-        }
-        "ПриИзменении" => "OnChange",
-        "НачалоВыбора" => "StartChoice",
-        "Очистка" => "Clearing",
-        "АвтоПодбор" => "AutoComplete",
-        "ОкончаниеВводаТекста" => "TextEditEnd",
-        "Нажатие" => "Click",
-        "Выбор" => "Selection",
-        "ПриАктивизацииСтроки" => "OnActivateRow",
-        "ПередНачаломДобавления" => "BeforeAddRow",
-        "ПередУдалением" => "BeforeDeleteRow",
-        "ПередНачаломИзменения" => "BeforeRowChange",
-        "ПриНачалеРедактирования" => "OnStartEdit",
-        "ПриОкончанииРедактирования" => "OnEditEnd",
-        "ПередОкончаниемРедактирования" => "BeforeEditEnd",
-        "ПриАктивизацииЯчейки" => "OnActivateCell",
-        "ПриАктивизацииПоля" => "OnActivateField",
-        "ПередРазворачиванием" => "BeforeExpand",
-        "ПриПолученииДанныхНаСервере" => "OnGetDataAtServer",
-        "ПередЗагрузкойПользовательскихНастроекНаСервере" => {
-            "BeforeLoadUserSettingsAtServer"
-        }
-        "ПриЗагрузкеПользовательскихНастроекНаСервере" => {
-            "OnLoadUserSettingsAtServer"
-        }
-        "ПриОбновленииСоставаПользовательскихНастроекНаСервере" => {
-            "OnUpdateUserSettingSetAtServer"
-        }
-        other => other,
     }
+    let commands = ["command", "commandName", "stdCommand"]
+        .into_iter()
+        .filter(|key| item.contains_key(*key))
+        .collect::<Vec<_>>();
+    if let [_, second, ..] = commands.as_slice() {
+        return Err(bad(
+            op_index,
+            &format!("{location}.{second}"),
+            format!(
+                "a button runs one command: give one of `command`, `commandName`, `stdCommand`, not {}",
+                commands
+                    .iter()
+                    .map(|key| format!("`{key}`"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn parse_form_operation(
@@ -1349,28 +1461,67 @@ fn parse_form_operation(
 ) -> Result<FormResourcePlanKind, ApplyPlanError> {
     let address = qualified_target(args, op_index, binding)?;
     let target = form_target(&address, op_index)?;
-    // Узел, на котором исполняется операция, — ровно её `at`. Операции,
-    // которые не читают элемент или форму из адреса, отказывают, а не пишут
-    // молча в форму или во владельца (#1351).
-    match operation {
-        "element.remove" | "event.bind" => {}
-        "form.add" | "form.set" if target.form.is_some() => {
-            return Err(bad(
-                op_index,
-                "at",
-                format!("{operation} targets the form owner `Owner.Name`, not a form"),
-            ));
+    // Узел, на котором исполняется операция, — ровно её `at`: элемент и
+    // событие задаются адресом, а операция другого узла отказывает, а не
+    // пишет молча в форму, элемент или владельца (#1351, #1355).
+    let placed = match operation {
+        "form.add" | "form.set" => target.form.is_none(),
+        "element.add" => target.form.is_some() && target.event.is_none(),
+        "element.remove" => !target.items.is_empty() && target.event.is_none(),
+        "event.bind" => target.event.is_some(),
+        _ => target.form.is_some() && target.items.is_empty() && target.event.is_none(),
+    };
+    if !placed {
+        let shape = match operation {
+            "form.add" | "form.set" => "the form owner `Owner.Name`, not a form",
+            "element.add" => {
+                "the form `Owner.Name.Form.F` or its item `….Item.A[.Item.B…]` that receives the elements"
+            }
+            "element.remove" => "the removed item `Owner.Name.Form.F.Item.A[.Item.B…]`",
+            "event.bind" => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
+            _ => "the form `Owner.Name.Form.F`",
+        };
+        return Err(bad(op_index, "at", format!("{operation} targets {shape}")));
+    }
+    if operation == "element.add" {
+        if let Some(items) = args.get("items").and_then(Value::as_array) {
+            for (index, item) in items.iter().enumerate() {
+                if let Some(item) = item.as_object() {
+                    refuse_nested_element_content(
+                        &address.to_string(),
+                        item,
+                        op_index,
+                        &format!("items[{index}]"),
+                    )?;
+                }
+            }
         }
-        _ if target.item.is_some() => {
-            return Err(bad(
-                op_index,
-                "at",
-                format!(
-                    "{operation} targets the form `Owner.Name.Form.F`, not its element; name a parent element in `items[].into`"
-                ),
-            ));
-        }
-        _ => {}
+    }
+    // Опубликованный контракт и разбор планировщиком принимают одну форму
+    // аргументов: ключ, которого писатель не пишет, отказывает до записи,
+    // а не теряется молча (#1447).
+    if let Some(contract) = crate::domain::operation_contract::OperationContract::form(operation) {
+        let mut checked = args.clone();
+        // `at` операции уже разобран в адрес; контракт сверяет остальное.
+        checked.insert("at".to_string(), Value::String(address.to_string()));
+        contract
+            .normalize(&Value::Object(checked), &format!("ops[{op_index}].args"))
+            .map_err(|error| {
+                let contract_at = format!("{address}.Can.{operation}");
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::BadValue,
+                    format!(
+                        "{}: {}; `{operation}` writes only the arguments listed at `{contract_at}`",
+                        error.path, error.message
+                    ),
+                )
+                .at_path(error.path)
+                .with_next(serde_json::json!({
+                    "tool": "unica.view",
+                    "args": {"at": contract_at},
+                    "reason": "аргументы, которые операция записывает на этом узле",
+                }))
+            })?;
     }
     let items_path = format!("ops[{op_index}].args.items");
     let form_of = |target: &FormTarget| -> Result<String, ApplyPlanError> {
@@ -1478,21 +1629,27 @@ fn parse_form_operation(
                 .get("items")
                 .and_then(Value::as_array)
                 .ok_or_else(|| bad(op_index, "items", "`items` must be an array"))?;
+            // Контейнер — последний элемент адреса; у самой формы — корень.
+            // Сосед `after` лежит в том же контейнере и задаёт место сам.
+            let container = target.items.last().cloned();
             let mut definitions = Vec::new();
             for (index, item) in items.iter().enumerate() {
                 let location = format!("items[{index}]");
                 let item = item
                     .as_object()
                     .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
-                let (definition, into, after) =
-                    legacy_element_definition(item, op_index, &location)?;
+                check_element_cross_fields(item, op_index, &location)?;
+                let (definition, after) = legacy_element_definition(item, op_index, &location)?;
                 let mut wrapper = Map::new();
                 wrapper.insert("elements".to_string(), Value::Array(vec![definition]));
-                if let Some(into) = into {
-                    wrapper.insert("into".to_string(), Value::String(into));
-                }
-                if let Some(after) = after {
-                    wrapper.insert("after".to_string(), Value::String(after));
+                match (after, &container) {
+                    (Some(after), _) => {
+                        wrapper.insert("after".to_string(), Value::String(after));
+                    }
+                    (None, Some(container)) => {
+                        wrapper.insert("into".to_string(), Value::String(container.clone()));
+                    }
+                    (None, None) => {}
                 }
                 definitions.push(Value::Object(wrapper));
             }
@@ -1506,41 +1663,34 @@ fn parse_form_operation(
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
+                subject: FormEditSubject::Container(target.items),
                 definitions,
             })
         }
         "element.remove" => {
             let form = form_of(&target)?;
-            let names = match &target.item {
-                // Элемент назван адресом: список в аргументах называл бы
-                // другие узлы, и молча его не отбрасываем.
-                Some(_) if args.contains_key("items") || args.contains_key("values") => {
-                    let key = if args.contains_key("items") { "items" } else { "values" };
-                    return Err(bad(
-                        op_index,
-                        key,
-                        "element.remove at an element address removes that element; drop `items`/`values` or call it at the form",
-                    ));
-                }
-                Some(item) => vec![item.clone()],
-                None => listed_names(args, "name", op_index).map_err(|_| {
-                    bad(
-                        op_index,
-                        "at",
-                        "element.remove names the element in the address (`...Form.F.Item.X`) or in `items`",
-                    )
-                })?,
-            };
-            let definition = serde_json::json!({
-                "removeElements": names
-                    .into_iter()
-                    .map(|name| serde_json::json!({"name": name}))
-                    .collect::<Vec<_>>()
-            });
+            // Элемент назван адресом: список в аргументах называл бы другие
+            // узлы, и молча его не отбрасываем.
+            if let Some(key) = ["items", "values"]
+                .into_iter()
+                .find(|key| args.contains_key(*key))
+            {
+                return Err(bad(
+                    op_index,
+                    key,
+                    "element.remove removes the item named by its address; drop the argument",
+                ));
+            }
+            let name = target
+                .items
+                .last()
+                .cloned()
+                .expect("element.remove target carries an item");
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
-                definitions: vec![definition],
+                subject: FormEditSubject::Removed(target.items),
+                definitions: vec![serde_json::json!({"removeElements": [{"name": name}]})],
             })
         }
         "formAttribute.add" | "formCommand.add" => {
@@ -1587,41 +1737,31 @@ fn parse_form_operation(
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
+                subject: FormEditSubject::Node(Vec::new()),
                 definitions: vec![Value::Object(wrapper)],
             })
         }
         "event.bind" => {
             let form = form_of(&target)?;
-            let values =
-                required_values(args, op_index, &["event", "handler", "element", "callType"])?;
-            let event = required_string(values, "event", op_index, "values")?;
+            // Событие и его элемент задаются адресом: `values` несут только
+            // обработчик и `callType`.
+            let values = required_values(args, op_index, &["handler", "callType"])?;
             let handler = required_string(values, "handler", op_index, "values")?;
+            let event = target
+                .event
+                .as_deref()
+                .expect("event.bind target carries an event");
+            // Имя события в адресе — имя реестра, как его публикует `view`;
+            // псевдонимов у адреса нет.
             let mut entry = Map::new();
-            entry.insert(
-                "name".to_string(),
-                Value::String(canonical_form_event(event).to_string()),
-            );
+            entry.insert("name".to_string(), Value::String(event.to_string()));
             entry.insert("handler".to_string(), Value::String(handler.to_string()));
             if let Some(call_type) = values.get("callType").and_then(Value::as_str) {
                 entry.insert("callType".to_string(), Value::String(call_type.to_string()));
             }
-            // Элемент, названный адресом, не переназначается аргументом:
-            // иначе событие легло бы на другой узел.
-            if target.item.is_some() && values.contains_key("element") {
-                return Err(bad(
-                    op_index,
-                    "values.element",
-                    "event.bind at an element address binds that element; drop `values.element` or call it at the form",
-                ));
-            }
-            let element = values
-                .get("element")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .or_else(|| target.item.clone());
-            let definition = match element {
+            let definition = match target.items.last() {
                 Some(element) => {
-                    entry.insert("element".to_string(), Value::String(element));
+                    entry.insert("element".to_string(), Value::String(element.clone()));
                     serde_json::json!({"elementEvents": [Value::Object(entry)]})
                 }
                 None => serde_json::json!({"formEvents": [Value::Object(entry)]}),
@@ -1629,6 +1769,7 @@ fn parse_form_operation(
             Ok(FormResourcePlanKind::FormEdit {
                 owner: target.owner,
                 form,
+                subject: FormEditSubject::Node(target.items),
                 definitions: vec![definition],
             })
         }
@@ -1967,11 +2108,13 @@ fn stage_form_remove(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn stage_form_edit(
     staged: &mut ApplyStagedState,
     authority: &FormResourceApplyAuthority<'_>,
     owner: &MetadataAddress,
     form: &str,
+    subject: &FormEditSubject,
     definitions: &[Value],
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
@@ -2002,6 +2145,7 @@ fn stage_form_edit(
         )?;
         root.range().start
     };
+    check_form_edit_subject(&xml_text, subject, definitions, op_index)?;
     let absolute = authority.source_root().join(&relative);
     let args_path = format!("ops[{op_index}].args");
     // Plain-string titles, tooltips and input hints are written in the
@@ -2576,9 +2720,12 @@ pub(crate) fn plan_form_resource_batch(
                                 return Err(ApplyPlanError::new(
                                     ApplyPlanErrorKind::BadValue,
                                     format!(
-                                        "the role already has a rights entry for `{}`; change it with right.set at `{role_at}.Right.{}`",
+                                        "the role already has a rights entry for `{}`; change it with right.set at `{}`",
                                         entry.object,
-                                        entry.object.replacen('.', "_", 1)
+                                        member_address(
+                                            &format!("{role_at}.Right"),
+                                            &entry.object.replacen('.', "_", 1)
+                                        )
                                     ),
                                 )
                                 .at_path(format!("{location}.object")));
@@ -2688,6 +2835,21 @@ pub(crate) fn plan_form_resource_batch(
                         }
                     }
                     InterfaceEdit::CommandOrder { group, commands } => {
+                        // Группа — узел адреса, а `*.set` правит только
+                        // существующий узел: группа объявлена в `GroupsOrder`,
+                        // как её видит чтение. Порядок не создаёт группу.
+                        if !interface_text_direct_item_values(&text, "GroupsOrder", "Group")
+                            .iter()
+                            .any(|declared| declared == group)
+                        {
+                            return Err(ApplyPlanError::new(
+                                ApplyPlanErrorKind::NotFound,
+                                format!(
+                                    "the command interface declares no group `{group}`; read its groups at `…Interface.Group`"
+                                ),
+                            )
+                            .at_path(at_path.clone()));
+                        }
                         let commands = commands
                             .iter()
                             .map(|command| normalize_interface_command_name(command, &mut log))
@@ -2919,6 +3081,7 @@ pub(crate) fn plan_form_resource_batch(
             FormResourcePlanKind::FormEdit {
                 owner,
                 form,
+                subject,
                 definitions,
             } => {
                 stage_form_edit(
@@ -2926,6 +3089,7 @@ pub(crate) fn plan_form_resource_batch(
                     &authority,
                     owner,
                     form,
+                    subject,
                     definitions,
                     op_index,
                     &mut provisional,
@@ -3099,7 +3263,7 @@ mod tests {
             "_dynList": true,
             "autoRefresh": true,
         });
-        let (definition, _, _) =
+        let (definition, _) =
             super::legacy_element_definition(item.as_object().unwrap(), 0, "ops[0].args.items[0]")
                 .expect("a dynamic-list table is a valid element definition");
         assert_eq!(definition["_dynList"], true);
@@ -3138,30 +3302,248 @@ mod tests {
         String::from_utf8(bytes).unwrap()
     }
 
+    /// Р2 (#1447): `element.add` добавляет один элемент. Вложенное дерево,
+    /// companion-содержимое и события отказывают `bad_value` по точному
+    /// пути до записи, а `next` ведёт к контракту `element.add`.
     #[test]
-    fn typed_html_nested_in_a_container_refuses_instead_of_becoming_input() {
+    fn element_add_refuses_nested_content_and_events_with_the_next_call() {
         let fixture = ApplySeamFixture::new();
-        for key in ["children", "columns"] {
+        let at = "main:Document.First.Form.ФормаДокумента";
+        for key in crate::domain::operation_contract::FORM_ELEMENT_NESTED_KEYS
+            .iter()
+            .chain(crate::domain::operation_contract::FORM_ELEMENT_EVENT_KEYS)
+            .chain(&["html"])
+        {
             let mut item = json!({"name": "Parent", "type": "Group"});
-            item[key] = json!([{"name": "Html", "type": "HTMLDocumentField"}]);
+            item[*key] = json!([{"name": "Child", "type": "HTMLDocumentField"}]);
             let error = parse_form_resource_plan_operation(
                 "element.add",
-                &json!({
-                    "at": "main:Document.First.Form.ФормаДокумента", "items": [item]
-                }),
+                &json!({"at": at, "items": [item]}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{key}");
+            let path = format!("ops[0].args.items[0].{key}");
+            assert_eq!(error.path(), Some(path.as_str()), "{key}");
+            assert_eq!(
+                error.next().unwrap()["args"]["at"],
+                json!(format!("{at}.Can.element.add")),
+                "{key}"
+            );
+            let follow_up = if *key == "html" {
+                "HTMLDocumentField".to_string()
+            } else {
+                format!("{at}.Item.Parent")
+            };
+            assert!(error.to_string().contains(&follow_up), "{key}: {error:?}");
+        }
+    }
+
+    /// Перекрёстные правила, которых схема не выражает: ключи динамического
+    /// списка без `_dynList` и две команды у кнопки пропали бы молча.
+    #[test]
+    fn element_add_refuses_keys_the_writer_would_drop_by_a_neighbour() {
+        let fixture = ApplySeamFixture::new();
+        for (item, path) in [
+            (
+                json!({"name": "T", "type": "Table", "autoRefresh": true}),
+                "ops[0].args.items[0].autoRefresh",
+            ),
+            (
+                json!({"name": "B", "type": "Button", "command": "A", "stdCommand": "Close"}),
+                "ops[0].args.items[0].stdCommand",
+            ),
+        ] {
+            let error = parse_form_resource_plan_operation(
+                "element.add",
+                &json!({"at": "main:Document.First.Form.ФормаДокумента", "items": [item]}),
                 0,
                 &fixture.binding,
             )
             .unwrap_err();
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
-            assert!(
-                error
-                    .path()
-                    .unwrap()
-                    .contains(&format!("items[0].{key}[0].type")),
-                "{error:?}"
-            );
+            assert_eq!(error.path(), Some(path));
         }
+    }
+
+    /// Значения-образцы ключа по его схеме: перебираются, пока одно не
+    /// изменит записанный XML.
+    fn sample_values(schema: &serde_json::Value) -> Vec<serde_json::Value> {
+        if let Some(values) = schema["enum"].as_array() {
+            return values.clone();
+        }
+        if let Some(choices) = schema["anyOf"].as_array() {
+            return choices.iter().flat_map(sample_values).collect();
+        }
+        match schema["type"].as_str() {
+            Some("boolean") => vec![json!(true), json!(false)],
+            Some("integer") | Some("number") => vec![json!(7)],
+            Some("string") => vec![json!("Sample")],
+            Some("object") => {
+                let mut sample = serde_json::Map::new();
+                match schema["properties"].as_object() {
+                    Some(properties) => {
+                        for (key, child) in properties {
+                            sample.insert(key.clone(), sample_values(child)[0].clone());
+                        }
+                    }
+                    None => {
+                        sample.insert("en".into(), json!("Sample"));
+                    }
+                }
+                vec![serde_json::Value::Object(sample)]
+            }
+            other => panic!("no sample for schema type {other:?}"),
+        }
+    }
+
+    /// Контракт `element.add` и писатель согласны по каждому виду: каждый
+    /// опубликованный ключ принимают контракт и планировщик, и хотя бы одно
+    /// его значение меняет записанный XML вида (#1447). Ключ, который
+    /// писатель вида не пишет, в контракт не попадает.
+    #[test]
+    fn every_published_element_key_reaches_the_xml_of_its_kind() {
+        use crate::infrastructure::native_operations::form::{emit_form_element, FormIdAllocator};
+        let fixture = ApplySeamFixture::new();
+        let contract =
+            crate::domain::operation_contract::OperationContract::form("element.add").unwrap();
+        let variants = contract.schema["properties"]["items"]["items"]["anyOf"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let emit = |item: &serde_json::Value| {
+            let (definition, _) =
+                super::legacy_element_definition(item.as_object().unwrap(), 0, "items[0]").unwrap();
+            let mut lines = Vec::new();
+            emit_form_element(
+                &mut lines,
+                &definition,
+                "\t",
+                &mut FormIdAllocator::new(),
+                Some("en"),
+            )
+            .unwrap_or_else(|error| panic!("{item}: {error}"));
+            lines.join("\n")
+        };
+        for kind in crate::domain::operation_contract::FORM_ELEMENT_KINDS {
+            let variant = variants
+                .iter()
+                .find(|variant| variant["properties"]["type"]["enum"][0] == json!(kind.kind))
+                .unwrap_or_else(|| panic!("{} has a contract variant", kind.kind));
+            let published = variant["properties"].as_object().unwrap();
+            assert_eq!(
+                published.len(),
+                kind.keys.len() + 3,
+                "{}: name, type, after and the kind keys",
+                kind.kind
+            );
+            for key in kind.keys {
+                let mut baseline = json!({"name": "Sample", "type": kind.kind});
+                if crate::domain::operation_contract::FORM_DYNAMIC_LIST_KEYS.contains(key) {
+                    baseline["_dynList"] = json!(true);
+                }
+                let before = emit(&baseline);
+                let written = sample_values(&published[*key]).into_iter().any(|value| {
+                    let mut item = baseline.clone();
+                    item[*key] = value;
+                    parse_form_resource_plan_operation(
+                        "element.add",
+                        &json!({"at": "main:Document.First.Form.ФормаДокумента", "items": [item.clone()]}),
+                        0,
+                        &fixture.binding,
+                    )
+                    .unwrap_or_else(|error| panic!("{} {key}: {error:?}", kind.kind));
+                    emit(&item) != before
+                });
+                assert!(written, "{}: `{key}` never reaches the XML", kind.kind);
+            }
+        }
+    }
+
+    /// Перечисления контракта элемента совпадают со справочником писателя.
+    #[test]
+    fn element_enums_match_the_writer_enum_contract() {
+        use crate::domain::operation_contract::form_element_enum;
+        use crate::infrastructure::native_operations::form::form_8_3_27_enum_values_for_test as writer;
+        for (kind, key, xml) in [
+            ("InputField", "titleLocation", "FormElementTitleLocation"),
+            ("CheckBox", "checkBoxType", "CheckBoxType"),
+            ("InputField", "horizontalAlign", "HorizontalAlign"),
+            ("Group", "orientation", "FormChildrenGroup"),
+            ("Group", "behavior", "UsualGroupBehavior"),
+            ("Group", "representation", "UsualGroupRepresentation"),
+            ("Table", "representation", "TableRepresentation"),
+            ("Button", "representation", "ButtonRepresentation"),
+            ("Group", "currentRowUse", "CurrentRowUse"),
+            ("Pages", "pagesRepresentation", "PagesRepresentation"),
+            ("Table", "commandBarLocation", "CommandBarLocation"),
+            ("Table", "initialTreeView", "InitialTreeView"),
+            ("Table", "choiceFoldersAndItems", "ChoiceFoldersAndItems"),
+            ("Table", "updateOnDataChange", "UpdateOnDataChange"),
+            (
+                "Button",
+                "locationInCommandBar",
+                "ButtonLocationInCommandBar",
+            ),
+        ] {
+            let mut published = form_element_enum(kind, key).unwrap().to_vec();
+            let mut expected = writer(xml).unwrap().to_vec();
+            published.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(published, expected, "{kind} {key}");
+        }
+    }
+
+    /// Реквизит формы принимает только то, что пишет его писатель (#1447);
+    /// проверка заполнения пишется тегом `<FillCheck>`, который знает 8.3.27.
+    #[test]
+    fn form_attribute_add_refuses_unwritten_keys_and_writes_fill_check() {
+        let fixture = ApplySeamFixture::new();
+        let at = "main:Document.First.Form.ФормаДокумента";
+        for (key, value) in [
+            ("view", json!(false)),
+            ("edit", json!(false)),
+            ("functionalOptions", json!(["FunctionalOption.X"])),
+            ("useAlways", json!(["Field"])),
+            ("save", json!(true)),
+            ("fillCheck", json!(true)),
+            ("valueType", json!("String")),
+            ("settings", json!({})),
+            ("chart", json!({})),
+            ("planner", json!({})),
+            ("additionalColumns", json!([])),
+            ("title", json!({"ru": "Заголовок"})),
+            ("fillChecking", json!("DontCheck")),
+        ] {
+            let error = parse_form_resource_plan_operation(
+                "formAttribute.add",
+                &json!({"at": at, "items": [{"name": "A", "type": "String", key: value}]}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{key}");
+            let path = format!("ops[0].args.items[0].{key}");
+            assert_eq!(error.path(), Some(path.as_str()), "{key}");
+        }
+        let mut lines = Vec::new();
+        crate::infrastructure::native_operations::form::emit_form_edit_attribute_item(
+            &mut lines,
+            json!({"name": "A", "type": "xs:string", "savedData": true, "fillChecking": "ShowError"})
+                .as_object()
+                .unwrap(),
+            "A",
+            1,
+            "\t\t",
+            Some("ru"),
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        assert!(!text.contains("FillChecking"), "{text}");
+        let saved = text.find("<SavedData>true</SavedData>").unwrap();
+        let fill = text.find("<FillCheck>ShowError</FillCheck>").unwrap();
+        assert!(saved < fill, "{text}");
     }
 
     #[test]
@@ -3398,26 +3780,54 @@ mod tests {
                 "element.add",
                 json!({
                     "at": "main:Document.First.Form.ФормаДокумента",
-                    "items": [{"name": "ПолеИтог", "path": "Объект.Total", "title": "Итог"}]
+                    "items": [{"name": "ГруппаИтог", "type": "UsualGroup"}]
                 }),
                 1,
+            ),
+            // Группа, добавленная предыдущей операцией, уже адресуется.
+            parse(
+                "element.add",
+                json!({
+                    "at": "main:Document.First.Form.ФормаДокумента.Item.ГруппаИтог",
+                    "items": [{"name": "ПолеИтог", "path": "Объект.Total", "title": "Итог"}]
+                }),
+                2,
             ),
             parse(
                 "event.bind",
                 json!({
-                    "at": "main:Document.First.Form.ФормаДокумента",
-                    "values": {"event": "ПриОткрытии", "handler": "ПриОткрытии"}
+                    "at": "main:Document.First.Form.ФормаДокумента.Event.OnOpen",
+                    "values": {"handler": "ПриОткрытии"}
                 }),
-                2,
+                3,
+            ),
+            parse(
+                "event.bind",
+                json!({
+                    "at": "main:Document.First.Form.ФормаДокумента.Item.ГруппаИтог.Item.ПолеИтог.Event.OnChange",
+                    "values": {"handler": "ПолеИтогПриИзменении"}
+                }),
+                4,
             ),
         ];
         let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
             .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
-        assert_eq!(effects.len(), 3);
+        assert_eq!(effects.len(), 5);
         let form = staged_text(&staged, "Documents/First/Forms/ФормаДокумента/Ext/Form.xml");
-        assert!(form.contains("<InputField name=\"ПолеИтог\""), "{form}");
+        let elements = super::form_items_of(&form).unwrap();
+        let field = super::form_item_at(
+            &elements,
+            &["ГруппаИтог".to_string(), "ПолеИтог".to_string()],
+        )
+        .expect("the field lands inside the group named by the address");
+        assert_eq!(field.events.len(), 1, "{form}");
+        assert_eq!(field.events[0].name, "OnChange");
+        assert_eq!(field.events[0].handler, "ПолеИтогПриИзменении");
         assert!(form.contains("<DataPath>Объект.Total</DataPath>"), "{form}");
-        assert!(form.contains("ПриОткрытии"), "{form}");
+        assert!(
+            form.contains("<Event name=\"OnOpen\">ПриОткрытии</Event>"),
+            "{form}"
+        );
         let owner = staged_text(&staged, "Documents/First.xml");
         assert!(owner.contains("<Form>ФормаДокумента</Form>"), "{owner}");
         assert!(
@@ -3427,6 +3837,298 @@ mod tests {
                 .any(|change| change.relative_path
                     == Path::new("Documents/First/Forms/ФормаДокумента/Ext/Form/Module.bsl")),
             "the form module is staged"
+        );
+    }
+
+    /// Узел правки формы — ровно адрес (#1355): цепочка `Item` сверяется
+    /// с формой, отсутствующий элемент даёт `not_found`, в поле не
+    /// добавить, сосед `after` берётся только из адресованного контейнера,
+    /// а удаление и событие касаются только названного элемента.
+    #[test]
+    fn a_form_edit_writes_only_the_addressed_item() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let form = "main:Document.First.Form.Main";
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                .map(|operation| IndexedPlanOperation::new(index, operation))
+        };
+        let base = || {
+            vec![
+                parse(
+                    "form.add",
+                    json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]}),
+                    0,
+                )
+                .unwrap(),
+                parse(
+                    "element.add",
+                    json!({"at": form, "items": [
+                        {"name": "Header", "type": "Group"},
+                        {"name": "Footer", "type": "Group"}
+                    ]}),
+                    1,
+                )
+                .unwrap(),
+                parse(
+                    "element.add",
+                    json!({"at": format!("{form}.Item.Header"), "items": [
+                        {"name": "Total", "path": "Объект.Total"},
+                        {"name": "Count", "path": "Объект.Total"}
+                    ]}),
+                    2,
+                )
+                .unwrap(),
+            ]
+        };
+        let plan = |op: &str, args: serde_json::Value| {
+            let mut operations = base();
+            operations.push(parse(op, args, 3)?);
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            plan_form_resource_batch(admission.staged_state().unwrap(), authority, &operations).map(
+                |(staged, _)| {
+                    let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+                    super::form_items_of(&text).unwrap()
+                },
+            )
+        };
+        let names = |elements: &[super::FormInfoElement]| {
+            elements
+                .iter()
+                .map(|element| element.name.clone())
+                .collect::<Vec<_>>()
+        };
+        let chain = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>()
+        };
+        for (op, args, kind, path) in [
+            (
+                "element.add",
+                json!({"at": format!("{form}.Item.Footer.Item.Total"), "items": [{"name": "X", "path": "Объект.Total"}]}),
+                ApplyPlanErrorKind::NotFound,
+                "ops[3].args.at",
+            ),
+            (
+                "element.add",
+                json!({"at": format!("{form}.Item.Header.Item.Total"), "items": [{"name": "X", "path": "Объект.Total"}]}),
+                ApplyPlanErrorKind::BadValue,
+                "ops[3].args.at",
+            ),
+            (
+                "element.add",
+                json!({"at": format!("{form}.Item.Footer"), "items": [{"name": "X", "path": "Объект.Total", "after": "Total"}]}),
+                ApplyPlanErrorKind::BadValue,
+                "ops[3].args.items[0].after",
+            ),
+            (
+                "element.remove",
+                json!({"at": format!("{form}.Item.Total")}),
+                ApplyPlanErrorKind::NotFound,
+                "ops[3].args.at",
+            ),
+            (
+                "event.bind",
+                json!({"at": format!("{form}.Item.Footer.Item.Total.Event.OnChange"), "values": {"handler": "H"}}),
+                ApplyPlanErrorKind::NotFound,
+                "ops[3].args.at",
+            ),
+        ] {
+            let Err(error) = plan(op, args.clone()) else {
+                panic!("{op} {args} is refused");
+            };
+            assert_eq!(error.kind(), kind, "{op} {args}: {error}");
+            assert_eq!(error.path(), Some(path), "{op} {args}: {error}");
+        }
+        // Сосед в том же контейнере задаёт место.
+        let elements = plan(
+            "element.add",
+            json!({"at": format!("{form}.Item.Header"), "items": [{"name": "X", "path": "Объект.Total", "after": "Total"}]}),
+        )
+        .unwrap();
+        let header = super::form_item_at(&elements, &chain(&["Header"])).unwrap();
+        assert_eq!(names(&header.children), ["Total", "X", "Count"]);
+        // Удаление вложенного элемента оставляет контейнер и соседа.
+        let elements = plan(
+            "element.remove",
+            json!({"at": format!("{form}.Item.Header.Item.Total")}),
+        )
+        .unwrap();
+        // Автоматическая командная панель новой формы — тоже элемент `Item`.
+        assert_eq!(
+            names(&elements),
+            ["ФормаКоманднаяПанель", "Header", "Footer"]
+        );
+        let header = super::form_item_at(&elements, &chain(&["Header"])).unwrap();
+        assert_eq!(names(&header.children), ["Count"]);
+        // Событие ложится только на названный элемент.
+        let elements = plan(
+            "event.bind",
+            json!({"at": format!("{form}.Item.Header.Item.Count.Event.OnChange"), "values": {"handler": "CountOnChange"}}),
+        )
+        .unwrap();
+        let count = super::form_item_at(&elements, &chain(&["Header", "Count"])).unwrap();
+        assert_eq!(count.events.len(), 1);
+        assert_eq!(count.events[0].handler, "CountOnChange");
+        let total = super::form_item_at(&elements, &chain(&["Header", "Total"])).unwrap();
+        assert!(total.events.is_empty());
+        // Снятые аргументы разбор семейства отвергает и в обход реестра.
+        for (op, args, path) in [
+            (
+                "element.add",
+                json!({"at": form, "items": [{"name": "X", "into": "Header"}]}),
+                "ops[3].args.items[0].into",
+            ),
+            (
+                "element.remove",
+                json!({"at": format!("{form}.Item.Header"), "items": [{"name": "Total"}]}),
+                "ops[3].args.items",
+            ),
+            (
+                "event.bind",
+                json!({"at": format!("{form}.Event.OnOpen"), "values": {"handler": "H", "event": "OnClose"}}),
+                "ops[3].args.values.event",
+            ),
+            (
+                "event.bind",
+                json!({"at": form, "values": {"handler": "H"}}),
+                "ops[3].args.at",
+            ),
+        ] {
+            let Err(error) = parse(op, args.clone(), 3) else {
+                panic!("{op} {args} is refused");
+            };
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} {args}");
+            assert_eq!(error.path(), Some(path), "{op} {args}: {error}");
+        }
+    }
+
+    /// Сосед `after` может быть добавлен раньше в том же `items` (#1443).
+    #[test]
+    fn element_add_after_names_an_item_added_earlier_in_the_same_list() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let form = "main:Document.First.Form.Main";
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                    .unwrap_or_else(|error| panic!("{op}: {error:?}")),
+            )
+        };
+        let operations = [
+            parse(
+                "form.add",
+                json!({"at": "main:Document.First", "items": [{"name": "Main", "type": "ObjectForm"}]}),
+                0,
+            ),
+            parse(
+                "element.add",
+                json!({"at": form, "items": [{"name": "Header", "type": "Group"}]}),
+                1,
+            ),
+            parse(
+                "element.add",
+                json!({"at": format!("{form}.Item.Header"), "items": [
+                    {"name": "A", "path": "Объект.Total"},
+                    {"name": "B", "path": "Объект.Total", "after": "A"}
+                ]}),
+                2,
+            ),
+        ];
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let (staged, _) =
+            plan_form_resource_batch(admission.staged_state().unwrap(), authority, &operations)
+                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        let elements = super::form_items_of(&text).unwrap();
+        let header = super::form_item_at(&elements, &["Header".to_string()]).unwrap();
+        let names = header
+            .children
+            .iter()
+            .map(|element| element.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["A", "B"], "{text}");
+    }
+
+    /// События из каталога 8.3.27, зависящие от вида владельца формы и пути
+    /// данных таблицы, принимаются и при добавлении элемента, и итоговой
+    /// проверкой формы (#1443).
+    #[test]
+    fn owner_and_data_path_specific_events_pass_planning_and_final_validation() {
+        let fixture = ApplySeamFixture::new();
+        let admission = fixture.admission();
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            IndexedPlanOperation::new(
+                index,
+                parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                    .unwrap_or_else(|error| panic!("{op}: {error:?}")),
+            )
+        };
+        let operations = [
+            parse(
+                "form.add",
+                json!({"at": "main:Document.First", "items": [
+                    {"name": "Main", "type": "ObjectForm"},
+                    {"name": "List", "type": "ListForm"}
+                ]}),
+                0,
+            ),
+            // `ValueChoice` формы есть только в каталоге владельца-документа.
+            parse(
+                "event.bind",
+                json!({
+                    "at": "main:Document.First.Form.Main.Event.ValueChoice",
+                    "values": {"handler": "ОбработкаВыбораЗначения"}
+                }),
+                1,
+            ),
+            // `URLListGetProcessing` таблицы есть только у источника
+            // динамического списка, его выбирает путь данных таблицы.
+            parse(
+                "element.add",
+                json!({
+                    "at": "main:Document.First.Form.List",
+                    "items": [{
+                        "name": "ВтороеПредставление",
+                        "type": "Table",
+                        "path": "Список"
+                    }]
+                }),
+                2,
+            ),
+            // Событие нового элемента привязывает `event.bind` на его адресе
+            // (Р2, #1447).
+            parse(
+                "event.bind",
+                json!({
+                    "at": "main:Document.First.Form.List.Item.ВтороеПредставление.Event.URLListGetProcessing",
+                    "values": {"handler": "ВтороеПредставлениеОбработкаПолученияСпискаURL"}
+                }),
+                3,
+            ),
+        ];
+        let authority = admission
+            .form_resource_planning_authority(&fixture.binding)
+            .unwrap();
+        let (staged, _) =
+            plan_form_resource_batch(admission.staged_state().unwrap(), authority, &operations)
+                .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let main = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        assert!(
+            main.contains("<Event name=\"ValueChoice\">ОбработкаВыбораЗначения</Event>"),
+            "{main}"
+        );
+        let list = staged_text(&staged, "Documents/First/Forms/List/Ext/Form.xml");
+        assert!(
+            list.contains("<Event name=\"URLListGetProcessing\">"),
+            "{list}"
         );
     }
 
@@ -3559,14 +4261,36 @@ mod tests {
                 json!({"values": {"right": "Read", "rls": "ГДЕ Автор = &Пользователь"}}),
                 2,
             ),
+            // Вложенный объект — одна запись с экранированными точками
+            // в имени: созданную запись правит `right.set` по её адресу.
+            parse(
+                "right.add",
+                "main:Role.Reader",
+                json!({"items": [{"object": "DataProcessor.D.Command.C", "rights": {"View": true}}]}),
+                3,
+            ),
+            parse(
+                "right.set",
+                "main:Role.Reader.Right.DataProcessor_D\\.Command\\.C",
+                json!({"values": {"right": "View", "value": false}}),
+                4,
+            ),
         ];
         let (staged, effects) = plan_form_resource_batch(staged, authority, &operations)
             .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
-        assert_eq!(effects.len(), 3);
+        assert_eq!(effects.len(), 5);
         let text = staged_text(&staged, "Roles/Reader/Ext/Rights.xml");
         assert!(text.starts_with('\u{feff}'), "byte-order mark survives");
         assert!(text.contains("<name>Update</name>"), "{text}");
         assert!(text.contains("<name>Document.Second</name>"), "{text}");
+        let nested = text
+            .split("<object>")
+            .find(|entry| entry.contains("<name>DataProcessor.D.Command.C</name>"))
+            .unwrap_or_else(|| panic!("nested entry is written: {text}"));
+        assert!(
+            nested.contains("<name>View</name>") && nested.contains("<value>false</value>"),
+            "{nested}"
+        );
         assert!(
             text.contains("<condition>ГДЕ Автор = &amp;Пользователь</condition>"),
             "{text}"
@@ -3645,7 +4369,7 @@ mod tests {
             (
                 "right.add",
                 "main:Role.Reader",
-                json!({"items": [{"object": "DataProcessor.D.Command.C", "rights": {"Use": true}}]}),
+                json!({"items": [{"object": "DataProcessor.D..C", "rights": {"Use": true}}]}),
                 "ops[0].args.items[0].object",
             ),
             // Короткий псевдоним чтения — не каноническое имя записи.
@@ -3662,6 +4386,73 @@ mod tests {
                 .expect_err("the subject comes from the address");
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} {path}");
             assert_eq!(error.path(), Some(path), "{op}");
+        }
+    }
+
+    /// Вложенный объект `right.add` — из закрытого набора раскладок
+    /// Rights.xml. Опечатка вида и вложенный объект корня конфигурации
+    /// отклоняются до записи, право вложенного объекта — из его набора.
+    #[test]
+    fn right_add_accepts_only_nested_objects_a_role_lists() {
+        let fixture = ApplySeamFixture::new();
+        for object in [
+            "Catalog.Items.Command.Open",
+            "Catalog.Items.Attribute.Price",
+            "Catalog.Items.StandardAttribute.Code",
+            "Document.Order.TabularSection.Goods",
+            "Document.Order.TabularSection.Goods.Attribute.Qty",
+            "Document.Order.TabularSection.Goods.StandardAttribute.LineNumber",
+            "InformationRegister.Prices.Dimension.Item",
+            "AccumulationRegister.Stock.Resource.Qty",
+            "Task.Job.AddressingAttribute.Assignee",
+            "Subsystem.Sales.Subsystem.Orders.Subsystem.Returns",
+        ] {
+            let args = json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": {"View": true}}]});
+            parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{object}: {error:?}"));
+        }
+        for object in [
+            "WebService.Exchange.Operation.Send",
+            "HTTPService.Api.URLTemplate.Items.Method.Get",
+            "IntegrationService.Bus.IntegrationServiceChannel.Out",
+        ] {
+            let args = json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": {"Use": true}}]});
+            parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .unwrap_or_else(|error| panic!("{object}: {error:?}"));
+        }
+        for (object, rights, path) in [
+            (
+                "Catalog.Items.Comand.Open",
+                json!({"Read": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Configuration.X.Command.Y",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Constant.Rate.Command.Open",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Catalog.Items.Command.Open.Attribute.X",
+                json!({"View": true}),
+                "ops[0].args.items[0].object",
+            ),
+            (
+                "Catalog.Items.Command.Open",
+                json!({"Read": true}),
+                "ops[0].args.items[0].rights.Read",
+            ),
+        ] {
+            let args =
+                json!({"at": "main:Role.Reader", "items": [{"object": object, "rights": rights}]});
+            let error = parse_form_resource_plan_operation("right.add", &args, 0, &fixture.binding)
+                .expect_err(object);
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{object}");
+            assert_eq!(error.path(), Some(path), "{object}");
         }
     }
 
@@ -3994,6 +4785,75 @@ mod tests {
             &fixture.binding,
         )
         .is_ok());
+    }
+
+    /// `formCommand.add` принимает ровно ключи, которые писатель кладёт
+    /// в `<Command>`, и передаёт их писателю; остальное отказывает
+    /// `bad_value` до записи, а не теряется молча (#1439).
+    #[test]
+    fn form_command_add_accepts_only_the_keys_its_writer_writes() {
+        let fixture = ApplySeamFixture::new();
+        let at = "main:Catalog.Items.Form.Item";
+        let item = json!({
+            "name": "Refresh",
+            "title": "Refresh",
+            "tooltip": "Refresh the list",
+            "shortcut": "F5",
+            "picture": "StdPicture.Refresh",
+            "representation": "TextPicture",
+        });
+        let plan = parse_form_resource_plan_operation(
+            "formCommand.add",
+            &json!({"at": at, "items": [item.clone()]}),
+            0,
+            &fixture.binding,
+        )
+        .expect("every published key is accepted")
+        .kind;
+        let super::FormResourcePlanKind::FormEdit { definitions, .. } = plan else {
+            panic!("formCommand.add plans a form edit");
+        };
+        let mut expected = item.as_object().unwrap().clone();
+        expected.insert("action".into(), json!("Refresh"));
+        assert_eq!(definitions, vec![json!({"commands": [expected]})]);
+
+        for (field, value) in [
+            ("use", json!(false)),
+            ("functionalOptions", json!(["FunctionalOption.X"])),
+            ("currentRowUse", json!("DontUse")),
+            ("modifiesSavedData", json!(true)),
+            ("table", json!("Список")),
+            ("loadTransparent", json!(false)),
+            ("representation", json!("PictureAndText")),
+            ("representation", json!("text")),
+            ("picture", json!({"src": "StdPicture.Refresh"})),
+            ("picture", json!("abs:picture.png")),
+            ("title", json!({"ru": "Обновить"})),
+            ("title", json!("")),
+            ("callType", json!("Before")),
+            (
+                "actions",
+                json!([{"callType": "Before", "handler": "RefreshBefore"}]),
+            ),
+            ("tooltip", json!({"ru": "Обновить"})),
+            ("tooltip", json!("")),
+            ("shortcut", json!("")),
+        ] {
+            let error = parse_form_resource_plan_operation(
+                "formCommand.add",
+                &json!({"at": at, "items": [{"name": "Refresh", field: value}]}),
+                0,
+                &fixture.binding,
+            )
+            .expect_err("a key the writer does not write is refused");
+            assert_eq!(
+                error.kind(),
+                ApplyPlanErrorKind::BadValue,
+                "{field} {value}"
+            );
+            let path = format!("ops[0].args.items[0].{field}");
+            assert_eq!(error.path(), Some(path.as_str()), "{field} {value}");
+        }
     }
 
     #[test]

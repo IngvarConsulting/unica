@@ -42,6 +42,18 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::an_area_is_written_only_where_it_exists_and_created_only_by_area_add
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::a_missing_rights_entry_or_area_routes_next_to_the_parent
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::a_missing_target_routes_next_to_the_parent_dictionary
+  - crates/unica-coder/src/domain/apply.rs::dcs_schema_nodes_and_structure_items_take_their_subject_from_the_address
+  - crates/unica-coder/src/domain/apply.rs::a_repeated_schema_name_routes_next_to_the_branch_and_every_match
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs::a_data_set_is_found_by_name_inside_unions
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/dcs_mxl.rs::a_structure_item_is_found_by_its_named_ancestors
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_dcs_container_arguments_route_next_to_the_structure_item
+  - crates/unica-coder/src/infrastructure/v13_read_projection.rs::dcs_structure_tests::repeated_total_paths_stay_rows_and_are_not_chosen
+  - crates/unica-coder/src/domain/apply.rs::a_form_item_or_event_named_by_an_argument_is_refused_with_its_address
+  - crates/unica-coder/src/domain/apply.rs::a_form_item_role_narrows_element_operations
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_form_items_and_events
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_form_arguments_route_next_to_the_item_or_event_address
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::form_add_then_element_and_event_edits_compose_in_one_batch
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::a_form_edit_writes_only_the_addressed_item
 gap: https://github.com/IngvarConsulting/unica/issues/1358
 ---
 
@@ -116,7 +128,10 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 снятый ключ отвергают контракт или разбор планировщиком, тоже `bad_value`.
 Набор, названный снятым `dataSet`, — это сегмент адреса вызова с тем же
 именем, иначе набор, найденный по имени в схеме макета (в том числе член
-объединения), иначе набор верхнего уровня. Операции запроса исполнимы
+объединения), иначе набор верхнего уровня. Если наборов с этим именем
+в схеме несколько, адрес за вызывающего не выбирается: первый `next` ведёт
+к ветви наборов `Template.<макет>.DataSet`, следующие — к `can` каждого
+совпавшего узла. Операции запроса исполнимы
 только на запросе набора `DataSet.<набор>.Query`; вызов на самом наборе
 получает отказ «не тот узел» с `next` к `can` его запроса. Прежний адрес
 `Template.<макет>.Query.<набор>` отвергается с `next` к запросу этого
@@ -132,17 +147,37 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 `variant.remove` — на `Setting.<вариант>`, `parameter.set` и
 `parameter.rename` — на `Parameter.<параметр>`, `field.set` и
 `fieldRole.set` — на `DataSet.<набор>.Field.<поле>`, вставка `code.insert`
-до или после метода — на `Method.<метод>` с `position`. Прежний аргумент
+до или после метода — на `Method.<метод>` с `position`. В схеме компоновки
+`dataSource.set` и `dataSource.remove` исполняются на
+`Template.<макет>.DataSource.<источник>`, `calculatedField.set` и
+`calculatedField.remove` — на `CalculatedField.<путь>`, `total.set`
+и `total.remove` — на `Total.<путь>`. Отбор, выбор, порядок, условное
+оформление, параметры вывода и `structure.add` берут контейнер настроек
+из адреса: вариант `Setting.<вариант>` или именованный элемент его
+структуры `Setting.<вариант>.Item.<имя>[.Item.<имя>…]`; `structure.patch`
+и `structure.remove` исполняются на самом элементе, а `structure.set`,
+заменяющая всю структуру, и параметры данных — только на варианте;
+у параметров данных ключа `group` больше нет, и контракт отвергает его как
+неизвестный.
+Безымянный элемент структуры адреса не имеет и прозрачен: его потомки
+адресуются от ближайшего именованного предка, а имя адресует элемент,
+только если оно единственно на своём уровне. Итог с повторённым
+`dataPath` (итоги одного поля по разным группировкам) адреса не получает
+и остаётся строкой ветви `Total`. Прежний аргумент
 (`values.object`, `values.area`, `values.name`, `values.field`,
-`values.dataPath`, `selector.method`) получает тот же отказ `bad_value`
-с `next` к `can` подузла и к ветви его вида. Поле с составным `dataPath`
-адресом не выражается до экранирования точки (#1356): его `field.set` и
-`fieldRole.set` недоступны, а отказ называет форму адреса поля. По той же
-причине до #1356 недоступны права вложенного объекта роли
-(`Kind.Name.Command.C`, реквизит): `right.add` такой объект отвергает,
-а `right.set` его записи не адресует. Запись прав адресуется только
-каноническим именем `<Вид>_<Имя>`, а не коротким псевдонимом чтения;
-`area.add` отвергает имя области с точкой.
+`values.dataPath`, `selector.method`, а у операций контейнера настроек
+`group` и `parent`) получает тот же отказ `bad_value`
+с `next` к `can` подузла и к ветви его вида; элемент структуры, названный
+прежним аргументом, ищется в структуре варианта, а повторённое имя ведёт
+к ветви `Setting.<вариант>.Item` и к `can` совпавших элементов. Ключи
+строк настроек без устойчивой идентичности — поле отбора, индекс выбора,
+порядка и оформления, составной ключ связи наборов — остаются аргументами.
+Точка в имени подузла
+экранируется `\.`: поле с составным `dataPath` адресуется
+`Field.Owner\.Code`, запись прав вложенного объекта роли
+(`Kind.Name.Command.C`, реквизит) — `Right.Kind_Name\.Command\.C`,
+область с точкой в имени — `Area.<имя с \.>`. Запись прав адресуется только
+каноническим именем `<Вид>_<Имя>`, а не коротким псевдонимом чтения.
 
 Узел создаёт только операция родителя с именем в аргументах, а `*.set`
 и `*.remove` пишут в существующий узел. Запись прав создаёт `right.add`
@@ -159,12 +194,24 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 с `next` к владельцу формы, где исполнима `form.add`. Псевдонимов
 прежних форм вызова нет.
 
-До переноса остальных операций на адреса подузлов (пакеты П4–П6 зонта
-#1358) обещание «не пишет в другой узел» выполнено не для всех операций:
-те, что ещё называют подузел аргументом (записи таблицы снятых аргументов
-в реестре, например `values.element` у `event.bind`, и группа
-`values.group` у `commandOrder.set`, чьи имена с точкой адресуются после
-#1356), пишут в подузел, названный аргументом, а не адресом.
+Элемент и событие формы адресуются цепочкой
+`Form.<форма>[.Item.<элемент>[.Item.<вложенный>…]][.Event.<событие>]`, как их
+показывает `view`; автоматическая командная панель формы и таблицы видна
+элементом `Item`. `element.add` добавляет в форму или в элемент-контейнер,
+названный адресом, `element.remove` удаляет элемент по его адресу,
+`event.bind` привязывает обработчик (`values.handler`, `values.callType`)
+на адресе события. Словарь элемента учитывает его роль: в поле, декорацию
+и кнопку элемент не добавляется, автоматическая командная панель отдельно
+от владельца не удаляется. Позиция `after` остаётся именем соседа в том же
+контейнере; сосед из другого контейнера отвергается `bad_value`. Снятые
+аргументы — `items[].into` у `element.add`, `items[].name`, элемент-строка
+`items[]` и `values.name` у `element.remove`, `values.element`
+и `values.event` у `event.bind` — получают тот же отказ `bad_value`
+с `next` к узлу, который называло значение: к элементу по его пути
+в форме, к событию с именем из реестра. Элемент, которого в форме нет,
+даёт `not_found` без записи. `event.bind` принимает каждое событие,
+опубликованное узлом `Event`: проверка привязки допускает события
+каталога платформы, по которому `view` строит эти узлы.
 
 Проверки проходят настоящий вызов `view` для объекта метаданных и
 отдельно проверяют проекции корня, модуля, неизвестного вида и операции

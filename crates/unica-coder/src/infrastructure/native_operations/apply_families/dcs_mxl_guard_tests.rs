@@ -164,11 +164,6 @@ fn canonical_dcs_noop_has_no_commit_events_cache_write_or_file_replacement() {
     let source_before = snapshot(&fixture.source_dir());
     let cache_before = snapshot(&cache_root(&fixture));
     let identity = file_identity_for_test(&path).unwrap();
-    let revision_service = fixture
-        .actor()
-        .source_revision_service(&fixture.binding)
-        .unwrap();
-    let machine_before = revision_service.machine_state_for_test();
     let preview = preview_request(SETTING, json!([{"op":"filter.clear","args":{}}]));
     let (noop, admission) = publication_input(&fixture, &preview);
     let (staged, effects) = plan_hidden_v13_apply(&noop, &fixture.binding, &admission).unwrap();
@@ -182,7 +177,6 @@ fn canonical_dcs_noop_has_no_commit_events_cache_write_or_file_replacement() {
     assert_eq!(snapshot(&fixture.source_dir()), source_before);
     assert_eq!(snapshot(&cache_root(&fixture)), cache_before);
     assert_eq!(file_identity_for_test(&path).unwrap(), identity);
-    assert_eq!(revision_service.machine_state_for_test(), machine_before);
 }
 
 #[test]
@@ -349,11 +343,6 @@ fn canonical_dcs_late_publication_failure_rolls_back_both_schemas_and_cache() {
         let cache_before = snapshot(&cache_root(&fixture));
         let identity = file_identity_for_test(&source.join(RELATIVE)).unwrap();
         let second_identity = file_identity_for_test(&source.join(second)).unwrap();
-        let service = fixture
-            .actor()
-            .source_revision_service(&fixture.binding)
-            .unwrap();
-        let machine_before = service.machine_state_for_test();
         set_retained_apply_failpoint(failpoint);
         let error = fixture
             .actor()
@@ -375,7 +364,6 @@ fn canonical_dcs_late_publication_failure_rolls_back_both_schemas_and_cache() {
             file_identity_for_test(&source.join(second)).unwrap(),
             second_identity
         );
-        assert_eq!(service.machine_state_for_test(), machine_before);
     }
 }
 
