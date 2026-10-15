@@ -291,7 +291,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
     /// Resolve can reuse the typed identity locator only after reading the
     /// exact node. View treats an absent BSL file as empty; a source location
     /// must distinguish that case from an existing empty file.
-    pub(crate) fn existing_export_path(&self, at: &QualifiedAddress) -> Result<String, ViewError> {
+    pub(crate) fn existing_export_path(
+        &self,
+        at: &QualifiedAddress,
+        requested_path: Option<&str>,
+    ) -> Result<String, ViewError> {
         self.read_checkpoint()?;
         let route = route_logical_address(at, self.profile)
             .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
@@ -308,9 +312,26 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 ));
             }
         }
-        let path = self.identity_export_path(at)?.ok_or_else(|| {
+        let mut path = self.identity_export_path(at)?.ok_or_else(|| {
             ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
         })?;
+        // A form has a descriptor and a content file at the same logical
+        // address. resolve(at) keeps its descriptor; resolve(path) may select
+        // the exact content file already read and proven by source_lines.
+        if requested_path.is_some_and(|requested| requested != path)
+            && route.reader() == LogicalReader::Form
+        {
+            if let Some(target) = route.reader_metadata_path() {
+                let content = self
+                    .read
+                    .attached_resource_export_path(target, "Form.xml")?;
+                if requested_path == Some(content.as_str())
+                    && self.read.form_source_exists(target)?
+                {
+                    path = content;
+                }
+            }
+        }
         self.read_checkpoint()?;
         Ok(path)
     }

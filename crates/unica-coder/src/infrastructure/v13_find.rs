@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MAX_SOURCE_SETS: usize = 64;
+const MAX_POINT_PATH_DEPTH: usize = 7;
 const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
 const DEFAULT_MAX_FACT_BYTES: usize = 16 * 1024 * 1024;
 /// Enough of a descriptor head to carry `Name` and `Synonym`. The directory
@@ -32,6 +33,52 @@ const NESTED_FAMILIES: [(&str, NodeKind); 3] = [
     ("Templates", NodeKind::Template),
     ("Commands", NodeKind::Command),
 ];
+
+/// File resources recognized only by point lookup, never indexed as name facts.
+#[derive(Clone, Copy)]
+enum AttachedPathResource {
+    Form,
+    FormModule,
+    ManagerModule,
+}
+
+impl AttachedPathResource {
+    fn from_layout(parts: &[&str]) -> Option<Self> {
+        match parts {
+            [_, _, "ext", "managermodule.bsl"] => Some(Self::ManagerModule),
+            [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
+            [_, _, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+            _ => None,
+        }
+    }
+
+    const fn owner_depth(self) -> usize {
+        match self {
+            Self::ManagerModule => 2,
+            Self::Form | Self::FormModule => 4,
+        }
+    }
+
+    const fn address_suffix(self) -> &'static str {
+        match self {
+            Self::Form => "",
+            Self::FormModule => ".Module.Form",
+            Self::ManagerModule => ".Module.Manager",
+        }
+    }
+
+    const fn file_suffix(self) -> &'static str {
+        match self {
+            Self::Form => "/Ext/Form.xml",
+            Self::FormModule => "/Ext/Form/Module.bsl",
+            Self::ManagerModule => "/Ext/ManagerModule.bsl",
+        }
+    }
+
+    const fn is_module(self) -> bool {
+        !matches!(self, Self::Form)
+    }
+}
 
 /// One admitted source-set root. The directory is read through the retained
 /// no-follow capability the actor owns; no path is reopened by name.
@@ -367,7 +414,7 @@ impl WorkspaceFindDirectoryBuilder {
             }
         } else {
             for source in sources {
-                source_matches.push((1..=parts.len().min(4)).any(|depth| {
+                source_matches.push((1..=parts.len().min(MAX_POINT_PATH_DEPTH)).any(|depth| {
                     let tail = parts[parts.len() - depth..].join("/");
                     normalized != tail && source_path_ends_with_query(source, &normalized, &tail)
                 }));
@@ -382,7 +429,7 @@ impl WorkspaceFindDirectoryBuilder {
         // The full index chooses the longest stored path. Probe equal-length
         // candidates in every source set before trying shorter fallbacks, so
         // a damaged, unrelated fallback cannot block an exact target.
-        for depth in [4, 3, 2, 1] {
+        for depth in [7, 6, 4, 3, 2, 1] {
             let tail = parts
                 .len()
                 .checked_sub(depth)
@@ -505,6 +552,23 @@ impl WorkspaceFindDirectoryBuilder {
         located: &mut Option<FindDocument>,
         ambiguous_alias: &mut bool,
     ) -> Result<(), FindBuildError> {
+        if matches!(
+            source.kind,
+            SourceSetKind::Configuration | SourceSetKind::Extension
+        ) {
+            if let Some(tail) = parts.len().checked_sub(depth).map(|start| &parts[start..]) {
+                if let Some(resource) = AttachedPathResource::from_layout(tail) {
+                    return self.locate_attached_path(
+                        source,
+                        tail,
+                        resource,
+                        deadline,
+                        cancellation,
+                        located,
+                    );
+                }
+            }
+        }
         let physical_names = absolute_relative.map(|relative| {
             relative
                 .components()
@@ -738,6 +802,70 @@ impl WorkspaceFindDirectoryBuilder {
             }
         }
         Ok(())
+    }
+
+    /// Reuse descriptor lookup only inside the source selected by the original
+    /// resource path. Registration remains the logical reader's responsibility.
+    fn locate_attached_path(
+        &self,
+        source: &LayoutFindSource<'_>,
+        tail: &[&str],
+        resource: AttachedPathResource,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+    ) -> Result<(), FindBuildError> {
+        let descriptor_query = format!("{}.xml", tail[..resource.owner_depth()].join("/"));
+        let source = LayoutFindSource::new(source.name, source.kind, source.root);
+        let Some(owner) = self.locate_path(
+            std::slice::from_ref(&source),
+            &descriptor_query,
+            deadline,
+            cancellation,
+        )?
+        else {
+            return Ok(());
+        };
+        let at = format!("{}{}", owner.at(), resource.address_suffix());
+        let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
+        if resource.is_module() {
+            if crate::domain::platform_profile::PlatformProfile::v8_3_27()
+                .module_capability(&address)
+                .is_none()
+            {
+                return Ok(());
+            }
+        } else if owner.kind() != "Form" {
+            return Ok(());
+        }
+        let descriptor = owner.placed_path().ok_or_else(unsafe_layout_entry)?;
+        let stem = descriptor
+            .strip_suffix(".xml")
+            .ok_or_else(unsafe_layout_entry)?;
+        let relative = format!("{stem}{}", resource.file_suffix());
+        find_checkpoint(deadline, cancellation)?;
+        match source
+            .root
+            .open_relative_regular_nofollow(Path::new(&relative))
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(child_read_error(error)),
+        }
+        add_path_match(
+            located,
+            FindDocument::new(
+                at,
+                if resource.is_module() {
+                    "Module"
+                } else {
+                    "Form"
+                },
+                owner.at(),
+                Vec::new(),
+            )
+            .with_path(relative),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1878,7 +2006,7 @@ fn retain_absolute_target(
     cancellation: &CancellationToken,
 ) -> Result<Option<AbsoluteTargetWitness>, FindBuildError> {
     let depth = relative.components().count();
-    if !(1..=4).contains(&depth) {
+    if !(1..=MAX_POINT_PATH_DEPTH).contains(&depth) {
         return Ok(None);
     }
     let mut current = source.root.clone();
@@ -1941,7 +2069,7 @@ fn absolute_query_matches_placement(
     let requested = witness.relative.components().collect::<Vec<_>>();
     let placed = Path::new(placed_path).components().collect::<Vec<_>>();
     let depth = requested.len();
-    if depth != placed.len() || !(1..=4).contains(&depth) {
+    if depth != placed.len() || !(1..=MAX_POINT_PATH_DEPTH).contains(&depth) {
         return Ok(false);
     }
     let mut parent = source.root.clone();

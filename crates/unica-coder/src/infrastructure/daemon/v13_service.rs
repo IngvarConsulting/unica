@@ -2301,6 +2301,41 @@ impl CanonicalV13ReadService {
                 format!("no admitted source set places `{path}`"),
             );
         };
+        // Attached file candidates are proven by the same reader as view:
+        // its owner registration and exact resource cannot be inferred from a
+        // plausible-looking layout alone.
+        if entry.kind() == "Module"
+            || entry
+                .placed_path()
+                .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
+        {
+            let address = match QualifiedAddress::parse(entry.at()) {
+                Ok(address) => address,
+                Err(error) => return error_result(None, RefusalCode::BadValue, error.to_string()),
+            };
+            let authority = match invocation
+                .layout_read_source(address.source_set())
+                .and_then(|source| source.logical_view_read_authority(cancellation))
+            {
+                Ok(authority) => authority,
+                Err(error) => {
+                    return error_result_detailed(
+                        Some(entry.at().to_owned()),
+                        RefusalDetail::SourceUnreadable,
+                        error,
+                    )
+                }
+            };
+            return match Self::resolve_with_authority(&authority, &address, entry.placed_path()) {
+                Ok(source) if Some(source.path()) == entry.placed_path() => resolve_result(source),
+                Ok(_) => error_result(
+                    Some(entry.at().to_owned()),
+                    RefusalCode::InvalidSource,
+                    "the logical reader does not place the requested resource at this path",
+                ),
+                Err(error) => view_error_result(Some(entry.at().to_owned()), error),
+            };
+        }
         resolve_result(ResolvedSource::new(
             entry.at(),
             entry.kind(),
@@ -2434,10 +2469,18 @@ impl CanonicalV13ReadService {
         let authority = source
             .logical_view_read_authority(cancellation)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        Self::resolve_with_authority(&authority, address, None)
+    }
+
+    fn resolve_with_authority(
+        authority: &crate::infrastructure::v13_read::LogicalViewReadAuthority<'_>,
+        address: &QualifiedAddress,
+        requested_path: Option<&str>,
+    ) -> Result<ResolvedSource, ViewError> {
         let snapshot = authority.snapshot(address)?;
         let canonical = authority.canonical_address(address, &snapshot)?;
         let (kind, lines) = authority.source_lines(&canonical, &snapshot)?;
-        let path = authority.existing_export_path(&canonical)?;
+        let path = authority.existing_export_path(&canonical, requested_path)?;
         if authority.snapshot(&canonical)?.revision != snapshot.revision {
             return Err(ViewError::new(
                 RefusalCode::StaleCursor,

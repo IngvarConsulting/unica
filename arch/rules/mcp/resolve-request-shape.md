@@ -1,6 +1,12 @@
 ---
 id: INV.WIRE.RESOLVE-EXACT-BRIDGE
 check:
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resource_refuses_mismatched_descriptor_identity_on_public_mcp
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resources_keep_source_prefix_and_deepest_root_selection_on_public_mcp
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resources_do_not_follow_linked_files_or_directories_on_public_mcp
+  - crates/unica-coder/tests/platform/v13_resolve_resources.rs::resolve_resource_prefix_skips_a_foreign_linked_collection_on_public_mcp
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_bsl_nodes_across_module_roles
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_method_spans_annotations_through_its_closing_line
   - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::resolve_exact_module_body_numbers_lines_like_view
@@ -76,3 +82,14 @@ check:
 Разные объекты по одному относительному пути дают отказ вместо произвольного
 выбора. `not_found` возможен лишь после проверки всех относящихся к запросу
 кандидатов.
+
+В наборах конфигурации и расширения `Forms/<форма>/Ext/Form.xml`
+разрешается в адрес формы, `Forms/<форма>/Ext/Form/Module.bsl` — в её
+`Module.Form`, а `Ext/ManagerModule.bsl` — в `Module.Manager` владельца,
+если профиль платформы допускает эту роль. Возвращённый путь называет
+запрошенный файл; XML-дескриптор владельца его не заменяет. Регистрация
+владельца и формы подтверждается тем же логическим reader, что и `view`.
+Поддержаны полный путь относительно корня набора, путь с префиксом workspace
+и абсолютный путь. До проверки регистрации физические кандидаты разных
+наборов по одному относительному пути дают отказ неоднозначности, включая
+случай незарегистрированного физического двойника.

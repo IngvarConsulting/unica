@@ -1188,6 +1188,33 @@ impl ActorBoundExecution {
             .collect()
     }
 
+    /// Upgrade only the layout candidate selected by resolve(path) to a typed
+    /// reader. The actor remains the issuer of its retained root and artifacts.
+    pub(in crate::infrastructure::daemon) fn layout_read_source(
+        &self,
+        name: &str,
+    ) -> Result<ActorReadSourceCapability, String> {
+        let ActorExecutionRevision::LayoutRead(lease) = &self.revision else {
+            return Err("typed layout reads require a layout invocation".into());
+        };
+        let binding = lease
+            .bindings
+            .iter()
+            .find(|binding| binding.source_set_name() == name)
+            .ok_or_else(|| "the selected layout source was not admitted".to_string())?;
+        self.invocation.actor.validate_binding(binding)?;
+        Ok(ActorReadSourceCapability {
+            binding: binding.clone(),
+            identity: format!(
+                "{}:{name}",
+                self.invocation.workspace_identity_hash.as_str()
+            ),
+            read_identity: uuid::Uuid::new_v4().to_string(),
+            deadline: lease.deadline,
+            registration_cache: self.invocation.actor.source_artifacts(binding)?,
+        })
+    }
+
     pub(crate) fn rejected_logical_read_result(&self) -> Option<DomainResult> {
         let ActorExecutionRevision::LogicalRead(lease) = &self.revision else {
             return None;

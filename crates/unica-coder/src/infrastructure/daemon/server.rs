@@ -12028,6 +12028,7 @@ struct ActorLogicalReadLease {"#,
         .unwrap();
         let cancellation = CancellationToken::new();
         let execution = invocation.begin_execution(&cancellation).unwrap();
+        assert!(execution.layout_read_source("main").is_err());
         let sibling_admission = sibling_reads.take();
         assert!(
             sibling_admission
@@ -12194,6 +12195,11 @@ struct ActorLogicalReadLease {"#,
             2,
             "the find directory must admit every workspace source set"
         );
+        assert!(find_execution.layout_read_source("absent").is_err());
+        let layout_capability = find_execution.layout_read_source("main").unwrap();
+        assert!(layout_capability
+            .logical_view_read_authority(&cancellation)
+            .is_ok());
         let find_result = service
             .execute(&find_execution, cancellation.clone())
             .expect("canonical v0.13 find execution");
@@ -12274,6 +12280,46 @@ struct ActorLogicalReadLease {"#,
             execution.publish(Ok(result), &cancellation).is_ok(),
             "a completed read remains usable after source content changes"
         );
+        let layout_execution = || {
+            bind_workspace_invocation(
+                &find_request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap()
+        };
+        let cancelled_execution = layout_execution();
+        assert!(cancelled_execution.layout_read_source("main").is_ok());
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        let result = cancelled_execution
+            .publish(
+                Ok(DomainResult::success("staged resource location")),
+                &cancelled,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!result.ok);
+        assert_eq!(result.diagnostics[0]["code"], "cancelled");
+        if crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test() {
+            let remapped_execution = layout_execution();
+            assert!(remapped_execution.layout_read_source("main").is_ok());
+            std::fs::rename(&source, workspace.path().join("retained-src")).unwrap();
+            std::fs::create_dir_all(&source).unwrap();
+            assert!(remapped_execution.layout_read_source("main").is_err());
+            assert!(remapped_execution
+                .publish(
+                    Ok(DomainResult::success("staged resource location")),
+                    &cancellation,
+                )
+                .is_err());
+        }
     }
 
     fn rejected_hidden_v13_view_execution(

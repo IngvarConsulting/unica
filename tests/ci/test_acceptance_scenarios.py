@@ -56,6 +56,7 @@ from tests.ci.acceptance_controls import (
     load_acceptance_corpus,
     matches_step,
     substitute_capture,
+    relative_file,
     tool_result,
     validate_controls,
 )
@@ -160,6 +161,11 @@ def substitute(value, context):
     if isinstance(value, str) and value.startswith("$capture."):
         return substitute_capture(value, context)
     if isinstance(value, str):
+        if value.startswith("$workspace/"):
+            relative = relative_file(value[len("$workspace/"):])
+            if "workspace" not in context:
+                raise ValueError("absolute workspace path needs an active scenario")
+            return str(Path(context["workspace"]).joinpath(*relative.parts))
         if value == "$task":
             return context.get("task", "00000000-0000-4000-8000-000000000000")
         if value == "$executionToken":
@@ -501,6 +507,18 @@ class SavedPlanWireTests(unittest.TestCase):
                    "executionToken": "saved-plan", "rev": "current-revision"}
         self.assertEqual(substitute({"text": "$capture.text", "object": "$capture.object"}, context),
                          {"text": "$executionToken", "object": {"at": "$rev"}})
+
+    def test_absolute_path_query_stays_inside_the_scenario_workspace(self):
+        context = {"workspace": Path("/scenario")}
+        self.assertEqual(substitute({"path": "$workspace/src/Form.xml"}, context),
+                         {"path": str(Path("/scenario/src/Form.xml"))})
+        for path in ["$workspace/../outside.xml", "$workspace/C:/outside.xml", "$workspace//outside.xml"]:
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                substitute(path, context)
+        with self.assertRaises(ValueError):
+            substitute("$workspace/src/Form.xml", {})
+        self.assertEqual(substitute("$capture.literal", {"captures": {"literal": "$workspace/src/Form.xml"}}),
+                         "$workspace/src/Form.xml")
 
     def test_execute_uses_the_preview_token_and_reads_do_not_replace_it(self):
         context = {}
@@ -858,7 +876,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None):
                     server.close()
                     current_workspace = wanted
                     server = fresh_server(current_workspace)
-                context = {}
+                context = {"workspace": server.workspace}
                 broken = False
                 finish = scenario_driver(server, scenario) if scenario_driver else None
                 verification = []

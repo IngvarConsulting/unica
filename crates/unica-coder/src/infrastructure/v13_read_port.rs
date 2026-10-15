@@ -1256,7 +1256,15 @@ impl ProviderReadAuthority {
     /// Only proves that the BSL file is present; the text is not read.
     pub(crate) fn module_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
         let relative = self.module_relative(target)?;
-        match self.root.open_relative_regular_nofollow(&relative) {
+        self.relative_source_exists(&relative)
+    }
+
+    pub(crate) fn form_source_exists(&self, target: &MetadataAddress) -> Result<bool, ViewError> {
+        self.relative_source_exists(&self.attached_resource_relative(target, "Form.xml")?)
+    }
+
+    fn relative_source_exists(&self, relative: &Path) -> Result<bool, ViewError> {
+        match self.root.open_relative_regular_nofollow(relative) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(ViewError::detailed(
