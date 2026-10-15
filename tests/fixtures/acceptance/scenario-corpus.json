@@ -40421,6 +40421,119 @@
   },
   {
    "id": "S437",
+   "name": "module-interface-slices-publish-only-routable-addresses",
+   "issue": 1467,
+   "area": "Навигация и чтение",
+   "task": "Прочитать и проверить ветвь Interface модуля: срезы Public/Library/Override приходят без адреса, который view отверг бы, check читает ветвь без валидатора командного интерфейса, а метод среза открывается своим адресом",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Interface"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items/0/interface",
+       "eq": "Public"
+      },
+      {
+       "pointer": "/data/items/0/addressable",
+       "eq": false
+      },
+      {
+       "pointer": "/data/items/0/at",
+       "absent": true
+      },
+      {
+       "pointer": "/data/items/0/methods/0",
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+      }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Interface"
+     },
+     "expect": [
+      "ok"
+     ],
+     "status": "readable",
+     "validators": []
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S438",
+   "name": "check-fails-a-module-variable-declared-after-methods",
+   "issue": 1460,
+   "area": "Код BSL",
+   "task": "Объявить переменную модуля после функций и проверить модуль: check проваливается находкой платформы о месте объявления, а не отвечает passed",
+   "wire": [
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "Перем ПоследнийОтвет;",
+         "position": "after"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Body"
+     },
+     "expect": [
+      "ok",
+      "provider"
+     ],
+     "status": "failed",
+     "validators": [
+      "bsl"
+     ],
+     "diagnostic": "VariableDeclarationPlacement"
+    }
+   ]
+  },
+  {
+   "id": "S439",
    "name": "resolve-metadata-object-by-its-own-place",
    "issue": 1457,
    "area": "Навигация и чтение",

@@ -310,9 +310,12 @@ impl InterfaceKind {
     }
 }
 
+/// Срез методов модуля по нормативным областям. У среза нет адреса:
+/// у `Interface` не бывает имени, и `…Interface.Public` грамматика адреса
+/// отвергает (CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS). Срез — элемент ветви
+/// `…Interface`, а его методы адресуются своими `…Method.<имя>` (#1467).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct InterfaceProjection {
-    pub(crate) at: String,
     pub(crate) kind: &'static str,
     pub(crate) interface: InterfaceKind,
     pub(crate) methods: Vec<String>,
@@ -826,7 +829,6 @@ mod tests {
             parent: None,
         };
         let interface = InterfaceProjection {
-            at: format!("{base}.Interface.Public"),
             kind: "Interface",
             interface: InterfaceKind::Public,
             methods: vec![method_at.clone()],
@@ -944,7 +946,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&projection.interfaces()[0]).unwrap(),
             json!({
-                "at": format!("{base}.Interface.Public"),
                 "kind": "Interface",
                 "interface": "Public",
                 "methods": [format!("{base}.Method.Проверить")]

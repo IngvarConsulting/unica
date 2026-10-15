@@ -11171,6 +11171,95 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
+    /// #1460: платформа не компилирует модуль, где `Перем` стоит после
+    /// методов, а анализатор такой модуль пропускает. `check` модуля через
+    /// настоящий сервис вызова проваливается находкой с текстом платформы и
+    /// местом объявления; тот же модуль с объявлением в начале проходит.
+    #[test]
+    fn module_check_fails_a_variable_declared_after_methods() {
+        let checked = |source: &str| {
+            let workspace = scheduled_handler_workspace("CONFIGURATION", source);
+            let runtime = bootstrap_runtime();
+            let service =
+                crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
+            let cancellation = CancellationToken::new();
+            let request = InvocationRequest::new(
+                ToolIdentity::Check,
+                serde_json::json!({"at": "main:CommonModule.Handlers.Body"}),
+                std::fs::canonicalize(workspace.path())
+                    .unwrap()
+                    .to_string_lossy(),
+                7_000,
+            )
+            .unwrap();
+            let check = bind_workspace_invocation(
+                &request,
+                &runtime.workspace_actors,
+                Arc::clone(&runtime.deliveries),
+                Arc::clone(&runtime.provider_hosts),
+                Arc::clone(&runtime.runtime_resources),
+                None,
+                runtime.capture_response_deadline_for_test(),
+            )
+            .unwrap()
+            .begin_execution(&cancellation)
+            .unwrap();
+            let (provider, _analyzer) =
+                crate::infrastructure::diagnostics::analyze_timeout_probe::recording_provider();
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = Some(provider));
+            let checked = service.execute(&check, cancellation.clone());
+            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = None);
+            let checked = checked.unwrap();
+            // Сообщения проверок — постоянные строки: ответ несёт данные
+            // поддержки, и CodeQL считает их вывод утечкой.
+            assert!(checked.ok, "module check must answer a verdict");
+            checked.data.unwrap()
+        };
+
+        let late = checked("Procedure Run() Export\n    Cache = 1;\nEndProcedure\n\nVar Cache;\n");
+        assert!(
+            late["status"] == "failed",
+            "a late declaration fails the check"
+        );
+        let diagnostics = late["diagnostics"].as_array().unwrap();
+        assert!(
+            diagnostics.len() == 1,
+            "exactly one finding names the declaration"
+        );
+        let finding = &diagnostics[0];
+        assert!(
+            finding["validator"] == "bsl",
+            "the finding belongs to the bsl step"
+        );
+        assert!(
+            finding["code"] == "VariableDeclarationPlacement",
+            "the finding names the placement rule"
+        );
+        assert!(finding["severity"] == "error", "the finding is an error");
+        assert!(
+            finding["message"]
+                == "Объявления переменных должны быть расположены в начале модуля, процедуры или функции",
+            "the finding carries the platform message"
+        );
+        assert!(
+            finding["location"]["targetKind"] == "module",
+            "the finding belongs to the module"
+        );
+        assert!(
+            finding["focus"]["range"]["startLine"] == 4,
+            "the finding points at the declaration line"
+        );
+
+        let early = checked("Var Cache;\n\nProcedure Run() Export\n    Cache = 1;\nEndProcedure\n");
+        assert!(early["status"] == "passed", "an early declaration passes");
+        assert!(
+            early["diagnostics"] == serde_json::json!([]),
+            "an early declaration has no findings"
+        );
+    }
+
     /// #1338: an addressed module `check` whose analyzer is still being
     /// delivered answers through the daemon's real invocation service with a
     /// retryable `working` delivery state, not with an analysis verdict. The
