@@ -40424,7 +40424,7 @@
    "name": "form-item-operations-are-named-by-the-item-node",
    "issue": 1465,
    "area": "Формы",
-   "task": "Операции элемента формы названы по узлу Item: can формы и элемента-контейнера выдаёт item.add, can элемента — item.remove; снятые element.add и element.remove отказывают bad_value без записи, next ведёт на тот же адрес, а item.add и item.remove строят предпросмотр",
+   "task": "Операции элемента формы названы по узлу Item: can формы и элемента-контейнера выдаёт item.add, can элемента — item.remove; снятые element.add и element.remove отказывают bad_value без записи, next ведёт к контракту item.* на ближайшем узле, где она исполнима, контракт снятого имени по адресу Can называет заменившую, а item.add и item.remove строят предпросмотр без записи",
    "wire": [
     {
      "tool": "unica.view",
@@ -40508,7 +40508,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
       }
      ],
      "fileAssertions": [
@@ -40540,7 +40540,55 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.item.remove"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: operation `element.add` is retired: read `item.add` at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add`; the arguments are unchanged",
+     "assertions": [
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.remove"
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: apply operation `element.remove` is retired: call `item.remove`, which addresses `Kind.Name.Form.F.Item.I[.Item.J…]`; the arguments are unchanged",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].op"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
       }
      ],
      "fileAssertions": [
@@ -40577,6 +40625,13 @@
       {
        "pointer": "/data/mode",
        "eq": "preview"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
       }
      ]
     },

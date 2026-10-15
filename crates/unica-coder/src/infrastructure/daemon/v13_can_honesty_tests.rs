@@ -1902,33 +1902,60 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
     assert_eq!(refusal.next.len(), 1);
     assert_eq!(refusal.next[0]["args"]["at"], "cf:Catalog.Items");
     // Операции элемента формы названы по узлу `Item` (#1465): снятые
-    // `element.*` называют `item.*` на том же адресе.
-    for (at, retired, replacement, args) in [
+    // `element.*` называют `item.*` на ближайшем узле, где она исполнима:
+    // на самом адресе или на его предке, а `next` ведёт к её контракту.
+    let form = "cf:Catalog.Items.Form.Choice";
+    let add = json!({"items": [{"name": "Code", "type": "InputField", "path": "Code"}]});
+    for (at, retired, args, target) in [
         (
-            "cf:Catalog.Items.Form.Choice",
+            form.to_string(),
             "element.add",
-            "item.add",
-            json!({"items": [{"name": "Code", "type": "InputField", "path": "Code"}]}),
+            add.clone(),
+            Some(form.to_string()),
         ),
         (
-            "cf:Catalog.Items.Form.Choice.Item.Code",
+            format!("{form}.Item.Code"),
             "element.remove",
-            "item.remove",
             json!({}),
+            Some(format!("{form}.Item.Code")),
         ),
+        (
+            format!("{form}.Item.Code.Event.OnChange"),
+            "element.add",
+            add.clone(),
+            Some(format!("{form}.Item.Code")),
+        ),
+        // На форме удалять нечего: элемент называет его адрес.
+        (form.to_string(), "element.remove", json!({}), None),
     ] {
-        let request = apply_request(at, retired, args);
+        let replacement = retired.replace("element.", "item.");
+        let request = apply_request(&at, retired, args);
         let refusal = preflight_apply_operations(&request, traits, &|_| None)
             .expect_err("a retired operation refuses before planning");
         assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{retired}");
         assert_eq!(refusal.at.as_deref(), Some("ops[0].op"), "{retired}");
         let message = refusal.diagnostics[0]["message"].as_str().unwrap();
-        assert!(
-            message.contains(&format!("call `{replacement}` at `{at}`")),
-            "{message}"
-        );
-        assert_eq!(refusal.next.len(), 1, "{retired}");
-        assert_eq!(refusal.next[0]["args"]["at"], at, "{retired}");
+        assert_eq!(refusal.next.len(), 1, "{retired} at {at}");
+        match target {
+            Some(target) => {
+                assert!(
+                    message.contains(&format!("call `{replacement}` at `{target}`")),
+                    "{message}"
+                );
+                assert_eq!(
+                    refusal.next[0]["args"]["at"],
+                    format!("{target}.Can.{replacement}"),
+                    "{retired} at {at}"
+                );
+            }
+            None => {
+                assert!(
+                    message.contains(&format!("call `{replacement}`, which addresses")),
+                    "{message}"
+                );
+                assert_eq!(refusal.next[0]["args"]["at"], at, "{retired} at {at}");
+            }
+        }
     }
 }
 

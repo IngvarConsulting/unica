@@ -1,7 +1,7 @@
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::apply::{
-    FormItemRole, OperationRegistry, OperationSite, SourceSetTraits, TemplateFormat,
-    IMPLEMENTED_APPLY_OPERATIONS,
+    FormItemRole, OperationRegistry, OperationSite, RetiredOperation, SourceSetTraits,
+    TemplateFormat, IMPLEMENTED_APPLY_OPERATIONS,
 };
 use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::metadata_kinds::metadata_kind;
@@ -12,6 +12,8 @@ use std::fmt;
 pub(super) struct ReadModeError {
     code: RefusalCode,
     message: String,
+    /// Адрес, к которому ведёт `next` отказа, когда он не словарь узла.
+    next: Option<String>,
 }
 
 impl ReadModeError {
@@ -19,6 +21,7 @@ impl ReadModeError {
         Self {
             code: RefusalCode::BadValue,
             message: message.into(),
+            next: None,
         }
     }
 
@@ -26,6 +29,7 @@ impl ReadModeError {
         Self {
             code: RefusalCode::UnsupportedSection,
             message: message.into(),
+            next: None,
         }
     }
 
@@ -33,11 +37,16 @@ impl ReadModeError {
         Self {
             code: RefusalCode::UnsupportedScope,
             message: message.into(),
+            next: None,
         }
     }
 
     pub(super) const fn code(&self) -> RefusalCode {
         self.code
+    }
+
+    pub(super) fn next(&self) -> Option<&str> {
+        self.next.as_deref()
     }
 }
 
@@ -180,14 +189,12 @@ pub(super) fn operation_node(
             "the operation dictionary is not computed for kind `{kind}` yet"
         ))
     })?;
-    let descriptor = OperationRegistry::closed()
-        .lookup(operation)
-        .ok_or_else(|| {
-            ReadModeError::bad_value(format!(
-                "unknown operation `{operation}`; inspect the node can dictionary"
-            ))
-        })?;
     let site = OperationSite::new(&owner, context).expect("node_site proved the operation site");
+    let Some(descriptor) = OperationRegistry::closed().lookup(operation) else {
+        return Err(retired_operation_contract(
+            operation, &site, &owner, format, item,
+        ));
+    };
     if inherited_node(data) && descriptor.content_resource().is_some() {
         return Err(ReadModeError::bad_value(format!(
             "operation `{operation}` writes content this borrowed node inherits from the parent; read the parent named by props.extends"
@@ -234,6 +241,43 @@ pub(super) fn operation_node(
     }))
 }
 
+/// The refusal of `<node>.Can.<op>` for an operation outside the registry.
+/// A retired operation names its replacement and leads `next` to the
+/// replacement's contract at the nearest node where it is executable
+/// (#1465); an unknown name leads to the node's own dictionary.
+fn retired_operation_contract(
+    operation: &str,
+    site: &OperationSite<'_>,
+    owner: &QualifiedAddress,
+    format: Option<TemplateFormat>,
+    item: Option<FormItemRole>,
+) -> ReadModeError {
+    let Some(retired) = RetiredOperation::lookup(operation) else {
+        return ReadModeError::bad_value(format!(
+            "unknown operation `{operation}`; inspect the node can dictionary"
+        ));
+    };
+    // Формат и роль известны только у прочитанного узла; у его предков
+    // фильтр их не сужает.
+    let format_of = |at: &QualifiedAddress| if at == owner { format } else { None };
+    let role_of = |at: &QualifiedAddress| if at == owner { item } else { None };
+    match retired.replacement_target(site, &format_of, &role_of) {
+        Some(target) => {
+            let contract = format!("{target}.Can.{}", retired.replacement);
+            let mut error = ReadModeError::bad_value(format!(
+                "operation `{operation}` is retired: read `{}` at `{contract}`; {}",
+                retired.replacement, retired.arguments
+            ));
+            error.next = Some(contract);
+            error
+        }
+        None => ReadModeError::bad_value(format!(
+            "operation `{operation}` is retired: `{}` replaces it and does not apply here; inspect the node can dictionary",
+            retired.replacement
+        )),
+    }
+}
+
 /// `diff` compares what the sources say. The dictionary is computed from the
 /// registry and the node's place, so comparing it never observes a source
 /// change: it leaves the compared data.
@@ -253,6 +297,57 @@ mod operation_dictionary_tests {
     fn can_of(mut data: Value) -> Value {
         attach_can(&mut data, super::configuration_context());
         data
+    }
+
+    /// Контракт снятой операции не читается: отказ называет заменившую,
+    /// а `next` ведёт к её контракту на ближайшем узле, где она исполнима
+    /// (#1465). Неизвестное имя по-прежнему ведёт к словарю узла.
+    #[test]
+    fn a_retired_operation_contract_names_its_replacement() {
+        let form = "cf:Catalog.Items.Form.Choice";
+        for (at, kind, op, expected) in [
+            (
+                form.to_string(),
+                "Form",
+                "element.add",
+                Some(format!("{form}.Can.item.add")),
+            ),
+            (
+                format!("{form}.Item.Code"),
+                "Item",
+                "element.remove",
+                Some(format!("{form}.Item.Code.Can.item.remove")),
+            ),
+            (
+                format!("{form}.Item.Code.Event.OnChange"),
+                "Event",
+                "element.add",
+                Some(format!("{form}.Item.Code.Can.item.add")),
+            ),
+            (
+                form.to_string(),
+                "Form",
+                "form.create",
+                Some("cf:Catalog.Items.Can.form.add".to_string()),
+            ),
+            (form.to_string(), "Form", "element.remove", None),
+            (form.to_string(), "Form", "element.unknown", None),
+        ] {
+            let data = json!({"at": at, "kind": kind});
+            let error = operation_node(&data, op, &at, super::configuration_context())
+                .expect_err("a retired operation has no contract");
+            assert_eq!(error.code(), RefusalCode::BadValue, "{op} at {at}");
+            assert_eq!(error.next(), expected.as_deref(), "{op} at {at}");
+            if let Some(contract) = expected {
+                let replacement = contract.rsplit_once(".Can.").unwrap().1;
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("read `{replacement}` at `{contract}`")),
+                    "{error}"
+                );
+            }
+        }
     }
 
     #[test]

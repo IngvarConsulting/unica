@@ -741,11 +741,19 @@ impl CanonicalV13ReadService {
                         .to_string();
                     operation_node(&data, op, &owner_at, can_context).map_err(|error| {
                         let mut refused = ViewError::new(error.code(), error.to_string());
-                        refused.set_next(json!({
-                            "tool": "unica.view",
-                            "args": {"at": owner_at},
-                            "reason": "операции, применимые к этому узлу",
-                        }));
+                        // Снятая операция ведёт к контракту заменившей (#1465).
+                        refused.set_next(match error.next() {
+                            Some(contract) => json!({
+                                "tool": "unica.view",
+                                "args": {"at": contract},
+                                "reason": "контракт операции, заменившей снятую",
+                            }),
+                            None => json!({
+                                "tool": "unica.view",
+                                "args": {"at": owner_at},
+                                "reason": "операции, применимые к этому узлу",
+                            }),
+                        });
                         refused
                     })
                 }
@@ -3999,17 +4007,13 @@ pub(super) fn preflight_apply_operations_with(
             // Снятая операция ведёт к заменившей на узле-родителе (#1354).
             if let Some(retired) = crate::domain::apply::RetiredOperation::lookup(operation.name())
             {
-                let target = retired.replacement_at(operation.at());
-                return Err(Box::new(with_node_dictionary(
-                    error_result(
-                        Some(format!("ops[{index}].op")),
-                        RefusalCode::BadValue,
-                        format!(
-                            "apply operation `{}` is retired: call `{}` at `{target}`; {}",
-                            retired.op, retired.replacement, retired.arguments
-                        ),
-                    ),
-                    &target.to_string(),
+                return Err(Box::new(retired_operation_refusal(
+                    index,
+                    operation.at(),
+                    retired,
+                    source,
+                    template_format,
+                    form_item,
                 )));
             }
             return Err(Box::new(with_node_dictionary(
@@ -4262,6 +4266,64 @@ pub(super) fn preflight_apply_operations_with(
         return Err(Box::new(refusal));
     }
     Ok(())
+}
+
+/// Отказ снятой операции без записи (#1354, #1465). Создающая операция
+/// ведёт к словарю родителя; переименованная — к контракту заменившей на
+/// ближайшем узле, где она исполнима, как отказ «не тот узел». Если такого
+/// узла в цепочке адреса нет, отказ называет форму адреса заменившей.
+fn retired_operation_refusal(
+    index: usize,
+    at: &QualifiedAddress,
+    retired: crate::domain::apply::RetiredOperation,
+    source: SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    form_item: &dyn Fn(&QualifiedAddress) -> Option<crate::domain::apply::FormItemRole>,
+) -> DomainResult {
+    let location = Some(format!("ops[{index}].op"));
+    let site = OperationSite::new(at, source);
+    let target = site
+        .as_ref()
+        .and_then(|site| retired.replacement_target(site, template_format, form_item));
+    let replacement = OperationRegistry::closed().lookup(retired.replacement);
+    match (target, replacement) {
+        (Some(target), Some(replacement)) => {
+            let refusal = error_result(
+                location,
+                RefusalCode::BadValue,
+                format!(
+                    "apply operation `{}` is retired: call `{}` at `{target}`; {}",
+                    retired.op, retired.replacement, retired.arguments
+                ),
+            );
+            if retired.creates.is_some() {
+                with_node_dictionary(refusal, &target.to_string())
+            } else {
+                with_operation_dictionary(refusal, &target.to_string(), replacement)
+            }
+        }
+        (_, replacement) => {
+            let shape = replacement.map_or_else(String::new, |replacement| {
+                format!(", which addresses {}", replacement.address_shape())
+            });
+            let refusal = error_result(
+                location,
+                RefusalCode::BadValue,
+                format!(
+                    "apply operation `{}` is retired: call `{}`{shape}; {}",
+                    retired.op, retired.replacement, retired.arguments
+                ),
+            );
+            let readable =
+                crate::infrastructure::logical_tree::route_logical_address(at, source.profile())
+                    .is_ok();
+            if readable {
+                with_node_dictionary(refusal, &at.to_string())
+            } else {
+                with_node_dictionary(refusal, &format!("{}:Configuration", at.source_set()))
+            }
+        }
+    }
 }
 
 /// Принимает ли роль элемента формы по адресу `at` операцию; адрес не

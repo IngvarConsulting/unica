@@ -2438,6 +2438,32 @@ impl RetiredOperation {
             _ => at.clone(),
         }
     }
+
+    /// Ближайший узел, где исполнима заменившая операция. Создающая
+    /// операция исполнима на родителе созданного узла; переименованная —
+    /// на самом адресе вызова, если место и роль элемента её принимают,
+    /// иначе на ближайшем предке, как в отказе «не тот узел». `None` —
+    /// такого узла в цепочке адреса нет.
+    pub(crate) fn replacement_target(
+        self,
+        site: &OperationSite<'_>,
+        template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+        form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    ) -> Option<QualifiedAddress> {
+        if self.creates.is_some() {
+            return Some(self.replacement_at(site.at));
+        }
+        let replacement = OperationRegistry::closed().lookup(self.replacement)?;
+        let here = replacement.applies_at(site)
+            && (site.terminal().kind() != NodeKind::Template
+                || replacement.admits_template_format(template_format(site.at)))
+            && (site.terminal().kind() != NodeKind::Item
+                || replacement.admits_form_item(form_item(site.at)));
+        if here {
+            return Some(site.at.clone());
+        }
+        replacement.nearest_applicable_ancestor_with(site, template_format, form_item)
+    }
 }
 
 fn configuration_root(source_set: &str) -> QualifiedAddress {
