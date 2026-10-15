@@ -1034,14 +1034,14 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
             "formAttribute.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main",
-            false,
+            true,
         ),
         (
             "cf:Catalog.Items.Form.Main.Item.Header.Event.OnChange",
             "element.add",
             json!({"items": [{"name": "Comment"}]}),
             "cf:Catalog.Items.Form.Main.Item.Header",
-            false,
+            true,
         ),
         (
             "cf:Role.Reader",
@@ -1280,8 +1280,58 @@ fn honest_can_on_form_items_and_events() {
             // к ближайшему узлу, где `element.add` исполнима.
             if op == "element.add" && at.ends_with(".Item.ПолеНаименование") {
                 assert_eq!(result.at.as_deref(), Some("ops[0].at"), "{result:?}");
-                assert_eq!(result.next[0]["args"]["at"], form, "{result:?}");
+                assert_eq!(
+                    result.next[0]["args"]["at"],
+                    format!("{form}.Can.element.add"),
+                    "{result:?}"
+                );
             }
+        }
+        // Подробный контракт каждой операции узла читается её адресом, и его
+        // пример строит предпросмотр на этом узле: контракт и планировщик
+        // согласны (#1447).
+        for op in expected.iter() {
+            let detailed = invoke(
+                &fixture.workspace,
+                ToolIdentity::View,
+                json!({"at": format!("{at}.Can.{op}")}),
+            );
+            assert!(detailed.ok, "{op} at {at}: {detailed:?}");
+            let contract = detailed.data.unwrap()["props"]["contract"].clone();
+            assert!(
+                contract["argsSchema"].is_object(),
+                "{op} at {at}: {contract}"
+            );
+            // Командная панель принимает только кнопки: её контракт публикует
+            // один вид, а поле ввода в ней планировщик отвергает.
+            let command_bar = at.ends_with("КоманднаяПанель") || at.ends_with("ListCommandBar");
+            if *op == "element.add" {
+                let kinds = contract["argsSchema"]["properties"]["items"]["items"]["anyOf"]
+                    .as_array()
+                    .unwrap()
+                    .len();
+                assert_eq!(kinds == 1, command_bar, "{at}: {kinds} element kinds");
+                if command_bar {
+                    let field = invoke(
+                        &fixture.workspace,
+                        ToolIdentity::Apply,
+                        json!({"at": at, "ops": [{"op": op, "args":
+                            {"items": [{"name": "Проба", "type": "InputField"}]}}]}),
+                    );
+                    assert!(!field.ok, "{at}: a field in a command bar is refused");
+                }
+            }
+            let example = contract["exampleArgs"].clone();
+            let planned = invoke(
+                &fixture.workspace,
+                ToolIdentity::Apply,
+                json!({"at": at, "ops": [{"op": op, "args": example}]}),
+            );
+            assert!(
+                planned.ok,
+                "{op} at {at}: {}",
+                serde_json::to_value(&planned).unwrap()
+            );
         }
     }
 }
@@ -1354,7 +1404,11 @@ fn retired_form_arguments_route_next_to_the_item_or_event_address() {
             .iter()
             .map(|next| next["args"]["at"].as_str().unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(actual, vec![next.clone(), branch], "{case}: {value}");
+        assert_eq!(
+            actual,
+            vec![format!("{next}.Can.{op}"), branch],
+            "{case}: {value}"
+        );
         let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": next}));
         assert!(viewed.ok, "{case}: {viewed:?}");
         let can = &viewed.data.unwrap()["can"];

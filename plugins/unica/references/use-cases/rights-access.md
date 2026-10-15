@@ -22,17 +22,18 @@ evidence; it does not probe the infobase.
 
 ## Primary path
 
-Use native role tools through MCP `unica`:
+Use the canonical role operations through MCP `unica` (skill `role-edit`):
 
-- `unica.view` on the role node
-- `unica.role.compile`
+- `unica.view` on the role node and its `Right` branch
+- `unica.apply` with `role.create` at `<set>:Configuration`, `right.add` on the
+  role and `right.set` on a role entry; preview first, then execute the saved
+  plan by `executionToken`
 - `unica.check` on the role node (validator `role`)
 
 When code changes require new rights, inspect the touched metadata objects and
-compile focused role definitions rather than broad presets.
+grant focused rights per object rather than broad typical sets.
 
 ## Related references
 
 - `../specs/1c-role-spec.md`
-- `../specs/role-dsl-spec.md`
 - `../platform/development-standards.md`

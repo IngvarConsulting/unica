@@ -148,8 +148,6 @@ const CI_PATH: &[&str] = &["CIPath", "ciPath", "path", "Path"];
 const CI_PATH_REQUIRED: &[&str] = &["CIPath"];
 pub(crate) const SUBSYSTEM_PATH: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
 const SUBSYSTEM_PATH_REQUIRED: &[&str] = &["SubsystemPath"];
-const SUBSYSTEM_COMPILE_WRITE: &[&str] = &["OutputDir", "outputDir", "Parent", "parent"];
-const SUBSYSTEM_COMPILE_GUARD: &[&str] = &["Parent", "parent", "OutputDir", "outputDir"];
 const OUTPUT_PATH: &[&str] = &["OutputPath", "outputPath"];
 pub(crate) const TEMPLATE_PATH: &[&str] = &["TemplatePath", "templatePath", "Path", "path"];
 pub(crate) const RIGHTS_PATH: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
@@ -165,9 +163,6 @@ const CFE_PATCH_METHOD_REQUIRED: &[&str] = &[
 const CFE_VALIDATE_REQUIRED: &[&str] = &["ExtensionPath"];
 const FORM_COMPILE_REQUIRED: &[&str] = &["OutputPath"];
 const FORM_EDIT_REQUIRED: &[&str] = &["FormPath"];
-const SUBSYSTEM_COMPILE_REQUIRED: &[&str] = &["OutputDir"];
-const MXL_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputPath"];
-const ROLE_COMPILE_REQUIRED: &[&str] = &["JsonPath", "OutputDir"];
 const ROLE_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operations"];
 const EXTERNAL_INIT_REQUIRED: &[&str] = &["Name", "OutputDir"];
 // `selector` and `position` are required only by selector-based operations, so
@@ -180,7 +175,6 @@ const XDTO_EDIT_REQUIRED: &[&str] = &["sourceSet", "metadataPath", "operations"]
 const JSON_PATH: &[&str] = &["JsonPath", "jsonPath"];
 const DEFINITION_FILE: &[&str] = &["DefinitionFile", "definitionFile"];
 const MODULE_PATH: &[&str] = &["ModulePath", "modulePath"];
-const PARENT_PATH: &[&str] = &["Parent", "parent"];
 
 const CF_PATH_GROUP: PathAliasGroup = path_alias_group("ConfigPath", CF_PATH);
 const OUTPUT_DIR_GROUP: PathAliasGroup = path_alias_group("OutputDir", OUTPUT_DIR);
@@ -200,7 +194,6 @@ const SUPPORT_PATH_GROUP: PathAliasGroup = path_alias_group("Path", SUPPORT_PATH
 const JSON_PATH_GROUP: PathAliasGroup = path_alias_group("JsonPath", JSON_PATH);
 const DEFINITION_FILE_GROUP: PathAliasGroup = path_alias_group("DefinitionFile", DEFINITION_FILE);
 const MODULE_PATH_GROUP: PathAliasGroup = path_alias_group("ModulePath", MODULE_PATH);
-const PARENT_PATH_GROUP: PathAliasGroup = path_alias_group("Parent", PARENT_PATH);
 
 const CF_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, DEFINITION_FILE_GROUP];
 const CF_READ_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP];
@@ -210,7 +203,6 @@ const CFE_TWO_ROOT_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, CF_P
 const CFE_INIT_PATH_GROUPS: &[PathAliasGroup] = &[CF_PATH_GROUP, CFE_INIT_OUTPUT_GROUP];
 const CFE_PATCH_METHOD_PATH_GROUPS: &[PathAliasGroup] = &[EXTENSION_PATH_GROUP, MODULE_PATH_GROUP];
 const CFE_VALIDATE_PATH_GROUPS: &[PathAliasGroup] = &[CFE_VALIDATE_PATH_GROUP];
-const COMPILE_TO_DIR_PATH_GROUPS: &[PathAliasGroup] = &[JSON_PATH_GROUP, OUTPUT_DIR_GROUP];
 const SRC_DIR_PATH_GROUPS: &[PathAliasGroup] = &[SRC_DIR_GROUP];
 const OBJECT_PATH_GROUPS: &[PathAliasGroup] = &[OBJECT_PATH_GROUP];
 const FORM_COMPILE_PATH_GROUPS: &[PathAliasGroup] =
@@ -219,8 +211,6 @@ const FORM_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[FORM_PATH_GROUP, JSON_PATH_GR
 const FORM_READ_PATH_GROUPS: &[PathAliasGroup] = &[FORM_PATH_GROUP];
 const INTERFACE_EDIT_PATH_GROUPS: &[PathAliasGroup] = &[CI_PATH_GROUP, DEFINITION_FILE_GROUP];
 const INTERFACE_READ_PATH_GROUPS: &[PathAliasGroup] = &[CI_PATH_GROUP];
-const SUBSYSTEM_COMPILE_PATH_GROUPS: &[PathAliasGroup] =
-    &[OUTPUT_DIR_GROUP, PARENT_PATH_GROUP, DEFINITION_FILE_GROUP];
 const SUBSYSTEM_EDIT_PATH_GROUPS: &[PathAliasGroup] =
     &[SUBSYSTEM_PATH_GROUP, DEFINITION_FILE_GROUP];
 const SUBSYSTEM_READ_PATH_GROUPS: &[PathAliasGroup] = &[SUBSYSTEM_PATH_GROUP];
@@ -229,7 +219,6 @@ const MXL_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, SRC_DIR_G
 /// `unica.mxl.info` requires `TemplatePath`, so the `SrcDir` half of the
 /// composite address it never reached is not published (#298).
 const MXL_INFO_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP];
-const COMPILE_TO_PATH_GROUPS: &[PathAliasGroup] = &[JSON_PATH_GROUP, OUTPUT_PATH_GROUP];
 const RIGHTS_READ_PATH_GROUPS: &[PathAliasGroup] = &[RIGHTS_PATH_GROUP];
 
 pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGroup] {
@@ -242,7 +231,6 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
         "cfe-init" => CFE_INIT_PATH_GROUPS,
         "cfe-patch-method" => CFE_PATCH_METHOD_PATH_GROUPS,
         "cfe-validate" => CFE_VALIDATE_PATH_GROUPS,
-        "role-compile" => COMPILE_TO_DIR_PATH_GROUPS,
         "form-remove" => SRC_DIR_PATH_GROUPS,
         "form-add" => OBJECT_PATH_GROUPS,
         "form-compile" => FORM_COMPILE_PATH_GROUPS,
@@ -250,13 +238,11 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
         "form-info" | "form-validate" => FORM_READ_PATH_GROUPS,
         "interface-edit" => INTERFACE_EDIT_PATH_GROUPS,
         "interface-validate" => INTERFACE_READ_PATH_GROUPS,
-        "subsystem-compile" => SUBSYSTEM_COMPILE_PATH_GROUPS,
         "subsystem-edit" => SUBSYSTEM_EDIT_PATH_GROUPS,
         "subsystem-info" | "subsystem-validate" => SUBSYSTEM_READ_PATH_GROUPS,
         "dcs-info" | "dcs-validate" => DCS_READ_PATH_GROUPS,
         "mxl-info" => MXL_INFO_PATH_GROUPS,
-        "mxl-decompile" | "mxl-validate" => MXL_READ_PATH_GROUPS,
-        "mxl-compile" => COMPILE_TO_PATH_GROUPS,
+        "mxl-validate" => MXL_READ_PATH_GROUPS,
         "role-info" | "role-validate" => RIGHTS_READ_PATH_GROUPS,
         _ => &[],
     }
@@ -454,16 +440,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         FormatPathPolicy::HandlerResolved,
         None,
     ),
-    descriptor(
-        "subsystem-compile",
-        SUBSYSTEM_COMPILE_REQUIRED,
-        SUBSYSTEM_COMPILE_WRITE,
-        SUBSYSTEM_COMPILE_WRITE,
-        Some(path_guard(
-            SUBSYSTEM_COMPILE_GUARD,
-            SupportGuardRequirement::Editable,
-        )),
-    ),
     descriptor_with_paths(
         "subsystem-edit",
         SUBSYSTEM_PATH_REQUIRED,
@@ -481,25 +457,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
     descriptor("dcs-info", EMPTY, EMPTY, TEMPLATE_PATH, None),
     descriptor_with_paths(
         "dcs-validate",
-        EMPTY,
-        EMPTY,
-        TEMPLATE_PATH,
-        FormatGuardPolicy::ExistingDump,
-        FormatPathPolicy::HandlerResolved,
-        None,
-    ),
-    descriptor_with_format(
-        "mxl-compile",
-        MXL_COMPILE_REQUIRED,
-        OUTPUT_PATH,
-        OUTPUT_PATH,
-        FormatGuardPolicy::ExistingDump,
-        Some(path_guard(OUTPUT_PATH, SupportGuardRequirement::Editable)),
-    ),
-    // A logical call carries no path, so the format
-    // dependency has to come from the handler's own resolution.
-    descriptor_with_paths(
-        "mxl-decompile",
         EMPTY,
         EMPTY,
         TEMPLATE_PATH,
@@ -526,13 +483,6 @@ pub(super) const NATIVE_OPERATION_DESCRIPTORS: &[OperationDescriptor] = &[
         FormatGuardPolicy::ExistingDump,
         FormatPathPolicy::HandlerResolved,
         None,
-    ),
-    descriptor(
-        "role-compile",
-        ROLE_COMPILE_REQUIRED,
-        OUTPUT_DIR,
-        OUTPUT_DIR,
-        Some(path_guard(OUTPUT_DIR, SupportGuardRequirement::Editable)),
     ),
     descriptor_with_paths(
         "role-edit",
