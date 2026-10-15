@@ -8705,10 +8705,11 @@ fn canonical_subsystem_check_validates_the_child_and_rejects_wrong_identity() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn canonical_subsystem_check_refuses_linked_dependencies() {
-    use std::os::unix::fs::symlink;
+    use crate::infrastructure::platform::testing::{
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
+    };
     for dependency in [
         "Orders.xml",
         "Orders/Ext/CommandInterface.xml",
@@ -8735,7 +8736,11 @@ fn canonical_subsystem_check_refuses_linked_dependencies() {
         }
         let foreign = fixture.source.join("foreign.xml");
         fs::write(&foreign, "<CommandInterface version=\"2.20\"/>").unwrap();
-        symlink(&foreign, &path).unwrap();
+        let outcome = create_file_link_fixture_for_test(&foreign, &path).unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            eprintln!("[SKIPPED FIXTURE] file-link fixture unavailable: {outcome:?}");
+            return;
+        }
         let address = QualifiedAddress::parse("main:Subsystem.Sales.Subsystem.Orders").unwrap();
         assert_eq!(
             fixture
