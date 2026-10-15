@@ -1431,6 +1431,14 @@ pub(crate) struct WorkspaceActor<R = ()> {
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
     saved_apply_plans: Mutex<SavedApplyPlans>,
+    /// Parsed root artifacts of each admitted source set, retained across
+    /// calls and revalidated by file stamp on every use.
+    source_artifacts: Mutex<
+        HashMap<
+            WorkspaceSourceSetIdentity,
+            Arc<crate::infrastructure::v13_large_configuration::RegistrationCache>,
+        >,
+    >,
     index_work: SharedWork<(), LongWorkFailure>,
     runtime: R,
 }
@@ -1537,6 +1545,7 @@ impl<R> WorkspaceActor<R> {
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             saved_apply_plans: Mutex::new(SavedApplyPlans::default()),
+            source_artifacts: Mutex::new(HashMap::new()),
             index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
             runtime,
         })
@@ -2214,6 +2223,22 @@ impl<R> WorkspaceActor<R> {
     #[cfg(test)]
     pub(crate) fn hold_mutation_lane_for_test(&self) -> MutexGuard<'_, ()> {
         self.mutation_lane.hold_for_test()
+    }
+
+    /// The root-artifact cache this actor retains for one bound source set.
+    pub(crate) fn source_artifacts(
+        &self,
+        binding: &ProviderRootBinding,
+    ) -> Result<Arc<crate::infrastructure::v13_large_configuration::RegistrationCache>, String>
+    {
+        self.validate_binding(binding)?;
+        let mut artifacts = self
+            .source_artifacts
+            .lock()
+            .map_err(|_| "workspace actor source-artifact cache is poisoned".to_string())?;
+        Ok(Arc::clone(
+            artifacts.entry(binding.source_set.clone()).or_default(),
+        ))
     }
 
     pub(crate) fn index_service<'a>(

@@ -14,15 +14,13 @@ use crate::domain::invocation::{DomainResult, InvocationFailure, SafeIdentityHas
 use crate::domain::project_sources::{
     ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind,
 };
-use crate::domain::refusal::{RefusalCode, RefusalDetail};
+use crate::domain::refusal::RefusalCode;
 use crate::infrastructure::logical_event_source::module_address_for_relative;
 use crate::infrastructure::platform::filesystem::RetainedDirectoryCapability;
 use crate::infrastructure::runtime_jobs::{RuntimeJobService, RuntimeResourceOwner};
 use crate::infrastructure::source_selection_evidence::discover_project_source_admission;
 use crate::infrastructure::source_selection_evidence::SourceSelectionEvidenceErrorKind;
-use crate::infrastructure::v13_large_configuration::{
-    read_configuration_registration_index, RegistrationCache, RegistrationIndex,
-};
+use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use crate::infrastructure::workspace::discover_workspace;
 use crate::infrastructure::workspace_actor::{
     ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding, WorkspaceActor,
@@ -78,8 +76,6 @@ impl LiteralSearchScan {
 struct SearchHitOwners<'a> {
     root: &'a RetainedDirectoryCapability,
     source_kind: SourceSetKind,
-    identity: &'a str,
-    revision: &'a str,
     cache: &'a RegistrationCache,
     index: Option<Option<Arc<RegistrationIndex>>>,
     owners: std::collections::BTreeMap<(&'static str, String), bool>,
@@ -89,15 +85,11 @@ impl<'a> SearchHitOwners<'a> {
     fn new(
         root: &'a RetainedDirectoryCapability,
         source_kind: SourceSetKind,
-        identity: &'a str,
-        revision: &'a str,
         cache: &'a RegistrationCache,
     ) -> Self {
         Self {
             root,
             source_kind,
-            identity,
-            revision,
             cache,
             index: None,
             owners: std::collections::BTreeMap::new(),
@@ -138,22 +130,7 @@ impl<'a> SearchHitOwners<'a> {
         checkpoint()?;
         let proved = if configuration {
             if self.index.is_none() {
-                let root = self.root;
-                let built =
-                    self.cache
-                        .get_or_build(self.identity, self.revision, checkpoint, || {
-                            let file = root
-                                .open_relative_regular_nofollow(std::path::Path::new(
-                                    "Configuration.xml",
-                                ))
-                                .map_err(|error| {
-                                    ViewError::detailed(
-                                        RefusalDetail::SourceUnreadable,
-                                        error.to_string(),
-                                    )
-                                })?;
-                            read_configuration_registration_index(file, checkpoint)
-                        });
+                let built = self.cache.registrations(self.root, checkpoint);
                 self.index = Some(match built {
                     Ok(index) => Some(index),
                     Err(error) if interrupted(&error) => return Err(error),
@@ -374,13 +351,8 @@ impl ActorReadSourceCapability {
                 Ok(())
             }
         };
-        let mut owners = SearchHitOwners::new(
-            &root,
-            self.binding.source_kind(),
-            &self.identity,
-            &self.read_identity,
-            &self.registration_cache,
-        );
+        let mut owners =
+            SearchHitOwners::new(&root, self.binding.source_kind(), &self.registration_cache);
         let mut stack = vec![(start_relative, start_directory, 0_usize)];
         let mut visited_entries = 0_usize;
         let mut scan = LiteralSearchScan::complete();
@@ -860,12 +832,14 @@ impl ActorBoundInvocation {
                 }
                 let sources = selected
                     .into_iter()
-                    .map(|source| ActorLogicalReadSourceLease {
-                        binding: source.binding.clone(),
-                        read_identity: uuid::Uuid::new_v4().to_string(),
-                        registration_cache: Arc::new(RegistrationCache::default()),
+                    .map(|source| {
+                        Ok(ActorLogicalReadSourceLease {
+                            binding: source.binding.clone(),
+                            read_identity: uuid::Uuid::new_v4().to_string(),
+                            registration_cache: self.actor.source_artifacts(&source.binding)?,
+                        })
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, String>>()?;
                 ActorExecutionRevision::LogicalRead(ActorLogicalReadLease {
                     deadline: logical_deadline,
                     sources,
@@ -1182,10 +1156,7 @@ impl ActorBoundExecution {
                         || uuid::Uuid::new_v4().to_string(),
                         |parent| parent.read_identity.clone(),
                     ),
-                    registration_cache: existing.map_or_else(
-                        || Arc::new(RegistrationCache::default()),
-                        |parent| Arc::clone(&parent.registration_cache),
-                    ),
+                    registration_cache: self.invocation.actor.source_artifacts(&source.binding)?,
                 });
             }
         }
@@ -1951,31 +1922,35 @@ mod registration_cache_tests {
     use super::*;
     use crate::application::invocation_store::ToolIdentity;
     use crate::application::ports::TokioClock;
-    use crate::infrastructure::v13_large_configuration::{
-        read_configuration_registration_index, RegistrationIndex,
-    };
-    use std::cell::Cell;
-    use std::path::Path;
+    use crate::application::result_store::ViewCursorStore;
+    use crate::application::v13::view::{ViewRequest, ViewService};
+    use crate::infrastructure::v13_large_configuration::RegistrationIndex;
 
-    fn registrations(
-        source: &ActorReadSourceCapability,
-        path: &Path,
-        builds: &Cell<usize>,
-    ) -> Arc<RegistrationIndex> {
+    fn registrations(source: &ActorReadSourceCapability) -> Arc<RegistrationIndex> {
         source
             .registration_cache
-            .get_or_build(&source.identity, &source.read_identity, &|| Ok(()), || {
-                builds.set(builds.get() + 1);
-                read_configuration_registration_index(
-                    std::fs::File::open(path).unwrap(),
-                    &|| Ok(()),
-                )
-            })
+            .registrations(&source.retained_root(), &|| Ok(()))
             .unwrap()
     }
 
+    /// Parses of `Configuration.xml` and of the support marker one
+    /// `view <set>:Configuration` performs through a fresh capability.
+    fn root_view_parses(source: &ActorReadSourceCapability) -> (bool, usize, usize) {
+        let cancellation = CancellationToken::new();
+        let authority = source.logical_view_read_authority(&cancellation).unwrap();
+        let service = ViewService::new(authority, ViewCursorStore::default());
+        let at = format!("{}:Configuration", source.source_set_name());
+        let result = service.view(ViewRequest::new(&at).unwrap());
+        let authority = service.authority_for_test();
+        (
+            result.ok,
+            authority.configuration_payload_read_count(),
+            authority.support_state_read_count(),
+        )
+    }
+
     #[test]
-    fn logical_read_reuses_registration_cache_and_isolates_sources_and_invocations() {
+    fn logical_read_retains_root_artifacts_across_calls_and_isolates_sources() {
         let workspace = tempfile::tempdir().unwrap();
         let xml = |name: &str| {
             format!(
@@ -2014,21 +1989,16 @@ mod registration_cache_tests {
             )
             .unwrap()
         };
+        // Let the stamps leave the timestamp-granularity window, as files
+        // of a real workspace have, so the actor may retain what it parsed.
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
         let cancellation = CancellationToken::new();
         let execution = bind().begin_execution(&cancellation).unwrap();
         let first = execution.read_sources().unwrap().remove(0);
-        let again = execution.read_sources().unwrap().remove(0);
-        assert!(
-            Arc::ptr_eq(&first.registration_cache, &again.registration_cache),
-            "reacquiring capabilities must retain the source lease's registration index"
-        );
-        let builds = Cell::new(0);
-        let path = workspace.path().join("ext/Configuration.xml");
-        let index = registrations(&first, &path, &builds);
-        let reused = registrations(&again, &path, &builds);
-        assert!(Arc::ptr_eq(&index, &reused));
-        assert_eq!(builds.get(), 1, "one lease parses Configuration.xml once");
+        let index = registrations(&first);
+        assert_eq!(root_view_parses(&first), (true, 1, 0));
 
+        // Sources stay isolated: the parent set has its own retained artifacts.
         execution
             .admit_borrowing_parent_sources(&cancellation)
             .unwrap();
@@ -2042,33 +2012,57 @@ mod registration_cache_tests {
             &first.registration_cache,
             &parent.registration_cache
         ));
-        execution
-            .admit_borrowing_parent_sources(&cancellation)
-            .unwrap();
-        let parent_again = execution
+
+        // A later call reuses what the actor retained while no file changed.
+        let next = bind()
+            .begin_execution(&cancellation)
+            .unwrap()
             .read_sources()
             .unwrap()
-            .into_iter()
-            .find(|source| source.source_set_name() == "parent")
-            .unwrap();
-        assert!(
-            Arc::ptr_eq(&parent.registration_cache, &parent_again.registration_cache),
-            "repeated parent admission must preserve its existing read lease"
-        );
-        assert_eq!(parent.read_identity, parent_again.read_identity);
-
-        std::fs::write(&path, xml("Later")).unwrap();
-        let next_execution = bind().begin_execution(&cancellation).unwrap();
-        let next = next_execution.read_sources().unwrap().remove(0);
-        assert!(!Arc::ptr_eq(
+            .remove(0);
+        assert!(Arc::ptr_eq(
             &first.registration_cache,
             &next.registration_cache
         ));
         assert_ne!(first.read_identity, next.read_identity);
-        let fresh = registrations(&next, &path, &builds);
-        assert_eq!(builds.get(), 2);
+        assert!(Arc::ptr_eq(&index, &registrations(&next)));
+        assert_eq!(first.registration_cache.registration_builds_for_test(), 1);
+        assert_eq!(root_view_parses(&next), (true, 0, 0));
+
+        // A changed support marker is read again by the next call.
+        let marker = workspace.path().join("ext/Ext/ParentConfigurations.bin");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+                "../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+            ),
+            &marker,
+        )
+        .unwrap();
+        // Let the stamps leave the timestamp-granularity window, as files
+        // of a real workspace have, so the actor may retain what it parsed.
+        std::thread::sleep(std::time::Duration::from_millis(2_100));
+        let after_marker = bind()
+            .begin_execution(&cancellation)
+            .unwrap()
+            .read_sources()
+            .unwrap()
+            .remove(0);
+        assert_eq!(root_view_parses(&after_marker), (true, 1, 1));
+
+        // A changed Configuration.xml is never served from the old index.
+        std::fs::write(workspace.path().join("ext/Configuration.xml"), xml("Later")).unwrap();
+        let after_edit = bind()
+            .begin_execution(&cancellation)
+            .unwrap()
+            .read_sources()
+            .unwrap()
+            .remove(0);
+        let fresh = registrations(&after_edit);
+        assert_eq!(first.registration_cache.registration_builds_for_test(), 2);
         assert!(fresh.contains("Catalog", "Later", &|| Ok(())).unwrap());
         assert!(!fresh.contains("Catalog", "First", &|| Ok(())).unwrap());
+        assert_eq!(root_view_parses(&after_edit), (true, 1, 0));
     }
 }
 
