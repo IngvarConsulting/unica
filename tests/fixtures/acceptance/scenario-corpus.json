@@ -4238,8 +4238,7 @@
           {
            "name": "ТаблицаКурсов",
            "type": "Table",
-           "path": "List",
-           "title": "Курсы"
+           "path": "List"
           }
          ]
         }
@@ -33489,7 +33488,7 @@
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
       }
      ],
      "fileAssertions": [
@@ -38933,7 +38932,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar"
+       "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar.Can.element.add"
       },
       {
        "pointer": "/next/1/args/at",
@@ -39048,7 +39047,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.StartChoice"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.StartChoice.Can.event.bind"
       },
       {
        "pointer": "/next/1/args/at",
@@ -39178,7 +39177,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.element.remove"
       }
      ],
      "fileAssertions": [
@@ -39580,7 +39579,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument",
+     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument; `formCommand.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.formCommand.add`",
      "assertions": [
       {
        "pointer": "/at",
@@ -39976,6 +39975,447 @@
   },
   {
    "id": "S434",
+   "name": "form-element-add-refuses-a-key-its-kind-does-not-write",
+   "issue": 1447,
+   "area": "Формы",
+   "task": "Подробный контракт element.add публикует ключи по виду элемента; backColor у поля ввода, которого писатель поля не пишет, отказывает bad_value по точному пути без записи, а тот же элемент без него строит предпросмотр",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/contract/argsSchema/properties/items/items/x-unica-discriminator",
+       "eq": "type"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "type": "InputField",
+           "path": "Объект.Наименование",
+           "backColor": "web:Red"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: ops[0].args.items[0].backColor: unknown argument; `element.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].backColor"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "type": "InputField",
+           "path": "Объект.Наименование"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S435",
+   "name": "form-element-add-adds-one-element-without-nested-content",
+   "issue": 1447,
+   "area": "Формы",
+   "task": "element.add добавляет один элемент: вложенные children и событие on отказывают bad_value без записи, next ведёт к контракту element.add; группа и поле в ней добавляются двумя операциями, обработчик — event.bind на адресе события",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ГруппаКомментарий",
+           "type": "Group",
+           "children": [
+            {
+             "name": "ПолеКомментарий",
+             "type": "InputField",
+             "path": "Объект.Наименование"
+            }
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: element.add adds one element without nested content; drop `children` and add each nested element with a separate element.add at `main:Catalog.Валюты.Form.ФормаЭ",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].children"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+      },
+      {
+       "pointer": "/summary",
+       "contains": "`main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий`"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "type": "InputField",
+           "path": "Объект.Наименование",
+           "on": [
+            "OnChange"
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: element.add does not bind events; drop `on` and bind each handler with event.bind at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].on"
+      },
+      {
+       "pointer": "/summary",
+       "contains": "`main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>`"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ГруппаКомментарий",
+           "type": "Group"
+          }
+         ]
+        }
+       },
+       {
+        "op": "element.add",
+        "args": {
+         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий",
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "type": "InputField",
+           "path": "Объект.Наименование"
+          }
+         ]
+        }
+       },
+       {
+        "op": "event.bind",
+        "args": {
+         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий.Item.ПолеКомментарий.Event.OnChange",
+         "values": {
+          "handler": "ПолеКомментарийПриИзменении"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "captures": {
+      "groupToken": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.groupToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/xcf/logform}UsualGroup[@name='ГруппаКомментарий']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='ПолеКомментарий']/{http://v8.1c.ru/8.3/xcf/logform}Events/{http://v8.1c.ru/8.3/xcf/logform}Event[@name='OnChange']",
+       "eq": [
+        "ПолеКомментарийПриИзменении"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S436",
+   "name": "form-attribute-add-refuses-unwritten-properties-and-writes-fill-check",
+   "issue": 1447,
+   "area": "Формы",
+   "task": "formAttribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formAttribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Комментарий",
+           "type": "String",
+           "functionalOptions": [
+            "FunctionalOption.Валюты"
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `formAttribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.fo",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].functionalOptions"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.formAttribute.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formAttribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Комментарий",
+           "type": "String",
+           "fillChecking": "ShowError"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "captures": {
+      "attributeToken": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.attributeToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name='Комментарий']/{http://v8.1c.ru/8.3/xcf/logform}FillCheck",
+       "eq": [
+        "ShowError"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/xcf/logform}FillChecking",
+       "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S437",
    "name": "method-body-text-round-trips-through-code-replace",
    "issue": 1458,
    "area": "Код BSL",
