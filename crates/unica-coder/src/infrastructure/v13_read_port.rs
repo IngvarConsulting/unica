@@ -2,6 +2,7 @@ use crate::application::ports::{MetaLocalInfo, MetadataChildProfile};
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use crate::application::v13::view::ViewError;
 use crate::domain::address::NodeKind;
+use crate::domain::address::QualifiedAddress;
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
 use crate::domain::metadata::{MetaPredefinedItemsData, MetaSupportStatus, MetadataKind};
@@ -1119,6 +1120,101 @@ impl ProviderReadAuthority {
                 })?;
         }
         Ok((relative, descriptor))
+    }
+
+    /// Check the selected descriptor and its direct dependencies under the same
+    /// retained root used by view; legacy metadata paths cannot name this chain.
+    pub(crate) fn validate_subsystem(
+        &self,
+        address: &QualifiedAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
+        use crate::infrastructure::native_operations::subsystem::{
+            subsystem_validation_outcome, validate_subsystem_content, SubsystemInfoFormatDocument,
+        };
+        let route = crate::infrastructure::logical_tree::route_logical_address(
+            address,
+            crate::domain::platform_profile::PlatformProfile::v8_3_27(),
+        )
+        .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
+        let target = route.reader_metadata_path().ok_or_else(|| {
+            ViewError::new(RefusalCode::BadValue, "subsystem check has no descriptor")
+        })?;
+        let (relative, bytes) =
+            self.registered_subsystem_descriptor(target, route.nested_subsystems(), checkpoint)?;
+        let text = std::str::from_utf8(&bytes).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        let (data, _) = parse_subsystem_info_xml(&relative, text, false)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let expected = address
+            .segments()
+            .last()
+            .and_then(|segment| segment.name())
+            .unwrap_or_default();
+        if data.name != expected {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                format!(
+                    "subsystem descriptor names `{}` instead of `{expected}`",
+                    data.name
+                ),
+            ));
+        }
+        let ci_relative = nested_subsystem_resource(&relative, "CommandInterface.xml");
+        let ci = self.read_optional_relative_with_checkpoint(&ci_relative, None, checkpoint)?;
+        let mut documents = vec![SubsystemInfoFormatDocument {
+            path: self.root_path().join(&relative),
+            bytes: bytes.clone(),
+        }];
+        if let Some(bytes) = &ci {
+            documents.push(SubsystemInfoFormatDocument {
+                path: self.root_path().join(&ci_relative),
+                bytes: bytes.clone(),
+            });
+        }
+        let guard = crate::infrastructure::format_guard::evaluate_prepared_subsystem_validation_format_guard(&documents);
+        let mut source_error = None;
+        let result = validate_subsystem_content(
+            text,
+            relative,
+            false,
+            |path| {
+                let result = (|| {
+                    checkpoint()?;
+                    match self.root.open_relative_regular_nofollow(path) {
+                        Ok(_) => Ok(true),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                        Err(error) => Err(ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            error.to_string(),
+                        )),
+                    }
+                })();
+                result.map_err(|error| {
+                    let message = error.to_string();
+                    source_error = Some(error);
+                    message
+                })
+            },
+            |_| {
+                ci.as_ref()
+                    .map(|bytes| {
+                        String::from_utf8(bytes.clone()).map_err(|error| error.to_string())
+                    })
+                    .transpose()
+            },
+        );
+        if let Some(error) = source_error {
+            return Err(error);
+        }
+        checkpoint()?;
+        Ok(
+            crate::infrastructure::native_operations::v13_analysis::subsystem_validation_outcome(
+                guard,
+                subsystem_validation_outcome(result),
+            ),
+        )
     }
 
     pub(crate) fn nested_subsystem_export_path(
