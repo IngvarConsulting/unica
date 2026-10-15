@@ -1137,6 +1137,18 @@ pub(super) fn canonical_meta_event_sources(sources: &[MetaEventSource]) -> Vec<M
     canonical
 }
 
+fn xml_node_range_with_preceding_whitespace(
+    node: roxmltree::Node<'_, '_>,
+) -> std::ops::Range<usize> {
+    let mut range = node.range();
+    if let Some(whitespace) = node.prev_sibling().filter(|sibling| {
+        sibling.is_text() && sibling.text().is_some_and(|text| text.trim().is_empty())
+    }) {
+        range.start = whitespace.range().start;
+    }
+    range
+}
+
 /// Add/remove only logical member nodes. Existing members, namespace bindings
 /// and opaque TypeIds keep their bytes and relative positions.
 pub(super) fn edit_meta_event_subscription_members(
@@ -1163,18 +1175,9 @@ pub(super) fn edit_meta_event_subscription_members(
     let mut edits = Vec::new();
     match mode {
         RelationEditMode::Remove => {
-            if !observed
-                .sources
-                .iter()
-                .any(|s| !requested_keys.contains(&s.identity_key()))
-            {
-                return Err(
-                    "EventSubscription Source must retain at least one logical event source".into(),
-                );
-            }
             for (node, member) in logical_nodes.iter().zip(&observed.sources) {
                 if requested_keys.contains(&member.identity_key()) {
-                    let span = node.range();
+                    let span = xml_node_range_with_preceding_whitespace(*node);
                     edits.push((
                         span.start - range.start..span.end - range.start,
                         String::new(),
@@ -1955,6 +1958,22 @@ mod tests {
         format!(
             r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:v8="{DATA_CORE_NS}" xmlns:cfg="{CURRENT_CONFIG_NS}" xmlns:xs="{XML_SCHEMA_NS}" version="2.20"><EventSubscription><Properties><Name>Events</Name>{source}</Properties><ChildObjects/></EventSubscription></MetaDataObject>"#
         )
+    }
+
+    #[test]
+    fn event_source_removal_range_includes_whitespace_before_self_closing_last_element() {
+        let xml = "<Source>\r\n\t<Keep/>\r\n\t<Remove/>\r\n</Source>";
+        let document = roxmltree::Document::parse(xml).unwrap();
+        let removed = document
+            .root_element()
+            .children()
+            .find(|node| node.has_tag_name("Remove"))
+            .unwrap();
+        let mut result = xml.to_string();
+
+        result.replace_range(xml_node_range_with_preceding_whitespace(removed), "");
+
+        assert_eq!(result, "<Source>\r\n\t<Keep/>\r\n</Source>");
     }
 
     #[test]

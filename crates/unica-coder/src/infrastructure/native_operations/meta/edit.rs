@@ -3829,8 +3829,55 @@ where
             after,
         });
     }
+    validate_typed_event_source_final_state(&working, operations)?;
     *xml_text = working;
     Ok(counts)
+}
+
+fn validate_typed_event_source_final_state(
+    xml: &str,
+    operations: &[MetaEditOperation],
+) -> Result<(), MetaFailure> {
+    if !operations.iter().any(|operation| {
+        matches!(
+            operation,
+            MetaEditOperation::EditRelations {
+                relation: MetaRelation::Source,
+                ..
+            }
+        )
+    }) {
+        return Ok(());
+    }
+    let document = Document::parse(xml.trim_start_matches('\u{feff}')).map_err(|_| {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "EventSubscription post-image is not valid XML",
+            Some("relations.source"),
+        ))
+    })?;
+    let source = meta_event_subscription_source_node(&document).map_err(|message| {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            message,
+            Some("relations.source"),
+        ))
+    })?;
+    let observed = parse_meta_event_subscription_source(source).map_err(|message| {
+        MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            message,
+            Some("relations.source"),
+        ))
+    })?;
+    if observed.sources.is_empty() {
+        return Err(MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "EventSubscription Source must retain at least one logical event source",
+            Some("relations.source"),
+        )));
+    }
+    Ok(())
 }
 
 fn typed_operation_name(operation: &MetaEditOperation) -> &'static str {
@@ -7847,7 +7894,7 @@ pub(crate) mod tests {
             &[source_edit(RelationEditMode::Remove, &["Catalog.ПримерА"])],
         )
         .unwrap();
-        assert_eq!(xml, after.replace(second, ""));
+        assert_eq!(xml, after.replace(&format!("  {second}"), ""));
         let removed = xml.clone();
         apply_typed_operations(
             &mut xml,
@@ -7976,6 +8023,26 @@ pub(crate) mod tests {
                 apply_typed_operations(&mut xml, &[source_edit(mode, &["Catalog.Items"])]).is_err()
             );
             assert_eq!(xml, before);
+        }
+
+        for operations in [
+            [
+                source_edit(RelationEditMode::Remove, &["Catalog.Items"]),
+                source_edit(RelationEditMode::Add, &["Catalog.Replacement"]),
+            ],
+            [
+                source_edit(RelationEditMode::Add, &["Catalog.Replacement"]),
+                source_edit(RelationEditMode::Remove, &["Catalog.Items"]),
+            ],
+        ] {
+            let mut xml = event_subscription_xml(
+                "<Source><v8:Type>cfg:CatalogObject.Items</v8:Type></Source>",
+            );
+
+            apply_typed_operations(&mut xml, &operations).unwrap();
+
+            assert!(!xml.contains("CatalogObject.Items"), "{xml}");
+            assert!(xml.contains("CatalogObject.Replacement"), "{xml}");
         }
     }
 

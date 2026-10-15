@@ -252,7 +252,9 @@
 			<Language>Русский</Language>
 			<CommonModule>EventHandlers</CommonModule>
 			<EventSubscription>CorpusEventSubscription</EventSubscription>
-			<Catalog>ПримерВ</Catalog><Catalog>ПримерА</Catalog><Catalog>ПримерБ</Catalog>
+			<Catalog>ПримерВ</Catalog>
+			<Catalog>ПримерА</Catalog>
+			<Catalog>ПримерБ</Catalog>
 		</ChildObjects>
 	</Configuration>
 </MetaDataObject>

@@ -8,6 +8,7 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_edits_keep_aliases_type_ids_and_distinct_manager_classes
   - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_add_declares_namespaces_and_preserves_bom_eol
   - crates/unica-coder/src/infrastructure/native_operations/meta/edit.rs::typed_event_source_incremental_edits_refuse_invalid_and_empty_results_without_writes
+  - crates/unica-coder/src/infrastructure/native_operations/meta/xml_model.rs::event_source_removal_range_includes_whitespace_before_self_closing_last_element
 ---
 
 # Источник подписки задаётся логическим типом, а не произвольным XML
@@ -33,6 +34,7 @@ check:
 при изменении состава.
 
 Точечная правка требует читаемого состава в логическом наборе источников.
-Повреждённый или неподдержанный состав и удаление последнего логического
-источника отклоняются до записи; сохранённые `TypeId` не заменяют логическую
-цель своего набора исходников.
+Повреждённый или неподдержанный состав отклоняется до записи. После всех
+операций одного вызова должен остаться хотя бы один логический источник;
+промежуточное пустое состояние допустимо и наружу не публикуется. Сохранённые
+`TypeId` не заменяют логическую цель своего набора исходников.
