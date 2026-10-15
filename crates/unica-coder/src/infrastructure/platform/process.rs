@@ -431,6 +431,37 @@ impl RuntimeProcessTreeTestProbe {
             runtime_process_pid_alive_for_test(self.process_id)
         }
     }
+
+    /// Whether the observed process has finished exiting, allowing `settle`
+    /// for the lag of its own handle on Windows. A Job Object stops counting
+    /// a member as active while that member is still exiting; its process
+    /// object is signaled only at the end of teardown. An empty Job is the
+    /// product's proof of tree death, and this probe trails it by that
+    /// teardown. On Unix the probe stays immediate.
+    pub(crate) fn exited_within(&self, settle: Duration) -> io::Result<bool> {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+            let millis = u32::try_from(settle.as_millis()).unwrap_or(u32::MAX - 1);
+            // SAFETY: the probe retains the exact handle captured before cancellation.
+            match unsafe { WaitForSingleObject(self.process.0, millis) } {
+                WAIT_OBJECT_0 => Ok(true),
+                WAIT_TIMEOUT => Ok(false),
+                WAIT_FAILED => Err(io::Error::last_os_error()),
+                state => Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unexpected runtime process wait state: {state}"),
+                )),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = settle;
+            runtime_process_pid_alive_for_test(self.process_id).map(|alive| !alive)
+        }
+    }
 }
 
 #[cfg(test)]
