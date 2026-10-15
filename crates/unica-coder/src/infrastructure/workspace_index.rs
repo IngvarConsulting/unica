@@ -10,14 +10,10 @@ use crate::infrastructure::platform::{
 };
 use crate::infrastructure::plugin_runtime::find_plugin_root;
 use crate::infrastructure::rlm_generation_collection::spawn_stale_rlm_generation_collection;
-#[cfg(test)]
-use crate::infrastructure::source_roots::source_generation;
 use crate::infrastructure::source_roots::{normalize_path_identity, resolve_source_root};
 use crate::infrastructure::workspace_state_scope::WorkspaceStateScope;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::cell::RefCell;
@@ -30,6 +26,32 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(test)]
+type IsolatedBuildStartObserver = Box<dyn Fn(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static ISOLATED_BUILD_START_OBSERVER: RefCell<Option<IsolatedBuildStartObserver>> = RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_isolated_build_start_observer_for_test(
+    observer: Option<IsolatedBuildStartObserver>,
+) {
+    ISOLATED_BUILD_START_OBSERVER.with(|slot| {
+        *slot.borrow_mut() = observer;
+    });
+}
+
+#[cfg(test)]
+fn observe_isolated_build_start(source_root: &Path) {
+    ISOLATED_BUILD_START_OBSERVER.with(|slot| {
+        if let Some(observer) = slot.borrow().as_ref() {
+            observer(source_root);
+        }
+    });
+}
+
 const INDEX_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_STALE_AFTER: Duration = Duration::from_secs(10 * 60);
 const LOCK_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -40,8 +62,6 @@ const RLM_PYTHON_UTF8: &str = "1";
 const RLM_PYTHON_IO_ENCODING: &str = "utf-8:surrogateescape";
 const STATUS_FILE_NAME: &str = "bsl_index_status.json";
 const LOCK_FILE_NAME: &str = "bsl_index.lock";
-#[cfg(test)]
-pub(crate) const SOURCE_GENERATION_STALE_STATUS: &str = "stale (source generation)";
 
 pub(crate) fn rlm_provider_state_root(
     context: &WorkspaceContext,
@@ -228,19 +248,6 @@ pub enum IndexReadiness {
     Unavailable(String),
 }
 
-impl IndexReadiness {
-    pub fn stale_status(&self) -> Option<&str> {
-        match self {
-            Self::Stale { status } => Some(status),
-            _ => None,
-        }
-    }
-
-    fn is_stale_content(&self) -> bool {
-        self.stale_status() == Some("stale (content)")
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct IndexStartReport {
     pub warnings: Vec<String>,
@@ -254,9 +261,6 @@ pub struct BslIndexStatus {
     pub message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_class: Option<BslIndexFailureClass>,
-    #[cfg(test)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -331,12 +335,9 @@ pub struct IndexBackgroundJob {
     pub action: String,
     pub context: WorkspaceContext,
     pub source_root: PathBuf,
-    #[cfg(test)]
-    pub source_generation: u64,
     pub(crate) root_capability: Option<Arc<RetainedDirectoryCapability>>,
     pub primary: IndexCommand,
     pub info: IndexCommand,
-    pub recovery_build: Option<IndexCommand>,
     pub status_path: PathBuf,
     #[cfg(test)]
     pub lock_path: PathBuf,
@@ -348,10 +349,7 @@ struct IndexStartSpec {
     source_root: PathBuf,
     primary: IndexCommand,
     info: IndexCommand,
-    recovery_build: Option<IndexCommand>,
     warning: &'static str,
-    #[cfg(test)]
-    source_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,9 +372,6 @@ struct BslIndexLock {
 }
 
 pub trait IndexRunner {
-    #[cfg(test)]
-    fn run(&self, command: &IndexCommand) -> Result<IndexOutput, String>;
-
     fn start_background(&self, job: IndexBackgroundJob) -> Result<(), String>;
 }
 
@@ -402,14 +397,6 @@ pub struct WorkspaceIndexService<'a> {
     runner: &'a dyn IndexRunner,
     bound_source_root: Option<Arc<RetainedDirectoryCapability>>,
     state_scope: WorkspaceStateScope,
-    /// Memoises the source-generation walk for the lifetime of one service
-    /// instance. Walking a vendor-class configuration costs hundreds of
-    /// milliseconds, and `handle_rlm_ready` asks this service to start indexing
-    /// and then immediately asks it for readiness — two decisions about the
-    /// same sources. Instances are built per request, so a memoised value never
-    /// outlives the decision it was taken for.
-    #[cfg(test)]
-    generation: RefCell<Option<(PathBuf, u64)>>,
 }
 
 impl<'a> WorkspaceIndexService<'a> {
@@ -437,6 +424,8 @@ impl<'a> WorkspaceIndexService<'a> {
         source_root: &Path,
         cancellation: &CancellationToken,
     ) -> IndexStartReport {
+        #[cfg(test)]
+        observe_isolated_build_start(source_root);
         if cancellation.is_cancelled() {
             return unavailable_start_report(cancelled_error("rlm index build stopped"));
         }
@@ -475,10 +464,7 @@ impl<'a> WorkspaceIndexService<'a> {
                 source_root: source_root.to_path_buf(),
                 primary: commands.build,
                 info: commands.info,
-                recovery_build: None,
                 warning: "rlm index build started",
-                #[cfg(test)]
-                source_generation: 0,
             },
         )
     }
@@ -488,8 +474,6 @@ impl<'a> WorkspaceIndexService<'a> {
             runner: &SYSTEM_INDEX_RUNNER,
             bound_source_root: None,
             state_scope: WorkspaceStateScope::LegacyPhysical,
-            #[cfg(test)]
-            generation: RefCell::new(None),
         }
     }
 
@@ -498,8 +482,6 @@ impl<'a> WorkspaceIndexService<'a> {
             runner,
             bound_source_root: None,
             state_scope: WorkspaceStateScope::LegacyPhysical,
-            #[cfg(test)]
-            generation: RefCell::new(None),
         }
     }
 
@@ -516,273 +498,6 @@ impl<'a> WorkspaceIndexService<'a> {
         self
     }
 
-    #[cfg(test)]
-    fn source_generation(&self, source_root: &Path) -> u64 {
-        let mut memo = self.generation.borrow_mut();
-        if let Some((memoised_root, generation)) = memo.as_ref() {
-            if memoised_root == source_root {
-                return *generation;
-            }
-        }
-        let generation = source_generation(source_root);
-        *memo = Some((source_root.to_path_buf(), generation));
-        generation
-    }
-
-    #[cfg(test)]
-    pub fn start_for_workspace(
-        &self,
-        context: &WorkspaceContext,
-        args: &Map<String, Value>,
-        dry_run: bool,
-    ) -> IndexStartReport {
-        self.start_for_workspace_cancellable(context, args, dry_run, &CancellationToken::new())
-    }
-
-    #[cfg(test)]
-    pub fn start_for_workspace_cancellable(
-        &self,
-        context: &WorkspaceContext,
-        args: &Map<String, Value>,
-        dry_run: bool,
-        cancellation: &CancellationToken,
-    ) -> IndexStartReport {
-        if dry_run {
-            return IndexStartReport::default();
-        }
-        if cancellation.is_cancelled() {
-            return IndexStartReport {
-                warnings: vec![cancelled_error("rlm index operation stopped before work")],
-            };
-        }
-
-        let source_root =
-            match resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str)) {
-                Ok(resolved) => resolved.path,
-                Err(_) => return IndexStartReport::default(),
-            };
-        if let Err(error) = self.validate_bound_source_root(&source_root) {
-            return unavailable_start_report(error);
-        }
-        let state_context = match self.state_context(context, &source_root) {
-            Ok(context) => context,
-            Err(error) => return unavailable_start_report(error),
-        };
-        let context = &state_context;
-        // Observed before `info` runs: a change during the probe leaves the
-        // generation older than the sources, which only ever reads as stale.
-        // The execution boundary in `handle_rlm_mcp` is what gates actual reads.
-        let generation = self.source_generation(&source_root);
-        let matching_failed = match failed_status_for_source(context, &source_root, generation) {
-            Ok(status) => status,
-            Err(error) => return unavailable_start_report(error),
-        };
-
-        match active_lock(context, &source_root) {
-            Ok(true) => {
-                return IndexStartReport {
-                    warnings: vec!["rlm index building".to_string()],
-                };
-            }
-            Ok(false) => {}
-            Err(error) => return unavailable_start_report(error),
-        }
-
-        let commands = match self.commands(context, &source_root, cancellation) {
-            Ok(commands) => commands,
-            Err(error) => {
-                if let Some(message) = matching_failed.as_deref() {
-                    return IndexStartReport {
-                        warnings: vec![format!("rlm index unavailable: {message}")],
-                    };
-                }
-                return unavailable_start_report(error);
-            }
-        };
-
-        let info = self.runner.run(&commands.info);
-        if let Err(error) = self.validate_bound_source_root(&source_root) {
-            return unavailable_start_report(error);
-        }
-        match active_lock(context, &source_root) {
-            Ok(true) => {
-                return IndexStartReport {
-                    warnings: vec!["rlm index building".to_string()],
-                };
-            }
-            Ok(false) => {}
-            Err(error) => return unavailable_start_report(error),
-        }
-        let info = match info {
-            Ok(output) => output,
-            Err(error) => {
-                if let Some(message) = matching_failed.as_deref() {
-                    return IndexStartReport {
-                        warnings: vec![format!("rlm index unavailable: {message}")],
-                    };
-                }
-                let _ = write_status(
-                    context,
-                    &source_root,
-                    BslIndexStatus::unavailable(error.as_str(), Some(&source_root)),
-                );
-                return IndexStartReport::default();
-            }
-        };
-
-        let readiness = bind_readiness_to_source_generation(
-            context,
-            &source_root,
-            generation,
-            readiness_from_info(&info),
-        );
-        match readiness {
-            IndexReadiness::Ready { .. } => IndexStartReport::default(),
-            other => {
-                if let Some(message) = matching_failed {
-                    return IndexStartReport {
-                        warnings: vec![format!("rlm index unavailable: {message}")],
-                    };
-                }
-                match other {
-                    IndexReadiness::Missing => self.start_background(
-                        context,
-                        IndexStartSpec {
-                            action: "build",
-                            source_root,
-                            primary: commands.build,
-                            info: commands.info,
-                            recovery_build: None,
-                            warning: "rlm index build started",
-                            source_generation: generation,
-                        },
-                    ),
-                    IndexReadiness::Stale { .. } => self.start_background(
-                        context,
-                        IndexStartSpec {
-                            action: "update",
-                            source_root,
-                            primary: commands.update,
-                            info: commands.info,
-                            recovery_build: Some(commands.build),
-                            warning: "rlm index building",
-                            source_generation: generation,
-                        },
-                    ),
-                    IndexReadiness::Incomplete => self.start_background(
-                        context,
-                        IndexStartSpec {
-                            action: "update",
-                            source_root,
-                            primary: commands.update,
-                            info: commands.info,
-                            recovery_build: Some(commands.build),
-                            warning: "rlm index recovery started",
-                            source_generation: generation,
-                        },
-                    ),
-                    IndexReadiness::Building => IndexStartReport {
-                        warnings: vec!["rlm index building".to_string()],
-                    },
-                    IndexReadiness::Failed(message) => {
-                        let _ = write_status(
-                            context,
-                            &source_root,
-                            BslIndexStatus::unavailable(message.as_str(), Some(&source_root)),
-                        );
-                        IndexStartReport::default()
-                    }
-                    IndexReadiness::Unavailable(message) => unavailable_start_report(message),
-                    IndexReadiness::Ready { .. } => unreachable!("handled above"),
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub fn ready_index(
-        &self,
-        context: &WorkspaceContext,
-        args: &Map<String, Value>,
-    ) -> IndexReadiness {
-        self.ready_index_cancellable(context, args, &CancellationToken::new())
-    }
-
-    #[cfg(test)]
-    pub fn ready_index_cancellable(
-        &self,
-        context: &WorkspaceContext,
-        args: &Map<String, Value>,
-        cancellation: &CancellationToken,
-    ) -> IndexReadiness {
-        if cancellation.is_cancelled() {
-            return IndexReadiness::Unavailable(cancelled_error(
-                "rlm index operation stopped before work",
-            ));
-        }
-        let source_root =
-            match resolve_source_root(context, args.get("sourceDir").and_then(Value::as_str)) {
-                Ok(resolved) => resolved.path,
-                Err(error) => return IndexReadiness::Unavailable(error),
-            };
-        if let Err(error) = self.validate_bound_source_root(&source_root) {
-            return IndexReadiness::Unavailable(error);
-        }
-        let state_context = match self.state_context(context, &source_root) {
-            Ok(context) => context,
-            Err(error) => return IndexReadiness::Unavailable(error),
-        };
-        let context = &state_context;
-        let generation = self.source_generation(&source_root);
-        let matching_failed = match failed_status_for_source(context, &source_root, generation) {
-            Ok(status) => status,
-            Err(error) => return IndexReadiness::Unavailable(error),
-        };
-
-        match active_lock(context, &source_root) {
-            Ok(true) => return IndexReadiness::Building,
-            Ok(false) => {}
-            Err(error) => return IndexReadiness::Unavailable(error),
-        }
-
-        let commands = match self.commands(context, &source_root, cancellation) {
-            Ok(commands) => commands,
-            Err(error) => {
-                return matching_failed
-                    .map(IndexReadiness::Failed)
-                    .unwrap_or(IndexReadiness::Unavailable(error));
-            }
-        };
-
-        let output = self.runner.run(&commands.info);
-        if let Err(error) = self.validate_bound_source_root(&source_root) {
-            return IndexReadiness::Unavailable(error);
-        }
-        match active_lock(context, &source_root) {
-            Ok(true) => return IndexReadiness::Building,
-            Ok(false) => {}
-            Err(error) => return IndexReadiness::Unavailable(error),
-        }
-        let output = match output {
-            Ok(output) => output,
-            Err(error) => {
-                return matching_failed
-                    .map(IndexReadiness::Failed)
-                    .unwrap_or(IndexReadiness::Unavailable(error));
-            }
-        };
-
-        match bind_readiness_to_source_generation(
-            context,
-            &source_root,
-            generation,
-            readiness_from_info(&output),
-        ) {
-            IndexReadiness::Ready { db_path } => IndexReadiness::Ready { db_path },
-            other => matching_failed.map(IndexReadiness::Failed).unwrap_or(other),
-        }
-    }
-
     fn commands(
         &self,
         context: &WorkspaceContext,
@@ -795,15 +510,6 @@ impl<'a> WorkspaceIndexService<'a> {
         let program = resolve_bundled_tool(&plugin_root, "rlm-bsl-index", true)?.program;
         let env = rlm_process_environment(rlm_generation_root(context, source_root)?);
         let root = source_root.as_os_str().to_os_string();
-        #[cfg(test)]
-        let update = IndexCommand {
-            program: program.clone(),
-            args: vec!["index".into(), "update".into(), root.clone()],
-            cwd: context.cwd.clone(),
-            env: env.clone(),
-            timeout: Duration::from_secs(24 * 60 * 60),
-            cancellation: cancellation.clone(),
-        };
         Ok(IndexCommands {
             info: IndexCommand {
                 program: program.clone(),
@@ -821,8 +527,6 @@ impl<'a> WorkspaceIndexService<'a> {
                 timeout: Duration::from_secs(24 * 60 * 60),
                 cancellation: cancellation.clone(),
             },
-            #[cfg(test)]
-            update,
         })
     }
 
@@ -887,10 +591,7 @@ impl<'a> WorkspaceIndexService<'a> {
             source_root,
             primary,
             info,
-            recovery_build,
             warning,
-            #[cfg(test)]
-            source_generation,
         } = spec;
         let isolated_build = isolated_build_id(&primary).is_some();
         let lock = match lock_path(context, &source_root) {
@@ -948,12 +649,9 @@ impl<'a> WorkspaceIndexService<'a> {
             action: action.to_string(),
             context: context.clone(),
             source_root,
-            #[cfg(test)]
-            source_generation,
             root_capability: self.bound_source_root.clone(),
             primary,
             info,
-            recovery_build,
             status_path,
             #[cfg(test)]
             lock_path: lock.clone(),
@@ -990,8 +688,6 @@ impl Default for WorkspaceIndexService<'_> {
 struct IndexCommands {
     info: IndexCommand,
     build: IndexCommand,
-    #[cfg(test)]
-    update: IndexCommand,
 }
 
 impl BslIndexStatus {
@@ -1002,8 +698,6 @@ impl BslIndexStatus {
             db_path: Some(db_path.display().to_string()),
             message: None,
             failure_class: None,
-            #[cfg(test)]
-            source_generation: None,
             build_id: None,
             next_action: None,
             updated_at: now_secs(),
@@ -1018,8 +712,6 @@ impl BslIndexStatus {
             db_path: None,
             message: Some(format!("rlm index {action} started")),
             failure_class: None,
-            #[cfg(test)]
-            source_generation: None,
             build_id: None,
             next_action: None,
             updated_at: now_secs(),
@@ -1034,42 +726,6 @@ impl BslIndexStatus {
             db_path: None,
             message: Some(message.to_string()),
             failure_class: Some(BslIndexFailureClass::Retryable),
-            #[cfg(test)]
-            source_generation: None,
-            build_id: None,
-            next_action: None,
-            updated_at: now_secs(),
-            last_run: None,
-        }
-    }
-
-    #[cfg(test)]
-    fn terminal_failure(message: &str, source_root: Option<&Path>) -> Self {
-        Self {
-            status: "failed".to_string(),
-            source_root: source_root.map(|path| path.display().to_string()),
-            db_path: None,
-            message: Some(message.to_string()),
-            failure_class: Some(BslIndexFailureClass::Terminal),
-            #[cfg(test)]
-            source_generation: None,
-            build_id: None,
-            next_action: None,
-            updated_at: now_secs(),
-            last_run: None,
-        }
-    }
-
-    #[cfg(test)]
-    fn unavailable(message: &str, source_root: Option<&Path>) -> Self {
-        Self {
-            status: "unavailable".to_string(),
-            source_root: source_root.map(|path| path.display().to_string()),
-            db_path: None,
-            message: Some(message.to_string()),
-            failure_class: None,
-            #[cfg(test)]
-            source_generation: None,
             build_id: None,
             next_action: None,
             updated_at: now_secs(),
@@ -1079,12 +735,6 @@ impl BslIndexStatus {
 
     fn with_last_run(mut self, metrics: BslIndexRunMetrics) -> Self {
         self.last_run = Some(metrics);
-        self
-    }
-
-    #[cfg(test)]
-    fn with_source_generation(mut self, generation: u64) -> Self {
-        self.source_generation = Some(generation);
         self
     }
 
@@ -1266,30 +916,9 @@ impl BslIndexRunMetrics {
             db_size: parse_info_value(&output.stdout, "DB size"),
         }
     }
-
-    fn recovered_from(
-        mut self,
-        action: &str,
-        reason: &str,
-        started_at: u64,
-        finished_at: u64,
-        total_duration_ms: u64,
-    ) -> Self {
-        self.action = action.to_string();
-        self.recovery_reason = Some(reason.to_string());
-        self.started_at = started_at;
-        self.finished_at = finished_at;
-        self.duration_ms = total_duration_ms;
-        self
-    }
 }
 
 impl IndexRunner for SystemIndexRunner {
-    #[cfg(test)]
-    fn run(&self, command: &IndexCommand) -> Result<IndexOutput, String> {
-        run_index_command(command)
-    }
-
     fn start_background(&self, job: IndexBackgroundJob) -> Result<(), String> {
         let handle = thread::Builder::new()
             .name("unica-rlm-index".to_string())
@@ -1366,9 +995,8 @@ where
     };
     match post_primary {
         IndexReadiness::Ready { db_path } => {
-            let candidate_db_is_usable = candidate_db_for_job_is_usable(&job, &db_path);
             if db_path_belongs_to_command_generation(&job.info, &db_path)
-                && (isolated_build_id(&job.info).is_none() || candidate_db_is_usable)
+                && candidate_db_for_job_is_usable(&job, &db_path)
             {
                 write_background_status(
                     &job,
@@ -1385,163 +1013,19 @@ where
                 );
             }
         }
-        readiness if readiness.is_stale_content() && job.recovery_build.is_some() => {
-            let reason = "stale (content) after update";
-            if !write_background_status(
-                &job,
-                BslIndexStatus::building(
-                    "build recovery after stale (content)",
-                    Some(&job.source_root),
-                ),
-            ) {
-                return;
-            }
-            let Some(recovery) = run_background_command(
-                job.recovery_build
-                    .as_ref()
-                    .expect("guarded recovery command"),
-                &mut job.lock_lease,
-                job.root_capability.as_deref(),
-                &mut run,
-            ) else {
-                return;
-            };
-            let recovery = match recovery {
-                Ok(output) => output,
-                Err(error) => {
-                    let message = recovery_failure_message(
-                        "rlm index update finished with stale (content) after update; recovery build failed",
-                        &error,
-                    );
-                    write_background_status(
-                        &job,
-                        BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
-                            .with_last_run(primary_metrics),
-                    );
-                    return;
-                }
-            };
-            if !recovery.status_success || recovery.cancelled || recovery.timed_out {
-                let detail = command_failure_message("build", &recovery);
-                let message = recovery_failure_message(
-                    "rlm index update finished with stale (content) after update; recovery build failed",
-                    &detail,
-                );
-                write_background_status(
-                    &job,
-                    BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
-                        .with_last_run(primary_metrics),
-                );
-                return;
-            }
-
-            let finished_at = now_secs();
-            let recovery_metrics = BslIndexRunMetrics::from_output(
-                "build",
-                primary_finished_at,
-                finished_at,
-                &recovery,
-            )
-            .recovered_from(
-                "update->build",
-                reason,
-                started_at,
-                finished_at,
-                primary.duration_ms.saturating_add(recovery.duration_ms),
-            );
-            let Some(final_readiness) = run_background_command(
-                &job.info,
-                &mut job.lock_lease,
-                job.root_capability.as_deref(),
-                &mut run,
-            ) else {
-                return;
-            };
-            let final_readiness = match final_readiness {
-                Ok(info) => readiness_from_info(&info),
-                Err(error) => {
-                    let message = recovery_failure_message(
-                        "rlm index update finished but info is stale (content); recovery build info failed",
-                        &error,
-                    );
-                    write_background_status(
-                        &job,
-                        BslIndexStatus::failed(message.as_str(), Some(&job.source_root))
-                            .with_last_run(recovery_metrics),
-                    );
-                    return;
-                }
-            };
-            match final_readiness {
-                IndexReadiness::Ready { db_path } => {
-                    if db_path_belongs_to_command_generation(&job.info, &db_path) {
-                        write_background_status(
-                            &job,
-                            ready_status_after_build(&job, &db_path, recovery_metrics),
-                        );
-                    } else {
-                        write_background_status(
-                            &job,
-                            BslIndexStatus::failed(
-                                "rlm index info reported a DB outside the active generation",
-                                Some(&job.source_root),
-                            )
-                            .with_last_run(recovery_metrics),
-                        );
-                    }
-                }
-                other => {
-                    write_background_status(
-                        &job,
-                        failed_status_from_readiness(
-                            &other,
-                            &job.source_root,
-                            #[cfg(test)]
-                            legacy_source_generation(&job),
-                            "rlm index update finished but info is stale (content); recovery build finished but final info is",
-                            #[cfg(test)]
-                            true,
-                        )
-                        .with_last_run(recovery_metrics),
-                    );
-                }
-            }
-        }
         other => {
             write_background_status(
                 &job,
                 failed_status_from_readiness(
                     &other,
                     &job.source_root,
-                    #[cfg(test)]
-                    legacy_source_generation(&job),
                     format!("rlm index {} finished but info is", job.action).as_str(),
-                    #[cfg(test)]
-                    false,
                 )
                 .with_last_run(primary_metrics),
             );
         }
     }
 }
-
-#[cfg(test)]
-fn ready_status_after_build(
-    job: &IndexBackgroundJob,
-    db_path: &Path,
-    metrics: BslIndexRunMetrics,
-) -> BslIndexStatus {
-    if let Some(build_id) = isolated_build_id(&job.info) {
-        return BslIndexStatus::ready(&job.source_root, db_path)
-            .with_build_id(build_id)
-            .with_last_run(metrics);
-    }
-    BslIndexStatus::ready(&job.source_root, db_path)
-        .with_source_generation(job.source_generation)
-        .with_last_run(metrics)
-}
-
-#[cfg(not(test))]
 fn ready_status_after_build(
     job: &IndexBackgroundJob,
     db_path: &Path,
@@ -1559,17 +1043,10 @@ fn ready_status_after_build(
         .with_last_run(metrics)
 }
 
-#[cfg(test)]
-fn legacy_source_generation(job: &IndexBackgroundJob) -> u64 {
-    job.source_generation
-}
-
 fn failed_status_from_readiness(
     readiness: &IndexReadiness,
     source_root: &Path,
-    #[cfg(test)] generation: u64,
     context: &str,
-    #[cfg(test)] recovery_exhausted: bool,
 ) -> BslIndexStatus {
     let detail = match readiness {
         IndexReadiness::Missing => "missing".to_string(),
@@ -1580,12 +1057,6 @@ fn failed_status_from_readiness(
         IndexReadiness::Ready { .. } => "fresh".to_string(),
     };
     let message = recovery_failure_message(context, &detail);
-    #[cfg(test)]
-    if recovery_exhausted && matches!(readiness, IndexReadiness::Stale { .. }) {
-        // Recorded so the block releases once the sources it applies to change.
-        return BslIndexStatus::terminal_failure(message.as_str(), Some(source_root))
-            .with_source_generation(generation);
-    }
     BslIndexStatus::failed(message.as_str(), Some(source_root))
 }
 
@@ -1837,28 +1308,7 @@ pub fn bsl_index_is_ready(context: &WorkspaceContext) -> bool {
     if active_lock(context, &source_root).unwrap_or(true) {
         return false;
     }
-    let Ok(Some(status)) = read_bsl_index_status(context, &source_root) else {
-        return false;
-    };
-    if status.status != "ready" || !stored_path_matches(status.source_root.as_deref(), &source_root)
-    {
-        return false;
-    }
-    match status.db_path {
-        Some(db_path) => {
-            let db_path = Path::new(&db_path);
-            db_path.is_file()
-                && db_path_belongs_to_generation(context, &source_root, db_path).unwrap_or(false)
-        }
-        None => false,
-    }
-}
-
-#[cfg(test)]
-fn source_generation_stale_readiness() -> IndexReadiness {
-    IndexReadiness::Stale {
-        status: SOURCE_GENERATION_STALE_STATUS.to_string(),
-    }
+    usable_index_build(context, &source_root).is_ok_and(|build| build.is_some())
 }
 
 fn unavailable_start_report(error: String) -> IndexStartReport {
@@ -2140,83 +1590,11 @@ fn write_status(
     write_status_path(&status_path(context, source_root)?, status)
 }
 
-#[cfg(test)]
-fn bind_readiness_to_source_generation(
-    context: &WorkspaceContext,
-    source_root: &Path,
-    generation: u64,
-    readiness: IndexReadiness,
-) -> IndexReadiness {
-    let IndexReadiness::Ready { db_path } = readiness else {
-        return readiness;
-    };
-    let status = match read_bsl_index_status(context, source_root) {
-        Ok(status) => status,
-        Err(error) => return IndexReadiness::Unavailable(error),
-    };
-    let db_is_in_generation = match db_path_belongs_to_generation(context, source_root, &db_path) {
-        Ok(matches) => matches,
-        Err(error) => return IndexReadiness::Unavailable(error),
-    };
-    let matches = status.is_some_and(|status| {
-        status.status == "ready"
-            && status.source_generation == Some(generation)
-            && stored_path_matches(status.source_root.as_deref(), source_root)
-            && stored_path_matches(status.db_path.as_deref(), &db_path)
-            && db_is_in_generation
-    });
-    if matches {
-        IndexReadiness::Ready { db_path }
-    } else {
-        source_generation_stale_readiness()
-    }
-}
-
-fn db_path_belongs_to_generation(
-    context: &WorkspaceContext,
-    source_root: &Path,
-    db_path: &Path,
-) -> Result<bool, String> {
-    let generation_root = rlm_generation_root(context, source_root)?;
-    Ok(normalized_path_is_within(db_path, &generation_root))
-}
-
 fn normalized_path_is_within(path: &Path, root: &Path) -> bool {
     match (normalize_path_identity(path), normalize_path_identity(root)) {
         (Ok(path), Ok(root)) => path_starts_with_host_root(&path, &root),
         _ => false,
     }
-}
-
-/// A terminal failure blocks automatic restarts so a broken index is not rebuilt
-/// in a loop. It is scoped to the sources it was recorded for: nothing else
-/// clears the marker — only a background run writes a ready status, and this
-/// check is what stops one from starting — so without the generation escape a
-/// terminal marker would be permanent and recoverable only by deleting the
-/// status file by hand.
-///
-/// A marker written before generations were recorded (`None`) is treated as no
-/// longer binding: it grants exactly one more attempt, which either succeeds or
-/// records a terminal marker that does carry a generation.
-#[cfg(test)]
-fn failed_status_for_source(
-    context: &WorkspaceContext,
-    source_root: &Path,
-    generation: u64,
-) -> Result<Option<String>, String> {
-    let Some(status) = read_bsl_index_status(context, source_root)? else {
-        return Ok(None);
-    };
-    if status.status != "failed"
-        || status.failure_class != Some(BslIndexFailureClass::Terminal)
-        || !stored_path_matches(status.source_root.as_deref(), source_root)
-        || status
-            .source_generation
-            .is_none_or(|failed| failed != generation)
-    {
-        return Ok(None);
-    }
-    Ok(status.message)
 }
 
 fn stored_path_matches(stored: Option<&str>, current: &Path) -> bool {
@@ -2432,13 +1810,13 @@ mod tests {
         let runner = RecordingIndexRunner::default();
         let service = WorkspaceIndexService::with_runner(&runner);
 
-        let report = service.start_for_workspace(&context, &Map::new(), false);
+        let report =
+            service.start_isolated_build(&context, &source_root, &CancellationToken::new());
 
         assert!(report.warnings.iter().any(|warning| {
             warning.starts_with("rlm index unavailable:")
                 && warning.contains("failed to resolve existing path ancestor")
         }));
-        assert!(runner.commands.borrow().is_empty());
         assert!(runner.backgrounds.borrow().is_empty());
         assert!(!source_root.join("rlm-bsl/index-v17/bsl_index.db").exists());
         assert!(!source_root
@@ -2640,11 +2018,6 @@ mod tests {
         assert_ne!(first_lock, second_lock);
 
         let runner = RecordingIndexRunner::default();
-        let mut args = Map::new();
-        args.insert(
-            "sourceDir".to_string(),
-            Value::String(first_source.to_str().unwrap().to_string()),
-        );
         for (index, (name, profile)) in [
             ("main", "program"),
             ("renamed", "program"),
@@ -2668,12 +2041,9 @@ mod tests {
             let actor = WorkspaceActor::new(identity, context.clone()).unwrap();
             let binding = actor.bind_provider_root(name, &first_source).unwrap();
             let service = actor.index_service(&binding, &runner).unwrap();
-            let report = service.start_for_workspace_cancellable(
-                &context,
-                &args,
-                false,
-                &CancellationToken::new(),
-            );
+            let admitted_source = binding.source_root().to_path_buf();
+            let report =
+                service.start_isolated_build(&context, &admitted_source, &CancellationToken::new());
 
             assert_eq!(
                 runner.backgrounds.borrow().len(),
@@ -2685,9 +2055,7 @@ mod tests {
         let backgrounds = runner.backgrounds.borrow();
         for (index, job) in backgrounds.iter().enumerate() {
             assert!(job.lock_path.is_file());
-            let status: Value =
-                serde_json::from_slice(&fs::read(&job.status_path).unwrap()).unwrap();
-            assert_eq!(status["status"], "building");
+            assert!(!job.status_path.exists());
             for previous in &backgrounds[..index] {
                 assert_ne!(job.lock_path, previous.lock_path);
                 assert_ne!(job.status_path, previous.status_path);
@@ -2863,76 +2231,6 @@ mod tests {
     }
 
     #[test]
-    fn start_rejects_status_generation_alias_without_writing_legacy_target() {
-        let context = test_context("status-generation-alias");
-        let source_root = default_source_root(&context);
-        fs::create_dir_all(&source_root).unwrap();
-        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
-        let legacy = pair_root.join("caches");
-        fs::create_dir_all(&legacy).unwrap();
-        let legacy_marker = legacy.join(STATUS_FILE_NAME);
-        fs::write(&legacy_marker, b"builder-14-status").unwrap();
-        let alias = pair_root.join("caches/rlm-bsl/index-v17");
-        fs::create_dir_all(alias.parent().unwrap()).unwrap();
-        let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
-            cleanup(&context);
-            return;
-        };
-        link.unwrap();
-        let runner = RecordingIndexRunner::default();
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert!(report.warnings.iter().any(|warning| {
-            warning.starts_with("rlm index unavailable:")
-                && warning.contains("symbolic link or reparse point")
-        }));
-        assert_eq!(fs::read(&legacy_marker).unwrap(), b"builder-14-status");
-        assert!(runner.commands.borrow().is_empty());
-        assert!(runner.backgrounds.borrow().is_empty());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn start_rejects_lock_generation_alias_without_writing_legacy_target() {
-        let context = test_context("lock-generation-alias");
-        let source_root = default_source_root(&context);
-        fs::create_dir_all(&source_root).unwrap();
-        let pair_root = rlm_provider_state_root(&context, &source_root).unwrap();
-        let legacy = pair_root.join("locks");
-        fs::create_dir_all(&legacy).unwrap();
-        let legacy_marker = legacy.join(LOCK_FILE_NAME);
-        fs::write(&legacy_marker, b"builder-14-lock").unwrap();
-        let alias = pair_root.join("locks/rlm-bsl/index-v17");
-        fs::create_dir_all(alias.parent().unwrap()).unwrap();
-        let Some(link) = testing::create_dir_symlink_for_test(&legacy, &alias) else {
-            cleanup(&context);
-            return;
-        };
-        link.unwrap();
-        let runner = RecordingIndexRunner::default();
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert!(report.warnings.iter().any(|warning| {
-            warning.starts_with("rlm index unavailable:")
-                && warning.contains("symbolic link or reparse point")
-        }));
-        assert_eq!(fs::read(&legacy_marker).unwrap(), b"builder-14-lock");
-        assert!(runner.commands.borrow().is_empty());
-        assert!(runner.backgrounds.borrow().is_empty());
-        cleanup(&context);
-    }
-
-    #[test]
     fn legacy_status_and_lock_do_not_gate_builder_15() {
         let context = test_context("legacy-markers");
         let source_root = context.workspace_root.join("src");
@@ -2983,25 +2281,27 @@ mod tests {
             fs::read(&legacy_status).unwrap(),
             fs::read(&legacy_lock).unwrap(),
         ];
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success("Index not found\n")]),
-            ..Default::default()
-        };
+        let runner = RecordingIndexRunner::default();
 
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
+        let report = WorkspaceIndexService::with_runner(&runner).start_isolated_build(
             &context,
-            &Map::new(),
-            false,
+            &source_root,
+            &CancellationToken::new(),
         );
 
         assert_eq!(report.warnings, vec!["rlm index build started"]);
         assert_eq!(runner.backgrounds.borrow()[0].action, "build");
-        assert_eq!(
-            PathBuf::from(index_command_env(
-                &runner.backgrounds.borrow()[0].primary,
-                "RLM_INDEX_DIR",
-            )),
-            rlm_generation_root(&context, &source_root).unwrap()
+        let candidate = PathBuf::from(index_command_env(
+            &runner.backgrounds.borrow()[0].primary,
+            "RLM_INDEX_DIR",
+        ));
+        assert!(
+            candidate.starts_with(
+                rlm_generation_root(&context, &source_root)
+                    .unwrap()
+                    .join("builds")
+            ),
+            "{candidate:?}"
         );
         assert_eq!(fs::read(&legacy_db).unwrap(), before[0]);
         assert_eq!(fs::read(&legacy_status).unwrap(), before[1]);
@@ -3010,56 +2310,50 @@ mod tests {
     }
 
     #[test]
-    fn builder_15_never_accepts_a_ready_db_reported_from_builder_14_storage() {
-        let context = test_context("legacy-db-never-readable");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        let legacy_db = rlm_provider_state_root(&context, &source_root)
-            .unwrap()
-            .join("rlm-tools-bsl/index/bsl_index.db");
-        fs::create_dir_all(legacy_db.parent().unwrap()).unwrap();
-        fs::write(&legacy_db, b"builder-14-db").unwrap();
-        let generation = source_generation(&source_root);
-        write_status(
-            &context,
-            BslIndexStatus::ready(&source_root, &legacy_db).with_source_generation(generation),
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                legacy_db.display()
-            ))]),
-            ..Default::default()
-        };
+    fn active_build_rejects_db_outside_declared_build_directory() {
+        enum InvalidDbLocation {
+            Builder14,
+            SiblingBuild,
+        }
 
-        let readiness =
-            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
+        for (name, location) in [
+            ("builder-14", InvalidDbLocation::Builder14),
+            ("sibling-build", InvalidDbLocation::SiblingBuild),
+        ] {
+            let context = test_context(&format!("active-build-{name}"));
+            let source_root = default_source_root(&context);
+            fs::create_dir_all(&source_root).unwrap();
+            let build_id = "a".repeat(32);
+            let db_path = match location {
+                InvalidDbLocation::Builder14 => rlm_provider_state_root(&context, &source_root)
+                    .unwrap()
+                    .join("rlm-tools-bsl/index/bsl_index.db"),
+                InvalidDbLocation::SiblingBuild => {
+                    rlm_build_root(&context, &source_root, &"b".repeat(32))
+                        .unwrap()
+                        .join("bsl_index.db")
+                }
+            };
+            fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            fs::write(&db_path, name).unwrap();
+            write_status(
+                &context,
+                BslIndexStatus::ready(&source_root, &db_path).with_build_id(build_id.clone()),
+            )
+            .unwrap();
 
-        assert!(!matches!(readiness, IndexReadiness::Ready { .. }));
-        assert_eq!(fs::read(&legacy_db).unwrap(), b"builder-14-db");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn cache_readiness_rejects_builder_14_db_even_with_a_builder_15_marker() {
-        let context = test_context("cache-readiness-legacy-db");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        let legacy_db = rlm_provider_state_root(&context, &source_root)
-            .unwrap()
-            .join("rlm-tools-bsl/index/bsl_index.db");
-        fs::create_dir_all(legacy_db.parent().unwrap()).unwrap();
-        fs::write(&legacy_db, b"builder-14-db").unwrap();
-        write_status(
-            &context,
-            BslIndexStatus::ready(&source_root, &legacy_db)
-                .with_source_generation(source_generation(&source_root)),
-        )
-        .unwrap();
-
-        assert!(!bsl_index_is_ready(&context));
-        cleanup(&context);
+            assert!(db_path.is_file(), "{name}: fixture DB must exist");
+            assert_eq!(
+                read_bsl_index_status(&context).unwrap().build_id.as_deref(),
+                Some(build_id.as_str()),
+                "{name}: marker must reach the build-directory check"
+            );
+            let active = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
+                .active_build(&context, &source_root)
+                .unwrap();
+            assert_eq!(active, None, "{name}: DB outside its build became active");
+            cleanup(&context);
+        }
     }
 
     #[test]
@@ -3070,12 +2364,7 @@ mod tests {
         let db_path = generation_db_path(&context, "ready/bsl_index.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, b"builder-15-db").unwrap();
-        write_status(
-            &context,
-            BslIndexStatus::ready(&source_root, &db_path)
-                .with_source_generation(source_generation(&source_root)),
-        )
-        .unwrap();
+        write_status(&context, BslIndexStatus::ready(&source_root, &db_path)).unwrap();
         write_fresh_lock(&context, "update");
 
         assert!(!bsl_index_is_ready(&context));
@@ -3107,158 +2396,6 @@ mod tests {
 
         assert_ne!(read_bsl_index_status(&context).unwrap().status, "ready");
         assert_eq!(fs::read(&legacy_db).unwrap(), b"builder-14-db");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn legacy_shared_terminal_status_does_not_gate_a_cold_pair() {
-        let context = test_context("legacy-shared-terminal-nonbinding");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let legacy_path = context.cache_root.join("caches").join(STATUS_FILE_NAME);
-        write_status_path(
-            &legacy_path,
-            terminal_failure_for_source("legacy terminal failure", &source_root),
-        )
-        .unwrap();
-        let legacy_bytes = fs::read(&legacy_path).unwrap();
-        assert!(super::read_bsl_index_status(&context, &source_root)
-            .unwrap()
-            .is_none());
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success("Index not found\n")]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
-        assert_eq!(runner.backgrounds.borrow()[0].action, "build");
-        assert_eq!(fs::read(&legacy_path).unwrap(), legacy_bytes);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn legacy_shared_retryable_update_status_does_not_select_update_for_a_cold_pair() {
-        let context = test_context("legacy-shared-update-nonbinding");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let legacy_path = context.cache_root.join("caches").join(STATUS_FILE_NAME);
-        let mut legacy_status =
-            BslIndexStatus::failed("legacy retryable update", Some(&source_root));
-        legacy_status.next_action = Some(BslIndexNextAction::Update);
-        write_status_path(&legacy_path, legacy_status).unwrap();
-        let legacy_bytes = fs::read(&legacy_path).unwrap();
-        assert!(super::read_bsl_index_status(&context, &source_root)
-            .unwrap()
-            .is_none());
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success("Index not found\n")]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
-        assert_eq!(runner.backgrounds.borrow()[0].action, "build");
-        assert_eq!(fs::read(&legacy_path).unwrap(), legacy_bytes);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn legacy_shared_fresh_lock_does_not_mark_a_cold_pair_building() {
-        let context = test_context("legacy-shared-lock-nonbinding");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let legacy_path = context.cache_root.join("locks").join(LOCK_FILE_NAME);
-        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-        write_lock_path(&legacy_path, BslIndexLock::new("update", &source_root)).unwrap();
-        let legacy_bytes = fs::read(&legacy_path).unwrap();
-        assert!(super::read_bsl_index_status(&context, &source_root)
-            .unwrap()
-            .is_none());
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success("Index not found\n")]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
-        assert_eq!(runner.backgrounds.borrow()[0].action, "build");
-        assert_eq!(fs::read(&legacy_path).unwrap(), legacy_bytes);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn legacy_status_without_source_generation_remains_readable() {
-        let status: BslIndexStatus = serde_json::from_str(
-            r#"{
-                "status":"ready",
-                "source_root":"C:/workspace/src",
-                "db_path":"C:/cache/bsl_index.db",
-                "message":null,
-                "updated_at":1
-            }"#,
-        )
-        .unwrap();
-
-        assert_eq!(status.source_generation, None);
-    }
-
-    #[test]
-    fn ready_status_can_carry_a_source_generation() {
-        let status = BslIndexStatus::ready(Path::new("src"), Path::new("index.db"))
-            .with_source_generation(42);
-
-        assert_eq!(status.source_generation, Some(42));
-    }
-
-    #[test]
-    fn dry_run_does_not_start_indexing_or_write_state() {
-        let context = test_context("dry-run");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let runner = RecordingIndexRunner::default();
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), true);
-
-        assert!(report.warnings.is_empty());
-        assert!(runner.commands.borrow().is_empty());
-        assert!(!status_path(&context).exists());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn cancellation_prefix_is_stable_for_pre_cancelled_index_requests() {
-        let context = test_context("pre-cancelled-prefix");
-        let runner = RecordingIndexRunner::default();
-        let service = WorkspaceIndexService::with_runner(&runner);
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-
-        let report =
-            service.start_for_workspace_cancellable(&context, &Map::new(), false, &cancellation);
-        let readiness = service.ready_index_cancellable(&context, &Map::new(), &cancellation);
-
-        assert!(report.warnings[0].starts_with("cancelled:"));
-        assert!(matches!(
-            readiness,
-            IndexReadiness::Unavailable(error) if error.starts_with("cancelled:")
-        ));
-        assert!(runner.commands.borrow().is_empty());
         cleanup(&context);
     }
 
@@ -3309,918 +2446,6 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_starts_update_not_build() {
-        let context = test_context("incomplete-update");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   incomplete\n",
-            )]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(report.warnings, vec!["rlm index recovery started"]);
-        assert_eq!(
-            runner.backgrounds.borrow()[0].primary.args[0..2],
-            ["index", "update"]
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn incomplete_recovery_update_followed_by_fresh_info_writes_ready_generation() {
-        let context = test_context("incomplete-recovery-ready");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "recovery/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, b"builder-15-db").unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   incomplete\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-        let job = runner.backgrounds.borrow_mut().remove(0);
-        let lock = job.lock_path.clone();
-        let mut outputs = vec![
-            IndexOutput::success("Index updated"),
-            IndexOutput::success(format!("Index: {}\n  Status:   fresh\n", db_path.display())),
-        ]
-        .into_iter();
-        run_background_job_with(job, |_command, _lease| {
-            Ok(outputs.next().expect("update and fresh info"))
-        });
-
-        assert_eq!(report.warnings, vec!["rlm index recovery started"]);
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "ready");
-        assert_eq!(status.db_path.as_deref(), Some(db_path.to_str().unwrap()));
-        assert!(generation_db_path(&context, "recovery/bsl_index.db").is_file());
-        assert_eq!(read_lock_path(&lock).unwrap().state, "released");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn cancelled_incomplete_recovery_is_non_ready_and_releases_generation_lock() {
-        let context = test_context("incomplete-recovery-cancelled");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   incomplete\n",
-            )]),
-            ..Default::default()
-        };
-
-        WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-        let job = runner.backgrounds.borrow_mut().remove(0);
-        let lock = job.lock_path.clone();
-        run_background_job_with(job, |_command, _lease| {
-            Ok(IndexOutput {
-                status_success: false,
-                status: "cancelled".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: true,
-                duration_ms: 1,
-            })
-        });
-
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_ne!(status.status, "ready");
-        assert!(status
-            .message
-            .as_deref()
-            .is_some_and(|message| message.starts_with(CANCELLED_PREFIX)));
-        assert_eq!(read_lock_path(&lock).unwrap().state, "released");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn concurrent_incomplete_recovery_requests_start_one_background_update() {
-        let context = test_context("incomplete-recovery-single-flight");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   incomplete\n",
-            )]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let first = service.start_for_workspace(&context, &Map::new(), false);
-        let second = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(first.warnings, vec!["rlm index recovery started"]);
-        assert_eq!(second.warnings, vec!["rlm index building"]);
-        assert_eq!(runner.backgrounds.borrow().len(), 1);
-        assert_eq!(runner.backgrounds.borrow()[0].action, "update");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn only_stale_content_is_recovery_eligible() {
-        assert!(IndexReadiness::Stale {
-            status: "stale (content)".to_string()
-        }
-        .is_stale_content());
-        assert!(!IndexReadiness::Stale {
-            status: "stale (age)".to_string()
-        }
-        .is_stale_content());
-    }
-
-    #[test]
-    fn multi_source_set_uses_main_configuration_root_for_rlm_commands() {
-        let context = test_context("multi-source-set");
-        fs::write(
-            context.workspace_root.join("v8project.yaml"),
-            r#"
-source-set:
-  - name: main
-    type: CONFIGURATION
-    path: src/cf
-  - name: TESTS
-    type: EXTENSION
-    path: exts/TESTS
-"#,
-        )
-        .unwrap();
-        fs::create_dir_all(context.workspace_root.join("src/cf")).unwrap();
-        fs::write(
-            context.workspace_root.join("src/cf/Configuration.xml"),
-            "<MetaDataObject/>",
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner::default();
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(
-            PathBuf::from(&runner.commands.borrow()[0].args[2]),
-            normalize_path_identity(&context.workspace_root.join("src/cf")).unwrap()
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn first_non_dry_run_starts_background_build_when_index_is_missing() {
-        let context = test_context("missing");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index not found: /tmp/bsl_index.db",
-            )]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
-        assert_eq!(runner.commands.borrow()[0].args[0..2], ["index", "info"]);
-        let backgrounds = runner.backgrounds.borrow();
-        assert_eq!(backgrounds[0].primary.args[0..2], ["index", "build"]);
-        assert!(backgrounds[0].recovery_build.is_none());
-        assert_eq!(
-            PathBuf::from(index_command_env(&backgrounds[0].primary, "RLM_INDEX_DIR",)),
-            rlm_generation_root(
-                &context,
-                &normalize_path_identity(&context.workspace_root.join("src")).unwrap()
-            )
-            .unwrap()
-        );
-        assert!(status_path(&context).is_file());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn repeated_detect_does_not_start_duplicate_indexing_while_lock_exists() {
-        let context = test_context("lock");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        write_fresh_lock(&context, "build");
-        let runner = RecordingIndexRunner::default();
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert!(runner.commands.borrow().is_empty());
-        assert!(runner.backgrounds.borrow().is_empty());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn startup_rechecks_active_lock_after_info_before_writing_ready() {
-        let context = test_context("lock-started-during-startup-info");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        let runner = LockDuringInfoRunner::new(
-            context.clone(),
-            IndexOutput::success(format!("Index: {}\n  Status:   fresh\n", db_path.display())),
-        );
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert_eq!(read_bsl_index_status(&context).unwrap().status, "building");
-        runner.release();
-        cleanup(&context);
-    }
-
-    #[test]
-    fn readiness_rechecks_active_lock_after_info_before_returning_ready() {
-        let context = test_context("lock-started-during-readiness-info");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        let runner = LockDuringInfoRunner::new(
-            context.clone(),
-            IndexOutput::success(format!("Index: {}\n  Status:   fresh\n", db_path.display())),
-        );
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let readiness = service.ready_index(&context, &Map::new());
-
-        assert_eq!(readiness, IndexReadiness::Building);
-        assert_eq!(read_bsl_index_status(&context).unwrap().status, "building");
-        runner.release();
-        cleanup(&context);
-    }
-
-    #[test]
-    fn stale_legacy_lock_is_recovered_and_starts_missing_index_build() {
-        let context = test_context("stale-legacy-lock");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        fs::create_dir_all(lock_path(&context).parent().unwrap()).unwrap();
-        fs::write(lock_path(&context), "").unwrap();
-        write_old_building_status(&context, "build");
-        make_lock_file_old(&context);
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index not found: /tmp/bsl_index.db",
-            )]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
-        assert_eq!(runner.commands.borrow()[0].args[0..2], ["index", "info"]);
-        assert_eq!(
-            runner.backgrounds.borrow()[0].primary.args[0..2],
-            ["index", "build"]
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn invalid_lock_without_building_status_is_treated_as_active() {
-        let context = test_context("invalid-lock-active");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        fs::create_dir_all(lock_path(&context).parent().unwrap()).unwrap();
-        fs::write(lock_path(&context), "").unwrap();
-        let runner = RecordingIndexRunner::default();
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert!(runner.commands.borrow().is_empty());
-        assert!(runner.backgrounds.borrow().is_empty());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn fresh_invalid_lock_with_stale_status_is_treated_as_active() {
-        let context = test_context("invalid-lock-with-stale-status");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        fs::create_dir_all(lock_path(&context).parent().unwrap()).unwrap();
-        fs::write(lock_path(&context), "").unwrap();
-        write_old_building_status(&context, "build");
-        let runner = RecordingIndexRunner::default();
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert!(runner.commands.borrow().is_empty());
-        assert!(runner.backgrounds.borrow().is_empty());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn stale_structured_lock_is_recovered_and_starts_missing_index_build() {
-        let context = test_context("stale-structured-lock");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        write_stale_lock(&context, "build");
-        write_old_building_status(&context, "build");
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index not found: /tmp/bsl_index.db",
-            )]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
-        assert_eq!(runner.commands.borrow()[0].args[0..2], ["index", "info"]);
-        assert_eq!(
-            runner.backgrounds.borrow()[0].primary.args[0..2],
-            ["index", "build"]
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn ready_index_recovers_stale_lock_and_reads_fresh_info() {
-        let context = test_context("stale-lock-ready");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        fs::create_dir_all(lock_path(&context).parent().unwrap()).unwrap();
-        fs::write(lock_path(&context), "").unwrap();
-        write_old_building_status(&context, "build");
-        make_lock_file_old(&context);
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_ready_status_for_current_source(
-            &context,
-            &context.workspace_root.join("src"),
-            &db_path,
-        );
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let readiness = service.ready_index(&context, &Map::new());
-
-        assert_eq!(readiness, IndexReadiness::Ready { db_path });
-        assert_eq!(runner.commands.borrow()[0].args[0..2], ["index", "info"]);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn ready_info_with_matching_marker_does_not_start_background_job() {
-        let context = test_context("ready");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_ready_status_for_current_source(&context, &source_root, &db_path);
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert!(report.warnings.is_empty());
-        assert!(runner.backgrounds.borrow().is_empty());
-        assert!(bsl_index_is_ready(&context));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn fresh_info_with_matching_generation_is_ready() {
-        let context = test_context("fresh-matching-generation");
-        let source_root = context.workspace_root.join("src");
-        let module = source_root.join("CommonModules/SmokeModule.bsl");
-        fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_ready_status_for_current_source(&context, &source_root, &db_path);
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-
-        let readiness =
-            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
-
-        assert_eq!(readiness, IndexReadiness::Ready { db_path });
-        cleanup(&context);
-    }
-
-    #[test]
-    fn fresh_info_with_legacy_ready_marker_starts_update() {
-        let context = test_context("fresh-legacy-generation");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_status(&context, BslIndexStatus::ready(&source_root, &db_path)).unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert_eq!(runner.backgrounds.borrow().len(), 1);
-        assert_eq!(runner.backgrounds.borrow()[0].action, "update");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn changed_bsl_rejects_fresh_info_after_service_recreation() {
-        let context = test_context("fresh-changed-generation");
-        let source_root = context.workspace_root.join("src");
-        let module = source_root.join("CommonModules/SmokeModule.bsl");
-        fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, "Процедура Smoke(А, Б, В)\nКонецПроцедуры\n").unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_ready_status_for_current_source(&context, &source_root, &db_path);
-        fs::write(
-            &module,
-            "Процедура Smoke(А, Б, В, Г = Неопределено)\nКонецПроцедуры\n",
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-
-        let recreated_service = WorkspaceIndexService::with_runner(&runner);
-        let readiness = recreated_service.ready_index(&context, &Map::new());
-
-        assert_eq!(
-            readiness,
-            IndexReadiness::Stale {
-                status: SOURCE_GENERATION_STALE_STATUS.to_string()
-            }
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn failed_marker_blocks_automatic_restart_for_same_source() {
-        let context = test_context("failed-marker");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        write_status(
-            &context,
-            terminal_failure_for_source(
-                "update left stale (content); recovery build failed",
-                &context.workspace_root.join("src"),
-            ),
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   stale (content)\n",
-            )]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert!(runner.backgrounds.borrow().is_empty());
-        assert_eq!(
-            report.warnings,
-            vec![
-                "rlm index unavailable: update left stale (content); recovery build failed"
-                    .to_string()
-            ]
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn retryable_cancelled_marker_does_not_block_automatic_restart() {
-        let context = test_context("retryable-cancelled-marker");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        write_status(
-            &context,
-            BslIndexStatus::failed(
-                "cancelled: rlm index build stopped",
-                Some(&context.workspace_root.join("src")),
-            ),
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success("Index not found\n")]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
-        assert_eq!(runner.backgrounds.borrow().len(), 1);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn ready_index_returns_matching_failed_marker_message() {
-        let context = test_context("failed-readiness");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        write_status(
-            &context,
-            terminal_failure_for_source(
-                "update left stale (content); recovery build failed",
-                &context.workspace_root.join("src"),
-            ),
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   stale (content)\n",
-            )]),
-            ..Default::default()
-        };
-
-        let readiness =
-            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
-
-        assert_eq!(
-            readiness,
-            IndexReadiness::Failed(
-                "update left stale (content); recovery build failed".to_string()
-            )
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn startup_preserves_matching_failed_marker_when_info_runner_errors() {
-        let context = test_context("failed-startup-info-error");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let original_message = "update left stale (content); recovery build failed";
-        write_status(
-            &context,
-            terminal_failure_for_source(original_message, &context.workspace_root.join("src")),
-        )
-        .unwrap();
-        let runner = FailingInfoRunner;
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(
-            report.warnings,
-            vec![format!("rlm index unavailable: {original_message}")]
-        );
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "failed");
-        assert_eq!(status.message.as_deref(), Some(original_message));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn readiness_preserves_matching_failed_marker_when_info_runner_errors() {
-        let context = test_context("failed-readiness-info-error");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let original_message = "update left stale (content); recovery build failed";
-        write_status(
-            &context,
-            terminal_failure_for_source(original_message, &context.workspace_root.join("src")),
-        )
-        .unwrap();
-        let runner = FailingInfoRunner;
-
-        let readiness =
-            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
-
-        assert_eq!(
-            readiness,
-            IndexReadiness::Failed(original_message.to_string())
-        );
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "failed");
-        assert_eq!(status.message.as_deref(), Some(original_message));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn startup_preserves_matching_failed_marker_when_command_construction_fails() {
-        let context = test_context("failed-startup-command-error");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let original_message = "update left stale (content); recovery build failed";
-        write_status(
-            &context,
-            terminal_failure_for_source(original_message, &context.workspace_root.join("src")),
-        )
-        .unwrap();
-        fs::write(
-            context
-                .workspace_root
-                .join("plugins/unica/third-party/manifest.json"),
-            "{not valid json",
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner::default();
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(
-            report.warnings,
-            vec![format!("rlm index unavailable: {original_message}")]
-        );
-        assert!(runner.commands.borrow().is_empty());
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "failed");
-        assert_eq!(status.message.as_deref(), Some(original_message));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn fresh_info_preserves_matching_failed_marker() {
-        let context = test_context("failed-then-fresh");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_status(
-            &context,
-            terminal_failure_for_source(
-                "old recovery failure",
-                &context.workspace_root.join("src"),
-            ),
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(
-            report.warnings,
-            vec!["rlm index unavailable: old recovery failure".to_string()]
-        );
-        assert_eq!(read_bsl_index_status(&context).unwrap().status, "failed");
-        assert!(runner.backgrounds.borrow().is_empty());
-        cleanup(&context);
-    }
-
-    /// Nothing else clears a terminal marker: only a background run writes a
-    /// ready status, and the marker is what stops one from starting. Without
-    /// this release the block would be permanent and recoverable only by
-    /// deleting the status file by hand.
-    #[test]
-    fn changed_sources_release_a_terminal_failed_marker() {
-        let context = test_context("failed-then-edited");
-        let source_root = context.workspace_root.join("src");
-        let module = source_root.join("CommonModules/SmokeModule.bsl");
-        fs::create_dir_all(module.parent().unwrap()).unwrap();
-        fs::write(&module, "Процедура Smoke()\nКонецПроцедуры\n").unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_status(
-            &context,
-            terminal_failure_for_source("old recovery failure", &source_root),
-        )
-        .unwrap();
-
-        fs::write(&module, "Процедура Smoke(НовыйПараметр)\nКонецПроцедуры\n").unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   stale (content)\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert_eq!(runner.backgrounds.borrow().len(), 1);
-        assert_eq!(runner.backgrounds.borrow()[0].action, "update");
-        cleanup(&context);
-    }
-
-    /// Markers written before generations were recorded cannot prove which
-    /// sources they applied to, so they grant one more attempt rather than
-    /// trapping workspaces that upgrade into the generation-bound build.
-    #[test]
-    fn legacy_terminal_marker_without_a_generation_does_not_block_update() {
-        let context = test_context("failed-legacy-marker");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_status(
-            &context,
-            BslIndexStatus::terminal_failure("old recovery failure", Some(&source_root)),
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   stale (content)\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert_eq!(runner.backgrounds.borrow().len(), 1);
-        cleanup(&context);
-    }
-
-    #[test]
-    fn failed_marker_for_another_source_root_does_not_block_update() {
-        let context = test_context("failed-other-source");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        fs::create_dir_all(context.workspace_root.join("other")).unwrap();
-        write_status(
-            &context,
-            terminal_failure_for_source(
-                "failure for another source root",
-                &context.workspace_root.join("other"),
-            ),
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   stale (age)\n",
-            )]),
-            ..Default::default()
-        };
-
-        let report = WorkspaceIndexService::with_runner(&runner).start_for_workspace(
-            &context,
-            &Map::new(),
-            false,
-        );
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        assert_eq!(runner.backgrounds.borrow().len(), 1);
-        assert_eq!(
-            runner.backgrounds.borrow()[0].primary.args[0..2],
-            ["index", "update"]
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn equivalent_normalized_source_spelling_matches_failed_marker() {
-        let context = test_context("failed-normalized-source");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let equivalent_source = context
-            .workspace_root
-            .join("src")
-            .join("CommonModules")
-            .join("..");
-        let original_message = "failed marker through equivalent source spelling";
-        write_status(
-            &context,
-            terminal_failure_for_source(original_message, &equivalent_source),
-        )
-        .unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   stale (content)\n",
-            )]),
-            ..Default::default()
-        };
-
-        let readiness =
-            WorkspaceIndexService::with_runner(&runner).ready_index(&context, &Map::new());
-
-        assert_eq!(
-            readiness,
-            IndexReadiness::Failed(original_message.to_string())
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn ready_info_preserves_existing_last_run_metrics() {
-        let context = test_context("ready-metrics");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(source_root.join("CommonModules")).unwrap();
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        write_status(
-            &context,
-            BslIndexStatus::ready(&source_root, &db_path)
-                .with_source_generation(source_generation(&source_root))
-                .with_last_run(BslIndexRunMetrics {
-                    action: "build".to_string(),
-                    recovery_reason: None,
-                    duration_ms: 1234,
-                    started_at: 10,
-                    finished_at: 11,
-                    timed_out: false,
-                    index_version: Some("v14".to_string()),
-                    modules: Some(24),
-                    methods: Some(617),
-                    db_size: Some("1.3 MB".to_string()),
-                }),
-        )
-        .unwrap();
-        let marker_before = fs::read_to_string(status_path(&context)).unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(format!(
-                "Index: {}\n  Status:   fresh\n",
-                db_path.display()
-            ))]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert!(report.warnings.is_empty());
-        assert_eq!(
-            fs::read_to_string(status_path(&context)).unwrap(),
-            marker_before
-        );
-        let status = read_bsl_index_status(&context).unwrap();
-        let metrics = status
-            .last_run
-            .expect("fresh info should not erase existing index metrics");
-        assert_eq!(metrics.action, "build");
-        assert_eq!(metrics.duration_ms, 1234);
-        assert_eq!(metrics.index_version.as_deref(), Some("v14"));
-        cleanup(&context);
-    }
-
-    #[test]
     fn path_normalization_failures_do_not_match_index_identity() {
         let context = test_context("invalid-path-identity");
         let dangling = context.workspace_root.join("dangling");
@@ -4235,310 +2460,6 @@ source-set:
         let dangling_text = dangling.display().to_string();
 
         assert!(!stored_path_matches(Some(&dangling_text), &dangling));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn stale_index_starts_background_update() {
-        let context = test_context("stale");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index: /tmp/bsl_index.db\n  Status:   stale (age)\n",
-            )]),
-            ..Default::default()
-        };
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let report = service.start_for_workspace(&context, &Map::new(), false);
-
-        assert_eq!(report.warnings, vec!["rlm index building".to_string()]);
-        let backgrounds = runner.backgrounds.borrow();
-        assert_eq!(backgrounds[0].primary.args[0..2], ["index", "update"]);
-        assert_eq!(
-            backgrounds[0]
-                .recovery_build
-                .as_ref()
-                .expect("update should carry a recovery build")
-                .args[0..2],
-            ["index", "build"]
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn update_falls_back_to_one_build_after_stale_content() {
-        let context = test_context("stale-content-recovery");
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        let mut job = test_background_job(&context, "update");
-        job.source_generation = 73;
-        job.recovery_build = Some(inert_index_command(&context, "build"));
-        let mut outputs = vec![
-            IndexOutput::success("Updated in 0.1s"),
-            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
-            IndexOutput::success("Index built in 1.2s\n  Index: v14\n  Modules: 24\n"),
-            IndexOutput::success(format!("Index: {}\n  Status:   fresh\n", db_path.display())),
-        ]
-        .into_iter();
-        let mut commands = Vec::new();
-
-        run_background_job_with(job, |command, _lease| {
-            commands.push(command.args[0..2].to_vec());
-            Ok(outputs.next().expect("scripted output"))
-        });
-
-        assert_eq!(
-            commands,
-            vec![
-                vec![OsString::from("index"), OsString::from("update")],
-                vec![OsString::from("index"), OsString::from("info")],
-                vec![OsString::from("index"), OsString::from("build")],
-                vec![OsString::from("index"), OsString::from("info")],
-            ]
-        );
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "ready");
-        assert_eq!(status.source_generation, Some(73));
-        let metrics = status.last_run.unwrap();
-        assert_eq!(metrics.action, "update->build");
-        assert_eq!(
-            metrics.recovery_reason.as_deref(),
-            Some("stale (content) after update")
-        );
-        cleanup(&context);
-    }
-
-    #[test]
-    fn update_followed_by_fresh_info_does_not_run_recovery_build() {
-        let context = test_context("update-fresh-no-recovery");
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
-        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
-        fs::write(&db_path, "").unwrap();
-        let mut job = test_background_job(&context, "update");
-        job.recovery_build = Some(inert_index_command(&context, "build"));
-        let mut outputs = vec![
-            IndexOutput::success("Updated in 0.1s"),
-            IndexOutput::success(format!("Index: {}\n  Status:   fresh\n", db_path.display())),
-        ]
-        .into_iter();
-        let mut commands = Vec::new();
-
-        run_background_job_with(job, |command, _lease| {
-            commands.push(command.args[0..2].to_vec());
-            Ok(outputs.next().expect("scripted output"))
-        });
-
-        assert_eq!(
-            commands,
-            vec![
-                vec![OsString::from("index"), OsString::from("update")],
-                vec![OsString::from("index"), OsString::from("info")],
-            ]
-        );
-        assert_eq!(read_bsl_index_status(&context).unwrap().status, "ready");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn cancelled_post_update_info_preserves_cancellation_prefix() {
-        let context = test_context("update-cancelled-info");
-        let mut job = test_background_job(&context, "update");
-        job.recovery_build = Some(inert_index_command(&context, "build"));
-        let mut outputs = vec![
-            IndexOutput::success("Updated in 0.1s"),
-            IndexOutput {
-                status_success: false,
-                status: "cancelled".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: true,
-                duration_ms: 1,
-            },
-        ]
-        .into_iter();
-
-        run_background_job_with(job, |_command, _lease| {
-            Ok(outputs.next().expect("scripted output"))
-        });
-
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.failure_class, Some(BslIndexFailureClass::Retryable));
-        let message = status.message.unwrap();
-        assert!(message.starts_with(CANCELLED_PREFIX), "{message}");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn failed_recovery_preserves_stale_content_cause() {
-        let context = test_context("stale-content-recovery-failed");
-        let mut job = test_background_job(&context, "update");
-        job.recovery_build = Some(inert_index_command(&context, "build"));
-        let mut outputs = vec![
-            IndexOutput::success("Updated in 0.1s"),
-            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
-            IndexOutput {
-                status_success: false,
-                status: "exit status: 1".to_string(),
-                stdout: String::new(),
-                stderr: "disk full".to_string(),
-                timed_out: false,
-                cancelled: false,
-                duration_ms: 4,
-            },
-        ]
-        .into_iter();
-
-        run_background_job_with(job, |_command, _lease| {
-            Ok(outputs.next().expect("scripted output"))
-        });
-
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "failed");
-        assert_eq!(status.failure_class, Some(BslIndexFailureClass::Retryable));
-        let message = status.message.unwrap();
-        assert!(message.contains("stale (content) after update"));
-        assert!(message.contains("disk full"));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn cancelled_recovery_build_preserves_prefix_and_stale_content_context() {
-        let context = test_context("stale-content-recovery-cancelled-build");
-        let mut job = test_background_job(&context, "update");
-        job.recovery_build = Some(inert_index_command(&context, "build"));
-        let mut outputs = vec![
-            IndexOutput::success("Updated in 0.1s"),
-            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
-            IndexOutput {
-                status_success: false,
-                status: "cancelled".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: true,
-                duration_ms: 4,
-            },
-        ]
-        .into_iter();
-
-        run_background_job_with(job, |_command, _lease| {
-            Ok(outputs.next().expect("scripted output"))
-        });
-
-        let message = read_bsl_index_status(&context).unwrap().message.unwrap();
-        assert!(message.starts_with("cancelled:"), "{message}");
-        assert!(message.contains("stale (content)"), "{message}");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn cancelled_final_recovery_info_preserves_prefix_and_stale_content_context() {
-        let context = test_context("stale-content-recovery-cancelled-final-info");
-        let mut job = test_background_job(&context, "update");
-        job.recovery_build = Some(inert_index_command(&context, "build"));
-        let mut outputs = vec![
-            IndexOutput::success("Updated in 0.1s"),
-            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
-            IndexOutput::success("Index built in 1.2s"),
-            IndexOutput {
-                status_success: false,
-                status: "cancelled".to_string(),
-                stdout: String::new(),
-                stderr: String::new(),
-                timed_out: false,
-                cancelled: true,
-                duration_ms: 1,
-            },
-        ]
-        .into_iter();
-
-        run_background_job_with(job, |_command, _lease| {
-            Ok(outputs.next().expect("scripted output"))
-        });
-
-        let message = read_bsl_index_status(&context).unwrap().message.unwrap();
-        assert!(message.starts_with("cancelled:"), "{message}");
-        assert!(message.contains("stale (content)"), "{message}");
-        cleanup(&context);
-    }
-
-    #[test]
-    fn recovery_does_not_recurse_when_final_info_is_stale() {
-        let context = test_context("stale-content-recovery-terminal");
-        let mut job = test_background_job(&context, "update");
-        job.recovery_build = Some(inert_index_command(&context, "build"));
-        let mut outputs = vec![
-            IndexOutput::success("Updated in 0.1s"),
-            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
-            IndexOutput::success("Index built in 1.2s"),
-            IndexOutput::success("Index: /tmp/bsl_index.db\n  Status:   stale (content)\n"),
-        ]
-        .into_iter();
-        let mut calls = 0;
-
-        run_background_job_with(job, |_command, _lease| {
-            calls += 1;
-            Ok(outputs.next().expect("scripted output"))
-        });
-
-        assert_eq!(calls, 4);
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "failed");
-        assert_eq!(status.failure_class, Some(BslIndexFailureClass::Terminal));
-        assert!(status.message.unwrap().contains("stale (content)"));
-        cleanup(&context);
-    }
-
-    #[test]
-    fn displaced_update_worker_does_not_launch_recovery_or_overwrite_replacement_state() {
-        let context = test_context("stale-content-recovery-displaced");
-        let mut job = test_background_job(&context, "update");
-        job.recovery_build = Some(inert_index_command(&context, "build"));
-        let replacement_status =
-            BslIndexStatus::building("replacement owner", Some(&job.source_root));
-        let mut commands = Vec::new();
-
-        run_background_job_with(job, |command, _lease| {
-            commands.push(command.args[0..2].to_vec());
-            match commands.len() {
-                1 => Ok(IndexOutput::success("Updated in 0.1s")),
-                2 => {
-                    let mut replacement =
-                        BslIndexLock::new("build", &context.workspace_root.join("src"));
-                    replacement.lock_id = "replacement-owner".to_string();
-                    write_lock_path(&lock_path(&context), replacement).unwrap();
-                    write_status_path(&status_path(&context), replacement_status.clone()).unwrap();
-                    Ok(IndexOutput::success(
-                        "Index: /tmp/bsl_index.db\n  Status:   stale (content)\n",
-                    ))
-                }
-                3 => Ok(IndexOutput::success("Index built in 1.2s")),
-                4 => Ok(IndexOutput::success(
-                    "Index: /tmp/bsl_index.db\n  Status:   fresh\n",
-                )),
-                _ => panic!("displaced worker ran an unexpected command"),
-            }
-        });
-
-        assert_eq!(
-            commands,
-            vec![
-                vec![OsString::from("index"), OsString::from("update")],
-                vec![OsString::from("index"), OsString::from("info")],
-            ]
-        );
-        let marker = read_lock_path(&lock_path(&context)).unwrap();
-        assert_eq!(marker.lock_id, "replacement-owner");
-        assert_eq!(marker.state, "active");
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "building");
-        assert_eq!(
-            status.message.as_deref(),
-            Some("rlm index replacement owner started")
-        );
         cleanup(&context);
     }
 
@@ -4583,7 +2504,10 @@ source-set:
     #[test]
     fn successful_background_job_records_last_run_metrics_in_status() {
         let context = test_context("metrics");
-        let db_path = generation_db_path(&context, "a/bsl_index.db");
+        let source_root = context.workspace_root.join("src");
+        let build_id = "0123456789abcdef0123456789abcdef";
+        let build_dir = rlm_build_root(&context, &source_root, build_id).unwrap();
+        let db_path = build_dir.join("bsl_index.db");
         fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         fs::write(&db_path, "").unwrap();
         let status = status_path(&context);
@@ -4593,34 +2517,37 @@ source-set:
             .unwrap()
             .expect("lock should be acquired for background job");
 
+        let mut primary = print_lines_command(
+            &context.workspace_root,
+            true,
+            &[
+                "Index built in 1.2s".to_string(),
+                "  Index:    v14".to_string(),
+                "  Modules:  24".to_string(),
+                "  Methods:  617".to_string(),
+                "  DB size:  1.3 MB".to_string(),
+            ],
+            CancellationToken::new(),
+        );
+        let mut info = print_lines_command(
+            &context.workspace_root,
+            false,
+            &[
+                format!("Index: {}", db_path.display()),
+                "  Status:   fresh".to_string(),
+            ],
+            CancellationToken::new(),
+        );
+        for command in [&mut primary, &mut info] {
+            command.env = rlm_process_environment(build_dir.clone());
+        }
         run_background_job(IndexBackgroundJob {
             action: "build".to_string(),
             context: context.clone(),
-            source_root: context.workspace_root.join("src"),
-            source_generation: 42,
+            source_root,
             root_capability: None,
-            primary: print_lines_command(
-                &context.workspace_root,
-                true,
-                &[
-                    "Index built in 1.2s".to_string(),
-                    "  Index:    v14".to_string(),
-                    "  Modules:  24".to_string(),
-                    "  Methods:  617".to_string(),
-                    "  DB size:  1.3 MB".to_string(),
-                ],
-                CancellationToken::new(),
-            ),
-            info: print_lines_command(
-                &context.workspace_root,
-                false,
-                &[
-                    format!("Index: {}", db_path.display()),
-                    "  Status:   fresh".to_string(),
-                ],
-                CancellationToken::new(),
-            ),
-            recovery_build: None,
+            primary,
+            info,
             status_path: status.clone(),
             lock_path: lock.clone(),
             lock_lease,
@@ -4641,58 +2568,9 @@ source-set:
         assert_eq!(metrics["modules"], 24);
         assert_eq!(metrics["methods"], 617);
         assert_eq!(metrics["db_size"], "1.3 MB");
-        assert_eq!(value["source_generation"], 42);
         let current = read_lock_path(&lock).expect("completed job should leave a marker");
         assert_eq!(current.state, "released");
         assert!(current.child_pid.is_some());
-        cleanup(&context);
-    }
-
-    #[test]
-    fn actor_bound_index_discards_synchronous_output_after_root_replacement() {
-        struct ReplacingRunner {
-            source_root: PathBuf,
-            displaced: PathBuf,
-        }
-
-        impl IndexRunner for ReplacingRunner {
-            fn run(&self, _command: &IndexCommand) -> Result<IndexOutput, String> {
-                fs::rename(&self.source_root, &self.displaced).unwrap();
-                fs::create_dir_all(&self.source_root).unwrap();
-                Ok(IndexOutput::success("Index not found: /tmp/bsl_index.db"))
-            }
-
-            fn start_background(&self, _job: IndexBackgroundJob) -> Result<(), String> {
-                panic!("a replaced root must not schedule background work")
-            }
-        }
-
-        let context = test_context("actor-bound-sync-root-replacement");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        let source_root = normalize_path_identity(&source_root).unwrap();
-        let capability = Arc::new(RetainedDirectoryCapability::open(&source_root).unwrap());
-        let runner = ReplacingRunner {
-            source_root: source_root.clone(),
-            displaced: context.workspace_root.join("src-displaced"),
-        };
-        let service =
-            WorkspaceIndexService::with_runner(&runner).with_bound_source_root(capability);
-        let args = serde_json::json!({ "sourceDir": source_root })
-            .as_object()
-            .unwrap()
-            .clone();
-
-        let readiness = service.ready_index(&context, &args);
-
-        assert!(
-            matches!(
-                readiness,
-                IndexReadiness::Unavailable(ref message)
-                    if message.contains("changed after admission")
-            ),
-            "{readiness:?}"
-        );
         cleanup(&context);
     }
 
@@ -4732,10 +2610,6 @@ source-set:
         }
 
         impl IndexRunner for ReplacingStartRunner {
-            fn run(&self, _command: &IndexCommand) -> Result<IndexOutput, String> {
-                Ok(IndexOutput::success("Index not found: /tmp/bsl_index.db"))
-            }
-
             fn start_background(&self, _job: IndexBackgroundJob) -> Result<(), String> {
                 fs::rename(&self.source_root, &self.displaced).unwrap();
                 fs::create_dir_all(&self.source_root).unwrap();
@@ -4754,12 +2628,8 @@ source-set:
         };
         let service =
             WorkspaceIndexService::with_runner(&runner).with_bound_source_root(capability);
-        let args = serde_json::json!({ "sourceDir": source_root })
-            .as_object()
-            .unwrap()
-            .clone();
-
-        let report = service.start_for_workspace(&context, &args, false);
+        let report =
+            service.start_isolated_build(&context, &source_root, &CancellationToken::new());
 
         assert!(
             report
@@ -4768,15 +2638,7 @@ source-set:
                 .any(|warning| warning.contains("changed after admission")),
             "{report:?}"
         );
-        let status = read_bsl_index_status(&context).unwrap();
-        assert_eq!(status.status, "building", "{status:?}");
-        assert!(
-            !status
-                .message
-                .as_deref()
-                .is_some_and(|message| message.contains("FOREIGN-REPLACEMENT-DIAGNOSTICS")),
-            "{status:?}"
-        );
+        assert!(read_bsl_index_status(&context).is_none());
         cleanup(&context);
     }
 
@@ -4905,7 +2767,6 @@ source-set:
             action: "build".to_string(),
             context: context.clone(),
             source_root: context.workspace_root.join("src"),
-            source_generation: source_generation(&context.workspace_root.join("src")),
             root_capability: None,
             primary: print_lines_command(
                 &context.workspace_root,
@@ -4919,7 +2780,6 @@ source-set:
                 &["Index not found: /tmp/bsl_index.db".to_string()],
                 CancellationToken::new(),
             ),
-            recovery_build: None,
             status_path: status.clone(),
             lock_path: lock.clone(),
             lock_lease,
@@ -4933,7 +2793,6 @@ source-set:
             .as_deref()
             .is_some_and(|message| message.starts_with("cancelled:")));
         assert!(current_status.last_run.is_some());
-        assert_eq!(current_status.source_generation, None);
         let current_lock = read_lock_path(&lock).expect("cancelled job should leave a marker");
         assert_eq!(current_lock.state, "released");
         cleanup(&context);
@@ -4945,21 +2804,76 @@ source-set:
         fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
         write_released_lock(&context, "build");
         write_old_building_status(&context, "build");
-        let runner = RecordingIndexRunner {
-            outputs: RefCell::new(vec![IndexOutput::success(
-                "Index not found: /tmp/bsl_index.db",
-            )]),
-            ..Default::default()
-        };
+        let runner = RecordingIndexRunner::default();
         let service = WorkspaceIndexService::with_runner(&runner);
 
-        let report = service.start_for_workspace(&context, &Map::new(), false);
+        let report = service.start_isolated_build(
+            &context,
+            &context.workspace_root.join("src"),
+            &CancellationToken::new(),
+        );
 
         assert_eq!(report.warnings, vec!["rlm index build started".to_string()]);
         assert_eq!(
             runner.backgrounds.borrow()[0].primary.args[0..2],
             ["index", "build"]
         );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn invalid_lock_without_building_status_is_treated_as_active() {
+        let context = test_context("invalid-lock-active");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        write_usable_build(&context, &"c".repeat(32));
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"").unwrap();
+        let lock_before = fs::read(&lock).unwrap();
+
+        assert!(!bsl_index_is_ready(&context));
+        assert_eq!(
+            fs::read(&lock).unwrap(),
+            lock_before,
+            "fresh invalid lock must not be recovered"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn fresh_invalid_lock_with_stale_status_is_treated_as_active() {
+        let context = test_context("invalid-lock-with-stale-status");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"").unwrap();
+        write_old_building_status(&context, "build");
+        let lock_before = fs::read(&lock).unwrap();
+        let status_before = fs::read(status_path(&context)).unwrap();
+
+        assert!(active_lock(&context, &source_root).unwrap());
+        assert_eq!(fs::read(&lock).unwrap(), lock_before);
+        assert_eq!(fs::read(status_path(&context)).unwrap(), status_before);
+        assert_eq!(read_bsl_index_status(&context).unwrap().status, "building");
+        cleanup(&context);
+    }
+
+    #[test]
+    fn stale_legacy_lock_is_recovered_by_active_lock() {
+        let context = test_context("stale-legacy-lock");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"").unwrap();
+        write_old_building_status(&context, "build");
+        make_lock_file_old(&context);
+
+        assert!(!active_lock(&context, &source_root).unwrap());
+        assert_eq!(read_lock_path(&lock).unwrap().state, "recovered");
+        assert_eq!(read_bsl_index_status(&context).unwrap().status, "failed");
         cleanup(&context);
     }
 
@@ -4976,13 +2890,7 @@ source-set:
             &mut lease,
             now_secs().saturating_sub(LOCK_STALE_AFTER.as_secs() + 1),
         );
-        let runner = RecordingIndexRunner::default();
-        let service = WorkspaceIndexService::with_runner(&runner);
-
-        let readiness = service.ready_index(&context, &Map::new());
-
-        assert_eq!(readiness, IndexReadiness::Building);
-        assert!(runner.commands.borrow().is_empty());
+        assert!(active_lock(&context, &context.workspace_root.join("src")).unwrap());
         drop(lease);
         cleanup(&context);
     }
@@ -5037,7 +2945,11 @@ source-set:
         };
         let service = WorkspaceIndexService::with_runner(&runner);
 
-        let report = service.start_for_workspace(&context, &Map::new(), false);
+        let report = service.start_isolated_build(
+            &context,
+            &context.workspace_root.join("src"),
+            &CancellationToken::new(),
+        );
 
         assert!(report
             .warnings
@@ -5049,90 +2961,28 @@ source-set:
     }
 
     #[test]
-    fn stale_structured_lock_is_marked_recovered_before_rebuild() {
+    fn stale_structured_lock_is_recovered_by_active_lock() {
         let context = test_context("stale-structured-recovered");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
         write_stale_lock(&context, "build");
         write_old_building_status(&context, "build");
 
-        assert!(!active_lock(&context, &context.workspace_root.join("src")).unwrap());
+        assert!(!active_lock(&context, &source_root).unwrap());
 
         let current =
             read_lock_path(&lock_path(&context)).expect("stale lock should remain as marker");
         assert_eq!(current.state, "recovered");
+        assert_eq!(read_bsl_index_status(&context).unwrap().status, "failed");
         cleanup(&context);
     }
 
     #[derive(Default)]
     struct RecordingIndexRunner {
-        outputs: RefCell<Vec<IndexOutput>>,
-        commands: RefCell<Vec<IndexCommand>>,
         backgrounds: RefCell<Vec<IndexBackgroundJob>>,
     }
 
-    struct FailingInfoRunner;
-
-    struct LockDuringInfoRunner {
-        context: WorkspaceContext,
-        output: IndexOutput,
-        lease: RefCell<Option<IndexLockLease>>,
-    }
-
-    impl LockDuringInfoRunner {
-        fn new(context: WorkspaceContext, output: IndexOutput) -> Self {
-            Self {
-                context,
-                output,
-                lease: RefCell::new(None),
-            }
-        }
-
-        fn release(&self) {
-            self.lease.borrow_mut().take();
-        }
-    }
-
-    impl IndexRunner for LockDuringInfoRunner {
-        fn run(&self, _command: &IndexCommand) -> Result<IndexOutput, String> {
-            let lock = lock_path(&self.context);
-            fs::create_dir_all(lock.parent().unwrap()).unwrap();
-            let lease =
-                acquire_index_lock(&lock, "build", &self.context.workspace_root.join("src"))
-                    .unwrap()
-                    .expect("competing maintenance should acquire the lock during info");
-            write_status(
-                &self.context,
-                BslIndexStatus::building("build", Some(&self.context.workspace_root.join("src"))),
-            )
-            .unwrap();
-            self.lease.replace(Some(lease));
-            Ok(self.output.clone())
-        }
-
-        fn start_background(&self, _job: IndexBackgroundJob) -> Result<(), String> {
-            panic!("active competing maintenance must prevent another background job")
-        }
-    }
-
-    impl IndexRunner for FailingInfoRunner {
-        fn run(&self, _command: &IndexCommand) -> Result<IndexOutput, String> {
-            Err("scripted index info failure".to_string())
-        }
-
-        fn start_background(&self, _job: IndexBackgroundJob) -> Result<(), String> {
-            panic!("failed marker must prevent background maintenance")
-        }
-    }
-
     impl IndexRunner for RecordingIndexRunner {
-        fn run(&self, command: &IndexCommand) -> Result<IndexOutput, String> {
-            self.commands.borrow_mut().push(command.clone());
-            if self.outputs.borrow().is_empty() {
-                return Ok(IndexOutput::success("Index not found: /tmp/bsl_index.db"));
-            }
-            Ok(self.outputs.borrow_mut().remove(0))
-        }
-
         fn start_background(&self, job: IndexBackgroundJob) -> Result<(), String> {
             self.backgrounds.borrow_mut().push(job);
             Ok(())
@@ -5144,10 +2994,6 @@ source-set:
     }
 
     impl IndexRunner for FailingReplacingIndexRunner {
-        fn run(&self, _command: &IndexCommand) -> Result<IndexOutput, String> {
-            Ok(IndexOutput::success("Index not found: /tmp/bsl_index.db"))
-        }
-
         fn start_background(&self, job: IndexBackgroundJob) -> Result<(), String> {
             let mut replacement = BslIndexLock::new("build", &job.source_root);
             replacement.lock_id = self.replacement_lock_id.clone();
@@ -5221,11 +3067,9 @@ source-set:
             action: action.to_string(),
             context: context.clone(),
             source_root: context.workspace_root.join("src"),
-            source_generation: source_generation(&context.workspace_root.join("src")),
             root_capability: None,
             primary: inert_index_command(context, action),
             info: inert_index_command(context, "info"),
-            recovery_build: None,
             status_path: status_path(context),
             lock_path: lock,
             lock_lease,
@@ -5260,18 +3104,6 @@ source-set:
             timeout: Duration::from_secs(30),
             cancellation,
         }
-    }
-
-    fn make_lock_file_old(context: &WorkspaceContext) {
-        use std::fs::FileTimes;
-
-        const JANUARY_1_2000_UTC: Duration = Duration::from_secs(946_684_800);
-        let file = OpenOptions::new()
-            .write(true)
-            .open(lock_path(context))
-            .unwrap();
-        file.set_times(FileTimes::new().set_modified(UNIX_EPOCH + JANUARY_1_2000_UTC))
-            .unwrap();
     }
 
     fn test_context(name: &str) -> WorkspaceContext {
@@ -5370,22 +3202,30 @@ source-set:
         write_status(context, status).unwrap();
     }
 
-    fn terminal_failure_for_source(message: &str, source_root: &Path) -> BslIndexStatus {
-        BslIndexStatus::terminal_failure(message, Some(source_root))
-            .with_source_generation(source_generation(source_root))
-    }
-
-    fn write_ready_status_for_current_source(
-        context: &WorkspaceContext,
-        source_root: &Path,
-        db_path: &Path,
-    ) {
+    fn write_usable_build(context: &WorkspaceContext, build_id: &str) -> PathBuf {
+        let source_root = default_source_root(context);
+        let build_root = rlm_build_root(context, &source_root, build_id).unwrap();
+        let db_path = build_root.join("bsl_index.db");
+        fs::create_dir_all(&build_root).unwrap();
+        fs::write(&db_path, b"usable index").unwrap();
         write_status(
             context,
-            BslIndexStatus::ready(source_root, db_path)
-                .with_source_generation(source_generation(source_root)),
+            BslIndexStatus::ready(&source_root, &db_path).with_build_id(build_id.to_string()),
         )
         .unwrap();
+        db_path
+    }
+
+    fn make_lock_file_old(context: &WorkspaceContext) {
+        use std::fs::FileTimes;
+
+        const JANUARY_1_2000_UTC: Duration = Duration::from_secs(946_684_800);
+        let file = OpenOptions::new()
+            .write(true)
+            .open(lock_path(context))
+            .unwrap();
+        file.set_times(FileTimes::new().set_modified(UNIX_EPOCH + JANUARY_1_2000_UTC))
+            .unwrap();
     }
 
     #[test]
@@ -5473,7 +3313,6 @@ source-set:
         assert_eq!(fs::read(&old_db).unwrap(), b"old usable database");
         let marker = read_bsl_index_status(&context).unwrap();
         assert_eq!(marker.build_id.as_deref(), Some(candidate_id.as_str()));
-        assert_eq!(marker.source_generation, None);
         cleanup(&context);
     }
 
@@ -5493,6 +3332,7 @@ source-set:
         let runner = RecordingIndexRunner::default();
         let service = WorkspaceIndexService::with_runner(&runner);
         assert_eq!(service.active_build(&context, &source_root).unwrap(), None);
+        assert!(!bsl_index_is_ready(&context));
 
         let report =
             service.start_isolated_build(&context, &source_root, &CancellationToken::new());
@@ -5530,6 +3370,7 @@ source-set:
         assert_eq!(active.id, candidate_id);
         assert_eq!(active.directory, candidate_directory);
         assert_eq!(active.db_path, candidate_db);
+        assert!(bsl_index_is_ready(&context));
         assert_eq!(fs::read(&legacy_db).unwrap(), b"legacy mutable database");
         fs::write(&legacy_db, b"rewritten by legacy builder").unwrap();
         assert_eq!(fs::read(&active.db_path).unwrap(), b"isolated database");

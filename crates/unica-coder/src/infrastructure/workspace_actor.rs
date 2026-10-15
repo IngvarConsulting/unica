@@ -4091,22 +4091,13 @@ pub(crate) mod tests {
             .unwrap();
         let runner = &crate::infrastructure::workspace_index::SYSTEM_INDEX_RUNNER;
         let service = fixture.actor.index_service(&binding, runner).unwrap();
-        let args = serde_json::json!({
-            "sourceDir": fixture.roots[1].display().to_string()
-        })
-        .as_object()
-        .unwrap()
-        .clone();
-
-        let readiness = service.ready_index(fixture.actor.context(), &args);
+        let error = service
+            .active_build(fixture.actor.context(), &fixture.roots[1])
+            .unwrap_err();
 
         assert!(
-            matches!(
-                readiness,
-                crate::infrastructure::workspace_index::IndexReadiness::Unavailable(ref message)
-                    if message.contains("escaped its actor-bound source root")
-            ),
-            "{readiness:?}"
+            error.contains("escaped its actor-bound source root"),
+            "{error}"
         );
         fixture.cleanup();
     }
