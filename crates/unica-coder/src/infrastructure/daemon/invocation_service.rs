@@ -1188,8 +1188,9 @@ impl ActorBoundExecution {
             .collect()
     }
 
-    /// Upgrade only the layout candidate selected by resolve(path) to a typed
-    /// reader. The actor remains the issuer of its retained root and artifacts.
+    /// Повышает до типизированного читателя только кандидата раскладки,
+    /// выбранного resolve(path). Владельцем удерживаемого корня и артефактов
+    /// остаётся актор.
     pub(in crate::infrastructure::daemon) fn layout_read_source(
         &self,
         name: &str,

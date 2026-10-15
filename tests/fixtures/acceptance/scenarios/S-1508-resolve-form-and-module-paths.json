@@ -477,6 +477,77 @@
     {
       "tool": "unica.resolve",
       "args": {
+        "path": "src/Documents/Invoice/Ext/ObjectModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Invoice.Module.Object"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "Documents/Invoice/Ext/ObjectModule.bsl"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/DataProcessors/Orphan/Ext/ManagerModule.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `DataProcessor.Orphan` is not registered",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/DataProcessors/Processor/Forms/Ghost/Ext/Form.xml"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `DataProcessor.Processor` does not register `Form.Ghost`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Ext/ExternalConnectionModule.bsl"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: no admitted source set places `src/Ext/ExternalConnectionModule.bsl`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
         "path": "src/CommonModules/Probe/Ext/Module.bsl"
       },
       "expect": [

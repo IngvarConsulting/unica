@@ -2301,9 +2301,9 @@ impl CanonicalV13ReadService {
                 format!("no admitted source set places `{path}`"),
             );
         };
-        // Attached file candidates are proven by the same reader as view:
-        // its owner registration and exact resource cannot be inferred from a
-        // plausible-looking layout alone.
+        // Кандидаты на присоединённые файлы подтверждаются тем же читателем,
+        // что и view: регистрацию владельца и точный ресурс нельзя вывести
+        // только из правдоподобной раскладки.
         if entry.kind() == "Module"
             || entry
                 .placed_path()

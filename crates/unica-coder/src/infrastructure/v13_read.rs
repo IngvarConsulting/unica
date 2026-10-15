@@ -315,9 +315,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let mut path = self.identity_export_path(at)?.ok_or_else(|| {
             ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
         })?;
-        // A form has a descriptor and a content file at the same logical
-        // address. resolve(at) keeps its descriptor; resolve(path) may select
-        // the exact content file already read and proven by source_lines.
+        // У формы есть дескриптор и файл содержимого по одному логическому
+        // адресу. resolve(at) сохраняет дескриптор, а resolve(path) может выбрать
+        // точный файл содержимого, уже прочитанный и подтверждённый source_lines.
         if requested_path.is_some_and(|requested| requested != path)
             && route.reader() == LogicalReader::Form
         {

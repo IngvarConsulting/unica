@@ -4,9 +4,13 @@ use crate::application::v13::find::{
 use crate::domain::address::{NodeKind, QualifiedAddress};
 use crate::domain::cancellation::CancellationToken;
 use crate::domain::code_intelligence::ProviderDeadline;
+use crate::domain::platform_profile::PlatformProfile;
 use crate::domain::project_sources::SourceSetKind;
 use crate::domain::refusal::{RefusalCode, RefusalDetail};
 use crate::infrastructure::capacity_observation::CapacityObserver;
+use crate::infrastructure::logical_event_source::{
+    module_address_for_relative, module_relative, module_source_address,
+};
 use crate::infrastructure::metadata_kinds::metadata_kind_by_directory;
 use crate::infrastructure::platform::filesystem::{
     FileIdentity, RetainedChildCapability, RetainedDirectoryCapability,
@@ -34,49 +38,24 @@ const NESTED_FAMILIES: [(&str, NodeKind); 3] = [
     ("Commands", NodeKind::Command),
 ];
 
-/// File resources recognized only by point lookup, never indexed as name facts.
-#[derive(Clone, Copy)]
+/// Файловые ресурсы только для точечного поиска, не индексируемые как факты имени.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum AttachedPathResource {
     Form,
     FormModule,
-    ManagerModule,
+    RoleModule,
 }
 
 impl AttachedPathResource {
     fn from_layout(parts: &[&str]) -> Option<Self> {
         match parts {
-            [_, _, "ext", "managermodule.bsl"] => Some(Self::ManagerModule),
             [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
             [_, _, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+            [.., "ext", file] if file.ends_with("module.bsl") && *file != "module.bsl" => {
+                Some(Self::RoleModule)
+            }
             _ => None,
         }
-    }
-
-    const fn owner_depth(self) -> usize {
-        match self {
-            Self::ManagerModule => 2,
-            Self::Form | Self::FormModule => 4,
-        }
-    }
-
-    const fn address_suffix(self) -> &'static str {
-        match self {
-            Self::Form => "",
-            Self::FormModule => ".Module.Form",
-            Self::ManagerModule => ".Module.Manager",
-        }
-    }
-
-    const fn file_suffix(self) -> &'static str {
-        match self {
-            Self::Form => "/Ext/Form.xml",
-            Self::FormModule => "/Ext/Form/Module.bsl",
-            Self::ManagerModule => "/Ext/ManagerModule.bsl",
-        }
-    }
-
-    const fn is_module(self) -> bool {
-        !matches!(self, Self::Form)
     }
 }
 
@@ -804,8 +783,8 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(())
     }
 
-    /// Reuse descriptor lookup only inside the source selected by the original
-    /// resource path. Registration remains the logical reader's responsibility.
+    /// Повторно использует поиск дескриптора только внутри источника, выбранного
+    /// исходным путём ресурса. За регистрацию по-прежнему отвечает логический читатель.
     fn locate_attached_path(
         &self,
         source: &LayoutFindSource<'_>,
@@ -815,7 +794,15 @@ impl WorkspaceFindDirectoryBuilder {
         cancellation: &CancellationToken,
         located: &mut Option<FindDocument>,
     ) -> Result<(), FindBuildError> {
-        let descriptor_query = format!("{}.xml", tail[..resource.owner_depth()].join("/"));
+        if resource == AttachedPathResource::RoleModule {
+            return self.locate_role_module_path(source, tail, deadline, cancellation, located);
+        }
+        let (address_suffix, file_suffix, is_module) = match resource {
+            AttachedPathResource::Form => ("", "/Ext/Form.xml", false),
+            AttachedPathResource::FormModule => (".Module.Form", "/Ext/Form/Module.bsl", true),
+            AttachedPathResource::RoleModule => unreachable!("ветка обработана выше"),
+        };
+        let descriptor_query = format!("{}.xml", tail[..4].join("/"));
         let source = LayoutFindSource::new(source.name, source.kind, source.root);
         let Some(owner) = self.locate_path(
             std::slice::from_ref(&source),
@@ -826,9 +813,9 @@ impl WorkspaceFindDirectoryBuilder {
         else {
             return Ok(());
         };
-        let at = format!("{}{}", owner.at(), resource.address_suffix());
+        let at = format!("{}{address_suffix}", owner.at());
         let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
-        if resource.is_module() {
+        if is_module {
             if crate::domain::platform_profile::PlatformProfile::v8_3_27()
                 .module_capability(&address)
                 .is_none()
@@ -842,7 +829,7 @@ impl WorkspaceFindDirectoryBuilder {
         let stem = descriptor
             .strip_suffix(".xml")
             .ok_or_else(unsafe_layout_entry)?;
-        let relative = format!("{stem}{}", resource.file_suffix());
+        let relative = format!("{stem}{file_suffix}");
         find_checkpoint(deadline, cancellation)?;
         match source
             .root
@@ -856,15 +843,85 @@ impl WorkspaceFindDirectoryBuilder {
             located,
             FindDocument::new(
                 at,
-                if resource.is_module() {
-                    "Module"
-                } else {
-                    "Form"
-                },
+                if is_module { "Module" } else { "Form" },
                 owner.at(),
                 Vec::new(),
             )
             .with_path(relative),
+        )
+    }
+
+    fn locate_role_module_path(
+        &self,
+        source: &LayoutFindSource<'_>,
+        tail: &[&str],
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        located: &mut Option<FindDocument>,
+    ) -> Result<(), FindBuildError> {
+        let owner_parts = &tail[..tail.len() - 2];
+        let descriptor_query = if owner_parts.is_empty() {
+            "Configuration.xml".to_string()
+        } else {
+            format!("{}.xml", owner_parts.join("/"))
+        };
+        let selected = LayoutFindSource::new(source.name, source.kind, source.root);
+        let mut owner = self.locate_path(
+            std::slice::from_ref(&selected),
+            &descriptor_query,
+            deadline,
+            cancellation,
+        )?;
+        if owner.is_none() && !owner_parts.is_empty() {
+            owner = self.locate_path(
+                std::slice::from_ref(&selected),
+                &owner_parts.join("/"),
+                deadline,
+                cancellation,
+            )?;
+        }
+        let Some(owner) = owner else {
+            return Ok(());
+        };
+        let branch = if owner.kind() == "Configuration" {
+            format!("{}:Module", source.name)
+        } else {
+            format!("{}.Module", owner.at())
+        };
+        let branch = QualifiedAddress::parse(&branch).map_err(|_| unsafe_layout_entry())?;
+        let profile = PlatformProfile::v8_3_27();
+        let requested = tail.join("/");
+        let Some((expected, relative)) = profile
+            .module_children(&branch)
+            .into_iter()
+            .filter_map(|child| {
+                let target = module_source_address(child.at(), child.capability()).ok()?;
+                let relative = module_relative(&target, source.kind).ok()?;
+                (normalize_layout_path(&relative.to_string_lossy()) == requested)
+                    .then_some((child, relative))
+            })
+            .next()
+        else {
+            return Ok(());
+        };
+        let Some(address) =
+            module_address_for_relative(source.name, source.kind, profile, &relative)
+        else {
+            return Err(unsafe_layout_entry());
+        };
+        if address != *expected.at() {
+            return Err(unsafe_layout_entry());
+        }
+        find_checkpoint(deadline, cancellation)?;
+        match source.root.open_relative_regular_nofollow(&relative) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(child_read_error(error)),
+        }
+        add_path_match(
+            located,
+            FindDocument::new(address.to_string(), "Module", owner.at(), Vec::new())
+                .with_path(path_text(&relative)),
         )
     }
 
@@ -2844,6 +2901,70 @@ mod tests {
             write(&fixture.source.join("Catalogs/Валюты.xml"), "<broken");
             assert!(locate(non_layout.to_str().unwrap()).unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn point_lookup_routes_owner_module_roles_through_the_platform_profile() {
+        let fixture = Fixture::new();
+        write(
+            &fixture.source.join("Ext/SessionModule.bsl"),
+            "Процедура Probe() Экспорт\nКонецПроцедуры\n",
+        );
+        write(
+            &fixture
+                .source
+                .join("Catalogs/Валюты/Ext/RecordSetModule.bsl"),
+            "Процедура Probe() Экспорт\nКонецПроцедуры\n",
+        );
+        write(
+            &fixture.source.join("CommonCommands/Open.xml"),
+            &owner("Open", "CommonCommand", "Открыть", ""),
+        );
+        write(
+            &fixture
+                .source
+                .join("CommonCommands/Open/Ext/CommandModule.bsl"),
+            "Процедура Probe() Экспорт\nКонецПроцедуры\n",
+        );
+        let root = RetainedDirectoryCapability::open(&fixture.source).unwrap();
+        let builder = WorkspaceFindDirectoryBuilder::default();
+        let locate = |path: &str| {
+            builder.locate_path(
+                &[LayoutFindSource::new(
+                    "main",
+                    SourceSetKind::Configuration,
+                    &root,
+                )],
+                path,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+        };
+        for (path, expected) in [
+            (
+                "Catalogs/Валюты/Ext/ObjectModule.bsl",
+                "main:Catalog.Валюты.Module.Object",
+            ),
+            (
+                "Catalogs/Валюты/Commands/Обновить/Ext/CommandModule.bsl",
+                "main:Catalog.Валюты.Command.Обновить.Module.Command",
+            ),
+            (
+                "CommonCommands/Open/Ext/CommandModule.bsl",
+                "main:CommonCommand.Open.Module.Command",
+            ),
+            ("Ext/SessionModule.bsl", "main:Module.Session"),
+        ] {
+            let entry = locate(path).unwrap().expect("путь модуля размещён");
+            assert_eq!(entry.at(), expected, "{path}");
+            assert_eq!(entry.placed_path(), Some(path), "{path}");
+        }
+        assert!(
+            locate("Catalogs/Валюты/Ext/RecordSetModule.bsl")
+                .unwrap()
+                .is_none(),
+            "физический файл не добавляет справочнику модуль набора записей"
+        );
     }
 
     #[test]

@@ -41,6 +41,7 @@ fn resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp() {
                     ".Form.Main.Module.Form",
                     "Module",
                 ),
+                ("Ext/ObjectModule.bsl", ".Module.Object", "Module"),
                 ("Ext/ManagerModule.bsl", ".Module.Manager", "Module"),
             ] {
                 let path = format!("{kind}s/{name}/{resource}");
@@ -72,6 +73,21 @@ fn resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp() {
                 }
             }
         }
+        for (path, address) in [
+            (
+                "Documents/Invoice/Commands/Post/Ext/CommandModule.bsl",
+                "main:Document.Invoice.Command.Post.Module.Command",
+            ),
+            ("Ext/SessionModule.bsl", "main:Module.Session"),
+        ] {
+            let result =
+                mcp.completed_tool_call(call_tool(id, "unica.resolve", json!({"path":path})));
+            id += 1;
+            assert_eq!(result["ok"], true, "{path}: {result:#}");
+            assert_eq!(result["data"]["at"], address);
+            assert_eq!(result["data"]["path"], path);
+            assert_eq!(result["data"]["kind"], "Module");
+        }
         let descriptor = mcp.completed_tool_call(call_tool(
             id,
             "unica.resolve",
@@ -100,7 +116,9 @@ fn resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp() {
         "DataProcessors/Orphan/Forms/Main/Ext/Form.xml",
         "DataProcessors/Processor/Forms/Ghost/Ext/Form.xml",
         "DataProcessors/Processor/Forms/Ghost/Ext/Form/Module.bsl",
+        "Documents/Invoice/Ext/RecordSetModule.bsl",
         "Documents/Invoice/Ext/ManagerModule.bsl",
+        "Ext/ExternalConnectionModule.bsl",
         "DataProcessors/Absent/Ext/ManagerModule.bsl",
     ]
     .iter()
@@ -153,14 +171,28 @@ fn resolve_resources_keep_source_prefix_and_deepest_root_selection_on_public_mcp
     let ambiguous = mcp.completed_tool_call(call_tool(5, "unica.resolve", json!({"path":path})));
     assert_eq!(ambiguous["ok"], false, "{ambiguous:#}");
     assert_eq!(ambiguous["diagnostics"][0]["code"], "bad_value");
-    // An unregistered physical double must still refuse ambiguity, rather than
-    // selecting an arbitrary source before typed registration is established.
+    // Незарегистрированный физический двойник должен приводить к отказу
+    // из-за неоднозначности, а не к выбору произвольного источника до проверки
+    // типизированной регистрации.
     let root_descriptor = root.path().join("Configuration.xml");
     let text = std::fs::read_to_string(&root_descriptor)
         .unwrap()
         .replace("<DataProcessor>Processor</DataProcessor>", "");
-    std::fs::write(root_descriptor, text).unwrap();
+    std::fs::write(&root_descriptor, text).unwrap();
     let ambiguous = mcp.completed_tool_call(call_tool(6, "unica.resolve", json!({"path":path})));
+    assert_eq!(ambiguous["ok"], false, "{ambiguous:#}");
+    assert_eq!(ambiguous["diagnostics"][0]["code"], "bad_value");
+    let module_path = "Documents/Invoice/Ext/ObjectModule.bsl";
+    let ambiguous =
+        mcp.completed_tool_call(call_tool(7, "unica.resolve", json!({"path":module_path})));
+    assert_eq!(ambiguous["ok"], false, "{ambiguous:#}");
+    assert_eq!(ambiguous["diagnostics"][0]["code"], "bad_value");
+    let text = std::fs::read_to_string(&root_descriptor)
+        .unwrap()
+        .replace("<Document>Invoice</Document>", "");
+    std::fs::write(root_descriptor, text).unwrap();
+    let ambiguous =
+        mcp.completed_tool_call(call_tool(8, "unica.resolve", json!({"path":module_path})));
     assert_eq!(ambiguous["ok"], false, "{ambiguous:#}");
     assert_eq!(ambiguous["diagnostics"][0]["code"], "bad_value");
     mcp.finish();

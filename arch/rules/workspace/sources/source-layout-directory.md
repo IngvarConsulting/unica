@@ -14,6 +14,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_find.rs::a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object
   - crates/unica-coder/src/infrastructure/v13_find.rs::large_configuration_descriptor_still_has_a_layout_address
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_ignores_the_search_collection_entry_limit
+  - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_routes_owner_module_roles_through_the_platform_profile
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_common_module_file_requires_target_and_owner_without_full_directory
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_refuses_when_target_name_is_outside_the_descriptor_sample
   - crates/unica-coder/src/infrastructure/v13_find.rs::point_lookup_refuses_an_existing_broken_target_descriptor
