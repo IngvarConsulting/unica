@@ -594,7 +594,8 @@ fn parse_family_operation(
         | OperationFamily::Subsystem
         | OperationFamily::Interface
         | OperationFamily::Support => {
-            let parsed = form_resource::parse_form_resource_plan_operation(
+            let parsed = form_resource::parse_form_resource_plan_operation_in(
+                Some(family),
                 operation.name(),
                 &args,
                 op_index,
@@ -639,11 +640,10 @@ fn parse_family_operation(
     Ok(parsed)
 }
 
-/// Разбор операции планировщиком без стадирования: проверка, что разбор цели
-/// и аргументов семейства принимает вызов. Им двусторонняя проверка `can`
-/// сверяет словарь узла с планировщиком.
-/// Разбор семейством в обход реестра: двусторонняя проверка ищет адреса,
-/// которые семейство приняло бы, а реестр — нет.
+/// Разбор семейством без проверки места реестром: семейство выбирает запись
+/// реестра для адреса вызова (общее имя `attribute.add` объекта и формы,
+/// #1465), но применимость не проверяется. Двусторонняя проверка `can`
+/// ищет так адреса, которые семейство приняло бы, а реестр — нет.
 #[cfg(test)]
 pub(crate) fn parse_family_operation_for_test(
     op_index: usize,

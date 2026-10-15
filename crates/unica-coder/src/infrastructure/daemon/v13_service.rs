@@ -4264,7 +4264,13 @@ pub(super) fn preflight_apply_operations_with(
                 descriptor,
             ),
             None => {
-                let message = format!("{refused}; it addresses {}", descriptor.address_shape());
+                // Общее имя (#1465) исполнимо по формам адреса обеих записей.
+                let shapes = registry
+                    .named(operation.name())
+                    .map(|descriptor| descriptor.address_shape())
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                let message = format!("{refused}; it addresses {shapes}");
                 let refusal = error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,

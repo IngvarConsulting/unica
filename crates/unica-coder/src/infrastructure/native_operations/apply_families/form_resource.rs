@@ -691,7 +691,28 @@ fn creation_name(
     Ok(name)
 }
 
+/// Разбор без семейства, выбранного вызывающим: общее имя (`attribute.add`
+/// формы и объекта, #1465) выбирает запись реестра по адресу вызова.
+#[cfg(test)]
 pub(crate) fn parse_form_resource_plan_operation(
+    operation: &str,
+    args: &Value,
+    op_index: usize,
+    binding: &ProviderRootBinding,
+) -> Result<FormResourcePlanOperation, ApplyPlanError> {
+    let at = args
+        .get("at")
+        .and_then(Value::as_str)
+        .and_then(|raw| QualifiedAddress::resolve_input(raw, &[binding.source_set_name()]).ok());
+    let family = super::resolved_descriptor(operation, at.as_ref(), binding)
+        .map(|descriptor| descriptor.family());
+    parse_form_resource_plan_operation_in(family, operation, args, op_index, binding)
+}
+
+/// Разбор операции семейством, которое выбрал разбор `apply` по записи
+/// реестра для адреса вызова.
+pub(crate) fn parse_form_resource_plan_operation_in(
+    family: Option<OperationFamily>,
     operation: &str,
     args: &Value,
     op_index: usize,
@@ -705,14 +726,6 @@ pub(crate) fn parse_form_resource_plan_operation(
         )
         .at_path(format!("ops[{op_index}].args"))
     })?;
-    // Общее имя (`attribute.add` формы и объекта, #1465) выбирает
-    // семейство по адресу вызова.
-    let at = object
-        .get("at")
-        .and_then(Value::as_str)
-        .and_then(|raw| QualifiedAddress::resolve_input(raw, &[binding.source_set_name()]).ok());
-    let family = super::resolved_descriptor(operation, at.as_ref(), binding)
-        .map(|descriptor| descriptor.family());
     let kind = match family {
         Some(OperationFamily::Role) => parse_role_operation(operation, object, op_index, binding)?,
         Some(OperationFamily::Subsystem) => {

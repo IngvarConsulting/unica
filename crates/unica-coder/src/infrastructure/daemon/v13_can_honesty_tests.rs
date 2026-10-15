@@ -167,12 +167,14 @@ const WRITES_BEYOND_NODE: &[(&str, &str)] = &[
 /// чьи файлы сверяются с узлом `at`. Остальные операции словаря доходят до
 /// плана только с именами, которых в фикстуре нет, и проверку записи здесь
 /// не получают: прежде всего операции СКД, табличного документа и членов
-/// метаданных.
+/// метаданных. Общее имя двух семейств (`attribute.add` объекта и формы,
+/// #1465) записывается с семейством — `Form:attribute.add`, — чтобы
+/// проверка одной записи не прятала непроверенную другую.
 const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
     (
         "workspace",
         &[
-            "attribute.add",
+            "Metadata:attribute.add",
             "childSubsystem.add",
             "childSubsystem.remove",
             "code.insert",
@@ -196,8 +198,8 @@ const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
             "item.add",
             "event.bind",
             "form.remove",
-            "attribute.add",
-            "command.add",
+            "Form:attribute.add",
+            "Form:command.add",
             "help.create",
             "objectType.add",
             "props.set",
@@ -601,8 +603,9 @@ fn check_fixture(name: &str) -> (BTreeSet<RouteClass>, BTreeSet<(RouteClass, Str
         .find(|(fixture, _)| *fixture == name)
         .map_or(&[][..], |(_, ops)| *ops);
     for op in required {
+        let key = required_write_key(op);
         assert!(
-            writes_checked.contains(*op),
+            writes_checked.contains(&key),
             "{name}: the plan of `{op}` was not checked against its node; checked {writes_checked:?}"
         );
     }
@@ -817,6 +820,29 @@ fn source_root(workspace: &Path, set: &str) -> PathBuf {
         .expect("declared source set")
 }
 
+/// Ключ проверенной записи — семейство и имя: общее имя двух семейств
+/// (#1465) проверяется у каждой записи отдельно.
+fn write_key(descriptor: OperationDescriptor) -> String {
+    format!("{:?}:{}", descriptor.family(), descriptor.name())
+}
+
+/// Ключ строки `WRITES_CHECKED_AT_LEAST`: с семейством как есть, без него —
+/// только для имени одной записи реестра.
+fn required_write_key(entry: &str) -> String {
+    if entry.contains(':') {
+        return entry.to_string();
+    }
+    let mut named = OperationRegistry::closed().named(entry);
+    let descriptor = named
+        .next()
+        .unwrap_or_else(|| panic!("`{entry}` is registered"));
+    assert!(
+        named.next().is_none(),
+        "`{entry}` names two registry records: write it with its family"
+    );
+    write_key(descriptor)
+}
+
 thread_local! {
     static NARROWINGS_SEEN: std::cell::RefCell<BTreeSet<usize>> =
         const { std::cell::RefCell::new(BTreeSet::new()) };
@@ -925,7 +951,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         }
         if plan_writes && listed && family == Ok(true) {
             if let Ok(paths) = plan(checked, &request) {
-                WRITES_CHECKED.with(|done| done.borrow_mut().insert(op.to_string()));
+                WRITES_CHECKED.with(|done| done.borrow_mut().insert(write_key(descriptor)));
                 check_written_paths(checked, &address, route, op, &paths, mismatches);
             }
         }
@@ -1984,6 +2010,18 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
             }
         }
     }
+    // Общее имя без исполнимого узла в цепочке адреса называет формы
+    // адреса обеих записей: объекта и формы.
+    let request = apply_request(
+        "cf:Constant.Rate",
+        "attribute.add",
+        json!({"items": [{"name": "Comment", "type": "String"}]}),
+    );
+    let refusal = preflight_apply_operations(&request, traits, &|_| None)
+        .expect_err("attribute.add does not apply to a constant");
+    let message = refusal.diagnostics[0]["message"].as_str().unwrap();
+    assert!(message.contains("`Kind.Name.Form.F`"), "{message}");
+    assert!(message.contains(" or "), "{message}");
 }
 
 /// Новые узлы схемы (#1357): снятый `group`, `parent` или `name` ведёт

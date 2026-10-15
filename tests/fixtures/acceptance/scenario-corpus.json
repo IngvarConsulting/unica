@@ -40669,7 +40669,7 @@
    "name": "form-attribute-and-command-share-the-node-names",
    "issue": 1465,
    "area": "Формы",
-   "task": "Реквизит и команда формы добавляются attribute.add и command.add на адресе формы, как у объекта метаданных: can формы выдаёт их, контракт по адресу Can выбирается адресом (форма или объект), снятые formAttribute.add и formCommand.add отказывают bad_value без записи с next к контракту на форме, а новые имена строят предпросмотр без записи",
+   "task": "Реквизит и команда формы добавляются attribute.add и command.add на адресе формы, как у объекта метаданных: can формы выдаёт их, контракт по адресу Can выбирается адресом (у формы — писатель формы, у справочника — член метаданных), снятые formAttribute.add и formCommand.add отказывают bad_value без записи с next к контракту на форме, а новые имена пишут реквизит и команду в Form.xml, не меняя описание справочника",
    "wire": [
     {
      "tool": "unica.view",
@@ -40701,6 +40701,10 @@
       "before": {
        "kind": "sha256",
        "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      },
+      "catalogBefore": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты.xml"
       }
      }
     },
@@ -40716,6 +40720,14 @@
       {
        "pointer": "/data/props/op",
        "eq": "attribute.add"
+      },
+      {
+       "pointer": "/data/props/contract/help/path",
+       "eq": "skills/form-edit/SKILL.md"
+      },
+      {
+       "pointer": "/data/props/contract/target",
+       "eq": "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Attribute branch before choosing names."
       }
      ]
     },
@@ -40731,6 +40743,10 @@
       {
        "pointer": "/data/props/op",
        "eq": "attribute.add"
+      },
+      {
+       "pointer": "/data/props/contract/help/path",
+       "eq": "skills/meta-edit/SKILL.md"
       }
      ]
     },
@@ -40828,31 +40844,7 @@
           }
          ]
         }
-       }
-      ]
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "preview"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
+       },
        {
         "op": "command.add",
         "args": {
@@ -40879,6 +40871,49 @@
        "kind": "sha256",
        "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
        "eq": "$capture.before"
+      }
+     ],
+     "captures": {
+      "token": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.token"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xmlTags",
+       "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name='Проба']",
+       "eq": [
+        "Attribute"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xmlTags",
+       "select": "./{http://v8.1c.ru/8.3/xcf/logform}Commands/{http://v8.1c.ru/8.3/xcf/logform}Command[@name='Проба']",
+       "eq": [
+        "Command"
+       ]
+      },
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты.xml",
+       "eq": "$capture.catalogBefore"
       }
      ]
     }
