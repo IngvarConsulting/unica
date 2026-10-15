@@ -1692,7 +1692,6 @@ mod tests {
         set_unix_mode_for_test, unix_mode_for_test, FileLinkFixtureOutcome,
     };
     use std::fs;
-    #[cfg(windows)]
     use std::io::Read;
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::path::{Path, PathBuf};
@@ -2202,7 +2201,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[cfg(windows)]
     #[test]
     fn single_file_cleanup_unlinks_stage_while_another_handle_is_open() {
         let root = unique_temp_root("single-file-posix-cleanup");
