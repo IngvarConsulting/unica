@@ -103,19 +103,22 @@ class GateProfileCompositionTests(unittest.TestCase):
 
     def test_private_scenario_feature_selection_is_scoped_to_its_library_module(self) -> None:
         prefix = "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::"
+        # Признак включается одному пакету и двум целям: библиотеке, где фильтр
+        # оставляет только модуль сценариев, и контракту целиком. Один вызов —
+        # одна сборка `unica-coder` с признаком на план и прогон.
         expected = (
-            "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--lib",
-            "-E", f"test(/^{prefix}/)",
+            "-p", "unica-coder", "--features", "receipt-ledger-test-support",
+            "--lib", "--test", "daemon_receipt_ledger",
+            "-E", f"binary(daemon_receipt_ledger) | test(/^{prefix}/)",
         )
-        self.assertEqual(self.run_tests.LEDGER_SCENARIO_LIBRARY, expected)
+        self.assertEqual(self.run_tests.LEDGER_FEATURE_SELECTION, expected)
         self.assertEqual(self.run_tests.rust_selections("pr"), [("--workspace",)])
         for profile in ("queue", "main", "release", "all", "large"):
             with self.subTest(profile=profile):
                 selections = self.run_tests.rust_selections(profile)
-                self.assertEqual(selections[0], ("--workspace",))
-                self.assertEqual(selections[2], expected)
+                self.assertEqual(selections, [("--workspace",), expected])
                 self.assertNotIn("--features", selections[0])
-                self.assertNotIn("--workspace", selections[2])
+                self.assertNotIn("--workspace", selections[1])
         source = (REPO_ROOT / "crates/unica-coder/src/infrastructure/daemon/runtime_v5/receipt_scenario_v5/tests.rs").read_text()
         declared = attributed_test_functions(source)
         self.assertIn("fresh_task_listener_after_restart_survives_its_prepare_barrier_release", declared)

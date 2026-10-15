@@ -77,20 +77,21 @@ def nextest_junit(profile: str) -> Path:
 # признаком тестовой поддержки: у цели стоит `required-features`. Признак не
 # включается на весь workspace — под ним рантайм ведёт себя иначе на пути
 # fail-stop, а тестировать надо поставляемый код, — поэтому контракт идёт
-# вторым вызовом nextest ровно на одну цель. Он целиком `medium` и `large`:
-# ворота, принимающие только `small`, второго вызова не получают, потому что
-# пустой отбор у nextest — отказ, а не зелёный ноль.
-LEDGER_CONTRACT = (
-    "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--test", "daemon_receipt_ledger",
-)
-
-# These private fixture tests exercise the daemon through helpers, so the
-# generic source classifier cannot see their sockets. Enable only this library
-# module, apart from the production workspace and the public ledger contract.
+# вторым вызовом nextest. Он целиком `medium` и `large`: ворота, принимающие
+# только `small`, второго вызова не получают, потому что пустой отбор у
+# nextest — отказ, а не зелёный ноль.
+#
+# Тем же вызовом идут приватные сценарии библиотеки: они гоняют демона через
+# помощники, и классификатор исходников их сокетов не видит, поэтому признак
+# включается только этому модулю. Один вызов на обе цели — одна сборка
+# `unica-coder` с признаком: план собирает её, прогон берёт готовой. Фильтр
+# nextest пересекается с `default-filter` профиля, как и прежде у каждого
+# из двух вызовов.
 SCENARIO_TEST_PREFIX = "infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::"
-LEDGER_SCENARIO_LIBRARY = (
-    "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--lib",
-    "-E", f"test(/^{SCENARIO_TEST_PREFIX}/)",
+LEDGER_FEATURE_SELECTION = (
+    "-p", "unica-coder", "--features", "receipt-ledger-test-support",
+    "--lib", "--test", "daemon_receipt_ledger",
+    "-E", f"binary(daemon_receipt_ledger) | test(/^{SCENARIO_TEST_PREFIX}/)",
 )
 
 
@@ -128,11 +129,11 @@ def surviving_product_report(os_name: str = os.name):
 
 def rust_selections(profile: str) -> list[tuple[str, ...]]:
     """Что отбирает каждый вызов nextest: весь workspace и, если ворота
-    принимают `medium` или `large`, контракт и private scenario-модуль ReceiptLedger."""
+    принимают `medium` или `large`, одним вызовом контракт и приватные
+    сценарии ReceiptLedger."""
     selections = [("--workspace",)]
     if set(ADMITTED[profile]) & {"medium", "large"}:
-        selections.append(LEDGER_CONTRACT)
-        selections.append(LEDGER_SCENARIO_LIBRARY)
+        selections.append(LEDGER_FEATURE_SELECTION)
     return selections
 
 
@@ -297,7 +298,7 @@ def write_python_plan(profile: str, results: Path, runner: str, suite: str | Non
 
 
 def scenario_library_medium(selection: tuple[str, ...] | None, binary: str, name: str) -> bool:
-    return selection == LEDGER_SCENARIO_LIBRARY and binary == "unica-coder" and name.startswith(SCENARIO_TEST_PREFIX)
+    return selection == LEDGER_FEATURE_SELECTION and binary == "unica-coder" and name.startswith(SCENARIO_TEST_PREFIX)
 
 
 def emit_rust(

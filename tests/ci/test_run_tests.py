@@ -39,12 +39,9 @@ class RunTestsSeamTests(unittest.TestCase):
                 ["cargo", "nextest", "run", "--workspace", "--profile", "default"],
                 [
                     "cargo", "nextest", "run", "-p", "unica-coder",
-                    "--features", "receipt-ledger-test-support", "--test", "daemon_receipt_ledger",
-                    "--profile", "default",
-                ],
-                [
-                    "cargo", "nextest", "run", "-p", "unica-coder",
-                    "--features", "receipt-ledger-test-support", "--lib", "-E",
+                    "--features", "receipt-ledger-test-support",
+                    "--lib", "--test", "daemon_receipt_ledger", "-E",
+                    "binary(daemon_receipt_ledger) | "
                     "test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)",
                     "--profile", "default",
                 ],
@@ -66,11 +63,12 @@ class RunTestsSeamTests(unittest.TestCase):
 
         planned = module.commands("all", "all", interpreter="python")
 
-        # Workspace, контракт и библиотечные сценарии идут до Python.
-        self.assertEqual([command[0] for command in planned[:3]], ["cargo"] * 3)
-        self.assertTrue(all(command[0] == "python" for command in planned[3:]))
-        self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[3:]))
-        self.assertEqual(len(planned), 6)
+        # Workspace и один вызов с признаком (контракт и библиотечные
+        # сценарии) идут до Python.
+        self.assertEqual([command[0] for command in planned[:2]], ["cargo"] * 2)
+        self.assertTrue(all(command[0] == "python" for command in planned[2:]))
+        self.assertTrue(all(command[1].endswith("run-unittest.py") for command in planned[2:]))
+        self.assertEqual(len(planned), 5)
 
     def test_results_directory_turns_emission_on_for_python_suites(self) -> None:
         """Без `--results` набор идёт как раньше; с ним пишет результаты и знает раннер."""
@@ -118,9 +116,9 @@ class RunTestsSeamTests(unittest.TestCase):
                               junit=out / "no-such-junit.xml")
 
         self.assertEqual(code, 0)
-        # Каждый из трёх вызовов nextest снимает свой JUnit; затем список Python.
-        self.assertEqual(len(calls), 4)
-        self.assertEqual([len(planned) for planned in calls[:3]], [1, 1, 1])
+        # Каждый из двух вызовов nextest снимает свой JUnit; затем список Python.
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([len(planned) for planned in calls[:2]], [1, 1])
         signature = json.loads((out / "run.json").read_text(encoding="utf-8"))
         self.assertEqual(signature["ecosystem"], "all")
         self.assertEqual(signature["runner"], "ubuntu-latest")
@@ -187,9 +185,9 @@ class RunTestsSeamTests(unittest.TestCase):
             [
                 "cargo nextest run --workspace --profile default",
                 "cargo nextest run -p unica-coder --features receipt-ledger-test-support"
-                " --test daemon_receipt_ledger --profile default",
-                "cargo nextest run -p unica-coder --features receipt-ledger-test-support"
-                " --lib -E test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)"
+                " --lib --test daemon_receipt_ledger"
+                " -E binary(daemon_receipt_ledger) |"
+                " test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)"
                 " --profile default",
             ],
         )
@@ -202,7 +200,10 @@ class GateProfileTests(unittest.TestCase):
         module = load_module()
 
         ledger = [
-            "-p", "unica-coder", "--features", "receipt-ledger-test-support", "--test", "daemon_receipt_ledger",
+            "-p", "unica-coder", "--features", "receipt-ledger-test-support",
+            "--lib", "--test", "daemon_receipt_ledger", "-E",
+            "binary(daemon_receipt_ledger) | "
+            "test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)",
         ]
         for gate in ("pr", "queue", "main", "release"):
             with self.subTest(gate=gate):
@@ -213,14 +214,9 @@ class GateProfileTests(unittest.TestCase):
                     # `small` его не гоняют и не вызывают nextest впустую.
                     self.assertEqual(len(commands), 1)
                 else:
+                    # Контракт и сценарии — один вызов: одна сборка с признаком.
                     self.assertEqual(commands[1], ["cargo", "nextest", "run", *ledger, "--profile", gate])
-                    self.assertEqual(len(commands), 3)
-                    self.assertEqual(commands[2], [
-                        "cargo", "nextest", "run", "-p", "unica-coder",
-                        "--features", "receipt-ledger-test-support", "--lib", "-E",
-                        "test(/^infrastructure::daemon::runtime_v5::receipt_scenario_v5::tests::/)",
-                        "--profile", gate,
-                    ])
+                    self.assertEqual(len(commands), 2)
                 self.assertEqual(module.nextest_junit(gate).parts[-3:], ("nextest", gate, "junit.xml"))
         self.assertEqual(module.nextest_junit("all").parts[-3:], ("nextest", "default", "junit.xml"))
 
@@ -251,7 +247,7 @@ class GateProfileTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with patch.object(module.allure_results, "nextest_list", side_effect=lambda _, command: [dict(case) for case in cases] if "--lib" in command else []):
+            with patch.object(module.allure_results, "nextest_list", side_effect=lambda _, command: [dict(case) for case in cases] if "--features" in command else []):
                 self.assertEqual(module.write_rust_plan(root, "queue"), 3)
             planned = json.loads((root / "plan.json").read_text())
             self.assertEqual(planned[0]["size"], "medium")
@@ -266,7 +262,7 @@ class GateProfileTests(unittest.TestCase):
                 f'<testcase name="{prefix}foreign" time="0.1"/>'
                 '</testsuite></testsuites>'
             )
-            for selection, expected_owned_size in [(module.LEDGER_SCENARIO_LIBRARY, "medium"), (("--workspace",), "small")]:
+            for selection, expected_owned_size in [(module.LEDGER_FEATURE_SELECTION, "medium"), (("--workspace",), "small")]:
                 output = root / expected_owned_size
                 self.assertEqual(module.emit_rust(output, "queue", "linux", junit, selection=selection), 3)
                 results = [json.loads(path.read_text()) for path in output.glob("*-result.json")]
@@ -290,23 +286,30 @@ class GateProfileTests(unittest.TestCase):
 
         def run_commands(planned):
             command = planned[0]
-            library = "--lib" in command
-            ledger = "--test" in command
-            seen.append("--lib" if library else "--test" if ledger else "--workspace")
-            name = module.SCENARIO_TEST_PREFIX + "case" if library else "case"
-            junit.write_text(
-                '<testsuites name="unica"><testsuite name="unica-coder' + ("::daemon_receipt_ledger" if ledger else "") + '">'
-                '<testcase name="' + name + '" classname="unica-coder" time="0.1">'
-                + ('<failure message="assertion failed: first invocation"/>' if not library and not ledger else '')
-                + "</testcase></testsuite></testsuites>",
-                encoding="utf-8",
-            )
-            return 1 if not library and not ledger else 0
+            featured = "--features" in command
+            seen.append("--features" if featured else "--workspace")
+            if featured:
+                # Один вызов с признаком пишет обе цели: сценарии библиотеки
+                # и контракт.
+                suites = (
+                    '<testsuite name="unica-coder">'
+                    '<testcase name="' + module.SCENARIO_TEST_PREFIX + 'case" classname="unica-coder" time="0.1"/>'
+                    '</testsuite><testsuite name="unica-coder::daemon_receipt_ledger">'
+                    '<testcase name="case" classname="unica-coder::daemon_receipt_ledger" time="0.1"/>'
+                    '</testsuite>'
+                )
+            else:
+                suites = (
+                    '<testsuite name="unica-coder"><testcase name="case" classname="unica-coder" time="0.1">'
+                    '<failure message="assertion failed: first invocation"/></testcase></testsuite>'
+                )
+            junit.write_text('<testsuites name="unica">' + suites + "</testsuites>", encoding="utf-8")
+            return 0 if featured else 1
 
         code = module.execute("queue", "rust", out, "ubuntu-latest", run_commands=run_commands, junit=junit)
 
         self.assertEqual(code, 1, "later successful JUnit must not hide the first failure")
-        self.assertEqual(seen, ["--workspace", "--test", "--lib"])
+        self.assertEqual(seen, ["--workspace", "--features"])
         names = sorted(json.loads(path.read_text(encoding="utf-8"))["fullName"] for path in out.glob("*-result.json"))
         self.assertEqual(names, sorted([
             "unica-coder::case", "unica-coder::daemon_receipt_ledger::case",
@@ -328,7 +331,7 @@ class GateProfileTests(unittest.TestCase):
 
         def run_commands(planned):
             command = planned[0]
-            events.append("--lib" if "--lib" in command else "--test" if "--test" in command else "--workspace")
+            events.append("--features" if "--features" in command else "--workspace")
             return 0
 
         code = module.execute(
@@ -337,7 +340,7 @@ class GateProfileTests(unittest.TestCase):
         )
 
         self.assertEqual(code, 0)
-        self.assertEqual(events, ["--workspace", "report", "--test", "report", "--lib"])
+        self.assertEqual(events, ["--workspace", "report", "--features"])
 
     def test_surviving_product_report_is_windows_only_and_never_fails_the_run(self) -> None:
         module = load_module()
