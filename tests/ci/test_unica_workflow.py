@@ -671,6 +671,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         assert_pinned(self, RELEASE_WORKFLOW, steps_using(platforms, "actions/setup-python")[0], "v7")
         # Консоль Windows — cp1252; сбой Windows виден, но упаковку ночи не блокирует.
         self.assertEqual(platforms["env"]["PYTHONUTF8"], "1")
+        # Отладочная информация тестовой сборки — одна на джобу: шаг с другим
+        # значением пересобрал бы общие артефакты.
+        self.assertEqual(platforms["env"]["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
+        for step in platforms["steps"]:
+            self.assertNotIn("CARGO_PROFILE_DEV_DEBUG", step.get("env") or {})
         self.assertEqual(normalized(platforms["continue-on-error"]), "${{ matrix.runner == 'windows-latest' }}")
         self.assertFalse((WORKFLOWS_DIR / "unica-large.yml").exists())
 
