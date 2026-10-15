@@ -14929,7 +14929,7 @@
    "name": "code-insert-method-and-anchor-line-boundaries",
    "pr": 1292,
    "area": "Код BSL",
-   "task": "Anchor before/after учитывает только методы; method before/after сохраняет аннотацию и соседей; точный post-image и повтор без записи",
+   "task": "Anchor before/after учитывает только методы; method before встаёт над документирующим комментарием и аннотацией метода, after — после его окончания, соседи сохраняются; точный post-image и повтор без записи",
    "workspace": "tests/fixtures/acceptance/workspace-code",
    "wire": [
     {
@@ -15695,7 +15695,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15776,7 +15776,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15852,7 +15852,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15933,7 +15933,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -16009,7 +16009,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -16090,7 +16090,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -16166,7 +16166,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -30600,8 +30600,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -30895,8 +30895,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31190,8 +31190,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31485,8 +31485,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -31780,8 +31780,8 @@
        "pointer": "/data/lines",
        "eq": {
         "state": "range",
-        "from": 4,
-        "to": 64
+        "from": 3,
+        "to": 65
        }
       },
       {
@@ -33336,7 +33336,7 @@
    "name": "text-search-hit-opens-its-module",
    "issue": 1298,
    "area": "Код BSL",
-   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и прочитать ту же строку",
+   "task": "Найти литерал в тексте BSL, открыть модуль совпадения по его адресу и найти ту же строку в его исходном тексте",
    "workspace": "tests/fixtures/acceptance/workspace",
    "wire": [
     {
@@ -33403,12 +33403,20 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/items/12/line",
-       "eq": "$capture.hitLine"
+       "pointer": "/data/kind",
+       "eq": "Body"
       },
       {
-       "pointer": "/data/items/12/text",
-       "eq": "$capture.hitSnippet"
+       "pointer": "/data/items",
+       "absent": true
+      },
+      {
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "contains": "$capture.hitSnippet"
       }
      ]
     }
@@ -36066,24 +36074,11 @@
      "assertions": [
       {
        "pointer": "/data/items",
-       "eq": [
-        {
-         "line": 1,
-         "text": "#Если Сервер Тогда"
-        },
-        {
-         "line": 2,
-         "text": "Процедура Проверка() Экспорт"
-        },
-        {
-         "line": 3,
-         "text": "КонецПроцедуры"
-        },
-        {
-         "line": 4,
-         "text": "#КонецЕсли"
-        }
-       ]
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "eq": "#Если Сервер Тогда\nПроцедура Проверка() Экспорт\nКонецПроцедуры\n#КонецЕсли\n"
       }
      ]
     },
@@ -40421,244 +40416,61 @@
   },
   {
    "id": "S437",
-   "name": "form-item-operations-are-named-by-the-item-node",
-   "issue": 1465,
-   "area": "Формы",
-   "task": "Операции элемента формы названы по узлу Item: can формы и элемента-контейнера выдаёт item.add, can элемента — item.remove; снятые element.add и element.remove отказывают bad_value без записи, next ведёт к контракту item.* на ближайшем узле, где она исполнима, контракт снятого имени по адресу Can называет заменившую, а item.add и item.remove строят предпросмотр без записи",
+   "name": "module-interface-slices-publish-only-routable-addresses",
+   "issue": 1467,
+   "area": "Навигация и чтение",
+   "task": "Прочитать и проверить ветвь Interface модуля: срезы Public/Library/Override приходят без адреса, который view отверг бы, check читает ветвь без валидатора командного интерфейса, а метод среза открывается своим адресом",
    "wire": [
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      "at": "main:Catalog.Валюты.Module.Manager.Interface"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/can",
-       "contains": {
-        "op": "item.add",
-        "args": "items",
-        "implemented": true
-       }
+       "pointer": "/data/items/0/interface",
+       "eq": "Public"
+      },
+      {
+       "pointer": "/data/items/0/addressable",
+       "eq": false
+      },
+      {
+       "pointer": "/data/items/0/at",
+       "absent": true
+      },
+      {
+       "pointer": "/data/items/0/methods/0",
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
       }
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:Catalog.Валюты.Module.Manager.Interface"
+     },
+     "expect": [
+      "ok"
      ],
-     "captures": {
-      "before": {
-       "kind": "sha256",
-       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
-      }
-     }
+     "status": "readable",
+     "validators": []
     },
     {
      "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная"
+      "at": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/can",
-       "contains": {
-        "op": "item.add",
-        "args": "items",
-        "implemented": true
-       }
-      },
-      {
-       "pointer": "/data/can",
-       "contains": {
-        "op": "item.remove",
-        "args": "at",
-        "implemented": true
-       }
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "element.add",
-        "args": {
-         "items": [
-          {
-           "name": "ПолеЗагружаетсяИзИнтернета",
-           "type": "InputField",
-           "path": "Объект.ЗагружаетсяИзИнтернета"
-          }
-         ]
-        }
-       }
-      ]
-     },
-     "expect": [
-      "refused"
-     ],
-     "refusal": "bad_value: apply operation `element.add` is retired: call `item.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
-     "assertions": [
-      {
-       "pointer": "/at",
-       "eq": "ops[0].op"
-      },
-      {
-       "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
-      "ops": [
-       {
-        "op": "element.remove"
-       }
-      ]
-     },
-     "expect": [
-      "refused"
-     ],
-     "refusal": "bad_value: apply operation `element.remove` is retired: call `item.remove` at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная`; the arguments are unchanged",
-     "assertions": [
-      {
-       "pointer": "/at",
-       "eq": "ops[0].op"
-      },
-      {
-       "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.item.remove"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
-      }
-     ]
-    },
-    {
-     "tool": "unica.view",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
-     },
-     "expect": [
-      "refused"
-     ],
-     "refusal": "bad_value: operation `element.add` is retired: read `item.add` at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add`; the arguments are unchanged",
-     "assertions": [
-      {
-       "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "element.remove"
-       }
-      ]
-     },
-     "expect": [
-      "refused"
-     ],
-     "refusal": "bad_value: apply operation `element.remove` is retired: call `item.remove`, which addresses `Kind.Name.Form.F.Item.I[.Item.J…]`; the arguments are unchanged",
-     "assertions": [
-      {
-       "pointer": "/at",
-       "eq": "ops[0].op"
-      },
-      {
-       "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "item.add",
-        "args": {
-         "items": [
-          {
-           "name": "ПолеЗагружаетсяИзИнтернета",
-           "type": "InputField",
-           "path": "Объект.ЗагружаетсяИзИнтернета"
-          }
-         ]
-        }
-       }
-      ]
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "preview"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
-      "ops": [
-       {
-        "op": "item.remove"
-       }
-      ]
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/mode",
-       "eq": "preview"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Module.Manager.Method.ВалютаПоКоду"
       }
      ]
     }
@@ -40666,13 +40478,130 @@
   },
   {
    "id": "S438",
-   "name": "form-attribute-and-command-share-the-node-names",
-   "issue": 1465,
-   "area": "Формы",
-   "task": "Реквизит и команда формы добавляются attribute.add и command.add на адресе формы, как у объекта метаданных: can формы выдаёт их, контракт по адресу Can выбирается адресом (у формы — писатель формы, у справочника — член метаданных), снятые formAttribute.add и formCommand.add отказывают bad_value без записи с next к контракту на форме, а новые имена пишут реквизит и команду в Form.xml, не меняя описание справочника",
+   "name": "check-fails-a-module-variable-declared-after-methods",
+   "issue": 1460,
+   "area": "Код BSL",
+   "task": "Объявить переменную модуля после функций и проверить модуль: check проваливается находкой платформы о месте объявления, а не отвечает passed",
    "wire": [
     {
-     "tool": "unica.view",
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения",
+      "ops": [
+       {
+        "op": "code.insert",
+        "args": {
+         "text": "Перем ПоследнийОтвет;",
+         "position": "after"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.check",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Body"
+     },
+     "expect": [
+      "ok",
+      "provider"
+     ],
+     "status": "failed",
+     "validators": [
+      "bsl"
+     ],
+     "diagnostic": "VariableDeclarationPlacement"
+    }
+   ]
+  },
+  {
+   "id": "S439",
+   "name": "resolve-metadata-object-by-its-own-place",
+   "issue": 1457,
+   "area": "Навигация и чтение",
+   "task": "Разрешить корень конфигурации, объект и его форму по адресу в их файлы; отсутствующий объект даёт not_found",
+   "wire": [
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Configuration"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Configuration"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Configuration"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Configuration.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
+     "args": {
+      "at": "main:Catalog.Валюты"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Catalog"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Валюты.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
+       }
+      },
+      {
+       "pointer": "/rev",
+       "absent": true
+      }
+     ]
+    },
+    {
+     "tool": "unica.resolve",
      "args": {
       "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
      },
@@ -40681,239 +40610,118 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/can",
-       "contains": {
-        "op": "attribute.add",
-        "args": "items",
-        "implemented": true
+       "pointer": "/data/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      {
+       "pointer": "/data/kind",
+       "eq": "Form"
+      },
+      {
+       "pointer": "/data/path",
+       "eq": "Catalogs/Валюты/Forms/ФормаЭлемента.xml"
+      },
+      {
+       "pointer": "/data/lines",
+       "eq": {
+        "state": "notLineBased"
        }
       },
       {
-       "pointer": "/data/can",
-       "contains": {
-        "op": "command.add",
-        "args": "items",
-        "implemented": true
-       }
-      }
-     ],
-     "captures": {
-      "before": {
-       "kind": "sha256",
-       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
-      },
-      "catalogBefore": {
-       "kind": "sha256",
-       "file": "src/Catalogs/Валюты.xml"
-      }
-     }
-    },
-    {
-     "tool": "unica.view",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/props/op",
-       "eq": "attribute.add"
-      },
-      {
-       "pointer": "/data/props/contract/help/path",
-       "eq": "skills/form-edit/SKILL.md"
-      },
-      {
-       "pointer": "/data/props/contract/target",
-       "eq": "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Attribute branch before choosing names."
+       "pointer": "/rev",
+       "absent": true
       }
      ]
     },
     {
-     "tool": "unica.view",
+     "tool": "unica.resolve",
      "args": {
-      "at": "main:Catalog.Валюты.Can.attribute.add"
-     },
-     "expect": [
-      "ok"
-     ],
-     "assertions": [
-      {
-       "pointer": "/data/props/op",
-       "eq": "attribute.add"
-      },
-      {
-       "pointer": "/data/props/contract/help/path",
-       "eq": "skills/meta-edit/SKILL.md"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "formAttribute.add",
-        "args": {
-         "items": [
-          {
-           "name": "Проба",
-           "type": "Boolean"
-          }
-         ]
-        }
-       }
-      ]
+      "at": "main:Catalog.НетТакогоСправочника"
      },
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: apply operation `formAttribute.add` is retired: call `attribute.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
-     "assertions": [
-      {
-       "pointer": "/at",
-       "eq": "ops[0].op"
-      },
-      {
-       "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
-      }
-     ]
-    },
+     "refusal": "not_found: the source layout does not place `main:Catalog.НетТакогоСправочника`"
+    }
+   ]
+  },
+  {
+   "id": "S440",
+   "name": "method-body-text-round-trips-through-code-replace",
+   "issue": 1458,
+   "area": "Код BSL",
+   "task": "Прочитать метод исходным текстом с документирующим комментарием, исправить строку в этом тексте и заменить им тот же адрес: метод меняется на месте без дублирования комментария",
+   "wire": [
     {
-     "tool": "unica.apply",
+     "tool": "unica.view",
      "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "formCommand.add",
-        "args": {
-         "items": [
-          {
-           "name": "Проба"
-          }
-         ]
-        }
-       }
-      ]
-     },
-     "expect": [
-      "refused"
-     ],
-     "refusal": "bad_value: apply operation `formCommand.add` is retired: call `command.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
-     "assertions": [
-      {
-       "pointer": "/at",
-       "eq": "ops[0].op"
-      },
-      {
-       "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.command.add"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
-      }
-     ]
-    },
-    {
-     "tool": "unica.apply",
-     "args": {
-      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
-      "ops": [
-       {
-        "op": "attribute.add",
-        "args": {
-         "items": [
-          {
-           "name": "Проба",
-           "type": "Boolean"
-          }
-         ]
-        }
-       },
-       {
-        "op": "command.add",
-        "args": {
-         "items": [
-          {
-           "name": "Проба"
-          }
-         ]
-        }
-       }
-      ]
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/mode",
-       "eq": "preview"
-      }
-     ],
-     "fileAssertions": [
+       "pointer": "/data/at",
+       "eq": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
+      },
       {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "eq": "$capture.before"
+       "pointer": "/data/kind",
+       "eq": "Body"
+      },
+      {
+       "pointer": "/data/items",
+       "absent": true
+      },
+      {
+       "pointer": "/cursor",
+       "absent": true
+      },
+      {
+       "pointer": "/sourceText",
+       "eq": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = Неопределено;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
       }
-     ],
-     "captures": {
-      "token": {
-       "pointer": "/data/executionToken"
-      }
-     }
+     ]
     },
     {
      "tool": "unica.apply",
      "args": {
-      "executionToken": "$capture.token"
+      "at": "main:CommonModule.GoogleПереводчик",
+      "ops": [
+       {
+        "op": "code.replace",
+        "args": {
+         "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body",
+         "text": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = 443;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$executionToken"
+     },
+     "expect": [
+      "ok"
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:CommonModule.GoogleПереводчик.Method.Разрешения.Body"
      },
      "expect": [
       "ok"
      ],
      "assertions": [
       {
-       "pointer": "/data/mode",
-       "eq": "published"
-      }
-     ],
-     "fileAssertions": [
-      {
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "kind": "xmlTags",
-       "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name='Проба']",
-       "eq": [
-        "Attribute"
-       ]
-      },
-      {
-       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
-       "kind": "xmlTags",
-       "select": "./{http://v8.1c.ru/8.3/xcf/logform}Commands/{http://v8.1c.ru/8.3/xcf/logform}Command[@name='Проба']",
-       "eq": [
-        "Command"
-       ]
-      },
-      {
-       "kind": "sha256",
-       "path": "src/Catalogs/Валюты.xml",
-       "eq": "$capture.catalogBefore"
+       "pointer": "/sourceText",
+       "eq": "// Возвращает список разрешений для использования сервиса перевода.\r\n//\r\n// Возвращаемое значение:\r\n//  Массив\r\n//\r\nФункция Разрешения() Экспорт\r\n\t\r\n\tПротокол = \"HTTPS\";\r\n\tАдрес = \"translation.googleapis.com\";\r\n\tПорт = 443;\r\n\tОписание = НСтр(\"ru = 'Сервис перевода текста Google Translate'\");\r\n\t\r\n\tМодульРаботаВБезопасномРежиме = ОбщегоНазначения.ОбщийМодуль(\"РаботаВБезопасномРежиме\");\r\n\t\r\n\tРазрешение = МодульРаботаВБезопасномРежиме.РазрешениеНаИспользованиеИнтернетРесурса(Протокол, Адрес, Порт, Описание);\r\n\t\r\n\tРазрешения = Новый Массив;\r\n\tРазрешения.Добавить(Разрешение);\r\n\t\r\n\tВозврат Разрешения;\r\n\t\r\nКонецФункции\r\n"
       }
      ]
     }

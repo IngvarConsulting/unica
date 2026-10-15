@@ -11,7 +11,7 @@ use crate::domain::refusal::RefusalCode;
 use crate::domain::workspace::WorkspaceContext;
 use crate::infrastructure::platform::secure_read::read_root_relative_regular_file;
 use crate::infrastructure::project_health::{
-    inspect_project_health, inspect_project_health_continued,
+    inspect_project_health_continued,
     resources::{ResourceContinuation, ResourceInspectionProgress, RootCheckContinuationStore},
 };
 use crate::infrastructure::project_sources::discover_project_source_map_controlled;
@@ -268,23 +268,25 @@ fn bootstrap_result(
             source.source_format == SourceFormat::PlatformXml
                 && source.source_state == crate::domain::project_sources::SourceSetState::Supported
         });
-    let health = if source_map.source_sets.is_empty() {
+    // `view {}` отвечает фактами. Здоровье проекта (репозиторий, атрибуты,
+    // рабочие файлы) принадлежит вердикту `check {}` и для фактов не
+    // вычисляется (#1457).
+    let facts_only = question == RootQuestion::Facts;
+    #[cfg(test)]
+    if !source_map.source_sets.is_empty() {
+        test_control::pause_before_root_answer(&context.workspace_root);
+    }
+    let health = if source_map.source_sets.is_empty() || facts_only {
         None
     } else {
-        #[cfg(test)]
-        test_control::pause_before_health(&context.workspace_root);
         // Проверка здоровья проекта идёт в задаче до конца: прежде её
         // обрезало окно передачи в 7 с, и ответ приходил порцией (#1251).
-        let inspection = if question == RootQuestion::Verdict {
-            inspect_project_health_continued(
-                context,
-                cancellation,
-                ProviderDeadline::no_deadline(),
-                continuation.as_deref_mut(),
-            )
-        } else {
-            inspect_project_health(context, cancellation, ProviderDeadline::no_deadline())
-        };
+        let inspection = inspect_project_health_continued(
+            context,
+            cancellation,
+            ProviderDeadline::no_deadline(),
+            continuation.as_deref_mut(),
+        );
         Some(
             inspection
                 .map_err(|error| format!("{error:?}"))
@@ -341,6 +343,11 @@ fn bootstrap_result(
             "incomplete",
         ),
     };
+    if facts_only && !source_map.source_sets.is_empty() {
+        // Ссылка на чтение корня зависит от выбора набора, а не от
+        // готовности репозитория: её сообщает `check {}`.
+        ready = discovered_ready;
+    }
     let actionable_source = source_map.source_sets.iter().find(|source| {
         source.source_format == SourceFormat::PlatformXml
             && source.name
@@ -1398,7 +1405,7 @@ mod tests {
         ) else {
             panic!("root inspection must prepare before source admission");
         };
-        let pause = super::test_control::HealthInspectionPause::install(root);
+        let pause = super::test_control::RootInspectionPause::install(root);
         let cancelled = CancellationToken::new();
         cancelled.cancel();
         assert_eq!(inspection.execute(cancelled).unwrap_err().code, "cancelled");

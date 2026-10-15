@@ -85,8 +85,7 @@ def corpus_status() -> dict[str, object]:
     spec = importlib.util.spec_from_file_location("scenario_status", SCENARIO_STATUS)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    corpus = json.loads(module.CORPUS.read_text(encoding="utf-8"))
-    return module.build(corpus)
+    return module.build(module.load_corpus())
 
 
 def expand_repeats(template: str, status: dict[str, object]) -> tuple[str, set[str]]:

@@ -552,6 +552,16 @@ fn expected_engine_path(plugin_root: &Path, tool_name: &str, target_id: &str) ->
             return manifest_relative_path(&target_root, binary.delivered()).ok();
         }
     }
+    // Манифест называет файл движка для цели сам — тот же путь, по которому
+    // его ищет запуск (`engine_path_for`). Имя из `tools.lock.json` и голое
+    // имя инструмента ниже — только запасной ответ без манифеста: на Windows
+    // у них нет суффикса `.exe`, и отказ назвал бы не тот файл.
+    if let Some(program) = read_manifest(plugin_root).and_then(|manifest| {
+        let binary = manifest_binary(&manifest, tool_name, target_id).ok()?;
+        manifest_relative_path(plugin_root, &binary.binary_path).ok()
+    }) {
+        return Some(program);
+    }
     let lock_path = plugin_root.join("third-party").join("tools.lock.json");
     let lock: ToolsLock = serde_json::from_slice(&fs::read(&lock_path).ok()?).ok()?;
     let target = lock.targets.get(target_id)?;

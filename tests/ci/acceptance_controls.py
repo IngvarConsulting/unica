@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
-import math
 import re
 from pathlib import Path, PurePosixPath
 import xml.etree.ElementTree as ET
@@ -16,26 +16,55 @@ FORM_FILE = "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form
 MODULE_FILE = "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form/Module.bsl"
 
 
+def corpus_storage():
+    """The acceptance corpus storage module: `scripts/ci/acceptance_corpus.py`.
+
+    Tests, the registry renderer and the site read the corpus through the same
+    loader, so none of them can see a different set of scenarios."""
+    global _CORPUS_STORAGE
+    if _CORPUS_STORAGE is None:
+        path = Path(__file__).resolve().parents[2] / "scripts/ci/acceptance_corpus.py"
+        spec = importlib.util.spec_from_file_location("acceptance_corpus", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _CORPUS_STORAGE = module
+    return _CORPUS_STORAGE
+
+
+_CORPUS_STORAGE = None
+
+
+def tool_result(response):
+    """Канонический результат вызова: `structuredContent`, а у ответа
+    с исходным текстом BSL — конверт из первого блока `content` и сам
+    текст второго блока под ключом `sourceText`."""
+    result = (response or {}).get("result") or {}
+    structured = result.get("structuredContent")
+    if structured is not None:
+        return structured
+    blocks = result.get("content") or []
+    if result.get("isError") is not False or len(blocks) != 2 or not all(
+            block.get("type") == "text" and isinstance(block.get("text"), str) for block in blocks):
+        return None
+    try:
+        envelope = json.loads(blocks[0]["text"])
+    except ValueError:
+        return None
+    if not isinstance(envelope, dict) or envelope.get("ok") is not True or "sourceText" in envelope:
+        return None
+    envelope["sourceText"] = blocks[1]["text"]
+    return envelope
+
+
 def load_corpus(path):
-    def unique_object(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate corpus key {key!r}")
-            result[key] = value
-        return result
+    """Parse one corpus JSON file strictly: duplicate keys and non-JSON numbers fail."""
+    return corpus_storage().strict_load(path)
 
-    def invalid_constant(value):
-        raise ValueError(f"non-JSON corpus number {value}")
 
-    def finite_float(value):
-        result = float(value)
-        if not math.isfinite(result):
-            invalid_constant(value)
-        return result
-
-    return json.loads(Path(path).read_text(encoding="utf-8"), object_pairs_hook=unique_object,
-                      parse_constant=invalid_constant, parse_float=finite_float)
+def load_acceptance_corpus(root=None):
+    """The whole acceptance corpus: the closed `S###` block and per-file scenarios."""
+    storage = corpus_storage()
+    return storage.load(storage.ROOT if root is None else root)
 
 
 def pointer_tokens(pointer):

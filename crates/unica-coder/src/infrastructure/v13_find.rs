@@ -955,7 +955,17 @@ impl WorkspaceFindDirectoryBuilder {
                         cancellation,
                     )?
                     else {
-                        return Err(unsafe_layout_entry());
+                        let missing = collection.map_or_else(
+                            || PathBuf::from(&descriptor_name),
+                            |(_, name)| PathBuf::from(name).join(&descriptor_name),
+                        );
+                        return Err(FindBuildError::new(
+                            RefusalCode::InvalidSource,
+                            format!(
+                                "owner descriptor `{}` of the requested object is missing",
+                                path_text(&missing)
+                            ),
+                        ));
                     };
                     let RetainedChildCapability::RegularFile(owner_file) = owner_descriptor else {
                         return Err(unsafe_layout_entry());

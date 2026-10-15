@@ -4,10 +4,12 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::daemon_workspace_actor_admission_is_concurrent_and_fail_closed
   - crates/unica-coder/src/infrastructure/daemon/server.rs::default_actor_registry_admits_sixty_five_profiles_and_retains_exact_live_owners
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_eight_other_workspace_profiles_and_replays_exactly
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_temporary_named_root_validation_failure
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_plan_survives_former_six_hundred_second_actor_idle_window
   - crates/unica-coder/src/infrastructure/daemon/server.rs::running_unowned_index_work_survives_last_call_and_actor_idle_window
   - crates/unica-coder/src/infrastructure/daemon/server.rs::completed_leased_index_work_survives_last_call_and_actor_idle_window
   - crates/unica-coder/src/infrastructure/workspace_actor.rs::idle_cleanup_retains_unknown_actor_state_without_rejecting_other_profiles
+  - crates/unica-coder/src/infrastructure/workspace_actor.rs::replaced_named_root_outweighs_unavailable_root_in_any_iteration_order
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_idle_cleanup_before_live_invocation_creates_plan
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_warm_release_before_live_invocation_creates_plan
   - crates/unica-coder/src/infrastructure/daemon/server.rs::running_index_work_survives_idle_cleanup_before_live_invocation_creates_work

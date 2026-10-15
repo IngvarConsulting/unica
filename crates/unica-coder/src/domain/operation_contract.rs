@@ -3,6 +3,8 @@
 //! describes and normalizes the arguments consumed by supported planners.
 
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 mod form;
 #[cfg(test)]
@@ -794,6 +796,27 @@ impl OperationContract {
     }
 }
 
+/// Compiled grammar of an owned contract pattern. Every pattern comes from a
+/// schema built in this crate, so the set is closed and the cache is bounded.
+/// Compiling the Unicode identifier class anew for each validated argument
+/// dominated apply preflight (#1441).
+///
+/// The shared `Arc` keeps one match cache warm across calls: cloning `Regex`
+/// would start each validation with an empty one.
+fn contract_pattern(pattern: &str) -> Arc<regex::Regex> {
+    static COMPILED: OnceLock<Mutex<HashMap<String, Arc<regex::Regex>>>> = OnceLock::new();
+    let mut compiled = COMPILED
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(regex) = compiled.get(pattern) {
+        return Arc::clone(regex);
+    }
+    let regex = Arc::new(regex::Regex::new(pattern).expect("owned contract pattern"));
+    compiled.insert(pattern.to_owned(), Arc::clone(&regex));
+    regex
+}
+
 fn error(path: &str, message: impl Into<String>) -> ContractError {
     ContractError {
         path: path.into(),
@@ -838,11 +861,10 @@ fn validate(schema: &Value, value: &Value, path: &str) -> Result<(), ContractErr
         ));
     }
     if let Some(pattern) = schema["pattern"].as_str() {
-        if !value.as_str().is_some_and(|text| {
-            regex::Regex::new(pattern)
-                .expect("owned contract pattern")
-                .is_match(text)
-        }) {
+        if !value
+            .as_str()
+            .is_some_and(|text| contract_pattern(pattern).is_match(text))
+        {
             return Err(error(
                 path,
                 "text does not match the supported argument grammar",
@@ -1008,6 +1030,20 @@ fn normalize_aliases(schema: &Value, value: &mut Value) {
 mod tests {
     use super::*;
     use crate::domain::apply::{OperationFamily, OperationRegistry, IMPLEMENTED_APPLY_OPERATIONS};
+
+    /// Скомпилированная грамматика берётся из кеша по своему шаблону: повторная
+    /// проверка не подменяет одну грамматику другой (#1441).
+    #[test]
+    fn a_contract_pattern_keeps_its_own_grammar_on_repeated_validation() {
+        let identifier = json!({"type": "string", "pattern": IDENTIFIER_PATTERN});
+        let non_blank = json!({"type": "string", "pattern": r"\S"});
+        for _ in 0..2 {
+            assert!(validate(&identifier, &json!("Реквизит_1"), "args").is_ok());
+            assert!(validate(&identifier, &json!("1Реквизит"), "args").is_err());
+            assert!(validate(&non_blank, &json!("1Реквизит"), "args").is_ok());
+            assert!(validate(&non_blank, &json!(" "), "args").is_err());
+        }
+    }
 
     #[test]
     fn mxl_and_template_contracts_cover_examples_and_keep_legacy_value_grammar() {
