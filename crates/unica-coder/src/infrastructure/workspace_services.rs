@@ -4404,7 +4404,6 @@ mod tests {
     use crate::domain::workspace::WorkspaceContext;
     use crate::infrastructure::platform::filesystem::supports_retained_root_replacement_test;
     use crate::infrastructure::platform::testing;
-    use crate::infrastructure::source_roots::source_generation;
     use std::fs;
     use std::path::Path;
     use std::sync::OnceLock;
@@ -7516,7 +7515,6 @@ fn main() {
             db_path: Some(db_path.display().to_string()),
             message: None,
             failure_class: None,
-            source_generation: None,
             build_id: Some(build_id.clone()),
             next_action: None,
             updated_at: now_secs_for_test(),
@@ -8751,28 +8749,6 @@ fn main() {
         let error = mcp_tool_text(&response).unwrap_err();
 
         assert_eq!(error, "schema is unavailable");
-    }
-
-    #[test]
-    fn source_generation_ignores_generated_build_cache_but_tracks_bsl_source() {
-        let context = test_context("source-generation");
-        let source_root = context.workspace_root.join("src");
-        let module = source_root.join("CommonModules/SmokeModule.bsl");
-        fs::write(&module, "Процедура Тест() Экспорт\nКонецПроцедуры\n").unwrap();
-        let baseline = source_generation(&source_root);
-
-        let generated = source_root.join(".build/bsl-graph.db");
-        fs::create_dir_all(generated.parent().unwrap()).unwrap();
-        fs::write(&generated, "generated cache").unwrap();
-        assert_eq!(source_generation(&source_root), baseline);
-
-        fs::write(
-            &module,
-            "Процедура Тест() Экспорт\n\tСообщить(\"Изменено\");\nКонецПроцедуры\n",
-        )
-        .unwrap();
-        assert_ne!(source_generation(&source_root), baseline);
-        cleanup(&context);
     }
 
     #[test]

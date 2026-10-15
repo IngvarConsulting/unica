@@ -871,17 +871,7 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
             Err(error) if error.starts_with(CANCELLED_PREFIX) => {
                 return failed_section(ProviderId::Rlm, error);
             }
-            Err(error)
-                if error.contains("source revision")
-                    || provider_engine_absent(&context.workspace.cwd, "rlm-bsl-mcp") =>
-            {
-                if error.contains("source revision") {
-                    context.report_progress(ProviderProgressUpdate {
-                        phase: SearchProviderPhase::Preparing,
-                        detail_code: Some("sourceRevisionUntrusted".to_string()),
-                        results_found: 0,
-                    });
-                }
+            Err(error) if provider_engine_absent(&context.workspace.cwd, "rlm-bsl-mcp") => {
                 return unavailable_section(ProviderId::Rlm, redactor(&error));
             }
             Err(error) => return failed_section(ProviderId::Rlm, error),
@@ -906,13 +896,6 @@ impl CodeIntelligenceProvider for RlmProvider<'_> {
                     | IndexReadiness::Unavailable(_) => None,
                 };
                 let diagnostic = rlm_search_unready_error(readiness);
-                if diagnostic.contains("source revision") {
-                    context.report_progress(ProviderProgressUpdate {
-                        phase: SearchProviderPhase::Preparing,
-                        detail_code: Some("sourceRevisionUntrusted".to_string()),
-                        results_found: 0,
-                    });
-                }
                 if let Some(detail_code) = dependency_detail {
                     ProviderSearchSection::dependency_pending(
                         ProviderId::Rlm.identity(),
@@ -2524,11 +2507,8 @@ mod tests {
         );
     }
 
-    /// The generated cache is not source. `source_roots` already skips
-    /// `.build` while walking, and
-    /// `source_generation_ignores_generated_build_cache_but_tracks_bsl_source`
-    /// names `<sourceRoot>/.build/bsl-graph.db` as the artefact they skip. The
-    /// lexical corpus has to agree: `.build` sorts before every metadata
+    /// The generated cache is not source. The lexical corpus skips
+    /// `<sourceRoot>/.build/bsl-graph.db`: `.build` sorts before every metadata
     /// directory, `git grep` emits in path order, and on a real workspace the
     /// analyzer databases there run to gigabytes. A corpus that keeps them
     /// spends the whole provider budget reading Unica's own index of the very
@@ -3206,7 +3186,7 @@ mod tests {
     }
 
     #[test]
-    fn bsl_analyzer_empty_results_with_ready_indexing_footer_are_empty() {
+    fn bsl_analyzer_empty_results_with_index_ready_footer_are_empty() {
         for text in [
             "No results found.",
             "No results found.\nIndexing lexical: ready\nIndexing semantic: disabled",
@@ -4488,7 +4468,7 @@ mod tests {
     fn rlm_provider_reports_pending_update_as_a_retryable_dependency() {
         let client = FakeRlmClient {
             readiness: IndexReadiness::Stale {
-                status: "source revision changed".to_string(),
+                status: "stale (content)".to_string(),
             },
             calls: Mutex::new(Vec::new()),
             result: "[]".to_string(),

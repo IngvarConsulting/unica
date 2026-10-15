@@ -10545,7 +10545,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops() {
+    fn public_metadata_apply_preview_is_index_write_free_and_matches_real_plan() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -10578,6 +10578,65 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
         let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let index_context = crate::domain::workspace::WorkspaceContext {
+            cwd: workspace_hint.clone(),
+            workspace_root: workspace_hint.clone(),
+            cache_root: workspace_hint.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let index_state_root = crate::infrastructure::workspace_index::rlm_provider_state_root(
+            &index_context,
+            &source,
+        )
+        .unwrap();
+        let index_status =
+            crate::infrastructure::workspace_index::status_path(&index_context, &source).unwrap();
+        let index_lock = index_state_root.join("locks/rlm-bsl/index-v17/bsl_index.lock");
+        std::fs::create_dir_all(index_status.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(index_lock.parent().unwrap()).unwrap();
+        std::fs::write(
+            &index_status,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "status": "building",
+                "source_root": source.display().to_string(),
+                "db_path": null,
+                "message": "preview state trap",
+                "failure_class": null,
+                "build_id": null,
+                "next_action": null,
+                "updated_at": 0,
+                "last_run": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            &index_lock,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "lock_id": "preview-state-trap",
+                "owner_pid": std::process::id(),
+                "action": "build",
+                "source_root": source.display().to_string(),
+                "started_at": 0,
+                "updated_at": 0,
+                "state": "active"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        // Эта ловушка изменилась бы при любой проверке готовности индекса:
+        // устаревшая блокировка стала бы recovered, а состояние — failed.
+        let index_state_before = crate::test_support::tree_snapshot(&index_state_root);
+
+        struct IndexBuildObserverReset;
+        impl Drop for IndexBuildObserverReset {
+            fn drop(&mut self) {
+                crate::infrastructure::workspace_index::set_isolated_build_start_observer_for_test(
+                    None,
+                );
+            }
+        }
         let call = |arguments| {
             let request = InvocationRequest::new(
                 ToolIdentity::Apply,
@@ -10590,16 +10649,36 @@ struct ActorLogicalReadLease {"#,
         };
         let apply_pair = |operation: serde_json::Value| {
             let before = std::fs::read(&descriptor).unwrap();
-            let dry = call(serde_json::json!({
-                "at": "main:Document.Order",
-                "ops": [operation.clone()],
-            }));
+            let index_starts = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed_starts = std::rc::Rc::clone(&index_starts);
+            let (dry, repeated_dry) = {
+                // Наблюдатель стоит на первой строке start_isolated_build и
+                // видит вызов даже до раннего отказа доставки RLM или записи.
+                crate::infrastructure::workspace_index::set_isolated_build_start_observer_for_test(
+                    Some(Box::new(move |_| {
+                        observed_starts.set(observed_starts.get() + 1)
+                    })),
+                );
+                let _reset = IndexBuildObserverReset;
+                (
+                    call(serde_json::json!({
+                        "at": "main:Document.Order",
+                        "ops": [operation.clone()],
+                    })),
+                    call(serde_json::json!({
+                        "at": "main:Document.Order",
+                        "ops": [operation.clone()],
+                    })),
+                )
+            };
             assert!(dry.ok, "dry-run failed: {dry:?}");
             assert_eq!(std::fs::read(&descriptor).unwrap(), before);
-            let repeated_dry = call(serde_json::json!({
-                "at": "main:Document.Order",
-                "ops": [operation.clone()],
-            }));
+            assert_eq!(index_starts.get(), 0, "preview started RLM indexing");
+            assert_eq!(
+                crate::test_support::tree_snapshot(&index_state_root),
+                index_state_before,
+                "preview wrote RLM index state"
+            );
             assert_eq!(
                 dry.data.as_ref().unwrap()["planHash"],
                 repeated_dry.data.as_ref().unwrap()["planHash"],

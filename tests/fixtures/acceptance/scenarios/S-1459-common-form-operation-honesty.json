@@ -1,0 +1,169 @@
+{
+  "id": "S-1459-common-form-operation-honesty",
+  "issue": 1459,
+  "area": "Формы",
+  "task": "Общая форма и её контейнер не обещают item.add и согласованно отклоняют контракт и предпросмотр без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "eq": [
+            {
+              "op": "supportRule.set",
+              "args": "values",
+              "implemented": true
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "before": {
+          "file": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main.Can.item.add"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation `item.add` does not apply to CommonForm",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonForm.Main"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonForm.Main",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Added",
+                  "type": "LabelField"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `item.add` does not apply to CommonForm `main:CommonForm.Main`; it addresses `Kind.Name.Form.F[.Item.I…]`",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonForm.Main"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main.Item.Group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.Main.Item.Group.Can.item.add"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation `item.add` does not apply to Item",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonForm.Main.Item.Group"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonForm.Main.Item.Group",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Added",
+                  "type": "LabelField"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `item.add` does not apply to Item `main:CommonForm.Main.Item.Group`; it addresses `Kind.Name.Form.F[.Item.I…]`",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonForm.Main.Item.Group"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonForms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}

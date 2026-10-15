@@ -1,0 +1,238 @@
+{
+  "id": "S-1461-table-properties",
+  "issue": 1461,
+  "area": "Формы",
+  "task": "Неподдержанные высота, поиск и вложенные columns таблицы отклоняются без записи; адресное добавление сохраняет ReadOnly, CommandBarLocation и вид LabelField",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ReportTable",
+                  "type": "Table",
+                  "readOnly": true,
+                  "commandBarLocation": "None",
+                  "height": 6
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].height"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: ops[0].args.items[0].height: unknown argument; `item.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add`"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ReportTable",
+                  "type": "Table",
+                  "readOnly": true,
+                  "commandBarLocation": "None",
+                  "searchStringLocation": "None"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].searchStringLocation"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: ops[0].args.items[0].searchStringLocation: unknown argument; `item.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ReportTable",
+                  "type": "Table",
+                  "readOnly": true,
+                  "commandBarLocation": "None",
+                  "columns": [
+                    {
+                      "name": "ReportLabel",
+                      "type": "LabelField"
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].columns"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: item.add adds one element without nested content; drop `columns` and add each nested element with a separate item.add at `main:Catalog.Валюты.Form.ФормаЭлемента"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ReportTable",
+                  "type": "Table",
+                  "readOnly": true,
+                  "commandBarLocation": "None"
+                }
+              ]
+            }
+          },
+          {
+            "op": "item.add",
+            "args": {
+              "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ReportTable",
+              "items": [
+                {
+                  "name": "ReportLabel",
+                  "type": "LabelField"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Table[@name=\"ReportTable\"]/{http://v8.1c.ru/8.3/xcf/logform}ReadOnly",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Table[@name=\"ReportTable\"]/{http://v8.1c.ru/8.3/xcf/logform}CommandBarLocation",
+          "eq": [
+            "None"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xmlTags",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}Table[@name=\"ReportTable\"]/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/*",
+          "eq": [
+            "LabelField"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ReportTable.Item.ReportLabel"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/tag",
+          "eq": "[LabelField]"
+        }
+      ]
+    }
+  ]
+}
