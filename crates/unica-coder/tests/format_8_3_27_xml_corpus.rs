@@ -10,6 +10,8 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use unica_coder::application::{ToolHandler, UnicaApplication};
 
+#[path = "platform/daemon_teardown.rs"]
+mod daemon_teardown;
 #[path = "platform/format_8_3_27_xml_corpus.rs"]
 mod platform_support;
 
@@ -273,32 +275,11 @@ static MUTATOR_REGISTRY: &[MutatorRegistryEntry] = &[
         required_branches: &["remove-object"],
     },
     MutatorRegistryEntry {
-        tool: "unica.mxl.compile",
-        operation: "mxl-compile",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["mxl-compile-owned-template"],
-        required_branches: &["owned-template"],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.role.compile",
-        operation: "role-compile",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["role-compile-name-field"],
-        required_branches: &["name-field"],
-    },
-    MutatorRegistryEntry {
         tool: "unica.role.edit",
         operation: "role-edit",
         impact: XmlImpactClass::CreateOrModify,
         case_ids: &["role-edit-set-right"],
         required_branches: &["set-right"],
-    },
-    MutatorRegistryEntry {
-        tool: "unica.subsystem.compile",
-        operation: "subsystem-compile",
-        impact: XmlImpactClass::CreateOrModify,
-        case_ids: &["subsystem-compile-child"],
-        required_branches: &["child-creation"],
     },
     MutatorRegistryEntry {
         tool: "unica.subsystem.edit",
@@ -603,24 +584,9 @@ pub(crate) static EXECUTABLE_CASES: &[ExecutableCase] = &[
         branch: "remove-object",
     },
     ExecutableCase {
-        id: "mxl-compile-owned-template",
-        tool: "unica.mxl.compile",
-        branch: "owned-template",
-    },
-    ExecutableCase {
-        id: "role-compile-name-field",
-        tool: "unica.role.compile",
-        branch: "name-field",
-    },
-    ExecutableCase {
         id: "role-edit-set-right",
         tool: "unica.role.edit",
         branch: "set-right",
-    },
-    ExecutableCase {
-        id: "subsystem-compile-child",
-        tool: "unica.subsystem.compile",
-        branch: "child-creation",
     },
     ExecutableCase {
         id: "subsystem-edit-add-child",
@@ -751,6 +717,21 @@ fn common_args(workspace: &Path) -> Map<String, Value> {
 
 const CANONICAL_APPLY_TOOL: &str = "unica.apply";
 
+/// Состояние поставщика одного канонического вызова. Пауза простоя не
+/// останавливает его демона: после apply он держит результат для повтора
+/// (`arch/rules/workspace/actor-retention.md`) и переживает MCP. На Windows
+/// живой демон держит `target\debug\unica.exe`, и следующая сборка с другими
+/// признаками не может заменить файл. Поэтому демон останавливается, а
+/// состояние удаляется на любом выходе из вызова, в том числе по ошибке.
+struct CanonicalCallState(PathBuf);
+
+impl Drop for CanonicalCallState {
+    fn drop(&mut self) {
+        daemon_teardown::stop_daemons_under(&self.0);
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Runs one canonical `unica.apply` publication over the packaged stdio
 /// surface: the same production path a host uses, with the daemon state kept
 /// outside the case workspace so the platform checkpoint boundary stays clean.
@@ -776,7 +757,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
         STATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&state).map_err(|error| error.to_string())?;
-    let state = fs::canonicalize(&state).map_err(|error| error.to_string())?;
+    let state = CanonicalCallState(fs::canonicalize(&state).map_err(|error| error.to_string())?);
     let mut request = args.clone();
     request.remove("cwd");
     let publish_apply =
@@ -786,7 +767,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
     }
     let mut child = Command::new(env!("CARGO_BIN_EXE_unica"))
         .current_dir(&workspace)
-        .env("UNICA_PROVIDER_STATE_DIR", &state)
+        .env("UNICA_PROVIDER_STATE_DIR", &state.0)
         // Демон переживает MCP: без назначенной паузы он остаётся на
         // четверть часа, и к концу прогона их набирается столько же,
         // сколько было тестов.
@@ -911,7 +892,7 @@ fn call_canonical_tool(tool: &str, args: &Map<String, Value>) -> Result<String, 
     response = completed_response(&mut stdin, &mut reader, response, "execute")?;
     drop(stdin);
     let _ = child.wait();
-    let _ = fs::remove_dir_all(&state);
+    drop(state);
     let structured = response
         .get("result")
         .and_then(|result| result.get("structuredContent"))
@@ -1893,28 +1874,19 @@ fn seed_dcs_template(workspace: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn subsystem_compile_args(
-    workspace: &Path,
-    name: &str,
-    parent: Option<&str>,
-) -> Map<String, Value> {
-    let mut args = common_args(workspace);
-    args.insert(
-        "Value".to_string(),
-        Value::String(json!({"name": name}).to_string()),
-    );
-    args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-    if let Some(parent) = parent {
-        args.insert("Parent".to_string(), Value::String(parent.to_string()));
-    }
-    args
-}
-
+/// Корневую подсистему для правок состава и командного интерфейса заводит
+/// канонический `subsystem.create`.
 fn seed_parent_subsystem(workspace: &Path) -> Result<(), String> {
-    call_public_tool(
-        "unica.subsystem.compile",
-        &subsystem_compile_args(workspace, "CorpusParent", None),
-    )?;
+    let mut args = common_args(workspace);
+    args.insert("at".to_string(), json!("main:Configuration"));
+    args.insert(
+        "ops".to_string(),
+        json!([{
+            "op": "subsystem.create",
+            "args": {"at": "main:Configuration", "values": {"name": "CorpusParent"}}
+        }]),
+    );
+    call_canonical_apply(&args)?;
     Ok(())
 }
 
@@ -2033,42 +2005,37 @@ fn dcs_component_ops(template: &str) -> Vec<Value> {
         "structure.add",
         json!({"items":[{"name":"Corpus group","kind":"group","groupBy":["Value"]}]}),
     );
+    // Контейнер настроек — адрес: вариант или его элемент структуры (#1357).
     add(
-        ".Setting.Main",
+        ".Setting.Main.Item.Corpus group",
         "structure.add",
-        json!({"items":[{"name":"Details","kind":"group","parent":"Corpus group","groupBy":[]}]}),
+        json!({"items":[{"name":"Details","kind":"group","groupBy":[]}]}),
     );
-    for group in [None, Some("Corpus group")] {
-        let decorate = |mut value: Value| {
-            if let Some(group) = group {
-                value["group"] = json!(group);
-            }
-            value
-        };
+    for container in [".Setting.Main", ".Setting.Main.Item.Corpus group"] {
         add(
-            ".Setting.Main",
+            container,
             "selection.add",
-            json!({"items":[decorate(json!({"field":"Value"})),decorate(json!({"field":"Amount"}))]}),
+            json!({"items":[{"field":"Value"},{"field":"Amount"}]}),
         );
         add(
-            ".Setting.Main",
+            container,
             "filter.add",
-            json!({"items":[decorate(json!({"field":"Amount","comparison":"Greater","value":0}))]}),
+            json!({"items":[{"field":"Amount","comparison":"Greater","value":0}]}),
         );
         add(
-            ".Setting.Main",
+            container,
             "order.add",
-            json!({"items":[decorate(json!({"field":"Amount","direction":"Desc"}))]}),
+            json!({"items":[{"field":"Amount","direction":"Desc"}]}),
         );
         add(
-            ".Setting.Main",
+            container,
             "conditionalAppearance.add",
-            json!({"items":[decorate(json!({"fields":["Amount"],"filter":[{"field":"Amount","comparison":"Greater","value":0}],"appearance":{"ЦветТекста":"web:Red"}}))]}),
+            json!({"items":[{"fields":["Amount"],"filter":[{"field":"Amount","comparison":"Greater","value":0}],"appearance":{"ЦветТекста":"web:Red"}}]}),
         );
         add(
-            ".Setting.Main",
+            container,
             "outputParameter.set",
-            json!({"values":decorate(json!({"name":"Заголовок","value":if group.is_some(){"Corpus group"}else{"Corpus report"}}))}),
+            json!({"values":{"name":"Заголовок","value":if container.ends_with("group"){"Corpus group"}else{"Corpus report"}}}),
         );
     }
     add(
@@ -2260,45 +2227,13 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         )?;
         return Ok(canonical_dcs_template_add_args(workspace, "CorpusTemplate"));
     }
-    if case.id == "mxl-compile-owned-template" {
-        seed_configuration(workspace)?;
-        seed_report(workspace)?;
-        call_public_tool(
-            "unica.meta.edit",
-            &template_args(workspace, "CorpusTemplate", "SpreadsheetDocument"),
-        )?;
-        let output = "src/Reports/CorpusReport/Templates/CorpusTemplate/Ext/Template.xml";
-        fs::remove_file(workspace.join(output))
-            .map_err(|error| format!("cannot remove preparatory MXL content: {error}"))?;
-        let path = write_json_input(
-            workspace,
-            "mxl",
-            &json!({
-                "columns": 5,
-                "defaultWidth": 10,
-                "columnWidths": {"3": 20},
-                "styles": {"right": {"align": "right"}},
-                "areas": [{
-                    "name": "A",
-                    "rows": [{"cells": [
-                        {"col": 1, "span": 2, "text": "spanned"},
-                        {"col": 3, "text": "adjacent", "style": "right"},
-                        {"col": 5, "text": "after gap"}
-                    ]}]
-                }]
-            }),
-        )?;
-        let mut args = common_args(workspace);
-        args.insert("JsonPath".to_string(), Value::String(path));
-        args.insert("OutputPath".to_string(), Value::String(output.to_string()));
-        return Ok(args);
-    }
     if case.id == "support-edit-bin-only" {
         seed_platform_support_fixture(workspace)?;
         let mut args = common_args(workspace);
         args.insert(
             "at".to_string(),
-            Value::String("main:DataProcessor.ТестHTML".to_string()),
+            // Возможность изменения — свойство корня конфигурации на поддержке.
+            Value::String("main:Configuration".to_string()),
         );
         args.insert(
             "ops".to_string(),
@@ -2321,14 +2256,16 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         let mut args = common_args(workspace);
         args.insert(
             "at".to_string(),
-            Value::String("main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка".to_string()),
+            Value::String(
+                "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+                    .to_string(),
+            ),
         );
         args.insert(
             "ops".to_string(),
             json!([{
                 "op": "property.add",
                 "args": {"values": {
-                    "propertyPath": "СсылкаНаОбъект",
                     "property": {
                         "name": "Документ_Корпус",
                         "type": "tns:Документ_ЗаказКлиента",
@@ -2955,15 +2892,6 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         return Ok(args);
     }
 
-    if case.id == "subsystem-compile-child" {
-        seed_parent_subsystem(workspace)?;
-        return Ok(subsystem_compile_args(
-            workspace,
-            "CorpusChild",
-            Some("src/Subsystems/CorpusParent.xml"),
-        ));
-    }
-
     if case.id == "subsystem-edit-add-child" {
         seed_parent_subsystem(workspace)?;
         let mut args = common_args(workspace);
@@ -3046,38 +2974,29 @@ fn prepare_target(case: &ExecutableCase, workspace: &Path) -> Result<Map<String,
         return Ok(args);
     }
 
-    if case.id == "role-compile-name-field" {
-        seed_catalog(workspace)?;
-        let path = write_json_input(
-            workspace,
-            "role",
-            &json!({
-                "name": "CorpusReader",
-                "synonym": "Corpus reader",
-                "objects": ["Catalog.CorpusCatalog: @view"]
-            }),
-        )?;
-        let mut args = common_args(workspace);
-        args.insert("JsonPath".to_string(), Value::String(path));
-        args.insert("OutputDir".to_string(), Value::String("src".to_string()));
-        return Ok(args);
-    }
-
     if case.id == "role-edit-set-right" {
         seed_catalog(workspace)?;
-        let path = write_json_input(
-            workspace,
-            "role-edit-seed",
-            &json!({
-                "name": "CorpusReader",
-                "synonym": "Corpus reader",
-                "objects": ["Catalog.CorpusCatalog: @view"]
-            }),
-        )?;
-        let mut compile = common_args(workspace);
-        compile.insert("JsonPath".to_string(), Value::String(path));
-        compile.insert("OutputDir".to_string(), Value::String("src".to_string()));
-        call_public_tool("unica.role.compile", &compile)?;
+        // Роль с правами просмотра справочника заводят канонические
+        // `role.create` и `right.add` одной публикацией.
+        let mut seed = common_args(workspace);
+        seed.insert("at".to_string(), json!("main:Configuration"));
+        seed.insert(
+            "ops".to_string(),
+            json!([{
+                "op": "role.create",
+                "args": {"at": "main:Configuration", "values": {"name": "CorpusReader"}}
+            }, {
+                "op": "right.add",
+                "args": {
+                    "at": "main:Role.CorpusReader",
+                    "items": [{
+                        "object": "Catalog.CorpusCatalog",
+                        "rights": {"Read": true, "View": true, "InputByString": true}
+                    }]
+                }
+            }]),
+        );
+        call_canonical_apply(&seed)?;
 
         let mut args = common_args(workspace);
         args.insert("sourceSet".to_string(), Value::String("main".to_string()));
@@ -6269,12 +6188,13 @@ fn dcs_corpus_exercises_xsd_order_sensitive_contracts() {
             .filter(|entry| entry["op"] == op)
             .collect::<Vec<_>>();
         assert_eq!(matching.len(), 2, "missing variant/group settings {op}");
-        let operand = if op == "outputParameter.set" {
-            &matching[1]["args"]["values"]
-        } else {
-            &matching[1]["args"]["items"][0]
-        };
-        assert_eq!(operand["group"], "Corpus group");
+        assert!(
+            matching[1]["args"]["at"]
+                .as_str()
+                .unwrap()
+                .ends_with(".Setting.Main.Item.Corpus group"),
+            "{op} addresses the structure item"
+        );
     }
     assert_eq!(
         find("dataParameter.add")["args"]["items"][0]["name"],

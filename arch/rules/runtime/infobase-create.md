@@ -8,17 +8,17 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_without_prior_preview_creates_and_confirms_the_provider_receipt
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_an_infobase_created_elsewhere
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::apply_refuses_a_receipt_that_still_plans_to_create
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::captured_runner_014_create_is_confirmed_by_its_repeated_preview
+  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::captured_runner_015_create_is_confirmed_by_its_repeated_preview
   - crates/unica-coder/src/infrastructure/daemon/v13_infobase_create.rs::a_cluster_infobase_is_created_without_sources
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_first_pushes_after_create_skip_the_assembled_set_and_load_an_edit
-  - crates/unica-coder/src/infrastructure/daemon/runner_014.rs::the_origin_kind_follows_the_merged_infobase_section
+  - crates/unica-coder/src/infrastructure/daemon/runner_015.rs::the_origin_kind_follows_the_merged_infobase_section
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
 # Создание базы подтверждается повторным опросом раннера
 
 Адаптер раннера создаёт только отсутствующую базу. Что в ней окажется, решает
-раннер по виду цели, и ответ называет это, а не умалчивает. Раннер 0.14
+раннер по виду цели, и ответ называет это, а не умалчивает. Раннер 0.15
 собирает файловую базу сразу с основной конфигурацией проекта — набором
 `CONFIGURATION` — и записывает память об этом наборе: ответ сообщает
 `initializesSources: true` и имя набора в `sourceSet`. Базу в кластере, как и
@@ -42,7 +42,7 @@ false`. Вид цели адаптер читает из секции `origin` �
 возвращает preview, `false` создаёт базу без предварительного вызова preview.
 Preview допускает только запланированное создание (`planned`), без запуска
 платформы; отсутствие базы раннер проверяет только у файловой цели. Существующая база получает отказ
-`invalid_state` с указанием на `infobase.restore`: раннер 0.14 отвергает её
+`invalid_state` с указанием на `infobase.restore`: раннер 0.15 отвергает её
 отказом проверки ещё до запуска платформы, но вызов `infobase.create`
 аргументов не имеет, и править в нём нечего. Запланированное EDT-пространство
 также отклоняется.
@@ -65,5 +65,5 @@ preview раннера в текущем вызове. Их изменение �
 пути базы и установки платформы наружу не передаются.
 
 Проверки используют управляемые ответы раннера, в том числе снятые
-с раннера 0.14.0 вживую. Они не проверяют состояние настоящей
+с раннера 0.15.1 вживую. Они не проверяют состояние настоящей
 информационной базы.

@@ -15,6 +15,125 @@ pub(crate) fn is_file_sharing_violation(_error: &io::Error) -> bool {
     false
 }
 
+/// Тестовый наблюдатель файловой работы через удерживаемые каталоги.
+///
+/// Записывает каждое открытие файла (относительный путь, удержание дочернего
+/// файла) и каждое перечисление каталога, выполненные через
+/// `RetainedDirectoryCapability` под наблюдаемым корнем,
+/// в любом потоке процесса. Чтение исходников идёт через этот примитив,
+/// поэтому обход дерева виден по числу открытых описаний и перечислений.
+#[cfg(test)]
+pub(crate) mod retained_read_probe {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, MutexGuard};
+
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub(crate) enum RetainedRead {
+        Opened(PathBuf),
+        Listed(PathBuf),
+    }
+
+    impl RetainedRead {
+        fn path(&self) -> &Path {
+            match self {
+                Self::Opened(path) | Self::Listed(path) => path,
+            }
+        }
+
+        /// The same event with its path relative to `root`.
+        pub(crate) fn relative_to(&self, root: &Path) -> Self {
+            let relative = self.path().strip_prefix(root).unwrap_or(self.path());
+            match self {
+                Self::Opened(_) => Self::Opened(relative.to_path_buf()),
+                Self::Listed(_) => Self::Listed(relative.to_path_buf()),
+            }
+        }
+    }
+
+    struct Watch {
+        id: usize,
+        root: PathBuf,
+        events: Vec<RetainedRead>,
+    }
+
+    static ACTIVE: AtomicUsize = AtomicUsize::new(0);
+    static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+    static WATCHES: Mutex<Vec<Watch>> = Mutex::new(Vec::new());
+
+    fn watches() -> MutexGuard<'static, Vec<Watch>> {
+        WATCHES.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    fn canonical(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// One observation window over every retained read below `root`.
+    pub(crate) struct RetainedReadProbe {
+        id: usize,
+        root: PathBuf,
+    }
+
+    impl RetainedReadProbe {
+        pub(crate) fn watch(root: &Path) -> Self {
+            let root = canonical(root);
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            watches().push(Watch {
+                id,
+                root: root.clone(),
+                events: Vec::new(),
+            });
+            ACTIVE.fetch_add(1, Ordering::AcqRel);
+            Self { id, root }
+        }
+
+        /// Drains the events recorded since the previous call, sorted and with
+        /// paths relative to the watched root.
+        pub(crate) fn take(&self) -> Vec<RetainedRead> {
+            let mut events = watches()
+                .iter_mut()
+                .find(|watch| watch.id == self.id)
+                .map(|watch| std::mem::take(&mut watch.events))
+                .unwrap_or_default()
+                .iter()
+                .map(|event| event.relative_to(&self.root))
+                .collect::<Vec<_>>();
+            events.sort();
+            events
+        }
+    }
+
+    impl Drop for RetainedReadProbe {
+        fn drop(&mut self) {
+            watches().retain(|watch| watch.id != self.id);
+            ACTIVE.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    pub(super) fn record(event: impl FnOnce() -> RetainedRead) {
+        if ACTIVE.load(Ordering::Acquire) == 0 {
+            return;
+        }
+        let event = event();
+        let path = match event.path().parent() {
+            Some(parent) if matches!(event, RetainedRead::Opened(_)) => {
+                canonical(parent).join(event.path().file_name().unwrap_or_default())
+            }
+            _ => canonical(event.path()),
+        };
+        let event = match event {
+            RetainedRead::Opened(_) => RetainedRead::Opened(path),
+            RetainedRead::Listed(_) => RetainedRead::Listed(path),
+        };
+        for watch in watches().iter_mut() {
+            if event.path().starts_with(&watch.root) {
+                watch.events.push(event.clone());
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     static TEST_POST_RENAME_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -223,22 +342,6 @@ pub(crate) fn create_test_directory_link(target: &Path, link: &Path) -> io::Resu
     std::os::unix::fs::symlink(target, link)
 }
 
-/// Classifies the platform error produced when a no-follow open encounters a
-/// symbolic link. Keeping the OS errno inside this facade lets retained-tree
-/// callers preserve one portable fail-closed policy.
-#[cfg(test)]
-pub(crate) fn is_nofollow_link_error(error: &io::Error) -> bool {
-    #[cfg(unix)]
-    {
-        error.raw_os_error() == Some(libc::ELOOP)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = error;
-        false
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn supports_retained_root_replacement_test() -> bool {
     cfg!(unix)
@@ -260,7 +363,6 @@ type RetainedDirectoryCasePolicyForTest = Box<dyn Fn(FileIdentity) -> Option<boo
 #[cfg(test)]
 thread_local! {
     static TEST_RETAINED_DIRECTORY_CASE_POLICY: std::cell::RefCell<Option<RetainedDirectoryCasePolicyForTest>> = const { std::cell::RefCell::new(None) };
-    static TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -270,7 +372,6 @@ pub(crate) struct RetainedDirectoryCasePolicyTestGuard;
 impl Drop for RetainedDirectoryCasePolicyTestGuard {
     fn drop(&mut self) {
         TEST_RETAINED_DIRECTORY_CASE_POLICY.with(|slot| slot.borrow_mut().take());
-        TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(|slot| slot.set(0));
     }
 }
 
@@ -285,13 +386,7 @@ pub(crate) fn set_retained_directory_case_policy_for_test(
         );
         *slot.borrow_mut() = Some(Box::new(policy));
     });
-    TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(|slot| slot.set(0));
     RetainedDirectoryCasePolicyTestGuard
-}
-
-#[cfg(test)]
-pub(crate) fn retained_directory_case_policy_queries_for_test() -> usize {
-    TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES.with(std::cell::Cell::get)
 }
 
 #[cfg(all(test, windows))]
@@ -320,6 +415,77 @@ pub(crate) fn create_test_directory_link(_target: &Path, _link: &Path) -> io::Re
 pub(crate) struct PortablePermissions {
     permissions: fs::Permissions,
     key: u32,
+}
+
+/// Identity of one regular file's current content as the filesystem reports
+/// it: physical identity, length, modification time and change time (ctime,
+/// Windows `ChangeTime`). A write through the file, a replacement of its name
+/// or a restored modification time moves the change time. As in the Git
+/// index, a stamp proves content only once its times are older than the
+/// timestamp granularity window: see [`FileStamp::settled`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    identity: FileIdentity,
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+    changed: Option<std::time::SystemTime>,
+}
+
+impl FileStamp {
+    pub(crate) fn of(file: &fs::File) -> io::Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            identity: file_identity(file)?,
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+            changed: file_change_time(file, &metadata)
+                .ok()
+                .and_then(change_time_as_system_time),
+        })
+    }
+
+    /// Whether this stamp may stand for the file's content: both times are
+    /// known, not in the future and at least `window` older than `now`. A
+    /// write inside the window could keep every field, so such a stamp is
+    /// never cached and the file is read again until it settles.
+    pub(crate) fn settled(&self, now: std::time::SystemTime, window: std::time::Duration) -> bool {
+        [self.modified, self.changed].into_iter().all(|time| {
+            time.is_some_and(|time| now.duration_since(time).is_ok_and(|age| age >= window))
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        file: u64,
+        length: u64,
+        modified: Option<std::time::SystemTime>,
+        changed: Option<std::time::SystemTime>,
+    ) -> Self {
+        Self {
+            identity: FileIdentity { volume: 1, file },
+            length,
+            modified,
+            changed,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn change_time_as_system_time((ticks, _): (i64, i64)) -> Option<std::time::SystemTime> {
+    // FILETIME counts 100 ns ticks since 1601-01-01.
+    const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+    let since_epoch = u64::try_from(ticks.checked_sub(UNIX_EPOCH_TICKS)?).ok()?;
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_nanos(
+        since_epoch.checked_mul(100)?,
+    ))
+}
+
+#[cfg(not(windows))]
+fn change_time_as_system_time((seconds, nanoseconds): (i64, i64)) -> Option<std::time::SystemTime> {
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::new(
+        u64::try_from(seconds).ok()?,
+        u32::try_from(nanoseconds).ok()?,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -576,8 +742,6 @@ impl RetainedDirectoryCapability {
     fn case_sensitive_child_names(&self) -> io::Result<bool> {
         #[cfg(test)]
         {
-            TEST_RETAINED_DIRECTORY_CASE_POLICY_QUERIES
-                .with(|slot| slot.set(slot.get().saturating_add(1)));
             if let Some(policy) = TEST_RETAINED_DIRECTORY_CASE_POLICY.with(|slot| {
                 slot.borrow()
                     .as_ref()
@@ -589,15 +753,26 @@ impl RetainedDirectoryCapability {
         filesystem_case_sensitive_for_directory(&self.retained.directory)
     }
 
-    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+    /// Проверяет, указывает ли имя на удерживаемый каталог.
+    ///
+    /// `false` означает только завершённое сравнение двух разных физических
+    /// идентичностей. Ошибка открытия или чтения метаданных остаётся `Err`,
+    /// потому что по ней нельзя заключать, что имя было подменено.
+    pub(crate) fn named_identity_matches(&self) -> io::Result<bool> {
         let rebound = if let Some(parent) = &self.parent {
-            parent.directory.validate_named_identity()?;
+            if !parent.directory.named_identity_matches()? {
+                return Ok(false);
+            }
             open_directory_child_nofollow(&parent.directory.retained.directory, &parent.name)?
         } else {
             open_absolute_directory_path_nofollow(&self.path)?
         };
         let rebound_identity = file_identity(&rebound)?;
-        if rebound_identity != self.retained.identity {
+        Ok(rebound_identity == self.retained.identity)
+    }
+
+    pub(crate) fn validate_named_identity(&self) -> io::Result<()> {
+        if !self.named_identity_matches()? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "named directory identity changed after capability admission",
@@ -751,7 +926,8 @@ impl RetainedDirectoryCapability {
     /// fresh transaction-private quarantine with no replacement, then the
     /// moved identity is observed. If a concurrent directory was moved, it is
     /// restored to the public name when possible and never deleted here.
-    /// Windows keeps its handle-based directory deletion.
+    /// Windows deletes through the verified handle with POSIX semantics, so
+    /// the name leaves the parent even while another handle stays open.
     pub(crate) fn remove_empty_named_identity_relative_for_retained_apply(
         &self,
         quarantine_name: &std::ffi::OsStr,
@@ -823,7 +999,17 @@ impl RetainedDirectoryCapability {
             }
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let _ = quarantine_name;
+            remove_identity_bound_empty_directory_child_unlinking_name(
+                &parent.directory.retained.directory,
+                &parent.name,
+                self.retained.identity,
+                &self.retained.directory,
+            )
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = quarantine_name;
             remove_identity_bound_empty_directory_child(
@@ -1175,8 +1361,23 @@ impl RetainedDirectoryCapability {
         Ok(bytes)
     }
 
+    /// The stamp of a relative regular file, or `None` when it is absent.
+    /// Opening it is the only work: no content is read.
+    pub(crate) fn relative_file_stamp(&self, relative: &Path) -> io::Result<Option<FileStamp>> {
+        match self.open_relative_regular_nofollow(relative) {
+            Ok(file) => FileStamp::of(&file).map(Some),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) fn open_relative_regular_nofollow(&self, relative: &Path) -> io::Result<fs::File> {
         use std::path::Component;
+
+        #[cfg(test)]
+        retained_read_probe::record(|| {
+            retained_read_probe::RetainedRead::Opened(self.path.join(relative))
+        });
 
         let mut components = relative.components().peekable();
         if components.peek().is_none() {
@@ -1221,6 +1422,10 @@ impl RetainedDirectoryCapability {
         maximum_entries: Option<usize>,
         checkpoint: impl FnMut() -> io::Result<()>,
     ) -> io::Result<Vec<std::ffi::OsString>> {
+        #[cfg(test)]
+        retained_read_probe::record(|| {
+            retained_read_probe::RetainedRead::Listed(self.path.clone())
+        });
         read_directory_names_with_limit(&self.retained.directory, maximum_entries, checkpoint)
     }
 
@@ -1230,6 +1435,10 @@ impl RetainedDirectoryCapability {
         &self,
         visitor: impl FnMut(std::ffi::OsString) -> Result<(), E>,
     ) -> Result<(), E> {
+        #[cfg(test)]
+        retained_read_probe::record(|| {
+            retained_read_probe::RetainedRead::Listed(self.path.clone())
+        });
         visit_directory_names(&self.retained.directory, visitor)
     }
 
@@ -1265,6 +1474,10 @@ impl RetainedDirectoryCapability {
                 }))
             }
             OpenedChildKind::RegularFile => {
+                #[cfg(test)]
+                retained_read_probe::record(|| {
+                    retained_read_probe::RetainedRead::Opened(self.path.join(name))
+                });
                 let file = open_child_for_secure_tree_use(
                     &self.retained.directory,
                     name,
@@ -1290,6 +1503,10 @@ impl RetainedDirectoryCapability {
         &self,
         name: &std::ffi::OsStr,
     ) -> io::Result<RetainedRegularFileCapability> {
+        #[cfg(test)]
+        retained_read_probe::record(|| {
+            retained_read_probe::RetainedRead::Opened(self.path.join(name))
+        });
         let file = open_regular_child_nofollow(&self.retained.directory, name)?;
         let identity = file_identity(&file)?;
         Ok(RetainedRegularFileCapability {
@@ -1452,7 +1669,9 @@ impl RetainedRegularFileCapability {
     /// name to Unix's validate-then-`unlinkat` race. Unix first moves the
     /// identity to a unique transaction-owned quarantine name, verifies the
     /// move outcome, and only then performs best-effort artifact deletion.
-    /// Windows keeps its stronger handle-based delete. Portable Unix has no
+    /// Windows keeps its stronger handle-based delete, with POSIX semantics so
+    /// that no delete-pending name stays behind while another handle to the
+    /// file is open (issue #1463). Portable Unix has no
     /// unlink-by-descriptor operation: the final unlink of the verified,
     /// transaction-unique quarantine is still name-based. A hostile same-user
     /// process that discovers and swaps that internal name in the final gap can
@@ -1507,7 +1726,20 @@ impl RetainedRegularFileCapability {
                     )
                 })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // A saved plan, a cache participant or another reader of this
+            // workspace may still hold the file. Its name must leave the
+            // source tree now, not when the last handle closes (issue #1463).
+            let _ = quarantine_name;
+            remove_identity_bound_regular_child_unlinking_name(
+                &self.parent.retained.directory,
+                &self.name,
+                self.identity,
+                &self.file,
+            )
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = quarantine_name;
             self.remove_named_identity_relative()
@@ -3598,6 +3830,61 @@ fn open_child_for_delete_and_attribute_write(
 #[cfg(windows)]
 pub(crate) fn delete_open_child(file: &fs::File) -> io::Result<()> {
     set_delete_disposition(file)
+}
+
+/// Deletes the opened child and removes its name from the parent at once,
+/// even while other handles to the same object remain open.
+///
+/// The classic disposition of [`delete_open_child`] leaves the name in the
+/// directory as delete-pending until the last handle closes; any reader that
+/// opens that name gets `ERROR_ACCESS_DENIED` (issue #1463). POSIX delete
+/// semantics unlinks the name immediately and keeps the data only for the open
+/// handles. A volume that does not support it falls back to the classic
+/// disposition.
+#[cfg(windows)]
+pub(crate) fn delete_open_child_unlinking_name(file: &fs::File) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_DISPOSITION_INFORMATION_EX: u32 = 64;
+    const FILE_DISPOSITION_FLAG_DELETE: u32 = 0x0000_0001;
+    const FILE_DISPOSITION_FLAG_POSIX_SEMANTICS: u32 = 0x0000_0002;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002_u32 as i32;
+    const STATUS_INVALID_INFO_CLASS: i32 = 0xC000_0003_u32 as i32;
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
+    const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BB_u32 as i32;
+    const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010_u32 as i32;
+
+    let mut flags = FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS;
+    let mut status = NtIoStatusBlock {
+        status: NtIoStatusStatus { status: 0 },
+        information: 0,
+    };
+    // SAFETY: file is an owned handle opened with DELETE access by the delete-open helpers, and
+    // flags/status remain writable for the duration of the native call. Once marked, the only
+    // subsequent operation on the handle is Drop/close.
+    let result = unsafe {
+        NtSetInformationFile(
+            file.as_raw_handle(),
+            &mut status,
+            (&mut flags as *mut u32).cast(),
+            std::mem::size_of_val(&flags) as u32,
+            FILE_DISPOSITION_INFORMATION_EX,
+        )
+    };
+    if result >= 0 {
+        return Ok(());
+    }
+    if matches!(
+        result,
+        STATUS_NOT_IMPLEMENTED
+            | STATUS_INVALID_INFO_CLASS
+            | STATUS_INVALID_PARAMETER
+            | STATUS_NOT_SUPPORTED
+            | STATUS_INVALID_DEVICE_REQUEST
+    ) {
+        return set_delete_disposition(file);
+    }
+    Err(nt_status_error(result))
 }
 
 #[cfg(windows)]
@@ -5903,15 +6190,51 @@ fn restore_regular_child_from_cleanup_quarantine(
 }
 
 #[cfg(windows)]
-#[allow(
-    clippy::permissions_set_readonly_false,
-    reason = "the verified child handle changes only FILE_ATTRIBUTE_READONLY before deletion"
-)]
 pub(crate) fn remove_identity_bound_regular_child(
     parent: &fs::File,
     name: &std::ffi::OsStr,
     expected_identity: FileIdentity,
     retained: &fs::File,
+) -> io::Result<()> {
+    remove_identity_bound_regular_child_with(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        delete_open_child,
+    )
+}
+
+/// Same identity-bound removal, but the name leaves the directory at once even
+/// while another handle to the file stays open (see
+/// [`delete_open_child_unlinking_name`]).
+#[cfg(windows)]
+pub(crate) fn remove_identity_bound_regular_child_unlinking_name(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+) -> io::Result<()> {
+    remove_identity_bound_regular_child_with(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        delete_open_child_unlinking_name,
+    )
+}
+
+#[cfg(windows)]
+#[allow(
+    clippy::permissions_set_readonly_false,
+    reason = "the verified child handle changes only FILE_ATTRIBUTE_READONLY before deletion"
+)]
+fn remove_identity_bound_regular_child_with(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    delete: fn(&fs::File) -> io::Result<()>,
 ) -> io::Result<()> {
     let named = open_child_for_delete_and_attribute_write(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::RegularFile
@@ -5939,7 +6262,7 @@ pub(crate) fn remove_identity_bound_regular_child(
         permissions.set_readonly(false);
         named.set_permissions(permissions)?;
     }
-    delete_open_child(&named)
+    delete(&named)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -5985,6 +6308,41 @@ pub(crate) fn remove_identity_bound_empty_directory_child(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
+    remove_identity_bound_empty_directory_child_with(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        delete_open_child,
+    )
+}
+
+/// Same identity-bound removal of an empty directory whose name leaves its
+/// parent at once even while another handle to it stays open.
+#[cfg(windows)]
+pub(crate) fn remove_identity_bound_empty_directory_child_unlinking_name(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+) -> io::Result<()> {
+    remove_identity_bound_empty_directory_child_with(
+        parent,
+        name,
+        expected_identity,
+        retained,
+        delete_open_child_unlinking_name,
+    )
+}
+
+#[cfg(windows)]
+fn remove_identity_bound_empty_directory_child_with(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    expected_identity: FileIdentity,
+    retained: &fs::File,
+    delete: fn(&fs::File) -> io::Result<()>,
+) -> io::Result<()> {
     let named = open_any_child_for_delete(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::Directory
         || file_identity(&named)? != expected_identity
@@ -6004,7 +6362,7 @@ pub(crate) fn remove_identity_bound_empty_directory_child(
             "directory child identity changed; replacement left untouched",
         ));
     }
-    delete_open_child(&named)
+    delete(&named)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -7847,6 +8205,67 @@ mod tests {
         assert_eq!(hard_link_count(&target_file).unwrap(), 2);
 
         drop(target_file);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Issue #1463: a retained-apply cleanup may run while another owner (a
+    /// pending saved plan, a reader) still holds the file or directory. Its
+    /// name must leave the parent at once; on Windows a delete-pending name
+    /// stayed until the daemon exited and could not be opened by anyone.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn retained_apply_cleanup_leaves_no_name_while_another_handle_is_open() {
+        use super::{RetainedChildCapability, RetainedDirectoryCapability};
+        use std::ffi::OsStr;
+        use std::io::Read;
+
+        let root = unique_temp_root("retained-apply-cleanup-open-handle");
+        fs::create_dir_all(root.join("Created")).unwrap();
+        fs::write(root.join(".unica-apply-recovery"), b"preimage").unwrap();
+        let canonical = fs::canonicalize(&root).unwrap();
+        let parent = RetainedDirectoryCapability::open(&canonical).unwrap();
+        let Ok(RetainedChildCapability::RegularFile(recovery)) =
+            parent.retain_immediate_child_nofollow(OsStr::new(".unica-apply-recovery"))
+        else {
+            panic!("fixture recovery file must be a regular child");
+        };
+        let Ok(RetainedChildCapability::Directory(created)) =
+            parent.retain_immediate_child_nofollow(OsStr::new("Created"))
+        else {
+            panic!("fixture directory must be a directory child");
+        };
+        let mut other_file = fs::File::open(canonical.join(".unica-apply-recovery")).unwrap();
+        let other_directory =
+            RetainedDirectoryCapability::open(&canonical.join("Created")).unwrap();
+
+        recovery
+            .remove_named_identity_relative_for_retained_apply(OsStr::new(
+                ".unica-apply-quarantine",
+            ))
+            .unwrap();
+        created
+            .remove_empty_named_identity_relative_for_retained_apply(OsStr::new(
+                ".unica-apply-dir-cleanup-quarantine",
+            ))
+            .unwrap();
+
+        let names = fs::read_dir(&canonical)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert!(
+            names.is_empty(),
+            "cleanup left names while other handles stay open: {names:?}"
+        );
+        let mut bytes = Vec::new();
+        other_file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"preimage", "the other owner keeps its open data");
+
+        drop(other_file);
+        drop(other_directory);
+        drop(recovery);
+        drop(created);
+        drop(parent);
         fs::remove_dir_all(root).unwrap();
     }
 

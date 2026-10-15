@@ -1,0 +1,255 @@
+{
+ "id": "S-1465-form-attribute-command",
+ "name": "form-attribute-and-command-share-the-node-names",
+ "issue": 1465,
+ "area": "Формы",
+ "task": "Реквизит и команда формы добавляются attribute.add и command.add на адресе формы, как у объекта метаданных: can формы выдаёт их, контракт по адресу Can выбирается адресом (у формы — писатель формы, у справочника — член метаданных), снятые formAttribute.add и formCommand.add отказывают bad_value без записи с next к контракту на форме, а новые имена пишут реквизит и команду в Form.xml, не меняя описание справочника",
+ "wire": [
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/can",
+     "contains": {
+      "op": "attribute.add",
+      "args": "items",
+      "implemented": true
+     }
+    },
+    {
+     "pointer": "/data/can",
+     "contains": {
+      "op": "command.add",
+      "args": "items",
+      "implemented": true
+     }
+    }
+   ],
+   "captures": {
+    "before": {
+     "kind": "sha256",
+     "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+    },
+    "catalogBefore": {
+     "kind": "sha256",
+     "file": "src/Catalogs/Валюты.xml"
+    }
+   }
+  },
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/props/op",
+     "eq": "attribute.add"
+    },
+    {
+     "pointer": "/data/props/contract/help/path",
+     "eq": "skills/form-edit/SKILL.md"
+    },
+    {
+     "pointer": "/data/props/contract/target",
+     "eq": "The form itself: <source-set>:<Kind>.<Name>.Form.<Form>. Read its Attribute branch before choosing names."
+    }
+   ]
+  },
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:Catalog.Валюты.Can.attribute.add"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/props/op",
+     "eq": "attribute.add"
+    },
+    {
+     "pointer": "/data/props/contract/help/path",
+     "eq": "skills/meta-edit/SKILL.md"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+    "ops": [
+     {
+      "op": "formAttribute.add",
+      "args": {
+       "items": [
+        {
+         "name": "Проба",
+         "type": "Boolean"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "refusal": "bad_value: apply operation `formAttribute.add` is retired: call `attribute.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
+   "assertions": [
+    {
+     "pointer": "/at",
+     "eq": "ops[0].op"
+    },
+    {
+     "pointer": "/next/0/args/at",
+     "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "eq": "$capture.before"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+    "ops": [
+     {
+      "op": "formCommand.add",
+      "args": {
+       "items": [
+        {
+         "name": "Проба"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "refusal": "bad_value: apply operation `formCommand.add` is retired: call `command.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
+   "assertions": [
+    {
+     "pointer": "/at",
+     "eq": "ops[0].op"
+    },
+    {
+     "pointer": "/next/0/args/at",
+     "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.command.add"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "eq": "$capture.before"
+    }
+   ]
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+    "ops": [
+     {
+      "op": "attribute.add",
+      "args": {
+       "items": [
+        {
+         "name": "Проба",
+         "type": "Boolean"
+        }
+       ]
+      }
+     },
+     {
+      "op": "command.add",
+      "args": {
+       "items": [
+        {
+         "name": "Проба"
+        }
+       ]
+      }
+     }
+    ]
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "preview"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "eq": "$capture.before"
+    }
+   ],
+   "captures": {
+    "token": {
+     "pointer": "/data/executionToken"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "executionToken": "$capture.token"
+   },
+   "expect": [
+    "ok"
+   ],
+   "assertions": [
+    {
+     "pointer": "/data/mode",
+     "eq": "published"
+    }
+   ],
+   "fileAssertions": [
+    {
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "kind": "xmlTags",
+     "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name='Проба']",
+     "eq": [
+      "Attribute"
+     ]
+    },
+    {
+     "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+     "kind": "xmlTags",
+     "select": "./{http://v8.1c.ru/8.3/xcf/logform}Commands/{http://v8.1c.ru/8.3/xcf/logform}Command[@name='Проба']",
+     "eq": [
+      "Command"
+     ]
+    },
+    {
+     "kind": "sha256",
+     "path": "src/Catalogs/Валюты.xml",
+     "eq": "$capture.catalogBefore"
+    }
+   ]
+  }
+ ]
+}

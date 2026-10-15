@@ -4,8 +4,8 @@
 
 Справочник внутреннего JSON-описания общего писателя управляемых форм 1С.
 Публичный путь — `unica.apply`: создание через `form.add` на владельце, наполнение через
-`element.add`, `formAttribute.add`, `formCommand.add` и `event.bind`.
-`element.add` принимает типизированные `items[]` с `name` и `type`;
+`item.add`, `attribute.add`, `command.add` и `event.bind`.
+`item.add` принимает типизированные `items[]` с `name` и `type`;
 ключи DSL ниже не заменяют этот контракт. Поддержанные виды и примеры вызовов —
 в [form-edit](../../skills/form-edit/SKILL.md). Не все возможности справочника
 реализованы публичными операциями.
@@ -842,7 +842,7 @@ flags/layout/оформление/companions/события общий), плю�
 Forgiving-синонимы типа: XML-имя (`SpreadSheetDocumentField`) и рус. (`ПолеТабличногоДокумента`, `ПолеИндикатора`, `ПолеДиаграммы`, `ПолеДиаграммыГанта`, …).
 Скаляры `output`/`protection`/… — generic pass-through; bool как `true`/`false`, enum verbatim.
 
-Для HTML-поля публичный вызов — `unica.apply` → `element.add` с
+Для HTML-поля публичный вызов — `unica.apply` → `item.add` с
 `items: [{"name": "ПолеHTML", "type": "HTMLDocumentField", "path": "АдресHTML"}]`.
 Ключ `html` — внутреннее описание, не имя MCP-инструмента. `output` и
 `warningOnEditRepresentation` для HTML-поля нативный писатель не выпускает.
@@ -1144,6 +1144,10 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 ]
 ```
 
+`command.add` принимает из этой таблицы только `name`, `title`, `tooltip`,
+`action`, `shortcut`, `picture` (строкой) и `representation`; остальные ключи
+отклоняются до записи. Контракт операции — `<форма>.Can.command.add`.
+
 | Свойство | Тип | Описание |
 |----------|-----|----------|
 | `name` | string | Имя команды (обязательно) |
@@ -1157,7 +1161,7 @@ Shorthand: `"Имя [Заголовок]: тип = Выражение #noField #
 | `modifiesSavedData` | bool | Команда изменяет сохраняемые данные (`<ModifiesSavedData>`); эмитится только `true` |
 | `shortcut` | string | Клавиатурное сочетание |
 | `picture` | string \| object | Ссылка на картинку (`StdPicture.Name`; `abs:X` → `<xr:Abs>`). Скаляр ИЛИ объект `{src, loadTransparent?, transparentPixel?}` (как у `button`, §«button») |
-| `representation` | string | `Auto`, `Picture`, `Text`, `PictureAndText` |
+| `representation` | string | `Auto`, `Text`, `Picture`, `TextPicture`. Набор команды отличается от набора кнопки: `PictureAndText` у команды отклоняется до записи, платформа такую форму не загружает |
 
 ---
 

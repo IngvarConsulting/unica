@@ -20,10 +20,7 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
         ("unica.interface.edit", "interface"),
         ("unica.meta.add", "metadata"),
         ("unica.meta.edit", "metadata"),
-        ("unica.mxl.compile", "mxl"),
-        ("unica.role.compile", "role"),
         ("unica.role.edit", "role"),
-        ("unica.subsystem.compile", "subsystem"),
         ("unica.subsystem.edit", "subsystem"),
     ]);
     let actual = tools()
@@ -51,16 +48,14 @@ fn public_platform_xml_mutator_inventory() -> BTreeMap<&'static str, &'static st
 
 #[test]
 fn verified_public_mutator_idempotence_cases_are_exact() {
-    let cases: [(&str, fn()); 9] = [
+    let cases: [(&str, fn()); 7] = [
         ("unica.cf.edit", crate::application::tests::cf_edit_equal_serialized_result_is_a_public_noop_and_preserves_identity),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow),
         ("unica.code.patch", super::code::tests::applied_patch_returns_typed_data_and_repeated_apply_is_noop_with_stable_identity),
         ("unica.form.edit", super::form::tests::edit_form_identical_event_is_byte_and_identity_exact_idempotent_noop),
         ("unica.interface.edit", super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update),
         ("unica.meta.edit", super::meta::typed_resource_noop_and_identity_contract_is_complete),
-        ("unica.mxl.compile", super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update),
         ("unica.role.edit", super::role::role_edit_contract_tests::role_edit_without_vendor_support_is_logically_addressed_and_preserves_identity),
-        ("unica.subsystem.compile", super::subsystem::tests::repeated_subsystem_compile_preserves_file_identities_and_reports_no_changes),
     ];
     let registered = public_platform_xml_mutator_inventory();
     for (tool, evidence) in cases {
@@ -81,7 +76,7 @@ fn typed_platform_resource_noop_emits_no_effects() {
 
 #[test]
 fn public_platform_xml_mutator_preimage_contract_is_complete() {
-    let cases: [(&str, fn()); 18] = [
+    let cases: [(&str, fn()); 15] = [
         ("unica.cf.edit", super::cf::cf_edit_transaction_tests::cf_edit_external_only_change_rejects_concurrent_format_owner_change),
         ("unica.cf.init", super::cf::cf_init_transaction_tests::cf_init_reauthorizes_containing_owner_immediately_before_publication),
         ("unica.cfe.borrow", super::cfe::tests::borrow_cfe_rejects_concurrent_base_format_owner_change),
@@ -95,10 +90,7 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
         ("unica.interface.edit", super::interface::tests::interface_edit_rolls_back_if_unchanged_metadata_owner_changes_during_publication),
         ("unica.meta.add", super::meta::typed_resource_preimage_contract_is_complete),
         ("unica.meta.edit", crate::infrastructure::metadata_operations::tests::typed_edit_concurrency_and_rollback_preserve_exact_external_or_preimage_bytes),
-        ("unica.mxl.compile", super::mxl::tests::mxl_compile_rolls_back_if_format_owner_changes_during_publication),
-        ("unica.role.compile", super::role::role_compile_contract_tests::role_compile_rolls_back_if_supported_format_owner_appears_during_publication),
         ("unica.role.edit", super::role::role_edit_contract_tests::rights_drift_in_the_staging_window_is_classified_as_concurrent),
-        ("unica.subsystem.compile", super::subsystem::tests::subsystem_compile_exact_binds_a_reused_existing_child),
         ("unica.subsystem.edit", super::subsystem::tests::subsystem_edit_exact_binds_a_reused_existing_child),
     ];
     let inventory = public_platform_xml_mutator_inventory();
@@ -117,15 +109,14 @@ fn public_platform_xml_mutator_preimage_contract_is_complete() {
 }
 
 #[test]
-fn repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates() {
+fn repeated_interface_mutation_preserves_file_identity_but_reports_attempted_update() {
     super::interface::tests::repeated_interface_edit_preserves_identity_but_reports_attempted_update();
-    super::mxl::tests::repeated_mxl_compile_preserves_identity_but_reports_attempted_update();
 }
 
 #[test]
 fn mutation_idempotence_scope_decision_is_fully_realized() {
     verified_public_mutator_idempotence_cases_are_exact();
-    repeated_interface_and_mxl_mutations_preserve_file_identity_but_report_attempted_updates();
+    repeated_interface_mutation_preserves_file_identity_but_reports_attempted_update();
 }
 
 /// One registry-facing falsifier for every clause of selector-free tail

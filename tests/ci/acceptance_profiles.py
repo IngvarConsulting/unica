@@ -9,6 +9,8 @@ import shutil
 import time
 from pathlib import Path
 
+from tests.ci.acceptance_controls import tool_result
+
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
@@ -53,6 +55,7 @@ SOURCE_WORKSPACES = {
     "tests/fixtures/acceptance/workspace-code",
     "tests/fixtures/acceptance/workspace-resolve",
     "tests/fixtures/acceptance/workspace-form-names",
+    "tests/fixtures/acceptance/workspace-form-command-representation",
     "tests/fixtures/acceptance/workspace-borrowed",
     "tests/fixtures/acceptance/workspace",
     "tests/fixtures/acceptance/workspace-format",
@@ -195,7 +198,7 @@ def completed_delivery_call(server, tool, arguments, label):
     response = invoke(tool, arguments)
     task_id = None
     for poll in range(20):
-        result = (response or {}).get("result", {}).get("structuredContent") or {}
+        result = tool_result(response) or {}
         task = (result.get("data") or {}).get("task")
         if result.get("ok") is True and task:
             if task.get("status") not in {"queued", "working", "completed"}:

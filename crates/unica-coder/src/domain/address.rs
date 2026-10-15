@@ -72,7 +72,12 @@ pub(crate) enum NodeKind {
     DataSet,
     Field,
     Query,
-    Calculation,
+    /// Источник данных схемы компоновки: `Template.T.DataSource.<имя>`.
+    DataSource,
+    /// Вычисляемое поле схемы: `Template.T.CalculatedField.<dataPath>`.
+    CalculatedField,
+    /// Итог (ресурс) схемы: `Template.T.Total.<dataPath>`.
+    Total,
     Setting,
     Area,
     /// Группа командного интерфейса: место, куда платформа кладёт команду.
@@ -195,7 +200,9 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::DataSet, &["НаборДанных"]),
     spelling(NodeKind::Field, &["Поле"]),
     spelling(NodeKind::Query, &["Запрос"]),
-    spelling(NodeKind::Calculation, &["Вычисление"]),
+    spelling(NodeKind::DataSource, &["ИсточникДанных"]),
+    spelling(NodeKind::CalculatedField, &["ВычисляемоеПоле"]),
+    spelling(NodeKind::Total, &["Итог"]),
     spelling(NodeKind::Setting, &["Настройка"]),
     spelling(NodeKind::Area, &["Область"]),
     spelling(NodeKind::Module, &["Модуль"]),
@@ -224,6 +231,20 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Can, &[]),
 ];
 
+/// Сегменты до элемента структуры варианта СКД: `…Setting.V[.Item.I…]` —
+/// после именованного `Setting` идут только именованные `Item`.
+fn structure_item_route(owners: &[AddressSegment]) -> bool {
+    owners
+        .iter()
+        .rposition(|owner| owner.kind == NodeKind::Setting)
+        .is_some_and(|position| {
+            owners[position].name.is_some()
+                && owners[position + 1..]
+                    .iter()
+                    .all(|owner| owner.kind == NodeKind::Item && owner.name.is_some())
+        })
+}
+
 const fn spelling(kind: NodeKind, aliases: &'static [&'static str]) -> V13KindSpelling {
     V13KindSpelling { kind, aliases }
 }
@@ -249,7 +270,8 @@ impl NodeKind {
     /// Имена объектов метаданных и их членов — идентификаторы платформы,
     /// точки в них не бывает. Точку несут данные внутри документов, и решает
     /// маршрут, а не один вид: составной `dataPath` поля, параметр и область
-    /// внутри макета, группа интерфейса `CommandGroup.X`, тип и свойство
+    /// внутри макета, вычисляемое поле, итог и элемент структуры варианта
+    /// СКД, группа интерфейса `CommandGroup.X`, тип и свойство
     /// пакета XDTO, запись права роли на вложенный объект. Тот же `Parameter`
     /// у формы или операции веб-сервиса — член метаданных, и экранированная
     /// точка в нём — не имя, а склейка нескольких сегментов, которую разбор
@@ -265,11 +287,24 @@ impl NodeKind {
                 .any(|owner| owner.kind == Self::Template && owner.name.is_some());
         match self {
             Self::Field | Self::Parameter | Self::Area => inside_template,
+            // Путь вычисляемого поля и итога — `dataPath` схемы; имя элемента
+            // структуры варианта — строка данных настроек.
+            Self::CalculatedField | Self::Total => inside_template,
+            Self::Item => inside_template && structure_item_route(owners),
             Self::Group => previous == Some(Self::Interface),
             Self::Type | Self::Property => first == Some(Self::XdtoPackage),
             Self::Right => first == Some(Self::Role) && owners.len() == 1,
             _ => false,
         }
+    }
+
+    /// Может ли имя узла этого вида в этом месте адреса быть свободным
+    /// текстом: с пробелами, скобками и другими знаками вне грамматики
+    /// идентификатора. Такое имя носит только элемент структуры варианта
+    /// СКД: платформа хранит его строкой настроек («По периодам»), а не
+    /// идентификатором. Точка в нём по-прежнему экранируется `\.` (#1357).
+    pub(crate) fn name_is_free_text(self, owners: &[AddressSegment]) -> bool {
+        self == Self::Item && self.name_may_contain_dot(owners)
     }
 
     // Параметр назван `token`, а не `raw`: `&raw` — это спеллинг оператора
@@ -364,7 +399,9 @@ impl NodeKind {
             Self::DataSet => "DataSet",
             Self::Field => "Field",
             Self::Query => "Query",
-            Self::Calculation => "Calculation",
+            Self::DataSource => "DataSource",
+            Self::CalculatedField => "CalculatedField",
+            Self::Total => "Total",
             Self::Setting => "Setting",
             Self::Area => "Area",
             Self::Group => "Group",
@@ -426,7 +463,13 @@ impl QualifiedAddress {
         raw: &str,
         available_source_sets: &[&str],
     ) -> Result<Self, AddressError> {
-        if raw.contains(':') {
+        // Двоеточие отделяет набор исходников, только если префикс до него —
+        // имя набора: без точки или один из доступных. Имя элемента структуры
+        // СКД — свободный текст и может содержать двоеточие (#1357).
+        let qualified = raw.split_once(':').is_some_and(|(prefix, _)| {
+            !prefix.contains('.') || available_source_sets.contains(&prefix)
+        });
+        if qualified {
             return Self::parse(raw);
         }
         match available_source_sets {
@@ -541,7 +584,9 @@ impl QualifiedAddress {
                     ));
                 }
             }
-            if name.is_some_and(|name| !xml_ncname_is_valid(name)) {
+            if name.is_some_and(|name| {
+                !xml_ncname_is_valid(name) && !kind.name_is_free_text(&segments)
+            }) {
                 return Err(AddressError::new(
                     AddressErrorCode::InvalidName,
                     format!("invalid application name `{}`", name.unwrap_or_default()),
@@ -598,6 +643,14 @@ impl QualifiedAddress {
 
     pub(crate) fn segments(&self) -> &[AddressSegment] {
         &self.segments
+    }
+
+    /// Адрес из первых `len` сегментов: владелец узла по его адресу.
+    pub(crate) fn prefix(&self, len: usize) -> Self {
+        Self {
+            source_set: self.source_set.clone(),
+            segments: self.segments[..len.min(self.segments.len())].to_vec(),
+        }
     }
 
     pub(crate) fn logical_path(&self) -> String {
@@ -956,6 +1009,11 @@ mod tests {
             r"main:CommonTemplate.S.DataSet.D.Field.A\.B",
             r"main:Report.R.Template.P.Area.A\.B",
             r"main:Report.R.Template.P.Area.A\.B.Parameter.C\.D",
+            r"main:Report.R.Template.S.CalculatedField.A\.B",
+            r"main:Report.R.Template.S.Total.A\.B",
+            r"main:Report.R.Template.S.Setting.V.Item.A\.B.Item.C\.D",
+            r"main:Report.R.Template.S.Setting.V.Item.По периодам (итог).Item.1 группа",
+            r"main:CommonTemplate.S.Setting.V.Item.По периодам",
             r"main:Subsystem.S.Interface.Group.CommandGroup\.X",
             r"main:XDTOPackage.P.Type.T\.U.Property.A\.B.Property.C\.D",
             r"main:XDTOPackage.P.Property.A\.B",
@@ -970,6 +1028,12 @@ mod tests {
             r"main:Catalog.Items.Form.Main.Parameter.Key\.X",
             r"main:CommonForm.Main.Parameter.Key\.X",
             r"main:Catalog.Items.Form.Main.Group.G\.H",
+            r"main:Report.R.Template.S.DataSource.A\.B",
+            r"main:Report.R.Template.S.Item.A\.B",
+            r"main:Report.R.Template.S.Setting.По периодам",
+            r"main:Report.R.Template.S.Setting.V.Property.P.Item.A B",
+            r"main:Report.R.Template.S.DataSet.D.Field.A B",
+            r"main:Catalog.Items.Form.Main.Item.A B",
             r"main:Catalog.Items.Template.T\.U",
             r"main:Catalog.Items.Field.A\.B",
             r"main:Catalog.Items.Area.A\.B",
@@ -1232,6 +1296,46 @@ mod tests {
                 Err(error) => assert_eq!(Some(error.code()), case.error, "{}", case.case),
             }
         }
+    }
+
+    /// Имя элемента структуры СКД — свободный текст: двоеточие в нём не
+    /// делает неполный адрес квалифицированным, а в полном адресе набор
+    /// отделяет только первое двоеточие.
+    #[test]
+    fn a_colon_in_a_free_text_item_name_is_not_a_source_set_separator() {
+        let unqualified = "Report.R.Template.S.Setting.V.Item.Итоги: по периодам";
+        let qualified = "main:Report.R.Template.S.Setting.V.Item.Итоги: по периодам";
+        assert_eq!(
+            QualifiedAddress::resolve_input(unqualified, &["main"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(qualified, &["main"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(qualified, &["main", "ext"])
+                .unwrap()
+                .to_string(),
+            qualified
+        );
+        assert_eq!(
+            QualifiedAddress::resolve_input(unqualified, &["main", "ext"])
+                .unwrap_err()
+                .code(),
+            AddressErrorCode::AmbiguousAddress
+        );
+        // Набор с точкой в имени по-прежнему квалифицирует адрес.
+        assert_eq!(
+            QualifiedAddress::resolve_input("ext.v2:Catalog.Items", &["main", "ext.v2"])
+                .unwrap()
+                .to_string(),
+            "ext.v2:Catalog.Items"
+        );
     }
 
     #[test]

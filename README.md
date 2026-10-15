@@ -253,8 +253,8 @@ claude plugin marketplace remove unica
 Рекомендуемое окружение разработчика, настройка `rust-analyzer` для кодовых
 агентов и установка навыков MCP Server Dev описаны в
 [руководстве для контрибьюторов](CONTRIBUTING.md). Реестр приёмочных
-сценариев поверхности и покрытие операций — в
-[`docs/acceptance-scenarios.md`](docs/acceptance-scenarios.md).
+сценариев поверхности и покрытие операций — на
+[сайте проекта](https://ingvarconsulting.github.io/unica/acceptance-scenarios.html).
 
 Для разработки под Codex используется отдельный marketplace `unica-dev`:
 

@@ -1,10 +1,10 @@
-"""Executed only by the complete large agent-evaluation suite."""
+"""Локальная агентная приёмка сценария СКД."""
 import json
 import subprocess
 import unittest
 
 from tests.agent_evaluation.dcs_driver import REPO, evaluate, independent_review
-from tests.ci.acceptance_controls import load_corpus
+from tests.ci.acceptance_controls import load_acceptance_corpus
 from tests.ci.acceptance_profiles import select_profile
 from tests.ci.test_acceptance_scenarios import run_corpus
 
@@ -13,7 +13,7 @@ class DcsAgentAcceptanceTests(unittest.TestCase):
     def test_agent_uses_current_contract_without_retired_skills(self):
         subprocess.run(["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"],
                        cwd=REPO, check=True)
-        corpus = select_profile(load_corpus(REPO / "tests/fixtures/acceptance/scenario-corpus.json"), "agent-evaluation")
+        corpus = select_profile(load_acceptance_corpus(), "agent-evaluation")
         corpus["scenarios"] = [s for s in corpus["scenarios"] if s["evaluation"] == "dcs-contract"]
         proofs = REPO / ".session-temp/acceptance-agent"
         def driver(server, scenario):

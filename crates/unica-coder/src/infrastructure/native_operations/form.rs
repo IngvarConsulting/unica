@@ -418,6 +418,18 @@ fn validate_form_inner(
                     cmd_ids.insert(cmd_id.to_string(), cmd_name.to_string());
                 }
             }
+            // The platform loads a command `Representation` only from its own
+            // `DefaultRepresentation` set; the button values break the load.
+            // An empty element is not `Auto`: it is outside the set as well.
+            if let Some(element) = form_validation_child(*cmd, "Representation") {
+                let representation = form_ml_text(element);
+                let representation = representation.trim();
+                if form_8_3_27_enum_values("DefaultRepresentation")
+                    .is_some_and(|allowed| !allowed.contains(&representation))
+                {
+                    report.error(form_command_representation_error(cmd_name, representation));
+                }
+            }
         }
         if !report.stopped && !cmd_ids.is_empty() {
             report.ok(format!("Unique command IDs: {} entries", cmd_ids.len()));
@@ -447,7 +459,12 @@ fn validate_form_inner(
         if !report.stopped {
             let signature_check = (signatures == HandlerSignatures::Check)
                 .then(|| HandlerSignatureCheck::new(&form_path));
-            form_validate_events(root, signature_check, &mut report);
+            form_validate_events(
+                root,
+                signature_check,
+                form_metadata_owner(&form_path),
+                &mut report,
+            );
         }
         if !report.stopped {
             form_validate_command_actions(&cmd_nodes, &mut report);
@@ -990,6 +1007,7 @@ fn form_metadata_owner(form_path: &Path) -> Option<crate::domain::address::NodeK
 pub(crate) fn form_validate_events(
     root: roxmltree::Node<'_, '_>,
     signatures: Option<HandlerSignatureCheck>,
+    metadata_owner: Option<crate::domain::address::NodeKind>,
     report: &mut FormValidationReporter,
 ) {
     struct EventValidationState<'report> {
@@ -1107,6 +1125,8 @@ pub(crate) fn form_validate_events(
                 } else {
                     FormEventBinding::new(name, handler)
                 };
+                let data_path = form_child_text(owner, "DataPath");
+                let binding = binding.with_data_path(data_path.as_deref());
                 let validation = target.map_or_else(
                     || {
                         Err(FormEventDiagnostic::new(
@@ -1148,8 +1168,12 @@ pub(crate) fn form_validate_events(
     }
 
     let base_form = form_validation_child(root, "BaseForm");
+    // Вид владельца формы выбирает его каталог событий, как при планировании
+    // привязки: иначе итоговая проверка отвергла бы принятое событие.
+    let mut context = context_from_root(root);
+    context.metadata_owner = metadata_owner;
     let mut state = EventValidationState {
-        context: context_from_root(root),
+        context,
         signatures,
         report,
         errors: 0,
@@ -1782,8 +1806,17 @@ pub(crate) struct FormInfoParameter {
 pub(crate) struct FormInfoCommand {
     pub(crate) name: String,
     pub(crate) actions: Vec<FormInfoEvent>,
+    /// The command title in its first language; `null` when it has none.
+    pub(crate) title: Option<String>,
+    /// The tooltip in its first language; `null` when the command has none.
+    pub(crate) tooltip: Option<String>,
     /// The keyboard shortcut; `null` when the command declares none.
     pub(crate) shortcut: Option<String>,
+    /// The picture reference (`StdPicture.X`, `CommonPicture.X`); `null`
+    /// when the command has no picture.
+    pub(crate) picture: Option<String>,
+    /// The command's DefaultRepresentation; `null` when it keeps the default.
+    pub(crate) representation: Option<String>,
 }
 
 /// Minimal, provider-neutral form evidence consumed by the hidden event
@@ -1863,26 +1896,43 @@ fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> 
         .filter(|child| {
             child.is_element() && !form_skip_elements().contains(&child.tag_name().name())
         })
-        .map(|child| {
-            let name = child.attribute("name").unwrap_or("").to_string();
-            FormInfoElement {
-                tag: form_element_tag(child),
-                event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
-                title: form_title_differs(child, &name),
-                name,
-                binding: form_info_binding(child),
-                visible: form_child_text(child, "Visible").as_deref() != Some("false"),
-                enabled: form_child_text(child, "Enabled").as_deref() != Some("false"),
-                read_only: form_child_text(child, "ReadOnly").as_deref() == Some("true"),
-                events: form_child(child, "Events")
-                    .map(form_info_events_section)
-                    .unwrap_or_default(),
-                children: form_child(child, "ChildItems")
-                    .map(form_info_tree)
-                    .unwrap_or_default(),
-            }
-        })
+        .map(form_info_element)
         .collect()
+}
+
+/// Элементы владельца, как их адресует `view`: его автоматическая командная
+/// панель (у формы и таблицы), затем `ChildItems`. Панель — место кнопок,
+/// которые добавляет `item.add` по её адресу (#1355); остальные
+/// companions (`ContextMenu`, `ExtendedTooltip`, …) в дерево не входят.
+fn form_info_children(owner: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
+    form_child(owner, "AutoCommandBar")
+        .filter(|bar| bar.attribute("name").is_some_and(|name| !name.is_empty()))
+        .map(form_info_element)
+        .into_iter()
+        .chain(
+            form_child(owner, "ChildItems")
+                .map(form_info_tree)
+                .unwrap_or_default(),
+        )
+        .collect()
+}
+
+fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
+    let name = child.attribute("name").unwrap_or("").to_string();
+    FormInfoElement {
+        tag: form_element_tag(child),
+        event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
+        title: form_title_differs(child, &name),
+        name,
+        binding: form_info_binding(child),
+        visible: form_child_text(child, "Visible").as_deref() != Some("false"),
+        enabled: form_child_text(child, "Enabled").as_deref() != Some("false"),
+        read_only: form_child_text(child, "ReadOnly").as_deref() == Some("true"),
+        events: form_child(child, "Events")
+            .map(form_info_events_section)
+            .unwrap_or_default(),
+        children: form_info_children(child),
+    }
 }
 
 fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute> {
@@ -1950,7 +2000,12 @@ fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand>
                     call_type: action.attribute("callType").map(str::to_string),
                 })
                 .collect(),
+            title: form_child_text(command, "Title"),
+            tooltip: form_child_text(command, "ToolTip"),
             shortcut: form_child_text(command, "Shortcut"),
+            picture: form_child(command, "Picture")
+                .and_then(|picture| form_child_text(picture, "Ref")),
+            representation: form_child_text(command, "Representation"),
         })
         .collect()
 }
@@ -1961,9 +2016,7 @@ fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvid
         events: form_child(root, "Events")
             .map(form_info_events_section)
             .unwrap_or_default(),
-        elements: form_child(root, "ChildItems")
-            .map(form_info_tree)
-            .unwrap_or_default(),
+        elements: form_info_children(root),
         commands: form_child(root, "Commands")
             .map(form_info_commands)
             .unwrap_or_default(),
@@ -5087,7 +5140,7 @@ pub(crate) fn form_edit_apply_definition(
     }
     let planned_removals = form_edit_plan_removals(defn, xml_text)?;
     form_edit_validate_removal_definition_conflicts(defn, &planned_removals)?;
-    let planned_events = form_edit_plan_events(defn, xml_text)?;
+    let planned_events = form_edit_plan_events(defn, xml_text, form_metadata_owner(form_path))?;
     form_edit_apply_planned_removals(xml_text, &planned_removals);
     let form_name = form_edit_form_name(form_path);
     let mut elem_ids = FormIdAllocator {
@@ -5134,6 +5187,22 @@ pub(crate) fn form_edit_apply_definition(
                         defn.get("after").and_then(Value::as_str),
                     )?
                 };
+                // Командная панель держит кнопки: поле или группа в ней
+                // записались бы в XML, который платформа не загрузит (#1447).
+                if in_command_bar {
+                    for element in elements {
+                        let Some(object) = element.as_object() else {
+                            continue;
+                        };
+                        let kind = FormEditElementDefinitionKind::from_object(object)?;
+                        if kind != FormEditElementDefinitionKind::Button {
+                            return Err(format!(
+                                "[ERROR] a command bar holds only buttons: add '{}' with type Button, or add it to a group or the form",
+                                kind.name(object)?
+                            ));
+                        }
+                    }
+                }
                 let element_indent = insert_target.child_indent().to_string();
                 let start = elem_ids.next;
                 let mut lines = Vec::<String>::new();
@@ -5199,7 +5268,7 @@ pub(crate) fn form_edit_apply_definition(
                     continue;
                 };
                 let id = cmd_ids.next()?;
-                emit_form_edit_command_item(&mut lines, object, name, id, "\t\t", lang)?;
+                emit_form_command(&mut lines, object, name, id, "\t\t", lang)?;
                 added_cmds.push(FormEditAddedCommand {
                     name: name.to_string(),
                     action: object
@@ -5624,6 +5693,8 @@ impl FormEditEventPlanner {
         } else {
             FormEventBinding::new(&event.name, &event.handler)
         };
+        let data_path = form_child_text(owner_node, "DataPath");
+        let binding = binding.with_data_path(data_path.as_deref());
         validate_event_owner_node(owner_node, target, &binding)
             .and_then(|_| validate_event(&self.context, target, &binding))
             .map_err(|diagnostic| diagnostic.to_string())?;
@@ -5753,14 +5824,16 @@ fn form_edit_resolve_definition_guarded(
 pub(crate) fn form_edit_plan_events(
     definition: &Value,
     xml_text: &str,
+    metadata_owner: Option<crate::domain::address::NodeKind>,
 ) -> Result<Vec<FormEditPlannedEvent>, String> {
     let document = Document::parse(xml_text)
         .map_err(|err| format!("[ERROR] XML parse error while planning events: {err}"))?;
     let root = document.root_element();
     let direct_main_count = form_edit_direct_main_attribute_count(root);
     form_edit_validate_projected_main_attribute_count(direct_main_count, definition)?;
-    let context =
-        form_project_event_context(context_from_root(root), direct_main_count, definition);
+    let mut context = context_from_root(root);
+    context.metadata_owner = metadata_owner;
+    let context = form_project_event_context(context, direct_main_count, definition);
     let mut planner = FormEditEventPlanner::new(context.clone());
 
     if let Some(values) = definition.get("formEvents") {
@@ -6201,6 +6274,9 @@ pub(crate) fn form_edit_validate_new_element_event_tree(
                 } else {
                     FormEventBinding::new(&name, &handler)
                 };
+                // Путь данных таблицы выбирает события источника динамического
+                // списка, как у существующего элемента.
+                let binding = binding.with_data_path(object.get("path").and_then(Value::as_str));
                 validate_event(context, FormEventTarget::Element(kind), &binding)
                     .map_err(|diagnostic| diagnostic.to_string())?;
             }
@@ -7718,9 +7794,11 @@ pub(crate) fn emit_form_edit_attribute_item(
     if attr.get("savedData").and_then(Value::as_bool) == Some(true) {
         lines.push(format!("{inner}<SavedData>true</SavedData>"));
     }
+    // Проверка заполнения реквизита формы в 8.3.27 — `<FillCheck>`:
+    // `<FillChecking>` платформа у реквизита формы не знает (#1447).
     if let Some(fill_checking) = attr.get("fillChecking").and_then(Value::as_str) {
         lines.push(format!(
-            "{inner}<FillChecking>{}</FillChecking>",
+            "{inner}<FillCheck>{}</FillCheck>",
             escape_xml(fill_checking)
         ));
     }
@@ -7729,7 +7807,13 @@ pub(crate) fn emit_form_edit_attribute_item(
     Ok(())
 }
 
-pub(crate) fn emit_form_edit_command_item(
+/// One form `<Command>` for both the form compiler and `command.add`.
+/// Properties follow the platform's FormCommand XDTO order: Title, ToolTip,
+/// Use, Shortcut, Picture, Action, FunctionalOptions, Representation, ...
+/// The element shapes match 8.3.27 dumps: multilingual Title and ToolTip,
+/// Shortcut as text, Picture as `xr:Ref` with `xr:LoadTransparent`, and
+/// Representation from the command's own DefaultRepresentation set.
+pub(crate) fn emit_form_command(
     lines: &mut Vec<String>,
     cmd: &Map<String, Value>,
     name: &str,
@@ -7745,8 +7829,29 @@ pub(crate) fn emit_form_edit_command_item(
     if let Some(title) = cmd.get("title").and_then(Value::as_str) {
         emit_form_mltext(lines, &inner, "Title", title, lang)?;
     }
+    if let Some(tooltip) = cmd.get("tooltip") {
+        emit_form_mltext_value(lines, &inner, "ToolTip", tooltip, lang)?;
+    }
+    if let Some(value) = cmd.get("shortcut").and_then(Value::as_str) {
+        lines.push(format!("{inner}<Shortcut>{}</Shortcut>", escape_xml(value)));
+    }
+    if let Some(picture) = cmd.get("picture").and_then(Value::as_str) {
+        lines.push(format!("{inner}<Picture>"));
+        lines.push(format!("{inner}\t<xr:Ref>{}</xr:Ref>", escape_xml(picture)));
+        lines.push(format!(
+            "{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>"
+        ));
+        lines.push(format!("{inner}</Picture>"));
+    }
     if let Some(action) = cmd.get("action").and_then(Value::as_str) {
         lines.push(format!("{inner}<Action>{}</Action>", escape_xml(action)));
+    }
+    if let Some(value) = cmd.get("representation").and_then(Value::as_str) {
+        let representation = form_compile_command_representation(value)
+            .ok_or_else(|| form_command_representation_error(name, value))?;
+        lines.push(format!(
+            "{inner}<Representation>{representation}</Representation>"
+        ));
     }
     lines.push(format!("{indent}</Command>"));
     Ok(())
@@ -7915,6 +8020,7 @@ pub(crate) fn form_compile_xml(
     }
     form_compile_validate_data_paths(defn)?;
     form_compile_validate_element_properties(defn)?;
+    form_compile_validate_commands(defn)?;
     let context = form_project_event_context(
         FormEventContext {
             definition: FormDefinitionKind::Regular,
@@ -8729,6 +8835,11 @@ fn form_root_xml_property(name: &str) -> Option<(usize, &'static str)> {
         .map(|index| (index, FORM_ROOT_SCALAR_PROPERTY_ORDER[index]))
 }
 
+#[cfg(test)]
+pub(crate) fn form_8_3_27_enum_values_for_test(xml_name: &str) -> Option<&'static [&'static str]> {
+    form_8_3_27_enum_values(xml_name)
+}
+
 fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
     match xml_name {
         "WindowOpeningMode" => Some(&["Independent", "LockOwnerWindow", "LockWholeInterface"]),
@@ -8807,6 +8918,9 @@ fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
             "CommandBarHyperlink",
         ]),
         "ButtonRepresentation" => Some(&["Text", "Picture", "PictureAndText", "Auto"]),
+        // `logform:FormCommand.Representation` is `DefaultRepresentation`,
+        // not the button set: 8.3.27 refuses `PictureAndText` on a command.
+        "DefaultRepresentation" => Some(&["Text", "Picture", "TextPicture", "Auto"]),
         "ButtonLocationInCommandBar" => Some(&[
             "Auto",
             "InAdditionalSubmenu",
@@ -8839,6 +8953,34 @@ fn form_compile_validate_element_properties(defn: &Value) -> Result<(), String> 
         return Ok(());
     };
     form_compile_validate_element_property_tree(elements)
+}
+
+fn form_compile_validate_commands(defn: &Value) -> Result<(), String> {
+    let Some(commands) = defn.get("commands").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for command in commands {
+        let Some(value) = command.get("representation") else {
+            continue;
+        };
+        let name = command.get("name").and_then(Value::as_str).unwrap_or("");
+        let text = value
+            .as_str()
+            .ok_or_else(|| format!("form command {name} representation must be a string"))?;
+        if form_compile_command_representation(text).is_none() {
+            return Err(form_command_representation_error(name, text));
+        }
+    }
+    Ok(())
+}
+
+fn form_command_representation_error(name: &str, value: &str) -> String {
+    let allowed = form_8_3_27_enum_values("DefaultRepresentation")
+        .expect("form command representation has an 8.3.27 contract");
+    format!(
+        "Command '{name}': Representation '{value}' is not valid for 8.3.27; expected one of {}",
+        allowed.join(", ")
+    )
 }
 
 fn form_compile_validate_element_property_tree(elements: &[Value]) -> Result<(), String> {
@@ -9478,6 +9620,16 @@ fn form_compile_button_representation(value: &str) -> Option<&'static str> {
         "text" => Some("Text"),
         "picture" => Some("Picture"),
         "pictureandtext" => Some("PictureAndText"),
+        "auto" => Some("Auto"),
+        _ => None,
+    }
+}
+
+fn form_compile_command_representation(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "text" => Some("Text"),
+        "picture" => Some("Picture"),
+        "textpicture" => Some("TextPicture"),
         "auto" => Some("Auto"),
         _ => None,
     }
@@ -10544,16 +10696,17 @@ pub(crate) fn emit_form_attributes(
         if saved_data {
             lines.push(format!("{inner}<SavedData>true</SavedData>"));
         }
+        // 8.3.27 пишет FillCheck до Settings динамического списка.
+        if let Some(fill_checking) = object.get("fillChecking").and_then(Value::as_str) {
+            lines.push(format!(
+                "{inner}<FillCheck>{}</FillCheck>",
+                escape_xml(fill_checking)
+            ));
+        }
         if object.get("type").and_then(Value::as_str) == Some("DynamicList") {
             if let Some(settings) = object.get("settings").and_then(Value::as_object) {
                 emit_form_dynamic_list_attribute_settings(lines, settings, &inner);
             }
-        }
-        if let Some(fill_checking) = object.get("fillChecking").and_then(Value::as_str) {
-            lines.push(format!(
-                "{inner}<FillChecking>{}</FillChecking>",
-                escape_xml(fill_checking)
-            ));
         }
         emit_form_compile_attribute_columns(lines, object.get("columns"), &inner, ids, lang)?;
         lines.push(format!("{indent}\t</Attribute>"));
@@ -10766,32 +10919,7 @@ pub(crate) fn emit_form_commands(
             .and_then(Value::as_str)
             .ok_or_else(|| "Form command is missing name".to_string())?;
         let cmd_id = ids.next()?;
-        lines.push(format!(
-            "{indent}\t<Command name=\"{}\" id=\"{cmd_id}\">",
-            escape_xml(name)
-        ));
-        let inner = format!("{indent}\t\t");
-        if let Some(title) = object.get("title").and_then(Value::as_str) {
-            emit_form_mltext(lines, &inner, "Title", title, lang)?;
-        }
-        for (key, tag) in [
-            ("action", "Action"),
-            ("shortcut", "Shortcut"),
-            ("representation", "Representation"),
-        ] {
-            if let Some(value) = object.get(key).and_then(Value::as_str) {
-                lines.push(format!("{inner}<{tag}>{}</{tag}>", escape_xml(value)));
-            }
-        }
-        if let Some(picture) = object.get("picture").and_then(Value::as_str) {
-            lines.push(format!("{inner}<Picture>"));
-            lines.push(format!("{inner}\t<xr:Ref>{}</xr:Ref>", escape_xml(picture)));
-            lines.push(format!(
-                "{inner}\t<xr:LoadTransparent>true</xr:LoadTransparent>"
-            ));
-            lines.push(format!("{inner}</Picture>"));
-        }
-        lines.push(format!("{indent}\t</Command>"));
+        emit_form_command(lines, object, name, cmd_id, &format!("{indent}\t"), lang)?;
     }
     lines.push(format!("{indent}</Commands>"));
     Ok(())
@@ -11471,6 +11599,43 @@ pub(crate) mod tests {
             .errors
             .iter()
             .any(|error| { error.contains("urn:not-logform") && error.contains(FORM_LOGFORM_NS) }));
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// 8.3.27 loads `Representation` on a form command only from
+    /// `DefaultRepresentation`; `PictureAndText` breaks the load with an XDTO
+    /// property mismatch (#1436), while `TextPicture` is the platform's own.
+    #[test]
+    fn form_validate_rejects_button_representation_on_command() {
+        let form = |representation: &str| {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Form xmlns=\"{FORM_LOGFORM_NS}\" version=\"2.20\">\n\t<AutoCommandBar name=\"FormCommandBar\" id=\"-1\"/>\n\t<ChildItems/>\n\t<Attributes/>\n\t<Commands>\n\t\t<Command name=\"Find\" id=\"1\">\n\t\t\t<Action>Find</Action>\n\t\t\t<Representation>{representation}</Representation>\n\t\t</Command>\n\t</Commands>\n</Form>\n"
+            )
+        };
+        let context = temp_context("validate-command-representation");
+        let form_path = context.cwd.join("Form.xml");
+
+        // An empty or blank element is outside the set too, not a silent Auto.
+        for invalid in ["PictureAndText", "None", "Compact", "", " "] {
+            write_file(&form_path, &form(invalid));
+            let outcome = validate_form(&form_path_args(&form_path), &context);
+            assert!(!outcome.ok, "{invalid}: {outcome:?}");
+            assert!(
+                outcome
+                    .errors
+                    .iter()
+                    .any(|error| error.contains("Command 'Find'")
+                        && error.contains(invalid)
+                        && error.contains("TextPicture")),
+                "{invalid}: {:?}",
+                outcome.errors
+            );
+        }
+        for valid in ["Auto", "Text", "Picture", "TextPicture"] {
+            write_file(&form_path, &form(valid));
+            let outcome = validate_form(&form_path_args(&form_path), &context);
+            assert!(outcome.ok, "{valid}: {outcome:?}");
+        }
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -16025,6 +16190,241 @@ pub(crate) mod tests {
         assert!(xml.contains("<Table name=\"Rows\""), "{xml}");
         assert!(xml.contains("<Page name=\"Main\""), "{xml}");
         assert!(xml.contains("<Group>Horizontal</Group>"), "{xml}");
+    }
+
+    #[test]
+    fn form_compile_writes_command_representation_from_the_command_set() {
+        let definition = json!({
+            "commands": [{
+                "name": "Find",
+                "action": "Find",
+                "representation": "textPicture"
+            }]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let command = document
+            .descendants()
+            .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Command")))
+            .unwrap();
+        let representation = command
+            .children()
+            .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Representation")))
+            .and_then(|node| node.text());
+        assert_eq!(representation, Some("TextPicture"), "{xml}");
+    }
+
+    /// Command properties come out in the FormCommand XDTO order that
+    /// platform dumps use: Title, Shortcut, Picture, Action, Representation.
+    #[test]
+    fn form_compile_writes_command_properties_in_platform_order() {
+        let definition = json!({
+            "commands": [{
+                "name": "Find",
+                "title": "Find",
+                "representation": "Picture",
+                "action": "Find",
+                "picture": "StdPicture.Find",
+                "shortcut": "Ctrl+F"
+            }]
+        });
+
+        let (xml, _) = form_compile_xml(&definition, "2.20").unwrap();
+        let document = Document::parse(&xml).unwrap();
+        let command = document
+            .descendants()
+            .find(|node| node.has_tag_name((FORM_LOGFORM_NS, "Command")))
+            .unwrap();
+        let order = command
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| node.tag_name().name())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            ["Title", "Shortcut", "Picture", "Action", "Representation"],
+            "{xml}"
+        );
+    }
+
+    /// Each command key `command.add` publishes is written exactly as an
+    /// 8.3.27 dump writes it (#1439). Every expected block repeats, with
+    /// neutral names and texts, the shape of a `<Command>` from a platform
+    /// dump that carries only the keys under test: tabs, element order,
+    /// multilingual ToolTip, Shortcut text, Picture with `xr:Ref` and
+    /// `xr:LoadTransparent`, Representation from the command set.
+    #[test]
+    fn form_command_keys_are_written_like_the_platform_dump() {
+        let cases = [
+            (
+                json!({"action": "ЗаполнитьСведения",
+                       "tooltip": "Заполнить сведения из документа"}),
+                "ЗаполнитьСведения",
+                36,
+                concat!(
+                    "\t\t<Command name=\"ЗаполнитьСведения\" id=\"36\">\n",
+                    "\t\t\t<ToolTip>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Заполнить сведения из документа</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</ToolTip>\n",
+                    "\t\t\t<Action>ЗаполнитьСведения</Action>\n",
+                    "\t\t</Command>",
+                ),
+            ),
+            (
+                json!({"title": "Добавить строку", "shortcut": "Cmd+Z",
+                       "action": "ДобавитьСтроку"}),
+                "ДобавитьСтроку",
+                5,
+                concat!(
+                    "\t\t<Command name=\"ДобавитьСтроку\" id=\"5\">\n",
+                    "\t\t\t<Title>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Добавить строку</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</Title>\n",
+                    "\t\t\t<Shortcut>Cmd+Z</Shortcut>\n",
+                    "\t\t\t<Action>ДобавитьСтроку</Action>\n",
+                    "\t\t</Command>",
+                ),
+            ),
+            (
+                json!({"title": "Отметить все", "picture": "StdPicture.CheckAll",
+                       "action": "ОтметитьВсе"}),
+                "ОтметитьВсе",
+                10,
+                concat!(
+                    "\t\t<Command name=\"ОтметитьВсе\" id=\"10\">\n",
+                    "\t\t\t<Title>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Отметить все</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</Title>\n",
+                    "\t\t\t<Picture>\n",
+                    "\t\t\t\t<xr:Ref>StdPicture.CheckAll</xr:Ref>\n",
+                    "\t\t\t\t<xr:LoadTransparent>true</xr:LoadTransparent>\n",
+                    "\t\t\t</Picture>\n",
+                    "\t\t\t<Action>ОтметитьВсе</Action>\n",
+                    "\t\t</Command>",
+                ),
+            ),
+            (
+                json!({"title": "Сканировать", "action": "Сканировать",
+                       "representation": "Picture"}),
+                "Сканировать",
+                1,
+                concat!(
+                    "\t\t<Command name=\"Сканировать\" id=\"1\">\n",
+                    "\t\t\t<Title>\n",
+                    "\t\t\t\t<v8:item>\n",
+                    "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                    "\t\t\t\t\t<v8:content>Сканировать</v8:content>\n",
+                    "\t\t\t\t</v8:item>\n",
+                    "\t\t\t</Title>\n",
+                    "\t\t\t<Action>Сканировать</Action>\n",
+                    "\t\t\t<Representation>Picture</Representation>\n",
+                    "\t\t</Command>",
+                ),
+            ),
+            (
+                // Keys in a different order than the platform writes them.
+                json!({"representation": "Picture", "action": "СписокОбновить",
+                       "picture": "StdPicture.Refresh", "shortcut": "F5",
+                       "tooltip": "Обновить список", "title": "Обновить"}),
+                "СписокОбновить",
+                5,
+                DUMP_SHAPED_REFRESH_COMMAND,
+            ),
+        ];
+        for (definition, name, id, expected) in cases {
+            let mut lines = Vec::new();
+            emit_form_command(
+                &mut lines,
+                definition.as_object().unwrap(),
+                name,
+                id,
+                "\t\t",
+                Some("ru"),
+            )
+            .unwrap();
+            assert_eq!(lines.join("\n"), expected, "{name}");
+        }
+    }
+
+    /// A `<Command>` shaped like a platform dump with Title, ToolTip,
+    /// Shortcut, Picture, Action and Representation.
+    const DUMP_SHAPED_REFRESH_COMMAND: &str = concat!(
+        "\t\t<Command name=\"СписокОбновить\" id=\"5\">\n",
+        "\t\t\t<Title>\n",
+        "\t\t\t\t<v8:item>\n",
+        "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+        "\t\t\t\t\t<v8:content>Обновить</v8:content>\n",
+        "\t\t\t\t</v8:item>\n",
+        "\t\t\t</Title>\n",
+        "\t\t\t<ToolTip>\n",
+        "\t\t\t\t<v8:item>\n",
+        "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+        "\t\t\t\t\t<v8:content>Обновить список</v8:content>\n",
+        "\t\t\t\t</v8:item>\n",
+        "\t\t\t</ToolTip>\n",
+        "\t\t\t<Shortcut>F5</Shortcut>\n",
+        "\t\t\t<Picture>\n",
+        "\t\t\t\t<xr:Ref>StdPicture.Refresh</xr:Ref>\n",
+        "\t\t\t\t<xr:LoadTransparent>true</xr:LoadTransparent>\n",
+        "\t\t\t</Picture>\n",
+        "\t\t\t<Action>СписокОбновить</Action>\n",
+        "\t\t\t<Representation>Picture</Representation>\n",
+        "\t\t</Command>",
+    );
+
+    /// The form compiler and `command.add` share one command writer:
+    /// a compiled form carries the same `<Command>` block, ToolTip included.
+    #[test]
+    fn form_compile_writes_the_same_command_block_as_form_command_add() {
+        let commands = json!([{
+            "name": "СписокОбновить",
+            "title": "Обновить",
+            "tooltip": "Обновить список",
+            "shortcut": "F5",
+            "picture": "StdPicture.Refresh",
+            "action": "СписокОбновить",
+            "representation": "Picture"
+        }]);
+        let mut ids = FormIdAllocator { next: 4 };
+        let mut lines = Vec::new();
+        emit_form_commands(&mut lines, Some(&commands), "\t", &mut ids, Some("ru")).unwrap();
+        assert_eq!(
+            lines.join("\n"),
+            format!("\t<Commands>\n{DUMP_SHAPED_REFRESH_COMMAND}\n\t</Commands>")
+        );
+    }
+
+    /// The button value set is not the command one: 8.3.27 does not load
+    /// `PictureAndText` on a form command (#1436), so compile writes nothing.
+    #[test]
+    fn form_compile_refuses_button_representation_on_command() {
+        for invalid in ["PictureAndText", "None", "Compact"] {
+            let definition = json!({
+                "commands": [{
+                    "name": "Find",
+                    "action": "Find",
+                    "representation": invalid
+                }]
+            });
+
+            let error = form_compile_xml(&definition, "2.20").unwrap_err();
+            assert!(
+                error.contains("Command 'Find'")
+                    && error.contains(invalid)
+                    && error.contains("TextPicture"),
+                "{invalid}: {error}"
+            );
+        }
     }
 
     #[test]

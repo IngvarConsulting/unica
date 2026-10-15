@@ -455,6 +455,27 @@ impl<'a> OperationSite<'a> {
                 && metadata_collection_matches(owner.kind(), MetaCollection::Forms))
     }
 
+    /// Цепочка элементов формы объекта: `Owner.X.Form.F[.Item.A[.Item.B…]]`
+    /// даёт сегменты `Item` после формы (пустые у самой формы). `None` —
+    /// `segments` не такой адрес или маршрут не формы.
+    fn form_items<'s>(&self, segments: &'s [AddressSegment]) -> Option<&'s [AddressSegment]> {
+        match segments {
+            [owner, form, items @ ..]
+                if self.route == RouteClass::Form
+                    && owner.name().is_some()
+                    && form.kind() == NodeKind::Form
+                    && form.name().is_some()
+                    && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
+                    && items
+                        .iter()
+                        .all(|item| item.kind() == NodeKind::Item && item.name().is_some()) =>
+            {
+                Some(items)
+            }
+            _ => None,
+        }
+    }
+
     /// Табличный документ или схема как узел владельца: `Owner.X.Template.T`.
     fn owned_template(&self) -> bool {
         self.metadata_member(NodeKind::Template, MetaCollection::Templates)
@@ -469,6 +490,40 @@ impl<'a> OperationSite<'a> {
                     && member.kind() == kind
                     && member.name().is_some()
                     && metadata_collection_matches(owner.kind(), collection))
+    }
+
+    /// Узел схемы прямо под макетом владельца: `Owner.X.Template.T.<kind>.N`.
+    fn dcs_schema_member(&self, kind: NodeKind) -> bool {
+        self.route == RouteClass::Dcs
+            && matches!(self.segments(), [owner, template, member]
+                if owner.name().is_some()
+                    && template.kind() == NodeKind::Template
+                    && template.name().is_some()
+                    && member.kind() == kind
+                    && member.name().is_some()
+                    && metadata_collection_matches(owner.kind(), MetaCollection::Templates))
+    }
+
+    /// Вариант настроек макета владельца и цепочка именованных элементов его
+    /// структуры: число сегментов `Item` после `Setting`, `None` — адрес не
+    /// такой формы.
+    fn dcs_structure_depth(&self) -> Option<usize> {
+        if self.route != RouteClass::Dcs {
+            return None;
+        }
+        let [owner, template, setting, items @ ..] = self.segments() else {
+            return None;
+        };
+        (owner.name().is_some()
+            && template.kind() == NodeKind::Template
+            && template.name().is_some()
+            && setting.kind() == NodeKind::Setting
+            && setting.name().is_some()
+            && metadata_collection_matches(owner.kind(), MetaCollection::Templates)
+            && items
+                .iter()
+                .all(|item| item.kind() == NodeKind::Item && item.name().is_some()))
+        .then_some(items.len())
     }
 
     fn dcs_terminal(&self, kinds: &[NodeKind]) -> bool {
@@ -517,8 +572,12 @@ enum OperationApplicability {
     MetadataPredefinedItem,
     /// Форма объекта.
     Form,
-    /// Форма объекта или её элемент.
-    FormOrItem,
+    /// Форма объекта или её элемент любой вложенности: место нового элемента.
+    FormItemContainer,
+    /// Элемент формы любой вложенности: `Form.F.Item.A[.Item.B…]`.
+    FormItem,
+    /// Событие формы или её элемента: `Form.F[.Item.A…].Event.E`.
+    FormEvent,
     /// Роль верхнего уровня.
     Role,
     /// Запись прав роли на один объект: `Role.R.Right.<Вид_Имя>`.
@@ -543,6 +602,19 @@ enum OperationApplicability {
     DcsParameter,
     /// Поле набора данных.
     DcsField,
+    /// Источник данных схемы: `Template.T.DataSource.S` (#1357).
+    DcsDataSource,
+    /// Вычисляемое поле схемы: `Template.T.CalculatedField.F`.
+    DcsCalculatedField,
+    /// Итог схемы: `Template.T.Total.F`.
+    DcsTotal,
+    /// Вариант настроек или именованный элемент его структуры любой
+    /// вложенности: `Setting.S[.Item.I…]`. Коллекции настроек элемента
+    /// (отбор, выбор, порядок, оформление, параметры вывода) и вложенные
+    /// элементы структуры берут контейнер из адреса.
+    DcsSettingsContainer,
+    /// Именованный элемент структуры варианта: `Setting.S.Item.I[.Item.J…]`.
+    DcsStructureItem,
     /// Макет-табличный документ как узел владельца.
     Mxl,
     /// Именованная область макета-табличного документа.
@@ -600,7 +672,9 @@ impl OperationApplicability {
             Self::MetadataTemplate => "`Kind.Name.Template.T`",
             Self::MetadataPredefinedItem => "`Kind.Name.PredefinedItem.P`",
             Self::Form => "`Kind.Name.Form.F`",
-            Self::FormOrItem => "`Kind.Name.Form.F[.Item.I]`",
+            Self::FormItemContainer => "`Kind.Name.Form.F[.Item.I…]`",
+            Self::FormItem => "`Kind.Name.Form.F.Item.I[.Item.J…]`",
+            Self::FormEvent => "`Kind.Name.Form.F[.Item.I…].Event.E`",
             Self::Role => "`Role.Name`",
             Self::RoleRight => "`Role.Name.Right.<Kind>_<Name>`",
             Self::Subsystem => "`Subsystem.Name[.Subsystem.Child]`",
@@ -613,6 +687,11 @@ impl OperationApplicability {
             Self::DcsSettings => "`Kind.Name.Template.T.Setting.S`",
             Self::DcsParameter => "`Kind.Name.Template.T.Parameter.P`",
             Self::DcsField => "`Kind.Name.Template.T.DataSet.D.Field.F`",
+            Self::DcsDataSource => "`Kind.Name.Template.T.DataSource.S`",
+            Self::DcsCalculatedField => "`Kind.Name.Template.T.CalculatedField.F`",
+            Self::DcsTotal => "`Kind.Name.Template.T.Total.F`",
+            Self::DcsSettingsContainer => "`Kind.Name.Template.T.Setting.S[.Item.I…]`",
+            Self::DcsStructureItem => "`Kind.Name.Template.T.Setting.S.Item.I[.Item.J…]`",
             Self::Mxl => "`Kind.Name.Template.T` of a spreadsheet",
             Self::MxlArea => "`Kind.Name.Template.T.Area.A` of a spreadsheet",
             Self::XdtoPackage => "`XDTOPackage.Name`",
@@ -705,21 +784,18 @@ impl OperationApplicability {
                 site.metadata_member(NodeKind::PredefinedItem, MetaCollection::PredefinedItems)
             }
             Self::Form => site.route == RouteClass::Form && site.owned_form(),
-            Self::FormOrItem => {
-                site.route == RouteClass::Form
-                    && match segments {
-                        [_, _] => site.owned_form(),
-                        [owner, form, item] => {
-                            item.kind() == NodeKind::Item
-                                && item.name().is_some()
-                                && form.kind() == NodeKind::Form
-                                && form.name().is_some()
-                                && owner.name().is_some()
-                                && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
-                        }
-                        _ => false,
-                    }
-            }
+            Self::FormItemContainer => site.form_items(segments).is_some(),
+            Self::FormItem => site
+                .form_items(segments)
+                .is_some_and(|items| !items.is_empty()),
+            Self::FormEvent => match segments {
+                [path @ .., event] => {
+                    event.kind() == NodeKind::Event
+                        && event.name().is_some()
+                        && site.form_items(path).is_some()
+                }
+                [] => false,
+            },
             Self::Role => {
                 site.route == RouteClass::Role
                     && matches!(segments, [role] if role.kind() == NodeKind::Role && role.name().is_some())
@@ -772,6 +848,11 @@ impl OperationApplicability {
             Self::DcsSettings => site.dcs_terminal(&[NodeKind::Setting]),
             Self::DcsParameter => site.dcs_terminal(&[NodeKind::Parameter]),
             Self::DcsField => site.dcs_terminal(&[NodeKind::Field]),
+            Self::DcsDataSource => site.dcs_schema_member(NodeKind::DataSource),
+            Self::DcsCalculatedField => site.dcs_schema_member(NodeKind::CalculatedField),
+            Self::DcsTotal => site.dcs_schema_member(NodeKind::Total),
+            Self::DcsSettingsContainer => site.dcs_structure_depth().is_some(),
+            Self::DcsStructureItem => site.dcs_structure_depth().is_some_and(|depth| depth > 0),
             Self::XdtoPackage => {
                 site.route == RouteClass::Xdto
                     && matches!(segments, [package] if package.name().is_some())
@@ -904,6 +985,40 @@ impl TemplateFormat {
     }
 }
 
+/// Роль элемента формы для словаря операций. Единственный владелец
+/// отображения: `view` узнаёт роль по `props.tag` элемента, планировщик —
+/// по тому же признаку элемента прочитанной формы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FormItemRole {
+    /// Принимает вложенные элементы: группа, страницы, страница, таблица,
+    /// командная панель, группа кнопок, подменю.
+    Container,
+    /// Автоматическая командная панель формы или таблицы: в неё добавляются
+    /// кнопки, но удалить её отдельно от владельца нельзя.
+    AutoCommandBar,
+    /// Поле, декорация, кнопка: вложенных элементов не принимает.
+    Leaf,
+}
+
+impl FormItemRole {
+    /// Роль по признаку `tag` элемента, как его публикует `view`
+    /// (`[Group:V]`, `[Table]`, `[AutoCommandBar]`, `[Input]`).
+    pub(crate) fn from_tag(tag: &str) -> Self {
+        let kind = tag
+            .trim_start_matches('[')
+            .split([':', ',', ']'])
+            .next()
+            .unwrap_or_default();
+        match kind {
+            "AutoCommandBar" => Self::AutoCommandBar,
+            "Group" | "Table" | "CmdBar" | "Pages" | "Page" | "Popup" | "BtnGroup" => {
+                Self::Container
+            }
+            _ => Self::Leaf,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperationDescriptor {
     name: &'static str,
@@ -962,10 +1077,8 @@ pub(crate) const IMPLEMENTED_APPLY_OPERATIONS: &[&str] = &[
     "form.add",
     "form.set",
     "form.remove",
-    "element.add",
-    "element.remove",
-    "formAttribute.add",
-    "formCommand.add",
+    "item.add",
+    "item.remove",
     "event.bind",
     "right.add",
     "right.set",
@@ -1123,16 +1236,31 @@ impl OperationDescriptor {
         }
     }
 
+    /// Фильтр роли элемента формы. Элемент добавляется только в контейнер
+    /// (группу, страницы, страницу, таблицу, командную панель), а
+    /// автоматическая командная панель — часть своего владельца и не
+    /// удаляется. `None` — роль не установлена.
+    pub(crate) fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
+        !matches!(
+            (self.name, role),
+            ("item.add", Some(FormItemRole::Leaf))
+                | ("item.remove", Some(FormItemRole::AutoCommandBar))
+        )
+    }
+
     /// Применимость к прочитанному узлу: место и, для самого макета, формат
-    /// его тела. Этим ответом строится словарь `can`.
+    /// его тела, для элемента формы — его роль. Этим ответом строится
+    /// словарь `can`.
     pub(crate) fn applies_to_node(
         self,
         site: &OperationSite<'_>,
         template_format: Option<TemplateFormat>,
+        form_item: Option<FormItemRole>,
     ) -> bool {
         self.applies_at(site)
             && (site.terminal().kind() != NodeKind::Template
                 || self.admits_template_format(template_format))
+            && (site.terminal().kind() != NodeKind::Item || self.admits_form_item(form_item))
     }
 
     /// Ближайший узел по цепочке предков `at` (до корня набора включительно),
@@ -1145,6 +1273,17 @@ impl OperationDescriptor {
         self,
         site: &OperationSite<'_>,
         template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    ) -> Option<QualifiedAddress> {
+        self.nearest_applicable_ancestor_with(site, template_format, &|_| None)
+    }
+
+    /// То же с ролью элемента-предка формы: `form_item` читает её у
+    /// вызывающего, и `next` не уводит в поле, куда элемент не добавить.
+    pub(crate) fn nearest_applicable_ancestor_with(
+        self,
+        site: &OperationSite<'_>,
+        template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+        form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
     ) -> Option<QualifiedAddress> {
         let segments = site.segments();
         // Запрос — безымянный узел набора: операцию запроса, вызванную на
@@ -1170,6 +1309,8 @@ impl OperationDescriptor {
                 self.applies_at(&candidate)
                     && (candidate.terminal().kind() != NodeKind::Template
                         || self.admits_template_format(template_format(candidate.at)))
+                    && (candidate.terminal().kind() != NodeKind::Item
+                        || self.admits_form_item(form_item(candidate.at)))
             })
         })
     }
@@ -1191,7 +1332,7 @@ impl OperationDescriptor {
     pub(crate) fn retired_query_alias_target(
         self,
         site: &OperationSite<'_>,
-        data_sets: DataSetLookup<'_>,
+        data_sets: MemberPathLookup<'_>,
     ) -> Option<QualifiedAddress> {
         let segments = site.segments();
         let position = segments
@@ -1208,7 +1349,9 @@ impl OperationDescriptor {
             source_set: site.at.source_set().to_string(),
             segments: segments[..position].to_vec(),
         };
-        let data_set = named_data_set(&template, name, data_sets)?;
+        let NamedNode::Found(data_set) = named_data_set(&template, name, data_sets)? else {
+            return None;
+        };
         [".Query", ""].into_iter().find_map(|suffix| {
             let candidate = QualifiedAddress::parse(&format!("{data_set}{suffix}")).ok()?;
             OperationSite::new(&candidate, site.source)
@@ -1234,6 +1377,10 @@ impl OperationDescriptor {
                 super::operation_contract::OperationContract::metadata(self.name)
             }
             OperationFamily::Role => super::operation_contract::OperationContract::role(self.name),
+            OperationFamily::Form => super::operation_contract::OperationContract::form(self.name),
+            OperationFamily::Event => {
+                super::operation_contract::OperationContract::event(self.name)
+            }
             _ => None,
         }
     }
@@ -1355,17 +1502,17 @@ operation_descriptors!(
         MetadataPredefinedItem,
         Target
     ),
-    ("element.add", Form, Form, Items),
-    ("element.remove", Form, FormOrItem, Target),
-    ("formAttribute.add", Form, Form, Items),
-    ("formCommand.add", Form, Form, Items),
-    ("event.bind", Form, FormOrItem, Values),
+    ("item.add", Form, FormItemContainer, Items),
+    ("item.remove", Form, FormItem, Target),
+    ("attribute.add", Form, Form, Items),
+    ("command.add", Form, Form, Items),
+    ("event.bind", Form, FormEvent, Values),
     ("role.create", Role, Configuration, Values),
     ("right.add", Role, Role, Items),
     ("right.set", Role, RoleRight, Values),
     ("dataSource.add", Dcs, DcsSchema, Items),
-    ("dataSource.set", Dcs, DcsSchema, Values),
-    ("dataSource.remove", Dcs, DcsSchema, Values),
+    ("dataSource.set", Dcs, DcsDataSource, Values),
+    ("dataSource.remove", Dcs, DcsDataSource, Target),
     ("dataSet.add", Dcs, DcsDataContainer, Items),
     ("dataSet.set", Dcs, DcsData, Values),
     ("dataSet.remove", Dcs, DcsData, Target),
@@ -1379,41 +1526,58 @@ operation_descriptors!(
     ("parameter.rename", Dcs, DcsParameter, Values),
     ("parameter.reorder", Dcs, DcsSchema, Items),
     ("calculatedField.add", Dcs, DcsSchema, Items),
-    ("calculatedField.remove", Dcs, DcsSchema, Values),
+    ("calculatedField.remove", Dcs, DcsCalculatedField, Target),
     ("total.add", Dcs, DcsSchema, Items),
-    ("total.remove", Dcs, DcsSchema, Values),
+    ("total.remove", Dcs, DcsTotal, Target),
     ("variant.add", Dcs, DcsSchema, Items),
     ("variant.set", Dcs, DcsSettings, Values),
     ("variant.remove", Dcs, DcsSettings, Target),
     ("query.set", Dcs, DcsQuery, Values),
     ("query.patch", Dcs, DcsQuery, Values),
-    ("filter.add", Dcs, DcsSettings, Items),
-    ("filter.set", Dcs, DcsSettings, Values),
-    ("filter.remove", Dcs, DcsSettings, Values),
-    ("filter.clear", Dcs, DcsSettings, Values),
-    ("selection.add", Dcs, DcsSettings, Items),
-    ("selection.clear", Dcs, DcsSettings, Values),
-    ("order.add", Dcs, DcsSettings, Items),
-    ("order.clear", Dcs, DcsSettings, Values),
+    ("filter.add", Dcs, DcsSettingsContainer, Items),
+    ("filter.set", Dcs, DcsSettingsContainer, Values),
+    ("filter.remove", Dcs, DcsSettingsContainer, Values),
+    ("filter.clear", Dcs, DcsSettingsContainer, Values),
+    ("selection.add", Dcs, DcsSettingsContainer, Items),
+    ("selection.clear", Dcs, DcsSettingsContainer, Values),
+    ("order.add", Dcs, DcsSettingsContainer, Items),
+    ("order.clear", Dcs, DcsSettingsContainer, Values),
+    // Параметры данных есть только у самих настроек варианта: у элемента
+    // структуры их коллекции нет.
     ("dataParameter.add", Dcs, DcsSettings, Items),
     ("dataParameter.set", Dcs, DcsSettings, Values),
-    ("outputParameter.set", Dcs, DcsSettings, Values),
-    ("conditionalAppearance.add", Dcs, DcsSettings, Items),
-    ("conditionalAppearance.clear", Dcs, DcsSettings, Values),
-    ("structure.add", Dcs, DcsSettings, Items),
+    ("outputParameter.set", Dcs, DcsSettingsContainer, Values),
+    (
+        "conditionalAppearance.add",
+        Dcs,
+        DcsSettingsContainer,
+        Items
+    ),
+    (
+        "conditionalAppearance.clear",
+        Dcs,
+        DcsSettingsContainer,
+        Values
+    ),
+    ("structure.add", Dcs, DcsSettingsContainer, Items),
     ("structure.set", Dcs, DcsSettings, Values),
-    ("structure.patch", Dcs, DcsSettings, Values),
-    ("structure.remove", Dcs, DcsSettings, Values),
+    ("structure.patch", Dcs, DcsStructureItem, Values),
+    ("structure.remove", Dcs, DcsStructureItem, Target),
     ("dataSetLink.add", Dcs, DcsSchema, Items),
-    ("calculatedField.set", Dcs, DcsSchema, Values),
-    ("total.set", Dcs, DcsSchema, Values),
-    ("selection.set", Dcs, DcsSettings, Values),
-    ("selection.remove", Dcs, DcsSettings, Values),
-    ("order.set", Dcs, DcsSettings, Values),
-    ("order.remove", Dcs, DcsSettings, Values),
+    ("calculatedField.set", Dcs, DcsCalculatedField, Values),
+    ("total.set", Dcs, DcsTotal, Values),
+    ("selection.set", Dcs, DcsSettingsContainer, Values),
+    ("selection.remove", Dcs, DcsSettingsContainer, Values),
+    ("order.set", Dcs, DcsSettingsContainer, Values),
+    ("order.remove", Dcs, DcsSettingsContainer, Values),
     ("dataParameter.remove", Dcs, DcsSettings, Values),
-    ("outputParameter.remove", Dcs, DcsSettings, Values),
-    ("conditionalAppearance.remove", Dcs, DcsSettings, Values),
+    ("outputParameter.remove", Dcs, DcsSettingsContainer, Values),
+    (
+        "conditionalAppearance.remove",
+        Dcs,
+        DcsSettingsContainer,
+        Values
+    ),
     ("dataSetLink.set", Dcs, DcsSchema, Values),
     ("dataSetLink.remove", Dcs, DcsSchema, Values),
     ("mxl.set", Mxl, MxlArea, Values),
@@ -1463,7 +1627,16 @@ operation_descriptors!(
 /// адреса не строит. `{dataSet}` — набор схемы, названный значением: сегмент
 /// `DataSet` адреса вызова с этим именем, иначе набор, найденный по имени
 /// в схеме макета (вложенный набор объединения тоже), иначе набор верхнего
-/// уровня. Шаблон, который
+/// уровня; если наборов с этим именем несколько, отказ ведёт к ветви наборов
+/// макета и перечисляет их адреса. `{item}` — элемент, названный значением,
+/// под ближайшим контейнером адреса вызова: в форме — путь `Item.A.Item.B`
+/// элемента с этим именем, в варианте настроек — цепочка именованных
+/// элементов структуры `Setting.V.Item.<имя>[.Item.<имя>…]`; не найденное
+/// имя даёт элемент верхнего уровня `Item.<значение>`, повторённое ведёт
+/// к ветви `Item` контейнера и перечисляет совпавшие элементы. `{event}` —
+/// событие формы, названное `values.event` (русское имя переводится), иначе
+/// событие самого адреса вызова; без них запись адреса не строит.
+/// `{at-Event}` — адрес вызова без последнего сегмента `Event`. Шаблон, который
 /// кончается на `.{name}` вместо `{value}`, — для ключа, который называл
 /// подузел не его именем (идентификатором предопределённого элемента):
 /// адрес из значения не строится, и отказ ведёт к чтению коллекции, где
@@ -1583,10 +1756,12 @@ retired_arguments!(
         "{at^Template}.Setting.{value}",
         true
     ),
+    // Правка элемента структуры переехала на его адрес (#1357): вариант,
+    // названный аргументом, ведёт к элементам его структуры.
     (
         "structure.patch",
         "values.variant",
-        "{at^Template}.Setting.{value}",
+        "{at^Template}.Setting.{value}.Item.{name}",
         true
     ),
     (
@@ -1726,8 +1901,92 @@ retired_arguments!(
         "{at^Module}.Method.{value}",
         true
     ),
-    // Формы (П4, #1355): элемент события задаётся адресом `Item`.
-    ("event.bind", "values.element", "{at}.Item.{value}", false),
+    // Новые узлы СКД (П6, #1357): источник, вычисляемое поле и итог
+    // адресуются под макетом, элемент структуры варианта — цепочкой
+    // `Setting.V.Item.<имя>[.Item.<имя>…]`. `{item}` — элемент, названный
+    // значением в структуре варианта адреса вызова: см. `RetiredArgument`.
+    (
+        "dataSource.set",
+        "values.name",
+        "{at^Template}.DataSource.{value}",
+        true
+    ),
+    (
+        "dataSource.remove",
+        "values.name",
+        "{at^Template}.DataSource.{value}",
+        true
+    ),
+    (
+        "calculatedField.set",
+        "values.name",
+        "{at^Template}.CalculatedField.{value}",
+        true
+    ),
+    (
+        "calculatedField.remove",
+        "values.name",
+        "{at^Template}.CalculatedField.{value}",
+        true
+    ),
+    (
+        "total.set",
+        "values.field",
+        "{at^Template}.Total.{value}",
+        true
+    ),
+    (
+        "total.remove",
+        "values.name",
+        "{at^Template}.Total.{value}",
+        true
+    ),
+    ("filter.add", "items[].group", "{item}", true),
+    ("filter.set", "values.group", "{item}", true),
+    ("filter.remove", "values.group", "{item}", true),
+    ("filter.clear", "values.group", "{item}", true),
+    ("selection.add", "items[].group", "{item}", true),
+    ("selection.set", "values.group", "{item}", true),
+    ("selection.remove", "values.group", "{item}", true),
+    ("selection.clear", "values.group", "{item}", true),
+    ("order.add", "items[].group", "{item}", true),
+    ("order.set", "values.group", "{item}", true),
+    ("order.remove", "values.group", "{item}", true),
+    ("order.clear", "values.group", "{item}", true),
+    ("conditionalAppearance.add", "items[].group", "{item}", true),
+    (
+        "conditionalAppearance.remove",
+        "values.group",
+        "{item}",
+        true
+    ),
+    (
+        "conditionalAppearance.clear",
+        "values.group",
+        "{item}",
+        true
+    ),
+    ("outputParameter.set", "values.group", "{item}", true),
+    ("outputParameter.remove", "values.group", "{item}", true),
+    ("structure.add", "items[].parent", "{item}", true),
+    ("structure.patch", "values.name", "{item}", true),
+    ("structure.remove", "values.name", "{item}", true),
+    // Формы (П4, #1355): контейнер нового элемента, удаляемый элемент и
+    // событие задаются адресом `Item…Item[.Event]`. Позиция `after` остаётся
+    // именем соседа.
+    ("item.add", "items[].into", "{item}", true),
+    ("item.remove", "items[].name", "{item}", true),
+    ("item.remove", "items[]", "{item}", true),
+    ("item.remove", "values.name", "{item}", true),
+    ("event.bind", "values.element", "{item}.Event.{event}", true),
+    // Без имени события `next` ведёт к событиям элемента, где видны имена.
+    ("event.bind", "values.element", "{item}.Event.{name}", true),
+    (
+        "event.bind",
+        "values.event",
+        "{at-Event}.Event.{event}",
+        true
+    ),
 );
 
 /// Отказ по снятому аргументу: где он записан и куда перенести вызов.
@@ -1741,6 +2000,11 @@ pub(crate) struct ArgumentRedirect {
     /// Значение ключа не было именем подузла: операция исполнима на
     /// `<at>.<Имя>`, а имя читается в коллекции `at`.
     pub(crate) listing: bool,
+    /// Значение называет несколько узлов: `at` — их ветвь, здесь — адреса
+    /// узлов, где операция исполнима. Пусто — значение назвало один узел.
+    pub(crate) candidates: Vec<QualifiedAddress>,
+    /// Узлов с таким именем несколько: `at` — ветвь, где они видны.
+    pub(crate) ambiguous: bool,
 }
 
 /// Подстановка цепочки имён: значение — путь, где неэкранированная точка
@@ -1789,24 +2053,55 @@ impl RetiredArgument {
         at: &QualifiedAddress,
         args: &Map<String, Value>,
     ) -> Option<ArgumentRedirect> {
-        self.redirect_with(at, args, &|_, _| None)
+        self.redirect_with(at, args, &no_member_lookup)
     }
 
-    /// То же, что `redirect`, с поиском набора схемы по имени.
+    /// То же, что `redirect`, с поиском набора схемы и элемента формы по имени.
     pub(crate) fn redirect_with(
         self,
         at: &QualifiedAddress,
         args: &Map<String, Value>,
-        data_sets: DataSetLookup<'_>,
+        members: MemberPathLookup<'_>,
     ) -> Option<ArgumentRedirect> {
         let (location, value) = find_key(&Value::Object(args.clone()), self.key, String::new())?;
         // Шаблон подставляется строкой и разбирается заново; имя из значения
         // проходит `escape_name`, поэтому точка в нём остаётся внутри имени.
-        let raw = if self.address.contains("{dataSet}") {
-            let data_set = named_data_set(at, &value, data_sets)?;
-            self.address.replace("{dataSet}", &data_set.to_string())
+        // Событие и владелец события подставляются до поиска узла: суффикс
+        // шаблона за найденным узлом уже не содержит подстановок.
+        let template = if self.address.contains("{event}") {
+            self.address
+                .replace("{event}", &escape_name(&named_form_event(at, args)?))
         } else {
-            expand_anchor(self.address, at)?.replace("{at}", &at.to_string())
+            self.address.to_string()
+        };
+        let template = template.replace("{at-Event}", &without_event(at).to_string());
+        let named = if template.contains("{dataSet}") {
+            Some(("{dataSet}", named_data_set(at, &value, members)?))
+        } else if template.contains("{item}") {
+            Some(("{item}", named_item(at, &value, members)?))
+        } else {
+            None
+        };
+        let raw = match named {
+            Some((placeholder, NamedNode::Found(node))) => {
+                template.replace(placeholder, &node.to_string())
+            }
+            Some((placeholder, NamedNode::Ambiguous { branch, candidates })) => {
+                let suffix = template.split_once(placeholder)?.1;
+                let candidates = candidates
+                    .iter()
+                    .map(|candidate| QualifiedAddress::parse(&format!("{candidate}{suffix}")))
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()?;
+                return Some(ArgumentRedirect {
+                    location,
+                    at: branch,
+                    listing: false,
+                    candidates,
+                    ambiguous: true,
+                });
+            }
+            None => expand_anchor(&template, at)?.replace("{at}", &at.to_string()),
         };
         let raw = match raw.find(PATH_PLACEHOLDER) {
             Some(index) => {
@@ -1818,8 +2113,11 @@ impl RetiredArgument {
         if let Some(collection) = raw.strip_suffix(".{name}") {
             return Some(ArgumentRedirect {
                 location,
-                at: QualifiedAddress::parse(collection).ok()?,
+                at: QualifiedAddress::parse(&collection.replace("{value}", &escape_name(&value)))
+                    .ok()?,
                 listing: true,
+                candidates: Vec::new(),
+                ambiguous: false,
             });
         }
         // Запись прав роли называется `<Вид>_<Имя>[.Вложенный…]`: первая
@@ -1833,6 +2131,8 @@ impl RetiredArgument {
             location,
             at: target,
             listing: false,
+            candidates: Vec::new(),
+            ambiguous: false,
         })
     }
 }
@@ -1841,50 +2141,162 @@ impl ArgumentRedirect {
     /// Адрес, на котором операция исполнима: для записи с `listing` — член
     /// коллекции с подставленным именем.
     fn executable_at(&self) -> Option<QualifiedAddress> {
-        if !self.listing {
+        if let Some(candidate) = self.candidates.first() {
+            return Some(candidate.clone());
+        }
+        if !self.listing && !self.ambiguous {
             return Some(self.at.clone());
         }
         QualifiedAddress::parse(&format!("{}.{LISTED_MEMBER}", self.at)).ok()
     }
 }
 
-/// Путь набора схемы от макета по имени набора: `["A", "B"]` для вложенного
-/// набора `DataSet.A.DataSet.B`. `None` — набора с таким именем в схеме нет
-/// или их несколько.
-pub(crate) type DataSetLookup<'a> = &'a dyn Fn(&QualifiedAddress, &str) -> Option<Vec<String>>;
+/// Поиск узла по имени под контейнером. Контейнер — последний сегмент
+/// адреса: макет (набор данных, в том числе член объединения), вариант
+/// настроек (именованный элемент структуры) или форма (элемент формы).
+pub(crate) type MemberPathLookup<'a> = &'a dyn Fn(&QualifiedAddress, &str) -> NamedLookup;
+
+/// Ответ поиска узла по имени: путь имён от контейнера (`["A", "B"]` —
+/// `DataSet.A.DataSet.B` под макетом или `Item.A.Item.B` под формой
+/// и вариантом настроек).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NamedLookup {
+    /// Узел с таким именем один.
+    Found(Vec<String>),
+    /// Такого узла нет или тело контейнера не читается.
+    Missing,
+    /// Узлов с таким именем несколько; пути тех, что адресуемы.
+    Ambiguous(Vec<Vec<String>>),
+}
+
+/// Поиск, который ничего не знает о телах контейнеров.
+pub(crate) fn no_member_lookup(_: &QualifiedAddress, _: &str) -> NamedLookup {
+    NamedLookup::Missing
+}
+
+/// Узел, который назвало значение снятого аргумента.
+enum NamedNode {
+    Found(QualifiedAddress),
+    /// Имя повторяется: ветвь узлов этого вида и адреса совпавших.
+    Ambiguous {
+        branch: QualifiedAddress,
+        candidates: Vec<QualifiedAddress>,
+    },
+}
+
+/// Адрес владельца с путём имён: `{owner}.Kind.A.Kind.B`.
+fn owner_path(owner: &QualifiedAddress, kind: &str, path: &[String]) -> Option<QualifiedAddress> {
+    QualifiedAddress::parse(&format!(
+        "{owner}{}",
+        path.iter()
+            .map(|name| format!(".{kind}.{}", escape_name(name)))
+            .collect::<String>()
+    ))
+    .ok()
+}
+
+/// Начало адреса до последнего сегмента, вид которого подходит `kind`,
+/// включительно.
+fn prefix_through(
+    at: &QualifiedAddress,
+    kind: impl Fn(NodeKind) -> bool,
+) -> Option<QualifiedAddress> {
+    let length = at
+        .segments()
+        .iter()
+        .rposition(|segment| kind(segment.kind()))?
+        + 1;
+    Some(QualifiedAddress {
+        source_set: at.source_set().to_string(),
+        segments: at.segments()[..length].to_vec(),
+    })
+}
+
+/// Найденное по имени: один узел, несколько или ни одного (тогда — узел
+/// верхнего уровня с этим именем, адрес которого `view` честно не найдёт).
+fn resolve_named(
+    owner: &QualifiedAddress,
+    kind: &str,
+    name: &str,
+    lookup: MemberPathLookup<'_>,
+) -> Option<NamedNode> {
+    match lookup(owner, name) {
+        NamedLookup::Found(path) => owner_path(owner, kind, &path).map(NamedNode::Found),
+        NamedLookup::Missing => owner_path(owner, kind, &[name.to_string()]).map(NamedNode::Found),
+        NamedLookup::Ambiguous(paths) => Some(NamedNode::Ambiguous {
+            branch: QualifiedAddress::parse(&format!("{owner}.{kind}")).ok()?,
+            candidates: paths
+                .iter()
+                .map(|path| owner_path(owner, kind, path))
+                .collect::<Option<Vec<_>>>()?,
+        }),
+    }
+}
 
 /// Набор схемы, названный значением снятого `dataSet`: сегмент адреса вызова
 /// с этим именем; иначе найденный в схеме макета; иначе набор верхнего уровня.
+/// Несколько наборов с этим именем (члены разных объединений) — ветвь
+/// наборов макета и их адреса (#1357).
 fn named_data_set(
     at: &QualifiedAddress,
     name: &str,
-    data_sets: DataSetLookup<'_>,
-) -> Option<QualifiedAddress> {
+    data_sets: MemberPathLookup<'_>,
+) -> Option<NamedNode> {
     let segments = at.segments();
-    let prefix = |length: usize| QualifiedAddress {
-        source_set: at.source_set().to_string(),
-        segments: segments[..length].to_vec(),
-    };
     if let Some(index) = segments
         .iter()
         .rposition(|segment| segment.kind() == NodeKind::DataSet && segment.name() == Some(name))
     {
-        return Some(prefix(index + 1));
+        return Some(NamedNode::Found(QualifiedAddress {
+            source_set: at.source_set().to_string(),
+            segments: segments[..=index].to_vec(),
+        }));
     }
-    let template = prefix(
-        segments
-            .iter()
-            .rposition(|segment| segment.kind() == NodeKind::Template)?
-            + 1,
-    );
-    let path = data_sets(&template, name).unwrap_or_else(|| vec![name.to_string()]);
-    QualifiedAddress::parse(&format!(
-        "{template}{}",
-        path.iter()
-            .map(|name| format!(".DataSet.{}", escape_name(name)))
-            .collect::<String>()
-    ))
-    .ok()
+    let template = prefix_through(at, |kind| kind == NodeKind::Template)?;
+    resolve_named(&template, "DataSet", name, data_sets)
+}
+
+/// Элемент, названный значением снятого аргумента, под ближайшим
+/// контейнером адреса вызова: элемент формы (`into`, `name`, `element`)
+/// или именованный элемент структуры варианта настроек (`group`, `parent`,
+/// `name`).
+fn named_item(at: &QualifiedAddress, name: &str, items: MemberPathLookup<'_>) -> Option<NamedNode> {
+    let container = prefix_through(at, |kind| {
+        matches!(kind, NodeKind::Form | NodeKind::Setting)
+    })?;
+    resolve_named(&container, "Item", name, items)
+}
+
+/// Событие формы для снятого аргумента `event.bind`: `values.event` в имени
+/// реестра, иначе событие самого адреса вызова.
+fn named_form_event(at: &QualifiedAddress, args: &Map<String, Value>) -> Option<String> {
+    if let Some(event) = args
+        .get("values")
+        .and_then(|values| values.get("event"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|event| !event.is_empty())
+    {
+        return Some(crate::domain::form_edit::canonical_form_event_name(event).to_string());
+    }
+    at.segments()
+        .last()
+        .filter(|segment| segment.kind() == NodeKind::Event)
+        .and_then(|segment| segment.name())
+        .map(str::to_string)
+}
+
+/// Адрес вызова без последнего сегмента `Event`: владелец события.
+fn without_event(at: &QualifiedAddress) -> QualifiedAddress {
+    match at.segments() {
+        [owner @ .., last] if last.kind() == NodeKind::Event && !owner.is_empty() => {
+            QualifiedAddress {
+                source_set: at.source_set().to_string(),
+                segments: owner.to_vec(),
+            }
+        }
+        _ => at.clone(),
+    }
 }
 
 /// Подставляет `{at^Kind}`: начало `at` до последнего сегмента вида `Kind`
@@ -1957,12 +2369,12 @@ fn retired_argument_redirect_in(
     descriptor: OperationDescriptor,
     site: &OperationSite<'_>,
     args: &Map<String, Value>,
-    data_sets: DataSetLookup<'_>,
+    members: MemberPathLookup<'_>,
 ) -> Option<ArgumentRedirect> {
     entries
         .iter()
         .filter(|entry| entry.retired && entry.op == descriptor.name)
-        .filter_map(|entry| entry.redirect_with(site.at, args, data_sets))
+        .filter_map(|entry| entry.redirect_with(site.at, args, members))
         .find(|redirect| {
             redirect.executable_at().is_some_and(|target| {
                 OperationSite::new(&target, site.source)
@@ -1971,26 +2383,66 @@ fn retired_argument_redirect_in(
         })
 }
 
-/// Снятая операция и та, что её заменила на узле-родителе (#1354): узел
-/// создаёт операция родителя с именем в аргументах, а не адрес ещё
-/// несуществующего узла. Псевдонима нет — вызов снятой операции получает
-/// отказ с адресом родителя.
+/// Снятая операция и та, что её заменила (#1354, #1465). Узел создаёт
+/// операция родителя с именем в аргументах, а не адрес ещё несуществующего
+/// узла; операции элемента, реквизита и команды формы называются по виду
+/// своего узла (`Item`, `Attribute`, `Command`). Псевдонима нет — вызов
+/// снятой операции получает отказ без записи с адресом, где исполнима
+/// заменившая.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RetiredOperation {
     pub(crate) op: &'static str,
     pub(crate) replacement: &'static str,
-    /// Вид узла, который снятая операция создавала по своему адресу.
-    pub(crate) creates: NodeKind,
+    /// Семейство заменившей: имя `attribute.add` носит и объект
+    /// метаданных, и форма, а снятая `formAttribute.add` ведёт только
+    /// к форме.
+    pub(crate) family: OperationFamily,
+    /// Вид узла, который снятая операция создавала по своему адресу;
+    /// `None` — операция переименована и исполнима на том же адресе.
+    pub(crate) creates: Option<NodeKind>,
     /// Как аргументы прежнего вызова выражаются в заменившей операции.
     pub(crate) arguments: &'static str,
 }
 
-pub(crate) const RETIRED_OPERATIONS: &[RetiredOperation] = &[RetiredOperation {
-    op: "form.create",
-    replacement: "form.add",
-    creates: NodeKind::Form,
-    arguments: "`items: [{name, type}]` names the form and its type",
-}];
+const RENAMED_ARGUMENTS: &str = "the arguments are unchanged";
+
+pub(crate) const RETIRED_OPERATIONS: &[RetiredOperation] = &[
+    RetiredOperation {
+        op: "form.create",
+        replacement: "form.add",
+        family: OperationFamily::Form,
+        creates: Some(NodeKind::Form),
+        arguments: "`items: [{name, type}]` names the form and its type",
+    },
+    RetiredOperation {
+        op: "element.add",
+        replacement: "item.add",
+        family: OperationFamily::Form,
+        creates: None,
+        arguments: RENAMED_ARGUMENTS,
+    },
+    RetiredOperation {
+        op: "element.remove",
+        replacement: "item.remove",
+        family: OperationFamily::Form,
+        creates: None,
+        arguments: RENAMED_ARGUMENTS,
+    },
+    RetiredOperation {
+        op: "formAttribute.add",
+        replacement: "attribute.add",
+        family: OperationFamily::Form,
+        creates: None,
+        arguments: RENAMED_ARGUMENTS,
+    },
+    RetiredOperation {
+        op: "formCommand.add",
+        replacement: "command.add",
+        family: OperationFamily::Form,
+        creates: None,
+        arguments: RENAMED_ARGUMENTS,
+    },
+];
 
 impl RetiredOperation {
     pub(crate) fn lookup(op: &str) -> Option<Self> {
@@ -2000,13 +2452,23 @@ impl RetiredOperation {
             .find(|entry| entry.op == op)
     }
 
+    /// Запись реестра заменившей операции в её семействе.
+    pub(crate) fn descriptor(self) -> Option<OperationDescriptor> {
+        OperationRegistry::closed()
+            .named(self.replacement)
+            .find(|descriptor| descriptor.family == self.family)
+    }
+
     /// Узел, на котором исполнима заменившая операция: родитель узла вида
     /// `creates` в адресе вызова, иначе сам адрес вызова.
     pub(crate) fn replacement_at(self, at: &QualifiedAddress) -> QualifiedAddress {
+        let Some(creates) = self.creates else {
+            return at.clone();
+        };
         match at
             .segments()
             .iter()
-            .rposition(|segment| segment.kind() == self.creates)
+            .rposition(|segment| segment.kind() == creates)
         {
             Some(index) if index > 0 => QualifiedAddress {
                 source_set: at.source_set().to_string(),
@@ -2014,6 +2476,39 @@ impl RetiredOperation {
             },
             _ => at.clone(),
         }
+    }
+
+    /// Ближайший узел, где исполнима заменившая операция. Создающая
+    /// операция исполнима на родителе созданного узла; переименованная —
+    /// на самом адресе вызова, если место и роль элемента её принимают,
+    /// иначе на ближайшем предке, как в отказе «не тот узел». `None` —
+    /// такого узла в цепочке адреса нет.
+    pub(crate) fn replacement_target(
+        self,
+        site: &OperationSite<'_>,
+        template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+        form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    ) -> Option<QualifiedAddress> {
+        if self.creates.is_some() {
+            return Some(self.replacement_at(site.at));
+        }
+        let replacement = self.descriptor()?;
+        let placed = replacement.applies_at(site);
+        let here = placed
+            && (site.terminal().kind() != NodeKind::Template
+                || replacement.admits_template_format(template_format(site.at)))
+            && (site.terminal().kind() != NodeKind::Item
+                || replacement.admits_form_item(form_item(site.at)));
+        if here {
+            return Some(site.at.clone());
+        }
+        // Операция над самим узлом (`item.remove`), которую его роль не
+        // принимает: автоматическую командную панель отдельно не удалить, и
+        // другой узел — например, её таблица — вместо неё не подставляется.
+        if placed && replacement.skeleton_key() == "at" {
+            return None;
+        }
+        replacement.nearest_applicable_ancestor_with(site, template_format, form_item)
     }
 }
 
@@ -2049,27 +2544,65 @@ impl OperationRegistry {
         site: &OperationSite<'_>,
         args: &Map<String, Value>,
     ) -> Option<ArgumentRedirect> {
-        self.retired_argument_redirect_with(op, site, args, &|_, _| None)
+        self.retired_argument_redirect_with(op, site, args, &no_member_lookup)
     }
 
-    /// То же с поиском набора схемы по имени: снятый `dataSet` ведёт
-    /// к настоящему, в том числе вложенному, набору.
+    /// То же с поиском узла по имени: снятый `dataSet` ведёт к настоящему,
+    /// в том числе вложенному, набору, а имя элемента формы — к его пути.
     pub(crate) fn retired_argument_redirect_with(
         self,
         op: &str,
         site: &OperationSite<'_>,
         args: &Map<String, Value>,
-        data_sets: DataSetLookup<'_>,
+        members: MemberPathLookup<'_>,
     ) -> Option<ArgumentRedirect> {
-        let descriptor = self.lookup(op)?;
-        retired_argument_redirect_in(RETIRED_ARGUMENTS, descriptor, site, args, data_sets)
+        let descriptor = self.lookup_at(op, site)?;
+        retired_argument_redirect_in(RETIRED_ARGUMENTS, descriptor, site, args, members)
     }
 
+    /// Первая запись реестра с этим именем. Имя `attribute.add` и
+    /// `command.add` носят и объект метаданных, и форма (#1465): где адрес
+    /// известен, запись выбирает `lookup_at`.
     pub(crate) fn lookup(self, name: &str) -> Option<OperationDescriptor> {
+        self.named(name).next()
+    }
+
+    /// Записи реестра с этим именем в порядке реестра.
+    pub(crate) fn named(self, name: &str) -> impl Iterator<Item = OperationDescriptor> + '_ {
         self.descriptors()
             .iter()
             .copied()
-            .find(|descriptor| descriptor.name == name)
+            .filter(move |descriptor| descriptor.name == name)
+    }
+
+    /// Запись с этим именем, применимая к месту, а если ни одна не
+    /// применима — первая: её отказ «не тот узел» называет ближайший узел.
+    pub(crate) fn lookup_at(
+        self,
+        name: &str,
+        site: &OperationSite<'_>,
+    ) -> Option<OperationDescriptor> {
+        self.named(name)
+            .find(|descriptor| descriptor.applies_at(site))
+            .or_else(|| self.lookup(name))
+    }
+
+    /// Ближайший к адресу узел, где исполнима операция с этим именем, и её
+    /// запись: у общего имени побеждает запись с более близким узлом.
+    pub(crate) fn nearest_applicable_ancestor_with(
+        self,
+        name: &str,
+        site: &OperationSite<'_>,
+        template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+        form_item: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    ) -> Option<(OperationDescriptor, QualifiedAddress)> {
+        self.named(name)
+            .filter_map(|descriptor| {
+                descriptor
+                    .nearest_applicable_ancestor_with(site, template_format, form_item)
+                    .map(|target| (descriptor, target))
+            })
+            .max_by_key(|(_, target)| target.segments().len())
     }
 
     pub(crate) fn copyable_skeletons(self, site: &OperationSite<'_>) -> Vec<OperationRef> {
@@ -2121,7 +2654,7 @@ mod tests {
         )
         .unwrap_or_else(|| panic!("{raw} has no route"));
         OperationRegistry::closed()
-            .lookup(op)
+            .lookup_at(op, &site)
             .unwrap_or_else(|| panic!("{op} is registered"))
             .applies_at(&site)
     }
@@ -2160,7 +2693,7 @@ mod tests {
         for (op, expected) in [
             ("right.set", Some("Rights.xml")),
             ("right.add", Some("Rights.xml")),
-            ("element.add", Some("Form.xml")),
+            ("item.add", Some("Form.xml")),
             ("event.bind", Some("Form.xml")),
             ("event.implement", Some("Form.xml")),
             ("code.insert", Some("Form.xml")),
@@ -2382,10 +2915,10 @@ mod tests {
             "predefinedItem.add",
             "predefinedItem.set",
             "predefinedItem.remove",
-            "element.add",
-            "element.remove",
-            "formAttribute.add",
-            "formCommand.add",
+            "item.add",
+            "item.remove",
+            "attribute.add",
+            "command.add",
             "event.bind",
             "role.create",
             "right.add",
@@ -2469,10 +3002,27 @@ mod tests {
         let registry = OperationRegistry::closed();
         assert_eq!(expected.len(), 121);
         assert_eq!(registry.names(), expected);
+        // Реквизит и команда формы названы по своему узлу, как у объекта
+        // метаданных (#1465): имя одно, семейство выбирает адрес. Других
+        // повторов в реестре нет.
+        const SHARED_NAMES: &[&str] = &["attribute.add", "command.add"];
         let mut unique = registry.names().to_vec();
         unique.sort_unstable();
         unique.dedup();
-        assert_eq!(unique.len(), expected.len());
+        assert_eq!(unique.len(), expected.len() - SHARED_NAMES.len());
+        for name in SHARED_NAMES {
+            let families = registry
+                .descriptors()
+                .iter()
+                .filter(|descriptor| descriptor.name() == *name)
+                .map(|descriptor| descriptor.family())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                families,
+                [OperationFamily::Metadata, OperationFamily::Form],
+                "{name}"
+            );
+        }
 
         assert_eq!(
             registry.lookup("event.implement").unwrap().family(),
@@ -2585,30 +3135,69 @@ mod tests {
                 true,
             ),
             ("attribute.set", "main:Document.Order", false),
-            ("element.add", "main:Document.Order.Attribute.Total", false),
+            ("item.add", "main:Document.Order.Attribute.Total", false),
             ("event.bind", "main:Document.Order.Attribute.Total", false),
-            ("element.add", "main:Document.Order.Command.Print", false),
+            ("item.add", "main:Document.Order.Command.Print", false),
             // Реквизит формы — узел формы, не метаданных.
             (
                 "attribute.set",
                 "main:Document.Order.Form.Main.Attribute.Object",
                 false,
             ),
-            ("element.add", "main:Document.Order.Form.Main", true),
+            // Элементы и события формы адресуются цепочкой `Item` любой
+            // глубины (#1355): контейнер нового элемента — сам адрес.
+            ("item.add", "main:Document.Order.Form.Main", true),
             (
-                "element.add",
+                "item.add",
+                "main:Document.Order.Form.Main.Item.Header",
+                true,
+            ),
+            (
+                "item.add",
+                "main:Document.Order.Form.Main.Item.Header.Item.Inner",
+                true,
+            ),
+            (
+                "item.add",
+                "main:Document.Order.Form.Main.Item.Header.Event.OnChange",
+                false,
+            ),
+            ("item.remove", "main:Document.Order.Form.Main", false),
+            (
+                "item.remove",
+                "main:Document.Order.Form.Main.Item.Header",
+                true,
+            ),
+            (
+                "item.remove",
+                "main:Document.Order.Form.Main.Item.Header.Item.Inner",
+                true,
+            ),
+            ("event.bind", "main:Document.Order.Form.Main", false),
+            (
+                "event.bind",
                 "main:Document.Order.Form.Main.Item.Header",
                 false,
             ),
             (
-                "element.remove",
-                "main:Document.Order.Form.Main.Item.Header",
+                "event.bind",
+                "main:Document.Order.Form.Main.Event.OnOpen",
                 true,
             ),
             (
                 "event.bind",
-                "main:Document.Order.Form.Main.Item.Header",
+                "main:Document.Order.Form.Main.Item.Header.Item.Inner.Event.OnChange",
                 true,
+            ),
+            (
+                "event.bind",
+                "main:Document.Order.Form.Main.Command.Ok.Event.Execute",
+                false,
+            ),
+            (
+                "attribute.add",
+                "main:Document.Order.Form.Main.Item.Header",
+                false,
             ),
             ("form.set", "main:Document.Order", true),
             ("form.set", "main:Document.Order.Form.Main", false),
@@ -2880,7 +3469,10 @@ mod tests {
             ("template.set", Some(TemplateFormat::Other), true),
         ] {
             assert_eq!(
-                registry.lookup(op).unwrap().applies_to_node(&site, format),
+                registry
+                    .lookup(op)
+                    .unwrap()
+                    .applies_to_node(&site, format, None),
                 expected,
                 "{op} on {format:?}"
             );
@@ -2918,11 +3510,16 @@ mod tests {
                 Some("main:Configuration"),
             ),
             (
-                "element.add",
+                "item.add",
+                "main:Document.Order.Form.Main.Item.Header.Event.OnChange",
+                Some("main:Document.Order.Form.Main.Item.Header"),
+            ),
+            (
+                "attribute.add",
                 "main:Document.Order.Form.Main.Item.Header",
                 Some("main:Document.Order.Form.Main"),
             ),
-            ("element.add", "main:Document.Order.Attribute.Total", None),
+            ("item.add", "main:Document.Order.Attribute.Total", None),
             // Под макетом-схемой областей нет: `next` не ведёт туда, где
             // планировщик откажет по формату.
             (
@@ -2939,10 +3536,8 @@ mod tests {
             .unwrap();
             assert_eq!(
                 registry
-                    .lookup(op)
-                    .unwrap()
-                    .nearest_applicable_ancestor(&site, &format_of)
-                    .map(|at| at.to_string()),
+                    .nearest_applicable_ancestor_with(op, &site, &format_of, &|_| None)
+                    .map(|(_, at)| at.to_string()),
                 expected.map(str::to_string),
                 "{op} at {raw}"
             );
@@ -2957,7 +3552,13 @@ mod tests {
     #[test]
     fn every_retired_argument_entry_builds_a_routable_member_address() {
         let registry = OperationRegistry::closed();
-        let duplicates = [DUPLICATE_ARGUMENT_OPERATIONS, SUBNODE_OPERATIONS].concat();
+        let duplicates = [
+            DUPLICATE_ARGUMENT_OPERATIONS,
+            SUBNODE_OPERATIONS,
+            DCS_NODE_OPERATIONS,
+            FORM_OPERATIONS,
+        ]
+        .concat();
         let traits =
             SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let owners = [
@@ -3051,12 +3652,15 @@ mod tests {
     #[test]
     fn metadata_member_entries_are_retired_and_predefined_items_route_to_their_listing() {
         for entry in RETIRED_ARGUMENTS {
-            let member_package = entry.op != "event.bind";
-            assert_eq!(entry.retired, member_package, "{}", entry.op);
+            assert!(entry.retired, "{} {} has moved", entry.op, entry.key);
             assert_eq!(
                 entry.address.ends_with(".{name}"),
                 entry.op.starts_with("predefinedItem.")
-                    || (entry.op == "property.remove" && entry.key.ends_with("propertyPath")),
+                    || (entry.op == "property.remove" && entry.key.ends_with("propertyPath"))
+                    || (entry.op == "structure.patch" && entry.key == "values.variant")
+                    || (entry.op == "event.bind"
+                        && entry.key == "values.element"
+                        && !entry.address.contains("{event}")),
                 "{}",
                 entry.op
             );
@@ -3080,6 +3684,197 @@ mod tests {
         assert!(redirect.listing);
         assert_eq!(redirect.location, "values.id");
         assert_eq!(redirect.at.to_string(), "main:Catalog.Items.PredefinedItem");
+    }
+
+    /// Операции пакета П4 (#1355): элемент и событие формы задаются адресом.
+    const FORM_OPERATIONS: &[&str] = &["item.add", "item.remove", "event.bind"];
+
+    /// Контейнер, удаляемый элемент и событие формы, прежде названные
+    /// аргументом, задаются адресом `Item…Item[.Event]` (#1355). Имя
+    /// элемента ведёт к его пути в форме, а без формы — к элементу верхнего
+    /// уровня; русское имя события переводится в имя реестра; аргумент,
+    /// повторивший адрес, отказывает тем же адресом.
+    #[test]
+    fn a_form_item_or_event_named_by_an_argument_is_refused_with_its_address() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let form = "main:Catalog.Items.Form.Item";
+        let lookup = |container: &QualifiedAddress, name: &str| {
+            assert_eq!(container.to_string(), form);
+            match name {
+                "Field" => {
+                    super::NamedLookup::Found(vec!["Header".to_string(), "Field".to_string()])
+                }
+                "Header" => super::NamedLookup::Found(vec!["Header".to_string()]),
+                _ => super::NamedLookup::Missing,
+            }
+        };
+        let cases = [
+            (
+                "item.add",
+                form.to_string(),
+                json!({"items": [{"name": "New"}, {"name": "Other", "into": "Header"}]}),
+                "items[1].into",
+                format!("{form}.Item.Header"),
+                false,
+            ),
+            (
+                "item.add",
+                format!("{form}.Item.Header"),
+                json!({"items": [{"name": "New", "into": "Field"}]}),
+                "items[0].into",
+                format!("{form}.Item.Header.Item.Field"),
+                false,
+            ),
+            (
+                "item.remove",
+                form.to_string(),
+                json!({"items": [{"name": "Field"}]}),
+                "items[0].name",
+                format!("{form}.Item.Header.Item.Field"),
+                false,
+            ),
+            (
+                "item.remove",
+                form.to_string(),
+                json!({"items": ["Missing"]}),
+                "items[0]",
+                format!("{form}.Item.Missing"),
+                false,
+            ),
+            (
+                "item.remove",
+                form.to_string(),
+                json!({"values": {"name": "Header"}}),
+                "values.name",
+                format!("{form}.Item.Header"),
+                false,
+            ),
+            (
+                "event.bind",
+                form.to_string(),
+                json!({"values": {"event": "ПриОткрытии", "handler": "H"}}),
+                "values.event",
+                format!("{form}.Event.OnOpen"),
+                false,
+            ),
+            (
+                "event.bind",
+                form.to_string(),
+                json!({"values": {"event": "OnChange", "element": "Field", "handler": "H"}}),
+                "values.element",
+                format!("{form}.Item.Header.Item.Field.Event.OnChange"),
+                false,
+            ),
+            (
+                "event.bind",
+                format!("{form}.Item.Header.Item.Field.Event.OnChange"),
+                json!({"values": {"element": "Field", "handler": "H"}}),
+                "values.element",
+                format!("{form}.Item.Header.Item.Field.Event.OnChange"),
+                false,
+            ),
+            (
+                "event.bind",
+                format!("{form}.Item.Header.Item.Field.Event.OnChange"),
+                json!({"values": {"event": "StartChoice", "handler": "H"}}),
+                "values.event",
+                format!("{form}.Item.Header.Item.Field.Event.StartChoice"),
+                false,
+            ),
+            // Без имени события `next` ведёт к событиям элемента.
+            (
+                "event.bind",
+                form.to_string(),
+                json!({"values": {"element": "Field", "handler": "H"}}),
+                "values.element",
+                format!("{form}.Item.Header.Item.Field.Event"),
+                true,
+            ),
+        ];
+        for (op, raw, args, location, expected, listing) in cases {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let redirect = registry
+                .retired_argument_redirect_with(op, &site, args.as_object().unwrap(), &lookup)
+                .unwrap_or_else(|| panic!("{op} at {raw} keeps its retired argument"));
+            assert_eq!(redirect.location, location, "{op} at {raw}");
+            assert_eq!(redirect.at.to_string(), expected, "{op} at {raw}");
+            assert_eq!(redirect.listing, listing, "{op} at {raw}");
+        }
+        // Вызов на адресе без снятых ключей таблицу не трогает.
+        for (op, raw, args) in [
+            (
+                "item.add",
+                format!("{form}.Item.Header"),
+                json!({"items": [{"name": "New", "after": "Field"}]}),
+            ),
+            ("item.remove", format!("{form}.Item.Header"), json!({})),
+            (
+                "event.bind",
+                format!("{form}.Event.OnOpen"),
+                json!({"values": {"handler": "H", "callType": "After"}}),
+            ),
+        ] {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            assert_eq!(
+                registry.retired_argument_redirect_with(
+                    op,
+                    &site,
+                    args.as_object().unwrap(),
+                    &lookup
+                ),
+                None,
+                "{op} at {raw}"
+            );
+        }
+        for op in FORM_OPERATIONS {
+            assert!(
+                RETIRED_ARGUMENTS
+                    .iter()
+                    .any(|entry| entry.op == *op && entry.retired),
+                "{op} has a retired entry"
+            );
+        }
+    }
+
+    /// Роль элемента формы сужает словарь: в поле не добавить вложенный
+    /// элемент, автоматическую командную панель не удалить отдельно.
+    #[test]
+    fn a_form_item_role_narrows_element_operations() {
+        let registry = OperationRegistry::closed();
+        let at = address("main:Catalog.Items.Form.Item.Item.Header");
+        let site = OperationSite::new(
+            &at,
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+        )
+        .unwrap();
+        for (tag, add, remove) in [
+            ("[Group:V]", true, true),
+            ("[Group]", true, true),
+            ("[Table]", true, true),
+            ("[Pages]", true, true),
+            ("[Page]", true, true),
+            ("[CmdBar]", true, true),
+            ("[BtnGroup]", true, true),
+            ("[Popup]", true, true),
+            ("[AutoCommandBar]", true, false),
+            ("[Input]", false, true),
+            ("[Button]", false, true),
+            ("[Label]", false, true),
+        ] {
+            let role = Some(super::FormItemRole::from_tag(tag));
+            let verdict = |op: &str| {
+                registry
+                    .lookup(op)
+                    .unwrap()
+                    .applies_to_node(&site, None, role)
+            };
+            assert_eq!(verdict("item.add"), add, "{tag}");
+            assert_eq!(verdict("item.remove"), remove, "{tag}");
+        }
     }
 
     /// Операции пакета П3 (#1354): подузел, прежде названный аргументом на
@@ -3259,6 +4054,403 @@ mod tests {
         }
     }
 
+    /// Операции пакета П6 (#1357): источник, вычисляемое поле, итог и
+    /// элемент структуры варианта задаются адресом.
+    const DCS_NODE_OPERATIONS: &[&str] = &[
+        "dataSource.set",
+        "dataSource.remove",
+        "calculatedField.set",
+        "calculatedField.remove",
+        "total.set",
+        "total.remove",
+        "filter.add",
+        "filter.set",
+        "filter.remove",
+        "filter.clear",
+        "selection.add",
+        "selection.set",
+        "selection.remove",
+        "selection.clear",
+        "order.add",
+        "order.set",
+        "order.remove",
+        "order.clear",
+        "conditionalAppearance.add",
+        "conditionalAppearance.remove",
+        "conditionalAppearance.clear",
+        "outputParameter.set",
+        "outputParameter.remove",
+        "structure.add",
+        "structure.patch",
+        "structure.remove",
+    ];
+
+    /// Новые узлы схемы (#1357): операция исполнима ровно на своём узле, а
+    /// прежний аргумент, называвший источник, вычисляемое поле, итог или
+    /// контейнер настроек, отказывает с адресом узла. Без схемы элемент
+    /// структуры, названный аргументом, — элемент верхнего уровня варианта.
+    #[test]
+    fn dcs_schema_nodes_and_structure_items_take_their_subject_from_the_address() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let schema = "main:Report.Sales.Template.Schema";
+        let setting = format!("{schema}.Setting.Main");
+        let group = format!("{setting}.Item.ByCategory");
+        let nested = format!("{group}.Item.Details");
+        // Матрица применимости: узел и операции, которые на нём исполнимы
+        // из этого набора; остальные операции набора на нём не исполнимы.
+        let container = [
+            "filter.add",
+            "filter.remove",
+            "selection.set",
+            "order.clear",
+            "conditionalAppearance.remove",
+            "outputParameter.set",
+            "outputParameter.remove",
+            "structure.add",
+        ];
+        let item = [&container[..], &["structure.patch", "structure.remove"]].concat();
+        let variant = [
+            &container[..],
+            &[
+                "dataParameter.add",
+                "dataParameter.remove",
+                "structure.set",
+                "variant.set",
+            ],
+        ]
+        .concat();
+        let matrix: Vec<(String, Vec<&str>)> = vec![
+            (
+                schema.to_string(),
+                vec![
+                    "dataSource.add",
+                    "calculatedField.add",
+                    "total.add",
+                    "variant.add",
+                ],
+            ),
+            (
+                format!("{schema}.DataSource.Local"),
+                vec!["dataSource.set", "dataSource.remove"],
+            ),
+            (
+                format!("{schema}.CalculatedField.Owner\\.Code"),
+                vec!["calculatedField.set", "calculatedField.remove"],
+            ),
+            (
+                format!("{schema}.Total.Amount"),
+                vec!["total.set", "total.remove"],
+            ),
+            (setting.clone(), variant),
+            (group.clone(), item.clone()),
+            (nested.clone(), item),
+        ];
+        let checked = [
+            "dataSource.add",
+            "dataSource.set",
+            "dataSource.remove",
+            "calculatedField.add",
+            "calculatedField.set",
+            "calculatedField.remove",
+            "total.add",
+            "total.set",
+            "total.remove",
+            "variant.add",
+            "variant.set",
+            "filter.add",
+            "filter.remove",
+            "selection.set",
+            "order.clear",
+            "conditionalAppearance.remove",
+            "outputParameter.set",
+            "outputParameter.remove",
+            "dataParameter.add",
+            "dataParameter.remove",
+            "structure.add",
+            "structure.set",
+            "structure.patch",
+            "structure.remove",
+        ];
+        for (raw, applicable) in matrix {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            for op in checked {
+                assert_eq!(
+                    registry.lookup(op).unwrap().applies_at(&site),
+                    applicable.contains(&op),
+                    "{op} at {raw}"
+                );
+            }
+        }
+        // Безымянная ветвь и элемент структуры вне варианта — не узлы
+        // операций.
+        for raw in [
+            format!("{schema}.DataSource"),
+            format!("{setting}.Item"),
+            format!("{schema}.Item.Link"),
+        ] {
+            let at = address(&raw);
+            if let Some(site) = OperationSite::new(&at, traits) {
+                for op in DCS_NODE_OPERATIONS {
+                    assert!(
+                        !registry.lookup(op).unwrap().applies_at(&site),
+                        "{op} at {raw}"
+                    );
+                }
+            }
+        }
+        let cases = [
+            (
+                "dataSource.set",
+                schema.to_string(),
+                json!({"values": {"name": "Local", "kind": "Local"}}),
+                "values.name",
+                format!("{schema}.DataSource.Local"),
+            ),
+            (
+                "dataSource.remove",
+                format!("{schema}.DataSet.Main"),
+                json!({"values": {"name": "Local"}}),
+                "values.name",
+                format!("{schema}.DataSource.Local"),
+            ),
+            (
+                "calculatedField.set",
+                schema.to_string(),
+                json!({"values": {"name": "Owner.Code", "expression": "1"}}),
+                "values.name",
+                format!("{schema}.CalculatedField.Owner\\.Code"),
+            ),
+            (
+                "calculatedField.remove",
+                schema.to_string(),
+                json!({"values": {"name": "Double"}}),
+                "values.name",
+                format!("{schema}.CalculatedField.Double"),
+            ),
+            (
+                "total.set",
+                schema.to_string(),
+                json!({"values": {"field": "Amount", "expression": "Сумма(Amount)"}}),
+                "values.field",
+                format!("{schema}.Total.Amount"),
+            ),
+            (
+                "total.remove",
+                schema.to_string(),
+                json!({"values": {"name": "Amount"}}),
+                "values.name",
+                format!("{schema}.Total.Amount"),
+            ),
+            (
+                "filter.add",
+                setting.clone(),
+                json!({"items": [{"field": "Amount", "group": "ByCategory"}]}),
+                "items[0].group",
+                group.clone(),
+            ),
+            (
+                "selection.set",
+                setting.clone(),
+                json!({"values": {"field": "Amount", "use": false, "group": "ByCategory"}}),
+                "values.group",
+                group.clone(),
+            ),
+            (
+                "outputParameter.remove",
+                group.clone(),
+                json!({"values": {"name": "Title", "group": "ByCategory"}}),
+                "values.group",
+                group.clone(),
+            ),
+            (
+                "structure.add",
+                setting.clone(),
+                json!({"items": [{"name": "Details", "parent": "ByCategory"}]}),
+                "items[0].parent",
+                group.clone(),
+            ),
+            (
+                "structure.patch",
+                setting.clone(),
+                json!({"values": {"name": "ByCategory", "groupBy": ["Category"]}}),
+                "values.name",
+                group.clone(),
+            ),
+            (
+                "structure.remove",
+                setting.clone(),
+                json!({"values": {"name": "Report.Rows"}}),
+                "values.name",
+                format!("{setting}.Item.Report\\.Rows"),
+            ),
+        ];
+        for (op, raw, args, location, expected) in cases {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let args = args.as_object().unwrap();
+            let redirect = registry
+                .retired_argument_redirect(op, &site, args)
+                .unwrap_or_else(|| panic!("{op} at {raw} keeps its retired argument"));
+            assert_eq!(redirect.location, location, "{op} at {raw}");
+            assert_eq!(redirect.at.to_string(), expected, "{op} at {raw}");
+            assert!(!redirect.ambiguous, "{op} at {raw}");
+            let target = OperationSite::new(&redirect.at, traits).unwrap();
+            assert!(
+                registry.lookup(op).unwrap().applies_at(&target),
+                "{op} applies at {expected}"
+            );
+        }
+        for op in DCS_NODE_OPERATIONS {
+            assert!(
+                RETIRED_ARGUMENTS
+                    .iter()
+                    .any(|entry| entry.op == *op && entry.retired),
+                "{op} has a retired entry"
+            );
+        }
+    }
+
+    /// Поиск по имени трёхзначен (#1357): найденный узел даёт свой адрес,
+    /// повторённое имя — ветвь узлов этого вида и адреса совпавших, а не
+    /// выдуманный узел верхнего уровня.
+    #[test]
+    fn a_repeated_schema_name_routes_next_to_the_branch_and_every_match() {
+        let registry = OperationRegistry::closed();
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let schema = "main:Report.Sales.Template.Schema";
+        let lookup = |owner: &QualifiedAddress, name: &str| {
+            let owner = owner.to_string();
+            match (owner.as_str(), name) {
+                (owner, "Twin") if owner == schema => super::NamedLookup::Ambiguous(vec![
+                    vec!["Left".to_string(), "Twin".to_string()],
+                    vec!["Right".to_string(), "Twin".to_string()],
+                ]),
+                (owner, "Rows") if owner.ends_with(".Setting.Main") => {
+                    super::NamedLookup::Ambiguous(vec![
+                        vec!["Table".to_string(), "Rows".to_string()],
+                        vec!["Chart".to_string(), "Rows".to_string()],
+                    ])
+                }
+                (owner, "Details") if owner.ends_with(".Setting.Main") => {
+                    super::NamedLookup::Found(vec!["Table".to_string(), "Details".to_string()])
+                }
+                _ => super::NamedLookup::Missing,
+            }
+        };
+        let lookup = &lookup as super::MemberPathLookup<'_>;
+        let at = address(&format!("{schema}.DataSet.Main.Query"));
+        let site = OperationSite::new(&at, traits).unwrap();
+        let redirect = registry
+            .retired_argument_redirect_with(
+                "query.set",
+                &site,
+                json!({"values": {"dataSet": "Twin", "query": "ВЫБРАТЬ 1"}})
+                    .as_object()
+                    .unwrap(),
+                lookup,
+            )
+            .expect("the dataSet argument is retired");
+        assert!(redirect.ambiguous);
+        assert_eq!(redirect.at.to_string(), format!("{schema}.DataSet"));
+        assert_eq!(
+            redirect
+                .candidates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                format!("{schema}.DataSet.Left.DataSet.Twin.Query"),
+                format!("{schema}.DataSet.Right.DataSet.Twin.Query"),
+            ]
+        );
+        let setting = address(&format!("{schema}.Setting.Main"));
+        let site = OperationSite::new(&setting, traits).unwrap();
+        let redirect = registry
+            .retired_argument_redirect_with(
+                "filter.clear",
+                &site,
+                json!({"values": {"group": "Rows"}}).as_object().unwrap(),
+                lookup,
+            )
+            .expect("the group argument is retired");
+        assert!(redirect.ambiguous);
+        assert_eq!(redirect.at.to_string(), format!("{setting}.Item"));
+        assert_eq!(
+            redirect
+                .candidates
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                format!("{setting}.Item.Table.Item.Rows"),
+                format!("{setting}.Item.Chart.Item.Rows"),
+            ]
+        );
+        let redirect = registry
+            .retired_argument_redirect_with(
+                "structure.remove",
+                &site,
+                json!({"values": {"name": "Details"}}).as_object().unwrap(),
+                lookup,
+            )
+            .expect("the name argument is retired");
+        assert!(!redirect.ambiguous);
+        assert_eq!(
+            redirect.at.to_string(),
+            format!("{setting}.Item.Table.Item.Details")
+        );
+    }
+
+    /// Переименованная операция ведёт к ближайшему узлу, где исполнима
+    /// заменившая, с учётом роли элемента (#1465): элемент добавляется
+    /// в контейнер над полем, а автоматическую командную панель, которую
+    /// отдельно не удалить, не подменяет её таблица.
+    #[test]
+    fn a_renamed_operation_target_respects_the_item_role() {
+        use super::{FormItemRole, RetiredOperation};
+        let form = "main:Catalog.Items.Form.List";
+        let bar = format!("{form}.Item.List.Item.ListCommandBar");
+        let field = format!("{form}.Item.Header.Item.Code");
+        let role = |at: &QualifiedAddress| match at.to_string() {
+            text if text == bar => Some(FormItemRole::AutoCommandBar),
+            text if text == field => Some(FormItemRole::Leaf),
+            _ => Some(FormItemRole::Container),
+        };
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        for (op, raw, expected) in [
+            ("element.remove", bar.clone(), None),
+            ("element.add", bar.clone(), Some(bar.clone())),
+            ("element.remove", field.clone(), Some(field.clone())),
+            (
+                "element.add",
+                field.clone(),
+                Some(format!("{form}.Item.Header")),
+            ),
+            (
+                "element.add",
+                format!("{field}.Event.OnChange"),
+                Some(format!("{form}.Item.Header")),
+            ),
+        ] {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let target =
+                RetiredOperation::lookup(op)
+                    .unwrap()
+                    .replacement_target(&site, &|_| None, &role);
+            assert_eq!(
+                target.map(|target| target.to_string()),
+                expected,
+                "{op} at {raw}"
+            );
+        }
+    }
+
     /// Узел создаёт операция родителя: снятая `form.create` называет
     /// `form.add` на владельце формы, а `*.set` подузла знает, какая
     /// операция родителя создаёт его узел (#1354).
@@ -3287,6 +4479,48 @@ mod tests {
             );
         }
         assert!(super::RetiredOperation::lookup("form.add").is_none());
+        // Операции элемента, реквизита и команды формы переименованы по
+        // своему узлу (#1465): заменившая формы исполнима на том же адресе,
+        // снятого имени в реестре нет.
+        for (op, replacement, raw) in [
+            ("element.add", "item.add", "main:Catalog.Items.Form.Choice"),
+            (
+                "element.add",
+                "item.add",
+                "main:Catalog.Items.Form.Choice.Item.Header",
+            ),
+            (
+                "element.remove",
+                "item.remove",
+                "main:Catalog.Items.Form.Choice.Item.Header",
+            ),
+            (
+                "formAttribute.add",
+                "attribute.add",
+                "main:Catalog.Items.Form.Choice",
+            ),
+            (
+                "formCommand.add",
+                "command.add",
+                "main:Catalog.Items.Form.Choice",
+            ),
+        ] {
+            let retired = super::RetiredOperation::lookup(op).expect("the old name is retired");
+            assert_eq!(retired.replacement, replacement, "{op}");
+            assert!(registry.lookup(op).is_none(), "{op}");
+            let at = address(raw);
+            let target = retired.replacement_at(&at);
+            assert_eq!(target, at, "{op} at {raw}");
+            let site = OperationSite::new(
+                &target,
+                SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
+            )
+            .unwrap();
+            assert!(
+                retired.descriptor().unwrap().applies_at(&site),
+                "{replacement} at {raw}"
+            );
+        }
         for (op, creator) in [
             ("right.set", Some("right.add")),
             ("mxl.set", Some("area.add")),
@@ -3365,13 +4599,6 @@ mod tests {
                 format!("{template}.Setting.Main"),
             ),
             (
-                "structure.patch",
-                format!("{template}.Setting.Main"),
-                json!({"values": {"variant": "Extra", "name": "G", "groupBy": ["A"]}}),
-                "values.variant",
-                format!("{template}.Setting.Extra"),
-            ),
-            (
                 "childSubsystem.remove",
                 "main:Subsystem.Sales".to_string(),
                 json!({"items": [{"name": "Orders"}]}),
@@ -3440,6 +4667,25 @@ mod tests {
                 "{op} at {raw} without {location}"
             );
         }
+        // Правка элемента структуры исполняется на его адресе (#1357):
+        // вариант, названный аргументом, ведёт к элементам его структуры.
+        let at = address(&format!("{template}.Setting.Main.Item.G"));
+        let site = OperationSite::new(&at, traits).unwrap();
+        let redirect = registry
+            .retired_argument_redirect(
+                "structure.patch",
+                &site,
+                json!({"values": {"variant": "Extra", "groupBy": ["A"]}})
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("the variant argument is retired");
+        assert!(redirect.listing);
+        assert_eq!(redirect.location, "values.variant");
+        assert_eq!(
+            redirect.at.to_string(),
+            format!("{template}.Setting.Extra.Item")
+        );
         // Набор, не названный в адресе вызова, ищется в схеме: член
         // объединения получает свой вложенный адрес; без схемы — верхний
         // уровень.
@@ -3449,15 +4695,19 @@ mod tests {
         let args = args.as_object().unwrap();
         let lookup = |schema: &QualifiedAddress, name: &str| {
             assert_eq!(schema.to_string(), template);
-            (name == "Member").then(|| vec!["Union".to_string(), "Member".to_string()])
+            if name == "Member" {
+                super::NamedLookup::Found(vec!["Union".to_string(), "Member".to_string()])
+            } else {
+                super::NamedLookup::Missing
+            }
         };
         for (lookup, expected) in [
             (
-                &lookup as super::DataSetLookup<'_>,
+                &lookup as super::MemberPathLookup<'_>,
                 format!("{template}.DataSet.Union.DataSet.Member.Query"),
             ),
             (
-                &|_: &QualifiedAddress, _: &str| None,
+                &super::no_member_lookup as super::MemberPathLookup<'_>,
                 format!("{template}.DataSet.Member.Query"),
             ),
         ] {
@@ -3644,15 +4894,15 @@ mod tests {
                 registry.lookup("attribute.set").unwrap(),
                 &site,
                 json!({"values": {"name": "Goods"}}).as_object().unwrap(),
-                &|_, _| None,
+                &super::no_member_lookup,
             ),
             None
         );
         // Вложенная позиция в массиве называет номер элемента.
         let nested = super::RetiredArgument {
-            op: "element.add",
+            op: "item.add",
             key: "items[].into",
-            address: "{at}.Item.{value}",
+            address: "{item}",
             retired: true,
         };
         let form = address("main:Document.Order.Form.Main");

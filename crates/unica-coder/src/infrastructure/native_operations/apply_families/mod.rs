@@ -411,6 +411,26 @@ fn batch_effects_as_provisional(
 /// Пишет ли семейство операции в допущенный набор — ответ единственного
 /// владельца признака (`SourceSetTraits::writes`), общий с предварительной
 /// проверкой `apply` и словарём `can`.
+/// Запись реестра для вызова: общее имя (`attribute.add` и `command.add`
+/// объекта и формы, #1465) выбирает её адрес вызова, как предварительная
+/// проверка `apply`.
+pub(super) fn resolved_descriptor(
+    operation: &str,
+    at: Option<&crate::domain::address::QualifiedAddress>,
+    binding: &ProviderRootBinding,
+) -> Option<crate::domain::apply::OperationDescriptor> {
+    use crate::domain::apply::{OperationRegistry, OperationSite, SourceSetTraits};
+    let registry = OperationRegistry::closed();
+    let traits = SourceSetTraits::of_source(
+        binding.source_kind(),
+        binding.source_format(),
+        binding.source_profile(),
+    );
+    at.and_then(|at| OperationSite::new(at, traits))
+        .and_then(|site| registry.lookup_at(operation, &site))
+        .or_else(|| registry.lookup(operation))
+}
+
 fn validate_platform_xml_binding(
     binding: &ProviderRootBinding,
     operation: &str,
@@ -443,8 +463,9 @@ fn refuse_misplaced_operation(
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
 ) -> Result<(), ApplyPlanError> {
-    use crate::domain::apply::{OperationRegistry, OperationSite, SourceSetTraits};
-    let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
+    use crate::domain::apply::{OperationSite, SourceSetTraits};
+    let Some(descriptor) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
+    else {
         return Ok(());
     };
     validate_platform_xml_binding(binding, operation.name(), op_index)?;
@@ -500,8 +521,7 @@ fn refuse_inherited_content(
     binding: &ProviderRootBinding,
 ) -> Result<(), ApplyPlanError> {
     use crate::infrastructure::v13_read_port::{companion_owner, inherited_companion};
-    let Some(resource) = crate::domain::apply::OperationRegistry::closed()
-        .lookup(operation.name())
+    let Some(resource) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
         .and_then(|descriptor| descriptor.content_resource())
     else {
         return Ok(());
@@ -547,7 +567,9 @@ fn parse_family_operation(
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
 ) -> Result<ParsedApplyOperation, ApplyPlanError> {
-    let Some(family) = crate::application::v13::apply::dispatch_family(operation.name()) else {
+    let Some(family) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
+        .map(|descriptor| descriptor.family())
+    else {
         return Err(hidden_apply_family_unimplemented(op_index));
     };
     let args = serde_json::Value::Object(operation.args().clone());
@@ -572,7 +594,8 @@ fn parse_family_operation(
         | OperationFamily::Subsystem
         | OperationFamily::Interface
         | OperationFamily::Support => {
-            let parsed = form_resource::parse_form_resource_plan_operation(
+            let parsed = form_resource::parse_form_resource_plan_operation_in(
+                Some(family),
                 operation.name(),
                 &args,
                 op_index,
@@ -617,11 +640,10 @@ fn parse_family_operation(
     Ok(parsed)
 }
 
-/// Разбор операции планировщиком без стадирования: проверка, что разбор цели
-/// и аргументов семейства принимает вызов. Им двусторонняя проверка `can`
-/// сверяет словарь узла с планировщиком.
-/// Разбор семейством в обход реестра: двусторонняя проверка ищет адреса,
-/// которые семейство приняло бы, а реестр — нет.
+/// Разбор семейством без проверки места реестром: семейство выбирает запись
+/// реестра для адреса вызова (общее имя `attribute.add` объекта и формы,
+/// #1465), но применимость не проверяется. Двусторонняя проверка `can`
+/// ищет так адреса, которые семейство приняло бы, а реестр — нет.
 #[cfg(test)]
 pub(crate) fn parse_family_operation_for_test(
     op_index: usize,
@@ -688,27 +710,121 @@ pub(crate) fn staged_template_format(
     dcs_mxl::template_type_of(&bytes).map(|raw| crate::domain::apply::TemplateFormat::parse(&raw))
 }
 
-/// Путь набора с именем `name` в стадированной схеме макета `template`:
-/// по нему снятый `dataSet` ведёт к настоящему, в том числе вложенному,
-/// набору (#1353). `None` — схемы нет или набор не найден однозначно.
-pub(crate) fn staged_data_set_path(
+/// Поиск узла схемы по имени в стадированном макете: владелец — адрес
+/// макета (набор данных, в том числе член объединения, #1353) или его
+/// варианта настроек (именованный элемент структуры, #1357). Схемы нет —
+/// `Missing`.
+fn staged_schema_lookup(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
-    template: &crate::domain::address::QualifiedAddress,
+    owner: &crate::domain::address::QualifiedAddress,
     name: &str,
-) -> Option<Vec<String>> {
-    let (address, covered) = descriptor_node(template)?;
+) -> crate::domain::apply::NamedLookup {
+    use crate::domain::address::NodeKind;
+    use crate::domain::apply::NamedLookup;
+    let segments = owner.segments();
+    let (template, variant) = match segments.last() {
+        Some(last) if last.kind() == NodeKind::Template => (owner.clone(), None),
+        Some(last) if last.kind() == NodeKind::Setting && segments.len() > 1 => (
+            crate::domain::address::QualifiedAddress {
+                source_set: owner.source_set().to_string(),
+                segments: segments[..segments.len() - 1].to_vec(),
+            },
+            last.name(),
+        ),
+        _ => return NamedLookup::Missing,
+    };
+    let Some((address, covered)) = descriptor_node(&template) else {
+        return NamedLookup::Missing;
+    };
     if covered != template.segments().len() {
-        return None;
+        return NamedLookup::Missing;
     }
-    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+    let Some(bytes) = crate::infrastructure::logical_event_source::attached_resource_relative(
         &address,
         "Template.xml",
         binding.source_kind(),
     )
+    .ok()
+    .and_then(|relative| admission.staged_state().ok()?.read(&relative).ok()?) else {
+        return NamedLookup::Missing;
+    };
+    match variant {
+        Some(variant) => dcs_mxl::structure_item_path_in_schema(&bytes, variant, name),
+        None => dcs_mxl::data_set_path_in_schema(&bytes, name),
+    }
+}
+
+/// Путь узла с именем `name` под контейнером в стадированном состоянии:
+/// набора схемы под макетом, элемента структуры под вариантом настроек или
+/// элемента под формой. Им снятый аргумент, называвший узел по имени, ведёт
+/// к его настоящему адресу (#1353, #1355, #1357).
+pub(crate) fn staged_member_path(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    container: &crate::domain::address::QualifiedAddress,
+    name: &str,
+) -> crate::domain::apply::NamedLookup {
+    match container.segments().last().map(|segment| segment.kind()) {
+        Some(crate::domain::address::NodeKind::Form) => {
+            match staged_form_items(admission, binding, container) {
+                Some(items) => form_resource::form_item_path(&items, name),
+                None => crate::domain::apply::NamedLookup::Missing,
+            }
+        }
+        _ => staged_schema_lookup(admission, binding, container, name),
+    }
+}
+
+/// Роль элемента стадированной формы по его адресу
+/// `Owner.X.Form.F.Item.A[.Item.B…]`. `None` — элемента или формы нет.
+pub(crate) fn staged_form_item_role(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    item: &crate::domain::address::QualifiedAddress,
+) -> Option<crate::domain::apply::FormItemRole> {
+    use crate::domain::address::NodeKind;
+    let segments = item.segments();
+    if segments.len() < 3
+        || segments[1].kind() != NodeKind::Form
+        || !segments[2..]
+            .iter()
+            .all(|segment| segment.kind() == NodeKind::Item && segment.name().is_some())
+    {
+        return None;
+    }
+    let form = crate::domain::address::QualifiedAddress {
+        source_set: item.source_set().to_string(),
+        segments: segments[..2].to_vec(),
+    };
+    let items = staged_form_items(admission, binding, &form)?;
+    let chain = segments[2..]
+        .iter()
+        .filter_map(|segment| segment.name().map(str::to_string))
+        .collect::<Vec<_>>();
+    form_resource::form_item_at(&items, &chain)
+        .map(|element| crate::domain::apply::FormItemRole::from_tag(&element.tag))
+}
+
+/// Дерево элементов стадированной формы `Owner.X.Form.F`, как его читает
+/// `view`. `None` — формы или её `Form.xml` нет.
+fn staged_form_items(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    form: &crate::domain::address::QualifiedAddress,
+) -> Option<Vec<crate::infrastructure::native_operations::form::FormInfoElement>> {
+    let (address, covered) = descriptor_node(form)?;
+    if covered != 2 {
+        return None;
+    }
+    let relative = crate::infrastructure::logical_event_source::attached_resource_relative(
+        &address,
+        "Form.xml",
+        binding.source_kind(),
+    )
     .ok()?;
     let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
-    dcs_mxl::data_set_path_in_schema(&bytes, name)
+    form_resource::form_items_of(std::str::from_utf8(&bytes).ok()?).ok()
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
@@ -773,6 +889,32 @@ pub(crate) fn staged_node_existence(
         }
         (RouteClass::Mxl, NodeKind::Area, 1) => {
             dcs_mxl::spreadsheet_area_exists(&resource("Template.xml")?, terminal.name()?)
+        }
+        // Элемент формы и его событие: есть, когда цепочка `Item` ведёт к
+        // элементу формы; имя события проверяет матрица событий.
+        (RouteClass::Form, NodeKind::Item | NodeKind::Event, _) if covered == 2 => {
+            let tail = &at.segments()[covered..];
+            let chain = match tail {
+                [items @ .., last] if last.kind() == NodeKind::Event => items,
+                items => items,
+            };
+            if chain.is_empty()
+                || !chain
+                    .iter()
+                    .all(|segment| segment.kind() == NodeKind::Item && segment.name().is_some())
+            {
+                return None;
+            }
+            let form = crate::domain::address::QualifiedAddress {
+                source_set: at.source_set().to_string(),
+                segments: at.segments()[..covered].to_vec(),
+            };
+            let items = staged_form_items(admission, binding, &form)?;
+            let chain = chain
+                .iter()
+                .filter_map(|segment| segment.name().map(str::to_string))
+                .collect::<Vec<_>>();
+            Some(form_resource::form_item_at(&items, &chain).is_some())
         }
         _ => None,
     }
@@ -1300,13 +1442,23 @@ mod tests {
         let fixture = ApplySeamFixture::new();
         for (at, op, args) in [
             (
-                "main:Document.First.Form.Main.Item.Header",
-                "element.add",
+                "main:Document.First.Form.Main.Item.Header.Event.OnChange",
+                "item.add",
                 serde_json::json!({"items": [{"name": "Comment"}]}),
             ),
             (
+                "main:Document.First.Form.Main",
+                "item.remove",
+                serde_json::json!({}),
+            ),
+            (
                 "main:Document.First.Form.Main.Item.Header",
-                "formAttribute.add",
+                "event.bind",
+                serde_json::json!({"values": {"handler": "H"}}),
+            ),
+            (
+                "main:Document.First.Form.Main.Item.Header",
+                "attribute.add",
                 serde_json::json!({"items": [{"name": "Comment"}]}),
             ),
             (
@@ -1330,36 +1482,45 @@ mod tests {
         // Неизвестное свойство элемента — отказ, а не молча потерянный ключ.
         let request = seam_request(
             "main:Document.First.Form.Main",
-            "element.add",
+            "item.add",
             serde_json::json!({"items": [{"name": "Comment", "titel": "typo"}]}),
         );
         let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
             .err()
             .expect("an unknown element property refuses");
         assert_eq!(error.path(), Some("ops[0].args.items[0].titel"), "{error}");
-        // Путь привязки, который генератор знает, проходит разбор: его
-        // предметный отказ (`headerDataPath` у обычной группы) даёт генератор.
+        // Путь привязки, которого писатель вида не пишет (`headerDataPath`
+        // у обычной группы), отказывает по контракту вида до записи (#1447).
         let request = seam_request(
             "main:Document.First.Form.Main",
-            "element.add",
+            "item.add",
             serde_json::json!({"items": [{"name": "Header", "type": "Group", "headerDataPath": "Object.Ref"}]}),
         );
-        assert!(super::parse_apply_operation(0, &request.ops()[0], &fixture.binding).is_ok());
-        // Элемент назван адресом: перенаправить событие или удаление на другой
-        // элемент аргументом нельзя.
-        for (op, args, path) in [
+        let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
+            .err()
+            .expect("a binding path the group writer does not write refuses");
+        assert_eq!(
+            error.path(),
+            Some("ops[0].args.items[0].headerDataPath"),
+            "{error}"
+        );
+        // Элемент и событие названы адресом: перенаправить событие или
+        // удаление на другой узел аргументом нельзя (#1355).
+        for (at, op, args, path) in [
             (
+                "main:Document.First.Form.Main.Item.Header.Event.OnChange",
                 "event.bind",
-                serde_json::json!({"values": {"event": "OnChange", "handler": "H", "element": "Other"}}),
+                serde_json::json!({"values": {"handler": "H", "element": "Other"}}),
                 "ops[0].args.values.element",
             ),
             (
-                "element.remove",
+                "main:Document.First.Form.Main.Item.Header",
+                "item.remove",
                 serde_json::json!({"items": ["Other"]}),
                 "ops[0].args.items",
             ),
         ] {
-            let request = seam_request("main:Document.First.Form.Main.Item.Header", op, args);
+            let request = seam_request(at, op, args);
             let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
                 .err()
                 .unwrap_or_else(|| panic!("{op} must not redirect to another element"));

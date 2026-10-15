@@ -194,7 +194,7 @@ fn build_router(
                         crate::domain::refusal::RefusalCode::InvalidState,
                         message,
                     );
-                    return task_projection::call_tool_result(&refusal)
+                    return task_projection::call_tool_result(&refusal, host.response_budget)
                         .map(CanonicalCallOutcome::Direct)
                         .map_err(task_projection::projection_error);
                 }
@@ -207,6 +207,7 @@ fn build_router(
                 deadline,
                 observer.as_ref(),
                 cancellation,
+                host.response_budget,
             )
         });
     let get_client = Arc::clone(&client);
@@ -284,6 +285,7 @@ fn bounded_wait_ms(requested_wait_ms: u64, cutoff: Instant, now: Instant) -> u64
     requested_wait_ms.min(remaining.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn submit_and_settle(
     client: &V5DaemonClient,
     workspace: unica_bootstrap::ResolvedWorkspace,
@@ -292,6 +294,7 @@ fn submit_and_settle(
     deadline: FrontendInvocationDeadline,
     observer: Option<&ReceiptObserver>,
     cancellation: CanonicalCancellation,
+    budget: unica_bootstrap::ResponseBudget,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
     let cutoff = deadline.transport_cutoff();
     // No frame of this call has left the frontend yet: whatever the
@@ -355,7 +358,7 @@ fn submit_and_settle(
         // Writing never started: the frame did not reach the daemon.
         Err(error) => return Err(not_sent_refusal(&error)),
     };
-    settle(peer, response, &receipt_key)
+    settle(peer, response, &receipt_key, budget)
 }
 
 fn cancel_exact_endpoint(
@@ -523,6 +526,7 @@ fn settle(
     mut peer: V5DaemonProcessOwner,
     response: V5ServerResponse,
     receipt_key: &ReceiptKey,
+    budget: unica_bootstrap::ResponseBudget,
 ) -> Result<CanonicalCallOutcome, ErrorData> {
     match response {
         V5ServerResponse::Invocation {
@@ -535,7 +539,7 @@ fn settle(
             }
             // The final interface value is built first; a receipt whose value
             // cannot be built stays unacknowledged and expires on its own.
-            let projection = task_projection::project_direct_terminal(receipt.terminal())
+            let projection = task_projection::project_direct_terminal(receipt.terminal(), budget)
                 .map_err(task_projection::projection_error)?;
             let acknowledgement_deadline = Instant::now() + ACKNOWLEDGEMENT_BUDGET;
             // The acknowledgement proves the transfer daemon → frontend and
@@ -705,7 +709,7 @@ fn request_too_large_refusal(
              reduce the arguments or split the change into several calls"
         ),
     );
-    task_projection::call_tool_result(&refusal)
+    task_projection::call_tool_result(&refusal, unica_bootstrap::ResponseBudget::default())
         .map(CanonicalCallOutcome::Direct)
         .map_err(task_projection::projection_error)
 }

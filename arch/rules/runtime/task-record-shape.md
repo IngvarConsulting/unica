@@ -9,7 +9,7 @@ check:
   - crates/unica-coder/src/application/invocation_store_v5.rs::every_task_status_rejects_unknown_missing_wrong_case_and_cross_variant_fields
   - crates/unica-coder/src/application/invocation_store_v5.rs::v5_safe_failure_reason_is_closed_and_converts_every_legacy_reason
   - crates/unica-coder/src/infrastructure/daemon/server.rs::execution_boundary_names_a_changed_workspace_only_for_a_lost_binding
-  - crates/unica-coder/src/infrastructure/daemon/mod.rs::canonical_invocation_authority_keeps_root_capabilities_without_source_revision
+  - crates/unica-coder/src/infrastructure/daemon/mod.rs::canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision
   - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_failure_is_delivered_as_the_closed_reason_without_its_text
 gap: https://github.com/IngvarConsulting/unica/issues/984
 ---

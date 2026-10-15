@@ -23,6 +23,7 @@ from site_fetch import fetch  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RENDER = Path(__file__).with_name("render-pages.py")
+REGISTRY = Path(__file__).with_name("render-acceptance-registry.py")
 HISTORY_FILES = (
     "history.json",
     "history-trend.json",
@@ -55,6 +56,13 @@ def render_pages(status: Path, out: Path) -> list[str]:
         page = module.inline_assets(page, template.name)
         (out / template.name).write_text(page, encoding="utf-8")
         written.append(template.name)
+    # Реестр приёмочных сценариев не хранится в репозитории: его счётчики и
+    # списки покрытия меняет каждый новый сценарий, и общий файл ссорил бы
+    # между собой любые два таких изменения. Он собирается из корпуса здесь.
+    registry = load(REGISTRY)
+    page = registry.render_html(registry.render_document(), module.STYLESHEET.read_text(encoding="utf-8"))
+    (out / registry.PAGE_NAME).write_text(page, encoding="utf-8")
+    written.append(registry.PAGE_NAME)
     (out / "status.json").write_text(
         json.dumps(status_document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

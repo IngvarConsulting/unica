@@ -521,7 +521,8 @@ fn collect_element_semantics(
         let at = format!("{parent_at}.Item.{}", element.name);
         let is_table = element.event_kind == Some(FormElementKind::Table);
         if let Some(kind) = element.event_kind {
-            let owner = if parent_is_table {
+            // Командная панель таблицы — её часть, а не колонка.
+            let owner = if parent_is_table && kind != FormElementKind::CommandBar {
                 FormBindingOwner::Column(kind)
             } else if is_table {
                 FormBindingOwner::Table

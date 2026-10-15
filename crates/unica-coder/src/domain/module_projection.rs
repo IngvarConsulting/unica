@@ -106,6 +106,10 @@ pub(crate) struct BranchSummary {
     pub(crate) kind: BranchKind,
     pub(crate) at: String,
     pub(crate) count: usize,
+    /// Размер текста ветви в байтах UTF-8; есть только у `Body` модуля
+    /// с исходным файлом.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -214,8 +218,19 @@ pub(crate) struct MethodProjection {
     /// compilation directive to the closing keyword. Body lines lie inside.
     pub(crate) from_line: usize,
     pub(crate) to_line: usize,
+    /// Первая строка текста `Method.<имя>.Body`: начало документирующего
+    /// комментария непосредственно над методом, иначе `from_line`.
+    pub(crate) text_from_line: usize,
     pub(crate) body_from_line: usize,
     pub(crate) body_to_line: usize,
+}
+
+impl MethodProjection {
+    /// Число строк текста `Method.<имя>.Body`: комментарий, директива,
+    /// объявление, тело и строка окончания.
+    pub(crate) fn text_line_count(&self) -> usize {
+        (self.to_line + 1).saturating_sub(self.text_from_line)
+    }
 }
 
 impl Serialize for MethodProjection {
@@ -260,15 +275,13 @@ impl Serialize for MethodProjection {
                     kind: BranchKind::Compilation,
                     at: format!("{}.Compilation", self.at),
                     count: self.compilation_count,
+                    bytes: None,
                 },
                 BranchSummary {
                     kind: BranchKind::Body,
                     at: format!("{}.Body", self.at),
-                    count: if self.body_to_line < self.body_from_line {
-                        0
-                    } else {
-                        self.body_to_line - self.body_from_line + 1
-                    },
+                    count: self.text_line_count(),
+                    bytes: None,
                 },
             ],
         )?;
@@ -310,9 +323,12 @@ impl InterfaceKind {
     }
 }
 
+/// Срез методов модуля по нормативным областям. У среза нет адреса:
+/// у `Interface` не бывает имени, и `…Interface.Public` грамматика адреса
+/// отвергает (CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS). Срез — элемент ветви
+/// `…Interface`, а его методы адресуются своими `…Method.<имя>` (#1467).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct InterfaceProjection {
-    pub(crate) at: String,
     pub(crate) kind: &'static str,
     pub(crate) interface: InterfaceKind,
     pub(crate) methods: Vec<String>,
@@ -360,14 +376,6 @@ pub(crate) struct CompilationProjection {
 pub(crate) struct BodyLine {
     pub(crate) line: usize,
     pub(crate) text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct BodyPage {
-    pub(crate) lines: Vec<BodyLine>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) next: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,6 +428,7 @@ pub(crate) struct ModuleProjectionSet {
     events: Vec<EventProjection>,
     compilation: Vec<CompilationProjection>,
     body: Vec<BodyLine>,
+    source: String,
 }
 
 impl ModuleProjectionSet {
@@ -449,6 +458,7 @@ impl ModuleProjectionSet {
                 kind: *kind,
                 at: format!("{base}.{}", kind.as_str()),
                 count,
+                bytes: None,
             })
             .collect();
         Self {
@@ -466,7 +476,34 @@ impl ModuleProjectionSet {
             events,
             compilation,
             body,
+            source: String::new(),
         }
+    }
+
+    /// Исходный текст модуля, из которого построена проекция.
+    pub(crate) fn with_source(mut self, source: String) -> Self {
+        if let Some(body) = self
+            .summary
+            .branches
+            .iter_mut()
+            .find(|branch| branch.kind == BranchKind::Body)
+        {
+            body.bytes = Some(source.len() as u64);
+        }
+        self.source = source;
+        self
+    }
+
+    /// Текст модуля для `Body`: файл без начальных U+FEFF, разделители строк
+    /// как в файле.
+    pub(crate) fn source_text(&self) -> &str {
+        &self.source
+    }
+
+    /// Текст `Method.<имя>.Body`: строки от документирующего комментария до
+    /// строки окончания метода включительно, каждая со своим разделителем.
+    pub(crate) fn method_text(&self, method: &MethodProjection) -> &str {
+        line_span(&self.source, method.text_from_line, method.to_line)
     }
 
     pub(crate) const fn summary(&self) -> &ModuleSummary {
@@ -522,94 +559,30 @@ impl ModuleProjectionSet {
             ))),
         }
     }
+}
 
-    pub(crate) fn method_body(
-        &self,
-        method_at: &str,
-        context: Option<&str>,
-        limit: usize,
-        cursor: Option<&str>,
-    ) -> Result<BodyPage, ProjectionError> {
-        let method = self
-            .methods
-            .iter()
-            .find(|method| method.at == method_at)
-            .ok_or_else(|| {
-                ProjectionError::not_found(format!("method `{method_at}` was not found"))
-            })?;
-        if let Some(context) = context {
-            const CONTEXTS: &[&str] = &[
-                "server",
-                "externalConnection",
-                "thinClient",
-                "webClient",
-                "thickClientManaged",
-                "thickClientOrdinary",
-                "mobileClient",
-                "mobileAppClient",
-                "mobileAppServer",
-                "mobileStandaloneServer",
-            ];
-            if !CONTEXTS.contains(&context) {
-                return Err(ProjectionError::invalid_context(format!(
-                    "context `{context}` is not part of platform profile 8.3.27"
-                )));
-            }
-            // Публичный фильтр контекста отказывает раньше, в `view`, если
-            // контексты модуля неизвестны; здесь неизвестное не совпадает.
-            if !method
-                .compile
-                .contexts
-                .iter()
-                .flatten()
-                .any(|candidate| candidate == context)
-            {
-                return Ok(BodyPage {
-                    lines: Vec::new(),
-                    next: None,
-                });
-            }
-        }
-
-        let mut lines = self
-            .body
-            .iter()
-            .filter(|line| line.line >= method.body_from_line && line.line <= method.body_to_line)
-            .filter(|line| {
-                let Some(context) = context else {
-                    return true;
-                };
-                if line.text.trim_start().starts_with('#') {
-                    return false;
-                }
-                let covering = self
-                    .compilation
-                    .iter()
-                    .filter(|range| line.line >= range.from_line && line.line <= range.to_line)
-                    .collect::<Vec<_>>();
-                covering.is_empty()
-                    || covering.iter().all(|range| {
-                        range
-                            .contexts
-                            .iter()
-                            .flatten()
-                            .any(|candidate| candidate == context)
-                    })
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        let offset = cursor
-            .unwrap_or("0")
-            .parse::<usize>()
-            .map_err(|_| ProjectionError::not_found("body cursor is invalid"))?;
-        if offset > lines.len() {
-            return Err(ProjectionError::not_found("body cursor is out of range"));
-        }
-        let end = offset.saturating_add(limit.max(1)).min(lines.len());
-        let next = (end < lines.len()).then(|| end.to_string());
-        lines = lines[offset..end].to_vec();
-        Ok(BodyPage { lines, next })
+/// Строки `from..=to` (с единицы) вместе с их разделителями.
+fn line_span(text: &str, from: usize, to: usize) -> &str {
+    if from == 0 || to < from {
+        return "";
     }
+    let mut line = 1;
+    let mut start = (from == 1).then_some(0);
+    let mut end = text.len();
+    for (index, byte) in text.bytes().enumerate() {
+        if byte != b'\n' {
+            continue;
+        }
+        if line == to {
+            end = index + 1;
+            break;
+        }
+        line += 1;
+        if line == from {
+            start = Some(index + 1);
+        }
+    }
+    start.map_or("", |start| &text[start..end])
 }
 
 #[cfg(test)]
@@ -812,6 +785,7 @@ mod tests {
             compilation_count: 1,
             from_line: 5,
             to_line: 9,
+            text_from_line: 4,
             body_from_line: 7,
             body_to_line: 8,
         };
@@ -826,7 +800,6 @@ mod tests {
             parent: None,
         };
         let interface = InterfaceProjection {
-            at: format!("{base}.Interface.Public"),
             kind: "Interface",
             interface: InterfaceKind::Public,
             methods: vec![method_at.clone()],
@@ -925,7 +898,7 @@ mod tests {
                 },
                 "branches": [
                     {"at": format!("{base}.Method.Проверить.Compilation"), "count": 1},
-                    {"at": format!("{base}.Method.Проверить.Body"), "count": 2}
+                    {"at": format!("{base}.Method.Проверить.Body"), "count": 6}
                 ]
             })
         );
@@ -944,7 +917,6 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&projection.interfaces()[0]).unwrap(),
             json!({
-                "at": format!("{base}.Interface.Public"),
                 "kind": "Interface",
                 "interface": "Public",
                 "methods": [format!("{base}.Method.Проверить")]
@@ -973,13 +945,14 @@ mod tests {
                 "contexts": ["server"]
             })
         );
-        let body_page = projection.method_body(&method_at, None, 1, None).unwrap();
+        // Текст метода берётся из файла байт в байт: разделители строк
+        // сохраняются, а строки до комментария и после окончания не входят.
+        let source = "#Область ПрограммныйИнтерфейс\n\n\r\n// Проверяет заказ.\r\n&НаСервере\nПроцедура Проверить(Отказ) Экспорт\n    Отказ = Ложь;\n    Возврат;\nКонецПроцедуры\n#КонецОбласти\n";
+        let projection = projection.with_source(source.to_string());
+        assert_eq!(projection.source_text(), source);
         assert_eq!(
-            serde_json::to_value(body_page).unwrap(),
-            json!({
-                "lines": [{"line": 7, "text": "    Отказ = Ложь;"}],
-                "next": "1"
-            })
+            projection.method_text(&projection.methods()[0]),
+            "// Проверяет заказ.\r\n&НаСервере\nПроцедура Проверить(Отказ) Экспорт\n    Отказ = Ложь;\n    Возврат;\nКонецПроцедуры\n"
         );
         assert_forbidden_keys_are_absent(&summary);
     }
@@ -1054,7 +1027,7 @@ mod tests {
     }
 
     #[test]
-    fn method_without_body_reports_a_zero_body_branch_and_no_text() {
+    fn method_with_an_empty_body_still_counts_its_text_lines_and_inlines_no_text() {
         let method = MethodProjection {
             at: "main:HTTPService.API.Module.HTTPService.Method.get".to_string(),
             name: "get".to_string(),
@@ -1075,11 +1048,14 @@ mod tests {
             compilation_count: 0,
             from_line: 1,
             to_line: 1,
+            text_from_line: 1,
             body_from_line: 1,
             body_to_line: 0,
         };
         let value = serde_json::to_value(method).unwrap();
-        assert_eq!(value["branches"][1]["count"], 0);
+        // Текст `Body` метода включает объявление и строку окончания, поэтому
+        // у метода без тела ветвь не пуста.
+        assert_eq!(value["branches"][1]["count"], 1);
         assert!(value.get("body").is_none());
         assert!(value.get("source").is_none());
     }

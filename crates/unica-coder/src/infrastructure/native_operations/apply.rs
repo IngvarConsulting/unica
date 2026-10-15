@@ -740,6 +740,7 @@ impl ApplyStagedState {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let mut parent = self.root.as_ref().clone();
+        let mut route_identities = Vec::with_capacity(components.len() - 1);
         for component in &components[..components.len() - 1] {
             self.checkpoint("apply reference input route")?;
             if self.generated_subtree_forbidden {
@@ -749,7 +750,10 @@ impl ApplyStagedState {
                 reject_generated_component(Some(&policy), component)?;
             }
             parent = match parent.retain_immediate_child_nofollow(component) {
-                Ok(RetainedChildCapability::Directory(child)) => child,
+                Ok(RetainedChildCapability::Directory(child)) => {
+                    route_identities.push(child.identity());
+                    child
+                }
                 Err(error) if error.kind() == ErrorKind::NotFound => {
                     return self.read_bounded(&relative, limit);
                 }
@@ -860,9 +864,8 @@ impl ApplyStagedState {
                 RetainedApplyReadGuardBinding {
                     root: Arc::clone(&self.root),
                     relative_path: relative,
-                    ancestor: parent,
-                    name,
-                    original_file: file,
+                    route_identities,
+                    file_identity: id,
                     expected_len: bytes.len() as u64,
                     expected_sha256: digest,
                     deadline: self.deadline,
@@ -1269,15 +1272,32 @@ impl ApplyStagedState {
             .expect("regular or absent target has an identity")
         {
             if let Some(guard) = self.read_guards.get(identity) {
-                guard
-                    .original_file
-                    .validate_named_identity()
-                    .map_err(|error| {
-                        ApplyStagingError::new(
-                            ApplyStagingErrorKind::ConcurrentRevision,
-                            format!("reference input changed before write staging: {error}"),
-                        )
-                    })?;
+                let observed = guard.retain_named_route().map_err(|error| {
+                    // A stop request keeps its own kind; any route change stales the plan.
+                    let kind = match error.kind() {
+                        RetainedApplyValidationErrorKind::Cancelled => {
+                            ApplyStagingErrorKind::Cancelled
+                        }
+                        RetainedApplyValidationErrorKind::Deadline => {
+                            ApplyStagingErrorKind::Deadline
+                        }
+                        _ => ApplyStagingErrorKind::ConcurrentRevision,
+                    };
+                    ApplyStagingError::new(
+                        kind,
+                        format!("reference input changed before write staging: {error}"),
+                    )
+                })?;
+                if observed.identity() != guard.file_identity {
+                    return Err(ApplyStagingError::new(
+                        ApplyStagingErrorKind::ConcurrentRevision,
+                        format!(
+                            "reference input changed before write staging: {}",
+                            relative.display()
+                        ),
+                    ));
+                }
+                drop(observed);
                 let StagedFileState::Bytes(bytes) = &original else {
                     unreachable!("guarded target was a regular file")
                 };
@@ -1803,6 +1823,137 @@ pub(crate) mod tests {
             std::fs::read(root.join("Reference.bsl")).unwrap(),
             b"abcdeg"
         );
+    }
+
+    /// A reference scan over a whole configuration (issue #1466) must not
+    /// keep a descriptor per inspected file or directory: the saved guard is
+    /// an identity and a fingerprint, re-proved by walking the route again.
+    #[test]
+    fn reference_scan_descriptor_count_does_not_grow_with_inputs() {
+        use crate::infrastructure::platform::testing::open_handle_count_for_test;
+        const DIRECTORIES: usize = 32;
+        const FILES_PER_DIRECTORY: usize = 16;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let mut inputs = Vec::new();
+        for directory in 0..DIRECTORIES {
+            let parent = Path::new("Catalogs")
+                .join(format!("Item{directory}"))
+                .join("Ext");
+            std::fs::create_dir_all(root.join(&parent)).unwrap();
+            for file in 0..FILES_PER_DIRECTORY {
+                let relative = parent.join(format!("Module{file}.bsl"));
+                std::fs::write(root.join(&relative), b"Procedure A()\nEndProcedure\n").unwrap();
+                inputs.push(relative);
+            }
+        }
+        std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone());
+        let before = open_handle_count_for_test().unwrap();
+        for relative in &inputs {
+            assert!(state
+                .read_guarded_bounded(relative, 1024)
+                .unwrap()
+                .is_some());
+        }
+        assert_eq!(state.read_guards.len(), inputs.len());
+        let after_scan = open_handle_count_for_test().unwrap();
+        state
+            .replace("Owner.bsl", b"before", b"after!".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        let after_finalize = open_handle_count_for_test().unwrap();
+        // The old guard kept the file and every directory of its route open:
+        // more than three descriptors per input here. A fixed allowance
+        // absorbs descriptors of concurrently running tests.
+        let allowance = 32;
+        assert!(
+            after_scan.saturating_sub(before) < allowance,
+            "scan of {} inputs kept {} descriptors open",
+            inputs.len(),
+            after_scan.saturating_sub(before)
+        );
+        assert!(
+            after_finalize.saturating_sub(before) < allowance,
+            "saved plan of {} inputs keeps {} descriptors open",
+            inputs.len(),
+            after_finalize.saturating_sub(before)
+        );
+        transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after!");
+    }
+
+    /// Without a held descriptor the saved plan still refuses a nested input
+    /// that changed in place, was replaced by another file or lost its parent
+    /// directory to another directory with the same bytes.
+    #[test]
+    fn reference_guard_without_descriptors_rejects_nested_input_substitution() {
+        enum Substitution {
+            InPlaceEdit,
+            FileReplacedByRename,
+            ParentDirectoryReplaced,
+        }
+        for substitution in [
+            Substitution::InPlaceEdit,
+            Substitution::FileReplacedByRename,
+            Substitution::ParentDirectoryReplaced,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir_all(root.join("Catalogs/Item/Ext")).unwrap();
+            std::fs::write(root.join("Catalogs/Item/Ext/Module.bsl"), b"abcdef").unwrap();
+            std::fs::write(root.join("Owner.bsl"), b"before").unwrap();
+            let authority =
+                crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+            let mut state = staged_with_authority(root, authority.clone());
+            assert_eq!(
+                state
+                    .read_guarded_bounded(Path::new("Catalogs/Item/Ext/Module.bsl"), 16)
+                    .unwrap(),
+                Some(b"abcdef".to_vec())
+            );
+            state
+                .replace("Owner.bsl", b"before", b"after!".to_vec())
+                .unwrap();
+            let transaction = state.finalize().unwrap();
+            let expected = match substitution {
+                Substitution::InPlaceEdit => {
+                    std::fs::write(root.join("Catalogs/Item/Ext/Module.bsl"), b"abcdeg").unwrap();
+                    b"abcdeg".as_slice()
+                }
+                Substitution::FileReplacedByRename => {
+                    std::fs::write(root.join("Catalogs/Item/Ext/Next.bsl"), b"abcdef").unwrap();
+                    std::fs::rename(
+                        root.join("Catalogs/Item/Ext/Next.bsl"),
+                        root.join("Catalogs/Item/Ext/Module.bsl"),
+                    )
+                    .unwrap();
+                    b"abcdef".as_slice()
+                }
+                Substitution::ParentDirectoryReplaced => {
+                    std::fs::rename(root.join("Catalogs/Item"), root.join("Catalogs/Moved"))
+                        .unwrap();
+                    std::fs::create_dir_all(root.join("Catalogs/Item/Ext")).unwrap();
+                    std::fs::write(root.join("Catalogs/Item/Ext/Module.bsl"), b"abcdef").unwrap();
+                    b"abcdef".as_slice()
+                }
+            };
+            let error = transaction
+                .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+                .expect_err("substituted reference input must stale the plan");
+            assert!(
+                error.contains("reference input"),
+                "the refusal names the substituted reference input: {error}"
+            );
+            assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
+            assert_eq!(
+                std::fs::read(root.join("Catalogs/Item/Ext/Module.bsl")).unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]

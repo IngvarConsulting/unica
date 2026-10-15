@@ -14,6 +14,11 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_that_loads_a_previewed_skip_names_the_changed_infobase
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::force_is_optional_and_only_force_overwrites_the_infobase
   - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_exchange_refusals_name_both_ways_out_and_the_generations
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::apply_names_an_earlier_unapplied_load_the_runner_applied
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::a_push_whose_apply_failed_names_the_load_left_unapplied
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::a_failed_apply_after_an_applied_set_names_both_sets
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_unapplied_loads_are_applied_or_named_when_the_infobase_moved
+  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_runner_015_loads_a_module_restored_with_its_old_mtime
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 
@@ -52,7 +57,12 @@ Preview `push` не запускает конфигуратор и называ�
 в рабочем каталоге, а не по базе, и поколение базы для пропущенного набора
 не читает. Пропущенный набор не загружался и не применялся, поэтому ответ
 не называет его изменённым и не выдаёт его состояние в базе
-за засвидетельствованное или сверенное. Если пропущены все наборы,
+за засвидетельствованное или сверенное. Исключение — пропущенный набор,
+у которого раннер 0.15 применил загрузку, оставленную прежним `push`
+непринятой (шаг `applied: true`): база изменилась, и ответ называет набор
+в `changed` с `appliedEarlierLoad: true`. Отказ `push`, у которого загрузка
+удалась, а применение нет, называет набор в `changed` с
+`appliedToDatabaseConfiguration: false` и выход через повторный `push`. Если пропущены все наборы,
 ответ сообщает: загрузка не выполнялась, поколение не сверялось
 (`generationChecked: false`), состояние базы не проверено. Ответ называет
 условие: полная загрузка нужна, если базу могли изменить вне этой рабочей
