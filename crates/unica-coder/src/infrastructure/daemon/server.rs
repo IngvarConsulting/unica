@@ -11069,29 +11069,52 @@ struct ActorLogicalReadLease {"#,
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
                 .with(|slot| *slot.borrow_mut() = None);
             let checked = checked.unwrap();
-            assert!(checked.ok, "{checked:?}");
+            // Сообщения проверок — постоянные строки: ответ несёт данные
+            // поддержки, и CodeQL считает их вывод утечкой.
+            assert!(checked.ok, "module check must answer a verdict");
             checked.data.unwrap()
         };
 
         let late = checked("Procedure Run() Export\n    Cache = 1;\nEndProcedure\n\nVar Cache;\n");
-        assert_eq!(late["status"], "failed", "{late}");
-        let diagnostics = late["diagnostics"].as_array().unwrap();
-        assert_eq!(diagnostics.len(), 1, "{late}");
-        let finding = &diagnostics[0];
-        assert_eq!(finding["validator"], "bsl", "{late}");
-        assert_eq!(finding["code"], "VariableDeclarationPlacement", "{late}");
-        assert_eq!(finding["severity"], "error", "{late}");
-        assert_eq!(
-            finding["message"],
-            "Объявления переменных должны быть расположены в начале модуля, процедуры или функции",
-            "{late}"
+        assert!(
+            late["status"] == "failed",
+            "a late declaration fails the check"
         );
-        assert_eq!(finding["location"]["targetKind"], "module", "{late}");
-        assert_eq!(finding["focus"]["range"]["startLine"], 4, "{late}");
+        let diagnostics = late["diagnostics"].as_array().unwrap();
+        assert!(
+            diagnostics.len() == 1,
+            "exactly one finding names the declaration"
+        );
+        let finding = &diagnostics[0];
+        assert!(
+            finding["validator"] == "bsl",
+            "the finding belongs to the bsl step"
+        );
+        assert!(
+            finding["code"] == "VariableDeclarationPlacement",
+            "the finding names the placement rule"
+        );
+        assert!(finding["severity"] == "error", "the finding is an error");
+        assert!(
+            finding["message"]
+                == "Объявления переменных должны быть расположены в начале модуля, процедуры или функции",
+            "the finding carries the platform message"
+        );
+        assert!(
+            finding["location"]["targetKind"] == "module",
+            "the finding belongs to the module"
+        );
+        assert!(
+            finding["focus"]["range"]["startLine"] == 4,
+            "the finding points at the declaration line"
+        );
 
         let early = checked("Var Cache;\n\nProcedure Run() Export\n    Cache = 1;\nEndProcedure\n");
-        assert_eq!(early["status"], "passed", "{early}");
-        assert_eq!(early["diagnostics"], serde_json::json!([]), "{early}");
+        assert!(early["status"] == "passed", "an early declaration passes");
+        assert!(
+            early["diagnostics"] == serde_json::json!([]),
+            "an early declaration has no findings"
+        );
     }
 
     /// #1338: an addressed module `check` whose analyzer is still being
