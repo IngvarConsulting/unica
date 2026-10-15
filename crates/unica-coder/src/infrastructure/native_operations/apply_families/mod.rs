@@ -1455,14 +1455,21 @@ mod tests {
             .err()
             .expect("an unknown element property refuses");
         assert_eq!(error.path(), Some("ops[0].args.items[0].titel"), "{error}");
-        // Путь привязки, который генератор знает, проходит разбор: его
-        // предметный отказ (`headerDataPath` у обычной группы) даёт генератор.
+        // Путь привязки, которого писатель вида не пишет (`headerDataPath`
+        // у обычной группы), отказывает по контракту вида до записи (#1447).
         let request = seam_request(
             "main:Document.First.Form.Main",
             "element.add",
             serde_json::json!({"items": [{"name": "Header", "type": "Group", "headerDataPath": "Object.Ref"}]}),
         );
-        assert!(super::parse_apply_operation(0, &request.ops()[0], &fixture.binding).is_ok());
+        let error = super::parse_apply_operation(0, &request.ops()[0], &fixture.binding)
+            .err()
+            .expect("a binding path the group writer does not write refuses");
+        assert_eq!(
+            error.path(),
+            Some("ops[0].args.items[0].headerDataPath"),
+            "{error}"
+        );
         // Элемент и событие названы адресом: перенаправить событие или
         // удаление на другой узел аргументом нельзя (#1355).
         for (at, op, args, path) in [

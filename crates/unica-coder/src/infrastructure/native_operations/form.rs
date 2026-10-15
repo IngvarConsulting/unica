@@ -5187,6 +5187,22 @@ pub(crate) fn form_edit_apply_definition(
                         defn.get("after").and_then(Value::as_str),
                     )?
                 };
+                // Командная панель держит кнопки: поле или группа в ней
+                // записались бы в XML, который платформа не загрузит (#1447).
+                if in_command_bar {
+                    for element in elements {
+                        let Some(object) = element.as_object() else {
+                            continue;
+                        };
+                        let kind = FormEditElementDefinitionKind::from_object(object)?;
+                        if kind != FormEditElementDefinitionKind::Button {
+                            return Err(format!(
+                                "[ERROR] a command bar holds only buttons: add '{}' with type Button, or add it to a group or the form",
+                                kind.name(object)?
+                            ));
+                        }
+                    }
+                }
                 let element_indent = insert_target.child_indent().to_string();
                 let start = elem_ids.next;
                 let mut lines = Vec::<String>::new();
@@ -7778,9 +7794,11 @@ pub(crate) fn emit_form_edit_attribute_item(
     if attr.get("savedData").and_then(Value::as_bool) == Some(true) {
         lines.push(format!("{inner}<SavedData>true</SavedData>"));
     }
+    // Проверка заполнения реквизита формы в 8.3.27 — `<FillCheck>`:
+    // `<FillChecking>` платформа у реквизита формы не знает (#1447).
     if let Some(fill_checking) = attr.get("fillChecking").and_then(Value::as_str) {
         lines.push(format!(
-            "{inner}<FillChecking>{}</FillChecking>",
+            "{inner}<FillCheck>{}</FillCheck>",
             escape_xml(fill_checking)
         ));
     }
@@ -8815,6 +8833,11 @@ fn form_root_xml_property(name: &str) -> Option<(usize, &'static str)> {
         .iter()
         .position(|property| *property == candidate)
         .map(|index| (index, FORM_ROOT_SCALAR_PROPERTY_ORDER[index]))
+}
+
+#[cfg(test)]
+pub(crate) fn form_8_3_27_enum_values_for_test(xml_name: &str) -> Option<&'static [&'static str]> {
+    form_8_3_27_enum_values(xml_name)
 }
 
 fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
@@ -10673,16 +10696,17 @@ pub(crate) fn emit_form_attributes(
         if saved_data {
             lines.push(format!("{inner}<SavedData>true</SavedData>"));
         }
+        // 8.3.27 пишет FillCheck до Settings динамического списка.
+        if let Some(fill_checking) = object.get("fillChecking").and_then(Value::as_str) {
+            lines.push(format!(
+                "{inner}<FillCheck>{}</FillCheck>",
+                escape_xml(fill_checking)
+            ));
+        }
         if object.get("type").and_then(Value::as_str) == Some("DynamicList") {
             if let Some(settings) = object.get("settings").and_then(Value::as_object) {
                 emit_form_dynamic_list_attribute_settings(lines, settings, &inner);
             }
-        }
-        if let Some(fill_checking) = object.get("fillChecking").and_then(Value::as_str) {
-            lines.push(format!(
-                "{inner}<FillChecking>{}</FillChecking>",
-                escape_xml(fill_checking)
-            ));
         }
         emit_form_compile_attribute_columns(lines, object.get("columns"), &inner, ids, lang)?;
         lines.push(format!("{indent}\t</Attribute>"));

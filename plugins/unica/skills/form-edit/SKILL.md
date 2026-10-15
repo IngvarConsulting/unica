@@ -50,6 +50,35 @@ allowed-tools:
 внутри группы колонок таблицы (`ColumnGroup`) `view` пока не показывает:
 их адреса нет, и правка таких колонок — пробел контракта Unica MCP.
 
+### Закрытый контракт операции
+
+Подробный контракт операции читается адресом `<узел>.Can.<операция>`,
+например `main:Catalog.Номенклатура.Form.ФормаЭлемента.Can.element.add`.
+Он перечисляет ровно те ключи, которые записывает писатель операции.
+Ключ вне контракта, значение не того типа или вне перечисления получают
+`bad_value` с точным путём (`ops[0].args.items[0].backColor`) до записи:
+операция не теряет его молча.
+
+`element.add` добавляет один элемент без вложенного содержимого. Ключи
+элемента зависят от его `type`: например, `backColor` и `font` пишет только
+кнопка, а `title` не пишут таблица и поле надписи. Вложенный элемент
+добавляется отдельным `element.add` на адресе контейнера
+(`….Item.<Группа>`), обработчик — `event.bind` на адресе события
+(`….Item.<Элемент>.Event.<Событие>`) с явным именем. Ключи `children`,
+`columns`, `elements`, `commandBar`, `autoCmdBar`, `autoCommandBar`,
+`contextMenu`, `extendedTooltip`, `html`, `on` и `handlers` получают
+`bad_value`, а `next` ведёт к контракту `element.add`. Командная панель
+принимает только кнопки: её контракт публикует один вид `Button`. Группа и поле в ней добавляются в одном вызове
+двумя операциями: вторая адресует группу через `args.at`.
+
+`formAttribute.add` пишет `name`, `title` (строка), `type`, `main`,
+`savedData`, `fillChecking` и `columns` реквизита-таблицы. Проверка
+заполнения `"fillChecking": "ShowError"` записывается тегом `<FillCheck>`;
+без ключа проверки нет. Просмотр и редактирование (`view`, `edit`),
+функциональные опции, `useAlways`, `save`, `valueType`, настройки
+динамического списка и видимость по ролям этой операцией не пишутся
+и получают `bad_value`.
+
 Прежние аргументы, которые называли элемент или событие, сняты:
 `items[].into` у `element.add`, `items[].name`, элемент-строка `items[]`
 и `values.name` у `element.remove`, `values.element` и `values.event`
@@ -160,25 +189,37 @@ Preview и apply возвращают одинаковую типизирова�
 
 ### Типы элементов
 
-В `element.add` каждый `items[]` задаёт `name` и `type` (платформенный XML-тег
-из таблицы). Короткие ключи ниже относятся к внутреннему описанию элементов.
-Словарь создаёт одиннадцать видов:
+В `element.add` каждый `items[]` задаёт `name` и `type`; без `type`
+создаётся поле ввода. Словарь создаёт одиннадцать видов. Кроме ключей
+таблицы, каждый вид принимает `after` и флаги `visible`, `hidden`,
+`userVisible` (только `false`), `enabled`, `disabled`, `readOnly`.
 
-| Ключ | XML тег | Companions |
-|------|---------|------------|
-| `input` | InputField | ContextMenu, ExtendedTooltip |
-| `html` | HTMLDocumentField | ContextMenu, ExtendedTooltip |
-| `check` | CheckBoxField | ContextMenu, ExtendedTooltip |
-| `label` | LabelDecoration | ContextMenu, ExtendedTooltip |
-| `labelField` | LabelField | ContextMenu, ExtendedTooltip |
-| `group` | UsualGroup | ExtendedTooltip |
-| `table` | Table | ContextMenu, AutoCommandBar, Search*, ViewStatus* |
-| `pages` | Pages | ExtendedTooltip |
-| `page` | Page | ExtendedTooltip |
-| `button` | Button | ExtendedTooltip |
-| `commandBar` | CommandBar | — |
+| `type` | XML тег | Ключи вида | Companions |
+|------|---------|------------|------------|
+| `InputField` | InputField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `inputHint`, `width`, `height`, кнопки и флаги поля | ContextMenu, ExtendedTooltip |
+| `HTMLDocumentField` | HTMLDocumentField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight`, `skipOnInput` | ContextMenu, ExtendedTooltip |
+| `CheckBox` | CheckBoxField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `checkBoxType`, `footerDataPath` | ContextMenu, ExtendedTooltip |
+| `Label` | LabelDecoration | `title` (строка или `{text, formatted}`), `formatted`, `hyperlink`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight`, `tooltipRepresentation` | ContextMenu, ExtendedTooltip |
+| `LabelField` | LabelField | `path`, `tooltip`, `tooltipRepresentation`, `footerDataPath` | ContextMenu, ExtendedTooltip |
+| `Group` | UsualGroup | `title`, `orientation`, `behavior`, `collapsed`, `representation`, `titleDataPath`, `currentRowUse`, `showTitle`, `showLeftMargin` | ExtendedTooltip |
+| `Table` | Table | `path`, `representation`, `autoInsertNewRow`, `commandBarLocation`, `initialTreeView`, `enableDrag`, `rowPictureDataPath`, `tableAutofill`, `_dynList` и ключи динамического списка | ContextMenu, AutoCommandBar, Search*, ViewStatus* |
+| `Pages` | Pages | `title`, `pagesRepresentation`, `currentRowUse` | ExtendedTooltip |
+| `Page` | Page | `title`, `orientation`, `showTitle`, `titleDataPath` | ExtendedTooltip |
+| `Button` | Button | `command`, `commandName` или `stdCommand`, `title`, `tooltip`, `tooltipRepresentation`, `representation`, `defaultButton`, `picture`, `locationInCommandBar`, `backColor`, `font` | ExtendedTooltip |
+| `CommandBar` | CommandBar | `commandSource`, `autofill` | — |
 
-Группы и таблицы поддерживают `children`/`columns` для вложенных элементов.
+Перечисления (`titleLocation`, `orientation`, `representation` и другие)
+принимают значения платформы с заглавной буквы: `None`, `Horizontal`,
+`GroupBox`. Полный список ключей и значений — в контракте
+`<адрес>.Can.element.add`. Ключи динамического списка (`autoRefresh`,
+`autoRefreshPeriod`, `choiceFoldersAndItems`, `restoreCurrentRow`,
+`showRoot`, `allowRootChoice`, `updateOnDataChange`,
+`allowGettingCurrentRowURL`) пишутся только с `_dynList: true`; кнопка
+принимает одну команду. Флаги поля ввода `clearButton`, `spinButton`,
+`dropListButton`, `markIncomplete`, `skipOnInput`, `horizontalStretch`,
+`verticalStretch` и `autofill` командной панели принимают только `true`:
+явный `false` платформа отличает от умолчания, а операция его пока
+не пишет.
 
 ### Поле HTML-документа
 
@@ -194,9 +235,8 @@ HTML-поле привязывается через `path` к строковом
   "at": "main:Catalog.ТехническиеПроекты.Form.ФормаЭлемента",
   "ops": [{"op": "element.add", "args": {"items": [{
     "name": "ПолеОписания", "type": "HTMLDocumentField",
-    "path": "СтраницаРедактораОписания", "titleLocation": "none",
-    "width": 1, "height": 1, "autoMaxWidth": false, "skipOnInput": true,
-    "on": ["OnClick", "DocumentComplete"]
+    "path": "СтраницаРедактораОписания", "titleLocation": "None",
+    "width": 1, "height": 1, "autoMaxWidth": false, "skipOnInput": true
   }]}}]
 }
 ```
@@ -205,15 +245,13 @@ HTML-поле привязывается через `path` к строковом
 (целые `0..4294967295`), `autoMaxWidth`/`autoMaxHeight`, `skipOnInput`,
 `visible`, `userVisible`, `enabled`, `readOnly` и синонимы `hidden`/`disabled`.
 Булевы параметры принимают JSON boolean. События — только `OnClick` и
-`DocumentComplete`; имена обработчиков можно задать в `handlers` вместе с `on`.
-Для существующего поля используйте `event.bind` по адресу события
-`…Form.ФормаЭлемента.Item.ПолеОписания.Event.DocumentComplete`.
+`DocumentComplete`: привяжите их `event.bind` по адресу события
+`…Form.ФормаЭлемента.Item.ПолеОписания.Event.DocumentComplete` с явным
+именем обработчика, в том же вызове после `element.add` или позже.
 DOM-свойство `Document` относится к выполнению 1С и не записывается в XML.
 
 Чтобы поместить HTML-поле в группу, вызовите `element.add` на адресе группы;
-`after` задаёт соседний элемент. Вложенный typed-объект с
-`type: "HTMLDocumentField"` в `children`/`columns` отклоняется с подсказкой
-добавить поле отдельным вызовом на адресе его контейнера. Полученную форму
+`after` задаёт соседний элемент. Полученную форму
 прочитайте через `unica.view` и проверьте через `unica.check`.
 
 ### Чего словарь не пишет
@@ -324,9 +362,9 @@ BSL с неподтверждёнными именами. Пробел чтен�
 заполнение, загрузку, пересчёт, удаление строк, сортировку, изменение цен,
 скидок, НДС и аналогичные действия.
 
-### Допустимые события (`on`)
+### Допустимые события элемента
 
-Editor до записи проверяет событие по единой платформенной матрице. Недопустимое сочетание возвращает `ok=false` и код `FORM_EVENT_*`, не меняя файл. Основные сочетания:
+`event.bind` до записи проверяет событие по единой платформенной матрице. Недопустимое сочетание возвращает `ok=false` и код `FORM_EVENT_*`, не меняя файл. Основные сочетания:
 
 - **input**: `OnChange`, `StartChoice`, `ChoiceProcessing`, `Clearing`, `AutoComplete`, `TextEditEnd`, `Opening`, `Creating`, `EditTextChange`
 - **check**: `OnChange`
@@ -336,7 +374,7 @@ Editor до записи проверяет событие по единой п�
 - **pages**: `OnCurrentPageChange`
 - **page/button/group/command bar**: события не поддерживаются
 
-События `table` требуют непустой привязки: `path` для нового элемента или прямого `DataPath` у существующего `Table`. Платформа удаляет обработчики событий у несвязанной таблицы при загрузке/выгрузке конфигурации.
+События `table` требуют непустой привязки: прямого `DataPath` у `Table`. Платформа удаляет обработчики событий у несвязанной таблицы при загрузке/выгрузке конфигурации.
 
 `OnReadAtServer`, `BeforeWrite`, `BeforeWriteAtServer`, `OnWriteAtServer`, `AfterWriteAtServer` и `AfterWrite` разрешены только при подтверждённом persistent object/record типе главного реквизита. Для `DataProcessorObject`, `ReportObject`, `DynamicList` и неизвестного контекста они отклоняются. `NewWriteProcessing` и `FillCheckProcessingAtServer` являются общими событиями формы и этим ограничением не связаны.
 
@@ -348,10 +386,11 @@ Editor до записи проверяет событие по единой п�
 
 У формы расширения `event.bind` принимает `callType` (`Before`, `After`,
 `Override`) на адресе события формы или элемента. У обычной формы
-`callType` не задаётся. Событие нового элемента задаётся в его `on`:
-`"on": [{"event": "OnChange", "callType": "After"}]`. `formCommand.add`
-`callType` и `actions` не принимает: перехват действия команды формы
-расширения — `event.implement` с `callType` на адресе
+`callType` не задаётся. Событие нового элемента привязывает `event.bind`
+на его адресе: `{"values": {"handler": "Расш1_ПолеПриИзмененииПосле",
+"callType": "After"}}`. `formCommand.add` `callType` и `actions`
+не принимает: перехват действия команды формы расширения —
+`event.implement` с `callType` на адресе
 `….Form.<Форма>.Command.<Команда>.Event.Execute`.
 
 Повтор идентичного binding является явным idempotent no-op. Конфликт обработчика/`callType`, duplicate, отсутствующий элемент и любой недопустимый event отклоняют весь batch до мутации; планирование использует тот же planner.

@@ -1274,19 +1274,13 @@ fn form_attribute_type(type_name: &str) -> String {
 
 /// The legacy element definition for one typed v0.13 item: the discriminator
 /// key named after the element type, every other property passed through.
+/// The item has passed the closed `element.add` contract: its keys are the
+/// ones the writer of its kind writes.
 fn legacy_element_definition(
     item: &Map<String, Value>,
     op_index: usize,
     location: &str,
 ) -> Result<(Value, Option<String>), ApplyPlanError> {
-    if item.contains_key("html") {
-        return Err(bad(
-            op_index,
-            &format!("{location}.html"),
-            "html is an internal discriminator; use name and type: HTMLDocumentField in element.add",
-        ));
-    }
-    reject_nested_typed_html(item, op_index, location)?;
     let name = required_string(item, "name", op_index, location)?.to_string();
     let kind = item
         .get("type")
@@ -1294,17 +1288,21 @@ fn legacy_element_definition(
         .unwrap_or("InputField");
     let mut definition = Map::new();
     definition.insert("name".to_string(), Value::String(name.clone()));
+    let orientation = || {
+        Value::String(
+            item.get("orientation")
+                .and_then(Value::as_str)
+                .unwrap_or("vertical")
+                .to_string(),
+        )
+    };
     match kind {
         "InputField" | "Input" | "Field" => {}
         "HTMLDocumentField" => {
             definition.insert("html".to_string(), Value::String(name.clone()));
         }
         "Group" | "UsualGroup" => {
-            let orientation = item
-                .get("orientation")
-                .and_then(Value::as_str)
-                .unwrap_or("vertical");
-            definition.insert("group".to_string(), Value::String(orientation.to_string()));
+            definition.insert("group".to_string(), orientation());
         }
         "Table" => {
             definition.insert("table".to_string(), Value::String(name.clone()));
@@ -1326,6 +1324,11 @@ fn legacy_element_definition(
         }
         "Page" => {
             definition.insert("page".to_string(), Value::String(name.clone()));
+            // Ориентацию страницы пишет её `group`; прежде `orientation`
+            // у страницы молча пропадал (#1447).
+            if item.contains_key("orientation") {
+                definition.insert("group".to_string(), orientation());
+            }
         }
         "CommandBar" => {
             definition.insert("cmdBar".to_string(), Value::String(name.clone()));
@@ -1345,150 +1348,107 @@ fn legacy_element_definition(
         match key.as_str() {
             "name" | "type" | "orientation" => {}
             "after" => after = value.as_str().map(str::to_string),
-            // Контейнер задаётся адресом `at` (#1355); на проводе снятый
-            // ключ отвергает предварительная проверка с адресом в `next`.
-            "into" => {
-                return Err(bad(
-                    op_index,
-                    &format!("{location}.into"),
-                    "the container of new elements is the `at` address (`….Form.F.Item.<container>`), not `into`",
-                ))
-            }
-            known
-                if ELEMENT_DEFINITION_KEYS.contains(&known)
-                    || crate::infrastructure::native_operations::form::FORM_BINDING_PATH_PROPERTIES
-                        .iter()
-                        .any(|(json_key, _)| *json_key == known) =>
-            {
+            _ => {
                 definition.insert(key.clone(), value.clone());
-            }
-            unknown => {
-                return Err(bad(
-                    op_index,
-                    &format!("{location}.{unknown}"),
-                    format!("unknown form element property `{unknown}`"),
-                ))
             }
         }
     }
     Ok((Value::Object(definition), after))
 }
 
-/// Свойства элемента, которые читают генераторы элементов формы
-/// (`form::emit_form_*`), и внутренние различители вида. Пути привязки
-/// (`path`, `headerDataPath`, …) берутся из таблицы генератора
-/// `FORM_BINDING_PATH_PROPERTIES`: её проверка даёт предметный отказ, например
-/// для `headerDataPath` у обычной группы. Неизвестный ключ
-/// отказывает: раньше он молча пропадал, и опечатка давала элемент без
-/// заказанного свойства (#1351).
-const ELEMENT_DEFINITION_KEYS: &[&str] = &[
-    // Различитель таблицы динамического списка: без него генератор не пишет
-    // блок свойств списка (`autoRefresh`, `showRoot`, …).
-    "_dynList",
-    "allowGettingCurrentRowURL",
-    "allowRootChoice",
-    "autoCmdBar",
-    "autoCommandBar",
-    "autoInsertNewRow",
-    "autoMaxHeight",
-    "autoMaxWidth",
-    "autoRefresh",
-    "autoRefreshPeriod",
-    "autofill",
-    "backColor",
-    "behavior",
-    "button",
-    "check",
-    "checkBoxType",
-    "children",
-    "choiceButton",
-    "choiceFoldersAndItems",
-    "clearButton",
-    "cmdBar",
-    "collapsed",
-    "columns",
-    "command",
-    "commandBar",
-    "commandBarLocation",
-    "commandName",
-    "commandSource",
-    "currentRowUse",
-    "defaultButton",
-    "disabled",
-    "dropListButton",
-    "elements",
-    "enableDrag",
-    "enabled",
-    "font",
-    "formatted",
-    "group",
-    "handlers",
-    "headerHorizontalAlign",
-    "height",
-    "hidden",
-    "horizontalAlign",
-    "horizontalStretch",
-    "html",
-    "hyperlink",
-    "initialTreeView",
-    "input",
-    "inputHint",
-    "label",
-    "labelField",
-    "locationInCommandBar",
-    "markIncomplete",
-    "multiLine",
-    "on",
-    "page",
-    "pages",
-    "pagesRepresentation",
-    "passwordMode",
-    "picture",
-    "readOnly",
-    "representation",
-    "restoreCurrentRow",
-    "showInHeader",
-    "showLeftMargin",
-    "showRoot",
-    "showTitle",
-    "skipOnInput",
-    "spinButton",
-    "stdCommand",
-    "table",
-    "tableAutofill",
-    "text",
-    "title",
-    "titleLocation",
-    "tooltip",
-    "tooltipRepresentation",
-    "updateOnDataChange",
-    "userVisible",
-    "verticalStretch",
-    "visible",
-    "width",
-];
-
-// Nested children still use the internal element description. Refuse a typed
-// HTML child before its `name` could make that description default to InputField.
-fn reject_nested_typed_html(
+/// Ключи, которые `element.add` снял по Р2 (#1447), и внутренние различители
+/// вида: отказ с продолжением до проверки контракта, чтобы агент получил
+/// следующий вызов, а не общий «неизвестный аргумент».
+fn refuse_nested_element_content(
+    at: &str,
     item: &Map<String, Value>,
     op_index: usize,
     location: &str,
 ) -> Result<(), ApplyPlanError> {
-    for key in ["children", "columns"] {
-        if let Some(children) = item.get(key).and_then(Value::as_array) {
-            for (index, child) in children.iter().enumerate() {
-                let Some(child) = child.as_object() else {
-                    continue;
-                };
-                let location = format!("{location}.{key}[{index}]");
-                if child.get("type").and_then(Value::as_str) == Some("HTMLDocumentField") {
-                    return Err(bad(op_index, &format!("{location}.type"),
-                        "add HTMLDocumentField as a separate element.add call at the address of its parent"));
-                }
-                reject_nested_typed_html(child, op_index, &location)?;
-            }
+    use crate::domain::operation_contract::{FORM_ELEMENT_EVENT_KEYS, FORM_ELEMENT_NESTED_KEYS};
+    let name = item
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("<Element>");
+    let container = format!("{at}.Item.{}", crate::domain::address::escape_name(name));
+    let contract = serde_json::json!({
+        "tool": "unica.view",
+        "args": {"at": format!("{at}.Can.element.add")},
+        "reason": "контракт element.add: один элемент на запись, ключи по виду",
+    });
+    if item.contains_key("html") {
+        return Err(bad(
+            op_index,
+            &format!("{location}.html"),
+            "html is an internal discriminator; use name and type: HTMLDocumentField in element.add",
+        )
+        .with_next(contract));
+    }
+    if let Some(key) = FORM_ELEMENT_NESTED_KEYS
+        .iter()
+        .find(|key| item.contains_key(**key))
+    {
+        return Err(bad(
+            op_index,
+            &format!("{location}.{key}"),
+            format!(
+                "element.add adds one element without nested content; drop `{key}` and add each nested element with a separate element.add at `{container}` once this element exists"
+            ),
+        )
+        .with_next(contract));
+    }
+    if let Some(key) = FORM_ELEMENT_EVENT_KEYS
+        .iter()
+        .find(|key| item.contains_key(**key))
+    {
+        return Err(bad(
+            op_index,
+            &format!("{location}.{key}"),
+            format!(
+                "element.add does not bind events; drop `{key}` and bind each handler with event.bind at `{container}.Event.<Event>` once this element exists, naming the handler explicitly"
+            ),
+        )
+        .with_next(contract));
+    }
+    Ok(())
+}
+
+/// Перекрёстные правила ключей элемента, которых схема не выражает.
+fn check_element_cross_fields(
+    item: &Map<String, Value>,
+    op_index: usize,
+    location: &str,
+) -> Result<(), ApplyPlanError> {
+    use crate::domain::operation_contract::FORM_DYNAMIC_LIST_KEYS;
+    if item.get("_dynList").and_then(Value::as_bool) != Some(true) {
+        if let Some(key) = FORM_DYNAMIC_LIST_KEYS
+            .iter()
+            .find(|key| item.contains_key(**key))
+        {
+            return Err(bad(
+                op_index,
+                &format!("{location}.{key}"),
+                format!("`{key}` is a dynamic-list table property: it is written only with `_dynList: true`"),
+            ));
         }
+    }
+    let commands = ["command", "commandName", "stdCommand"]
+        .into_iter()
+        .filter(|key| item.contains_key(*key))
+        .collect::<Vec<_>>();
+    if let [_, second, ..] = commands.as_slice() {
+        return Err(bad(
+            op_index,
+            &format!("{location}.{second}"),
+            format!(
+                "a button runs one command: give one of `command`, `commandName`, `stdCommand`, not {}",
+                commands
+                    .iter()
+                    .map(|key| format!("`{key}`"))
+                    .collect::<Vec<_>>()
+                    .join(" and ")
+            ),
+        ));
     }
     Ok(())
 }
@@ -1523,21 +1483,44 @@ fn parse_form_operation(
         };
         return Err(bad(op_index, "at", format!("{operation} targets {shape}")));
     }
+    if operation == "element.add" {
+        if let Some(items) = args.get("items").and_then(Value::as_array) {
+            for (index, item) in items.iter().enumerate() {
+                if let Some(item) = item.as_object() {
+                    refuse_nested_element_content(
+                        &address.to_string(),
+                        item,
+                        op_index,
+                        &format!("items[{index}]"),
+                    )?;
+                }
+            }
+        }
+    }
     // Опубликованный контракт и разбор планировщиком принимают одну форму
     // аргументов: ключ, которого писатель не пишет, отказывает до записи,
-    // а не теряется молча (#1439).
+    // а не теряется молча (#1447).
     if let Some(contract) = crate::domain::operation_contract::OperationContract::form(operation) {
+        let mut checked = args.clone();
+        // `at` операции уже разобран в адрес; контракт сверяет остальное.
+        checked.insert("at".to_string(), Value::String(address.to_string()));
         contract
-            .normalize(
-                &Value::Object(args.clone()),
-                &format!("ops[{op_index}].args"),
-            )
+            .normalize(&Value::Object(checked), &format!("ops[{op_index}].args"))
             .map_err(|error| {
+                let contract_at = format!("{address}.Can.{operation}");
                 ApplyPlanError::new(
                     ApplyPlanErrorKind::BadValue,
-                    format!("{}: {}", error.path, error.message),
+                    format!(
+                        "{}: {}; `{operation}` writes only the arguments listed at `{contract_at}`",
+                        error.path, error.message
+                    ),
                 )
                 .at_path(error.path)
+                .with_next(serde_json::json!({
+                    "tool": "unica.view",
+                    "args": {"at": contract_at},
+                    "reason": "аргументы, которые операция записывает на этом узле",
+                }))
             })?;
     }
     let items_path = format!("ops[{op_index}].args.items");
@@ -1655,6 +1638,7 @@ fn parse_form_operation(
                 let item = item
                     .as_object()
                     .ok_or_else(|| bad(op_index, &location, "each item must be an object"))?;
+                check_element_cross_fields(item, op_index, &location)?;
                 let (definition, after) = legacy_element_definition(item, op_index, &location)?;
                 let mut wrapper = Map::new();
                 wrapper.insert("elements".to_string(), Value::Array(vec![definition]));
@@ -3318,30 +3302,248 @@ mod tests {
         String::from_utf8(bytes).unwrap()
     }
 
+    /// Р2 (#1447): `element.add` добавляет один элемент. Вложенное дерево,
+    /// companion-содержимое и события отказывают `bad_value` по точному
+    /// пути до записи, а `next` ведёт к контракту `element.add`.
     #[test]
-    fn typed_html_nested_in_a_container_refuses_instead_of_becoming_input() {
+    fn element_add_refuses_nested_content_and_events_with_the_next_call() {
         let fixture = ApplySeamFixture::new();
-        for key in ["children", "columns"] {
+        let at = "main:Document.First.Form.ФормаДокумента";
+        for key in crate::domain::operation_contract::FORM_ELEMENT_NESTED_KEYS
+            .iter()
+            .chain(crate::domain::operation_contract::FORM_ELEMENT_EVENT_KEYS)
+            .chain(&["html"])
+        {
             let mut item = json!({"name": "Parent", "type": "Group"});
-            item[key] = json!([{"name": "Html", "type": "HTMLDocumentField"}]);
+            item[*key] = json!([{"name": "Child", "type": "HTMLDocumentField"}]);
             let error = parse_form_resource_plan_operation(
                 "element.add",
-                &json!({
-                    "at": "main:Document.First.Form.ФормаДокумента", "items": [item]
-                }),
+                &json!({"at": at, "items": [item]}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{key}");
+            let path = format!("ops[0].args.items[0].{key}");
+            assert_eq!(error.path(), Some(path.as_str()), "{key}");
+            assert_eq!(
+                error.next().unwrap()["args"]["at"],
+                json!(format!("{at}.Can.element.add")),
+                "{key}"
+            );
+            let follow_up = if *key == "html" {
+                "HTMLDocumentField".to_string()
+            } else {
+                format!("{at}.Item.Parent")
+            };
+            assert!(error.to_string().contains(&follow_up), "{key}: {error:?}");
+        }
+    }
+
+    /// Перекрёстные правила, которых схема не выражает: ключи динамического
+    /// списка без `_dynList` и две команды у кнопки пропали бы молча.
+    #[test]
+    fn element_add_refuses_keys_the_writer_would_drop_by_a_neighbour() {
+        let fixture = ApplySeamFixture::new();
+        for (item, path) in [
+            (
+                json!({"name": "T", "type": "Table", "autoRefresh": true}),
+                "ops[0].args.items[0].autoRefresh",
+            ),
+            (
+                json!({"name": "B", "type": "Button", "command": "A", "stdCommand": "Close"}),
+                "ops[0].args.items[0].stdCommand",
+            ),
+        ] {
+            let error = parse_form_resource_plan_operation(
+                "element.add",
+                &json!({"at": "main:Document.First.Form.ФормаДокумента", "items": [item]}),
                 0,
                 &fixture.binding,
             )
             .unwrap_err();
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
-            assert!(
-                error
-                    .path()
-                    .unwrap()
-                    .contains(&format!("items[0].{key}[0].type")),
-                "{error:?}"
-            );
+            assert_eq!(error.path(), Some(path));
         }
+    }
+
+    /// Значения-образцы ключа по его схеме: перебираются, пока одно не
+    /// изменит записанный XML.
+    fn sample_values(schema: &serde_json::Value) -> Vec<serde_json::Value> {
+        if let Some(values) = schema["enum"].as_array() {
+            return values.clone();
+        }
+        if let Some(choices) = schema["anyOf"].as_array() {
+            return choices.iter().flat_map(sample_values).collect();
+        }
+        match schema["type"].as_str() {
+            Some("boolean") => vec![json!(true), json!(false)],
+            Some("integer") | Some("number") => vec![json!(7)],
+            Some("string") => vec![json!("Sample")],
+            Some("object") => {
+                let mut sample = serde_json::Map::new();
+                match schema["properties"].as_object() {
+                    Some(properties) => {
+                        for (key, child) in properties {
+                            sample.insert(key.clone(), sample_values(child)[0].clone());
+                        }
+                    }
+                    None => {
+                        sample.insert("en".into(), json!("Sample"));
+                    }
+                }
+                vec![serde_json::Value::Object(sample)]
+            }
+            other => panic!("no sample for schema type {other:?}"),
+        }
+    }
+
+    /// Контракт `element.add` и писатель согласны по каждому виду: каждый
+    /// опубликованный ключ принимают контракт и планировщик, и хотя бы одно
+    /// его значение меняет записанный XML вида (#1447). Ключ, который
+    /// писатель вида не пишет, в контракт не попадает.
+    #[test]
+    fn every_published_element_key_reaches_the_xml_of_its_kind() {
+        use crate::infrastructure::native_operations::form::{emit_form_element, FormIdAllocator};
+        let fixture = ApplySeamFixture::new();
+        let contract =
+            crate::domain::operation_contract::OperationContract::form("element.add").unwrap();
+        let variants = contract.schema["properties"]["items"]["items"]["anyOf"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let emit = |item: &serde_json::Value| {
+            let (definition, _) =
+                super::legacy_element_definition(item.as_object().unwrap(), 0, "items[0]").unwrap();
+            let mut lines = Vec::new();
+            emit_form_element(
+                &mut lines,
+                &definition,
+                "\t",
+                &mut FormIdAllocator::new(),
+                Some("en"),
+            )
+            .unwrap_or_else(|error| panic!("{item}: {error}"));
+            lines.join("\n")
+        };
+        for kind in crate::domain::operation_contract::FORM_ELEMENT_KINDS {
+            let variant = variants
+                .iter()
+                .find(|variant| variant["properties"]["type"]["enum"][0] == json!(kind.kind))
+                .unwrap_or_else(|| panic!("{} has a contract variant", kind.kind));
+            let published = variant["properties"].as_object().unwrap();
+            assert_eq!(
+                published.len(),
+                kind.keys.len() + 3,
+                "{}: name, type, after and the kind keys",
+                kind.kind
+            );
+            for key in kind.keys {
+                let mut baseline = json!({"name": "Sample", "type": kind.kind});
+                if crate::domain::operation_contract::FORM_DYNAMIC_LIST_KEYS.contains(key) {
+                    baseline["_dynList"] = json!(true);
+                }
+                let before = emit(&baseline);
+                let written = sample_values(&published[*key]).into_iter().any(|value| {
+                    let mut item = baseline.clone();
+                    item[*key] = value;
+                    parse_form_resource_plan_operation(
+                        "element.add",
+                        &json!({"at": "main:Document.First.Form.ФормаДокумента", "items": [item.clone()]}),
+                        0,
+                        &fixture.binding,
+                    )
+                    .unwrap_or_else(|error| panic!("{} {key}: {error:?}", kind.kind));
+                    emit(&item) != before
+                });
+                assert!(written, "{}: `{key}` never reaches the XML", kind.kind);
+            }
+        }
+    }
+
+    /// Перечисления контракта элемента совпадают со справочником писателя.
+    #[test]
+    fn element_enums_match_the_writer_enum_contract() {
+        use crate::domain::operation_contract::form_element_enum;
+        use crate::infrastructure::native_operations::form::form_8_3_27_enum_values_for_test as writer;
+        for (kind, key, xml) in [
+            ("InputField", "titleLocation", "FormElementTitleLocation"),
+            ("CheckBox", "checkBoxType", "CheckBoxType"),
+            ("InputField", "horizontalAlign", "HorizontalAlign"),
+            ("Group", "orientation", "FormChildrenGroup"),
+            ("Group", "behavior", "UsualGroupBehavior"),
+            ("Group", "representation", "UsualGroupRepresentation"),
+            ("Table", "representation", "TableRepresentation"),
+            ("Button", "representation", "ButtonRepresentation"),
+            ("Group", "currentRowUse", "CurrentRowUse"),
+            ("Pages", "pagesRepresentation", "PagesRepresentation"),
+            ("Table", "commandBarLocation", "CommandBarLocation"),
+            ("Table", "initialTreeView", "InitialTreeView"),
+            ("Table", "choiceFoldersAndItems", "ChoiceFoldersAndItems"),
+            ("Table", "updateOnDataChange", "UpdateOnDataChange"),
+            (
+                "Button",
+                "locationInCommandBar",
+                "ButtonLocationInCommandBar",
+            ),
+        ] {
+            let mut published = form_element_enum(kind, key).unwrap().to_vec();
+            let mut expected = writer(xml).unwrap().to_vec();
+            published.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(published, expected, "{kind} {key}");
+        }
+    }
+
+    /// Реквизит формы принимает только то, что пишет его писатель (#1447);
+    /// проверка заполнения пишется тегом `<FillCheck>`, который знает 8.3.27.
+    #[test]
+    fn form_attribute_add_refuses_unwritten_keys_and_writes_fill_check() {
+        let fixture = ApplySeamFixture::new();
+        let at = "main:Document.First.Form.ФормаДокумента";
+        for (key, value) in [
+            ("view", json!(false)),
+            ("edit", json!(false)),
+            ("functionalOptions", json!(["FunctionalOption.X"])),
+            ("useAlways", json!(["Field"])),
+            ("save", json!(true)),
+            ("fillCheck", json!(true)),
+            ("valueType", json!("String")),
+            ("settings", json!({})),
+            ("chart", json!({})),
+            ("planner", json!({})),
+            ("additionalColumns", json!([])),
+            ("title", json!({"ru": "Заголовок"})),
+            ("fillChecking", json!("DontCheck")),
+        ] {
+            let error = parse_form_resource_plan_operation(
+                "formAttribute.add",
+                &json!({"at": at, "items": [{"name": "A", "type": "String", key: value}]}),
+                0,
+                &fixture.binding,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{key}");
+            let path = format!("ops[0].args.items[0].{key}");
+            assert_eq!(error.path(), Some(path.as_str()), "{key}");
+        }
+        let mut lines = Vec::new();
+        crate::infrastructure::native_operations::form::emit_form_edit_attribute_item(
+            &mut lines,
+            json!({"name": "A", "type": "xs:string", "savedData": true, "fillChecking": "ShowError"})
+                .as_object()
+                .unwrap(),
+            "A",
+            1,
+            "\t\t",
+            Some("ru"),
+        )
+        .unwrap();
+        let text = lines.join("\n");
+        assert!(!text.contains("FillChecking"), "{text}");
+        let saved = text.find("<SavedData>true</SavedData>").unwrap();
+        let fill = text.find("<FillCheck>ShowError</FillCheck>").unwrap();
+        assert!(saved < fill, "{text}");
     }
 
     #[test]
@@ -3896,11 +4098,20 @@ mod tests {
                     "items": [{
                         "name": "ВтороеПредставление",
                         "type": "Table",
-                        "path": "Список",
-                        "on": ["URLListGetProcessing"]
+                        "path": "Список"
                     }]
                 }),
                 2,
+            ),
+            // Событие нового элемента привязывает `event.bind` на его адресе
+            // (Р2, #1447).
+            parse(
+                "event.bind",
+                json!({
+                    "at": "main:Document.First.Form.List.Item.ВтороеПредставление.Event.URLListGetProcessing",
+                    "values": {"handler": "ВтороеПредставлениеОбработкаПолученияСпискаURL"}
+                }),
+                3,
             ),
         ];
         let authority = admission

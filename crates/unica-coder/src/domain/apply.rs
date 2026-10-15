@@ -1370,6 +1370,9 @@ impl OperationDescriptor {
             }
             OperationFamily::Role => super::operation_contract::OperationContract::role(self.name),
             OperationFamily::Form => super::operation_contract::OperationContract::form(self.name),
+            OperationFamily::Event => {
+                super::operation_contract::OperationContract::event(self.name)
+            }
             _ => None,
         }
     }

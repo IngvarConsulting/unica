@@ -4238,8 +4238,7 @@
           {
            "name": "ТаблицаКурсов",
            "type": "Table",
-           "path": "List",
-           "title": "Курсы"
+           "path": "List"
           }
          ]
         }
@@ -11362,7 +11361,7 @@
    "name": "mxl-cell-contract-scalars-neighbors-and-revisions",
    "issue": 1311,
    "area": "Макеты",
-   "task": "Скалярные cells/null, замена параметра/шаблона, соседи, рост без уменьшения ширины, повтор без дубликата, новая область и stale token",
+   "task": "Скалярные cells, null без новой ячейки, замена параметра/шаблона, соседи, рост без уменьшения ширины, повтор без дубликата, новая область и stale token",
    "workspace": "tests/fixtures/acceptance/workspace-mxl",
    "wire": [
     {
@@ -11581,7 +11580,6 @@
         "Shared",
         "42",
         "true",
-        "",
         "Shared",
         "Last"
        ]
@@ -11658,7 +11656,7 @@
       },
       {
        "pointer": "/data/effects",
-       "eq": 1
+       "eq": 0
       }
      ],
      "captures": {
@@ -11689,7 +11687,7 @@
       },
       {
        "pointer": "/data/effects",
-       "eq": 1
+       "eq": 0
       }
      ]
     },
@@ -11876,10 +11874,10 @@
   },
   {
    "id": "S333",
-   "name": "mxl-readable-lossy-profiles-refuse-without-write",
-   "issue": 1311,
+   "name": "mxl-readable-profiles-edit-only-the-addressed-cell",
+   "issue": 1448,
    "area": "Макеты",
-   "task": "Чтение шире редактирования: соседние строки, пересечения и порядок областей, языки и наборы колонок не теряются при отказе",
+   "task": "Соседние строки, пересечения и порядок областей, языки, наборы колонок и рисунки больше не мешают правке: mxl.set меняет только текст адресованной ячейки, остальные байты совпадают (sha результата); область колонок и наложенные строки отказывают без записи",
    "workspace": "tests/fixtures/acceptance/workspace-mxl",
    "wire": [
     {
@@ -11901,7 +11899,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -11909,14 +11907,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve outside rows, overlapping areas or a different physical area order; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafeOutsideRow": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml",
        "eq": "f1ac46633f0ae18db5a505d4d455674cd996eabea6aff43650faceb720578967"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafeOutsideRow"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeOutsideRow/Ext/Template.xml",
+       "eq": "353e8f920bec3a9a728697a8c8374312ecfabefb8f0101edd78fa26d16fc06c5"
       }
      ]
     },
@@ -11939,7 +11973,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -11947,14 +11981,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve outside rows, overlapping areas or a different physical area order; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafeOverlappingAreas": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml",
        "eq": "99d9b7184dd7451a7d1b271cea063952d66ecf18a979ee84c96356bc94b4d054"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafeOverlappingAreas"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeOverlappingAreas/Ext/Template.xml",
+       "eq": "453635211e8198441152320b1c6b495333b477f874d3630d24f2d0baf1e2560e"
       }
      ]
     },
@@ -11977,7 +12047,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -11985,14 +12055,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve outside rows, overlapping areas or a different physical area order; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafePhysicalAreaOrder": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml",
        "eq": "4b538e3b77d208c904a393dfab1980f97b433367429123d31a53c2883e4c9e3c"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafePhysicalAreaOrder"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafePhysicalAreaOrder/Ext/Template.xml",
+       "eq": "256f21916b3df25f76a9ccb504371a96e75be8ff57da1b7f687f35cd665c0a3f"
       }
      ]
     },
@@ -12015,7 +12121,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -12023,14 +12129,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve multilingual cell text or format translations; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafeCellTranslations": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml",
        "eq": "8fe1d34e5159efd275a70b3b82dcc46f5ea9b69662f7170058cc99b52178036a"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafeCellTranslations"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeCellTranslations/Ext/Template.xml",
+       "eq": "714bb1544ee18d4179636fff292d3b6e80373b35e143dba28ef9c686f7d79249"
       }
      ]
     },
@@ -12053,7 +12195,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -12061,14 +12203,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve multiple or identified column sets; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafeMultipleColumnSets": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml",
        "eq": "8cd998a7d55031ba9b175f78557c1c64b4ef2722e6b7d82f18a7a77e3b62c9da"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafeMultipleColumnSets"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeMultipleColumnSets/Ext/Template.xml",
+       "eq": "c38d54ba0edcd57bb6998f9b92361068548bf0c66e59daef79b0f27b1b52583e"
       }
      ]
     },
@@ -12091,7 +12269,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -12099,14 +12277,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve multiple or identified column sets; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafeColumnsId": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml",
        "eq": "909d28947be628fc756b10ebaf33c6982755bb0c42e8e7db18e132a55c34df10"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafeColumnsId"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeColumnsId/Ext/Template.xml",
+       "eq": "02502c78731d19bd9aee3d1344d56fef81decb4f29f0490f179ad81140fe95f6"
       }
      ]
     },
@@ -12129,7 +12343,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -12137,14 +12351,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve non-Russian language settings; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafeLanguageSettings": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml",
        "eq": "72b0945ff487f5b46c7a8088ba929e13bb508ead49a0551f7d1d15fc4bb00973"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafeLanguageSettings"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeLanguageSettings/Ext/Template.xml",
+       "eq": "edd181bdc7e5aab0a27967acaa9e09b66acfd2b74c79603ea7186826cc3772c6"
       }
      ]
     },
@@ -12167,7 +12417,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -12175,14 +12425,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the spreadsheet holds `drawing` content the cell editor cannot preserve; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafeDrawing": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml",
        "eq": "bd3c443c1b825d82bca13566c831f334dfe3589171f77384e03f0beca9642eba"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafeDrawing"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeDrawing/Ext/Template.xml",
+       "eq": "36864934cbcfa6e951d4d07dceb5ace4f31fab7defec381ac32d21c1e843af12"
       }
      ]
     },
@@ -12205,7 +12491,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -12215,7 +12501,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_source: the spreadsheet holds `namedItem` content the cell editor cannot preserve; edit this template in the Designer",
+     "refusal": "invalid_source: area `A` is a `Columns` area; the cell editor writes Rows areas, edit this one in the Designer",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -12243,7 +12529,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -12251,14 +12537,50 @@
       ]
      },
      "expect": [
-      "refused"
+      "ok"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve multilingual cell text or format translations; edit this template in the Designer",
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "tokenUnsafeFormatTranslations": {
+       "pointer": "/data/executionToken"
+      }
+     },
      "fileAssertions": [
       {
        "kind": "sha256",
        "path": "src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml",
        "eq": "37012a5a2337626c4fa2ae462bc0d3c5bea8ba2887123387f45726c5bec6c52b"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.tokenUnsafeFormatTranslations"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/UnsafeFormatTranslations/Ext/Template.xml",
+       "eq": "1513fd5000dfbd17e77e7c622bc89eb38ad380a9f17327d97be8f0924e3e7e79"
       }
      ]
     },
@@ -12281,7 +12603,7 @@
         "args": {
          "values": {
           "cells": {
-           "R1C1": "Changed"
+           "R1C1": "Edited"
           }
          }
         }
@@ -12291,7 +12613,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "invalid_source: the cell editor cannot preserve rows outside the named areas; edit this template in the Designer",
+     "refusal": "invalid_source: rows 0..4 overlap other rows of the document; edit this template in the Designer",
      "fileAssertions": [
       {
        "kind": "sha256",
@@ -33158,7 +33480,7 @@
      "assertions": [
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
       }
      ],
      "fileAssertions": [
@@ -38615,7 +38937,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar"
+       "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar.Can.element.add"
       },
       {
        "pointer": "/next/1/args/at",
@@ -38730,7 +39052,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.StartChoice"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.StartChoice.Can.event.bind"
       },
       {
        "pointer": "/next/1/args/at",
@@ -38860,7 +39182,7 @@
       },
       {
        "pointer": "/next/0/args/at",
-       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная"
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.element.remove"
       }
      ],
      "fileAssertions": [
@@ -39262,7 +39584,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument",
+     "refusal": "bad_value: ops[0].args.items[0].use: unknown argument; `formCommand.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.formCommand.add`",
      "assertions": [
       {
        "pointer": "/at",
@@ -39381,6 +39703,724 @@
   },
   {
    "id": "S433",
+   "name": "mxl-direct-edits-of-a-platform-export",
+   "issue": 1448,
+   "area": "Макеты",
+   "workspace": "tests/fixtures/acceptance/workspace-mxl",
+   "task": "На выгрузке 8.3.27 mxl.set меняет текст одной ячейки, area.add дописывает строки, область и высоту; результат каждого шага совпадает с тем, что платформа выгружает после загрузки; повтор не меняет файл; ячейка внутри объединения отказывает без записи",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.PlatformExport.Area.Строка.Parameter"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml"
+      },
+      "owner": {
+       "kind": "sha256",
+       "file": "src/cf/Reports/F06Report.xml"
+      }
+     },
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+       "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.PlatformExport.Area.Подвал",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "cells": {
+           "R1C2": "x"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: the cell lies inside a merged cell that starts at document row 5 column 1; write that cell instead",
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ],
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.values.cells.R1C2"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.PlatformExport.Area.Шапка",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "cells": {
+           "R1C1": "Отчёт за год"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "text": {
+       "pointer": "/data/executionToken"
+      }
+     },
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.text"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+       "eq": "0f065d5735844936debadd893a5064a68828c7307b88db4da11b02d832cf63b0"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.PlatformExport",
+      "ops": [
+       {
+        "op": "area.add",
+        "args": {
+         "items": [
+          {
+           "name": "Итог",
+           "cells": {
+            "R1C1": "Итого",
+            "R3C2": "x"
+           }
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      },
+      {
+       "pointer": "/data/effects",
+       "eq": 1
+      }
+     ],
+     "captures": {
+      "area": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.area"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+       "eq": "85474cc6da131bd40b7579f500f5fa10ab584d2bceb8aa7a530f1211d4d0b274"
+      },
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report.xml",
+       "eq": "$capture.owner"
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F06Report.Template.PlatformExport.Area.Итог.Body"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "index": 1,
+         "template": false,
+         "text": "Итого"
+        },
+        {
+         "index": 2,
+         "template": false,
+         "text": "x"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "cf:Report.F06Report.Template.PlatformExport.Area.Шапка",
+      "ops": [
+       {
+        "op": "mxl.set",
+        "args": {
+         "values": {
+          "cells": {
+           "R1C1": "Отчёт за год"
+          }
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "captures": {
+      "repeat": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.repeat"
+     },
+     "expect": [
+      "ok"
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+       "eq": "85474cc6da131bd40b7579f500f5fa10ab584d2bceb8aa7a530f1211d4d0b274"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S434",
+   "name": "form-element-add-refuses-a-key-its-kind-does-not-write",
+   "issue": 1447,
+   "area": "Формы",
+   "task": "Подробный контракт element.add публикует ключи по виду элемента; backColor у поля ввода, которого писатель поля не пишет, отказывает bad_value по точному пути без записи, а тот же элемент без него строит предпросмотр",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/props/contract/argsSchema/properties/items/items/x-unica-discriminator",
+       "eq": "type"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "type": "InputField",
+           "path": "Объект.Наименование",
+           "backColor": "web:Red"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: ops[0].args.items[0].backColor: unknown argument; `element.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].backColor"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "type": "InputField",
+           "path": "Объект.Наименование"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S435",
+   "name": "form-element-add-adds-one-element-without-nested-content",
+   "issue": 1447,
+   "area": "Формы",
+   "task": "element.add добавляет один элемент: вложенные children и событие on отказывают bad_value без записи, next ведёт к контракту element.add; группа и поле в ней добавляются двумя операциями, обработчик — event.bind на адресе события",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ГруппаКомментарий",
+           "type": "Group",
+           "children": [
+            {
+             "name": "ПолеКомментарий",
+             "type": "InputField",
+             "path": "Объект.Наименование"
+            }
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: element.add adds one element without nested content; drop `children` and add each nested element with a separate element.add at `main:Catalog.Валюты.Form.ФормаЭ",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].children"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.element.add"
+      },
+      {
+       "pointer": "/summary",
+       "contains": "`main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий`"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "type": "InputField",
+           "path": "Объект.Наименование",
+           "on": [
+            "OnChange"
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: element.add does not bind events; drop `on` and bind each handler with event.bind at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>`",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].on"
+      },
+      {
+       "pointer": "/summary",
+       "contains": "`main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеКомментарий.Event.<Event>`"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "element.add",
+        "args": {
+         "items": [
+          {
+           "name": "ГруппаКомментарий",
+           "type": "Group"
+          }
+         ]
+        }
+       },
+       {
+        "op": "element.add",
+        "args": {
+         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий",
+         "items": [
+          {
+           "name": "ПолеКомментарий",
+           "type": "InputField",
+           "path": "Объект.Наименование"
+          }
+         ]
+        }
+       },
+       {
+        "op": "event.bind",
+        "args": {
+         "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаКомментарий.Item.ПолеКомментарий.Event.OnChange",
+         "values": {
+          "handler": "ПолеКомментарийПриИзменении"
+         }
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "captures": {
+      "groupToken": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.groupToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/xcf/logform}UsualGroup[@name='ГруппаКомментарий']/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}InputField[@name='ПолеКомментарий']/{http://v8.1c.ru/8.3/xcf/logform}Events/{http://v8.1c.ru/8.3/xcf/logform}Event[@name='OnChange']",
+       "eq": [
+        "ПолеКомментарийПриИзменении"
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S436",
+   "name": "form-attribute-add-refuses-unwritten-properties-and-writes-fill-check",
+   "issue": 1447,
+   "area": "Формы",
+   "task": "formAttribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
+   "wire": [
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+     },
+     "expect": [
+      "ok"
+     ],
+     "captures": {
+      "before": {
+       "kind": "sha256",
+       "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formAttribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Комментарий",
+           "type": "String",
+           "functionalOptions": [
+            "FunctionalOption.Валюты"
+           ]
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "refused"
+     ],
+     "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `formAttribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.fo",
+     "assertions": [
+      {
+       "pointer": "/at",
+       "eq": "ops[0].args.items[0].functionalOptions"
+      },
+      {
+       "pointer": "/next/0/args/at",
+       "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.formAttribute.add"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "kind": "sha256",
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "eq": "$capture.before"
+      }
+     ]
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+      "ops": [
+       {
+        "op": "formAttribute.add",
+        "args": {
+         "items": [
+          {
+           "name": "Комментарий",
+           "type": "String",
+           "fillChecking": "ShowError"
+          }
+         ]
+        }
+       }
+      ]
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "preview"
+      }
+     ],
+     "captures": {
+      "attributeToken": {
+       "pointer": "/data/executionToken"
+      }
+     }
+    },
+    {
+     "tool": "unica.apply",
+     "args": {
+      "executionToken": "$capture.attributeToken"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/mode",
+       "eq": "published"
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name='Комментарий']/{http://v8.1c.ru/8.3/xcf/logform}FillCheck",
+       "eq": [
+        "ShowError"
+       ]
+      },
+      {
+       "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.3/xcf/logform}FillChecking",
+       "eq": []
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "S437",
    "name": "module-interface-slices-publish-only-routable-addresses",
    "issue": 1467,
    "area": "Навигация и чтение",
