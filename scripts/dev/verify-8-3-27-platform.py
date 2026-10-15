@@ -113,9 +113,10 @@ LAST_VERIFIED_CASE_CONTRACT_SHA256 = (
 # use): the same corpus generated with the fix runs all 69 cases under
 # --jobs 1 without a source error. Nine cases remain accepted-normalized
 # (#1369), so the run is not a pass. Keep LAST_VERIFIED.
-EXPECTED_CASE_CONTRACT_SHA256: str | None = (
-    "7c2a66149e33b5a57142dd81e5cd18af3aef7d008503b250338b5dda8c0d5805"
-)
+# #1448 removed the three cases of the retired DSL compilers (mxl-compile,
+# role-compile, subsystem-compile); the 66-case inventory has no pinned
+# contract until a fresh corpus generation and platform run pin it.
+EXPECTED_CASE_CONTRACT_SHA256: str | None = None
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 300.0
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 CASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
@@ -198,10 +199,7 @@ MANDATORY_CASE_IDS = frozenset(
         "meta-edit-resource-append",
         "meta-edit-resource-position-after",
         "meta-remove-object",
-        "mxl-compile-owned-template",
-        "role-compile-name-field",
         "role-edit-set-right",
-        "subsystem-compile-child",
         "subsystem-edit-add-child",
         "support-edit-bin-only",
         "template-add-binary-data",

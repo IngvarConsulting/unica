@@ -1013,7 +1013,7 @@ class CorpusAdapterTests(unittest.TestCase):
     def test_mandatory_corpus_includes_every_cfe_patch_module_layout(self):
         verifier = load_verifier()
 
-        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 69)
+        self.assertEqual(len(verifier.MANDATORY_CASE_IDS), 66)
         self.assertTrue(
             {
                 "cfe-patch-method-bsl-only",
@@ -1033,12 +1033,11 @@ class CorpusAdapterTests(unittest.TestCase):
 
         self.assertIn("meta-edit-event-source", verifier.MANDATORY_CASE_IDS)
 
-    def test_current_default_inventory_is_pinned_to_reproducible_candidate(self):
+    def test_current_default_inventory_waits_for_a_pinned_candidate(self):
         verifier = load_verifier()
-        self.assertEqual(
-            verifier.EXPECTED_CASE_CONTRACT_SHA256,
-            "7c2a66149e33b5a57142dd81e5cd18af3aef7d008503b250338b5dda8c0d5805",
-        )
+        # #1448 changed the case inventory; the gate refuses to pass until a
+        # fresh generation pins the new contract digest.
+        self.assertIsNone(verifier.EXPECTED_CASE_CONTRACT_SHA256)
         self.assertEqual(
             verifier.LAST_VERIFIED_CASE_CONTRACT_SHA256,
             "1c4afc7adf86cdb8a0e94c1f87e2166e4759387158317848746de0cee678bedf",
@@ -1054,7 +1053,7 @@ class CorpusAdapterTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 verifier.CorpusError,
-                r"case contract fields do not match the pinned public-writer inventory",
+                r"required corpus case contract is not pinned",
             ):
                 verifier.load_corpus(
                     manifest,

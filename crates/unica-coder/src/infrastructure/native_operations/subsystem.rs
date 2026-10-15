@@ -39,45 +39,6 @@ use super::common::*;
 use super::compile_transaction::{CompileTransaction, RegistrationStatus};
 use super::{cf::*, cfe::*, dcs::*, form::*, interface::*, meta::*, mxl::*, role::*, template::*};
 
-#[cfg(test)]
-type SubsystemCompileAfterRootOwnerProbeHook = Box<dyn FnOnce(&Path)>;
-
-#[cfg(test)]
-thread_local! {
-    static SUBSYSTEM_COMPILE_AFTER_ROOT_OWNER_PROBE_HOOK:
-        std::cell::RefCell<Option<SubsystemCompileAfterRootOwnerProbeHook>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-fn with_subsystem_compile_after_root_owner_probe_hook<T>(
-    hook: impl FnOnce(&Path) + 'static,
-    action: impl FnOnce() -> T,
-) -> T {
-    struct Reset(Option<SubsystemCompileAfterRootOwnerProbeHook>);
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            SUBSYSTEM_COMPILE_AFTER_ROOT_OWNER_PROBE_HOOK.with(|slot| {
-                slot.replace(self.0.take());
-            });
-        }
-    }
-
-    let previous = SUBSYSTEM_COMPILE_AFTER_ROOT_OWNER_PROBE_HOOK
-        .with(|slot| slot.replace(Some(Box::new(hook))));
-    let _reset = Reset(previous);
-    action()
-}
-
-#[cfg(test)]
-fn run_subsystem_compile_after_root_owner_probe_hook(path: &Path) {
-    if let Some(hook) =
-        SUBSYSTEM_COMPILE_AFTER_ROOT_OWNER_PROBE_HOOK.with(|slot| slot.borrow_mut().take())
-    {
-        hook(path);
-    }
-}
-
 pub(crate) struct SubsystemInfoData {
     pub(crate) name: String,
     pub(crate) synonym: String,
@@ -271,17 +232,6 @@ fn canonical_subsystem_boolean(value: &Value, property: &str) -> Result<String, 
     }
 }
 
-fn subsystem_boolean_field(
-    definition: &Value,
-    property: &str,
-    default: bool,
-) -> Result<String, String> {
-    definition
-        .get(property)
-        .map(|value| canonical_subsystem_boolean(value, property))
-        .unwrap_or_else(|| Ok(default.to_string()))
-}
-
 fn subsystem_validation_args(path: &Path) -> Map<String, Value> {
     let mut args = Map::new();
     args.insert(
@@ -409,23 +359,6 @@ fn require_subsystem_validation(outcome: &AdapterOutcome) -> Result<(), String> 
         outcome.summary.clone()
     };
     Err(format!("subsystem semantic validation failed: {details}"))
-}
-
-fn require_subsystem_registration_owner_validation(
-    path: &Path,
-    context: &WorkspaceContext,
-) -> Result<(), String> {
-    if path.file_name() != Some(OsStr::new("Configuration.xml")) {
-        return validate_subsystem_owner_path(path, context);
-    }
-
-    validate_cf_owner_path(path, context).map_err(|detail| {
-        format!(
-            "subsystem.compile Configuration owner validation failed for {}: {}",
-            path.display(),
-            detail.trim()
-        )
-    })
 }
 
 pub(crate) fn edit_subsystem(
@@ -3320,469 +3253,6 @@ pub(crate) fn subsystem_known_plural_types() -> &'static [&'static str] {
     ]
 }
 
-struct SubsystemCompileResult {
-    stdout: String,
-    artifacts: Vec<PathBuf>,
-    changes: Vec<String>,
-    warnings: Vec<String>,
-}
-
-pub(crate) fn compile_subsystem(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> AdapterOutcome {
-    compile_subsystem_internal(args, context, false)
-}
-
-pub(crate) fn preview_subsystem_compile(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-) -> Result<AdapterOutcome, String> {
-    let outcome = compile_subsystem_internal(args, context, true);
-    if outcome.ok {
-        Ok(outcome)
-    } else {
-        Err(outcome.errors.join("; "))
-    }
-}
-
-fn compile_subsystem_internal(
-    args: &Map<String, Value>,
-    context: &WorkspaceContext,
-    dry_run: bool,
-) -> AdapterOutcome {
-    let write_result = (|| -> Result<SubsystemCompileResult, String> {
-        let mut transaction = CompileTransaction::new();
-        let definition_file = path_arg(args, &["definitionFile", "DefinitionFile"]);
-        let value_arg = string_arg(args, &["value", "Value"]);
-        if definition_file.is_some() && value_arg.is_some() {
-            return Err("Cannot use both -DefinitionFile and -Value".to_string());
-        }
-        if definition_file.is_none() && value_arg.is_none() {
-            return Err("Either -DefinitionFile or -Value is required".to_string());
-        }
-
-        let defn = if let Some(definition_file) = definition_file {
-            let definition_file = absolutize(definition_file, &context.cwd);
-            if !definition_file.exists() {
-                return Err(format!(
-                    "Definition file not found: {}",
-                    definition_file.display()
-                ));
-            }
-            FileBackedJson::read(&definition_file, |err| {
-                format!("failed to parse subsystem JSON: {err}")
-            })?
-            .bind_to(&mut transaction)?
-        } else {
-            serde_json::from_str(value_arg.unwrap_or_default().trim_start_matches('\u{feff}'))
-                .map_err(|err| format!("failed to parse subsystem JSON: {err}"))?
-        };
-
-        let obj_name = defn
-            .get("name")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "JSON must have non-empty string 'name' field".to_string())?
-            .to_string();
-        validate_subsystem_metadata_name("Name", &obj_name)?;
-
-        let output_dir = required_path(args, &["outputDir", "OutputDir"], "OutputDir")
-            .map(|path| absolutize(path, &context.cwd))?;
-        let format_version = crate::domain::format_profile::ACTIVE_FORMAT_PROFILE
-            .export_format
-            .to_string();
-
-        let synonym = json_string_field(&defn, "synonym")
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| split_camel_case(&obj_name));
-        let comment = json_string_field(&defn, "comment").unwrap_or_default();
-        let include_help_in_contents =
-            subsystem_boolean_field(&defn, "includeHelpInContents", true)?;
-        let include_in_ci = subsystem_boolean_field(&defn, "includeInCommandInterface", true)?;
-        let use_one_command = subsystem_boolean_field(&defn, "useOneCommand", false)?;
-        let explanation = json_string_field(&defn, "explanation").unwrap_or_default();
-        let picture = json_string_field(&defn, "picture").unwrap_or_default();
-        let subsystem_uuid = match defn.get("uuid") {
-            None => fresh_uuid(),
-            Some(Value::String(value)) if is_valid_uuid(value) => value.clone(),
-            Some(value) => {
-                return Err(format!(
-                    "UUID must be an exact valid UUID string when provided: {value}"
-                ));
-            }
-        };
-
-        let mut stdout = String::new();
-        let mut normalized_count = 0usize;
-        let mut content_items = Vec::new();
-        if let Some(content) = defn.get("content").or_else(|| defn.get("objects")) {
-            if let Some(items) = content.as_array() {
-                for item in items {
-                    let raw = json_value_to_python_string(item);
-                    let normalized = normalize_subsystem_content_ref(&raw);
-                    if normalized != raw {
-                        stdout.push_str(&format!("[NORM] Content: {raw} -> {normalized}\n"));
-                        normalized_count += 1;
-                    }
-                    content_items.push(normalized);
-                }
-            }
-        }
-        if normalized_count > 0 {
-            stdout.push_str(&format!(
-                "[INFO] Normalized {normalized_count} content reference(s) to singular English form\n"
-            ));
-        }
-
-        let children = match defn.get("children") {
-            None => Vec::new(),
-            Some(Value::Array(items)) => {
-                let mut children = Vec::with_capacity(items.len());
-                for item in items {
-                    let child = item
-                        .as_str()
-                        .ok_or_else(|| "each child subsystem name must be a string".to_string())?
-                        .to_string();
-                    validate_subsystem_metadata_name("Child subsystem name", &child)?;
-                    children.push(child);
-                }
-                children
-            }
-            Some(_) => return Err("children must be an array of strings".to_string()),
-        };
-
-        let mut lines = Vec::new();
-        lines.push("<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_string());
-        lines.push(format!(
-            "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{format_version}\">"
-        ));
-        lines.push(format!(
-            "\t<Subsystem uuid=\"{}\">",
-            escape_xml(&subsystem_uuid)
-        ));
-        lines.push("\t\t<Properties>".to_string());
-        lines.push(format!("\t\t\t<Name>{}</Name>", escape_xml(&obj_name)));
-        emit_mltext(&mut lines, "\t\t\t", "Synonym", &synonym);
-        if comment.is_empty() {
-            lines.push("\t\t\t<Comment/>".to_string());
-        } else {
-            lines.push(format!("\t\t\t<Comment>{}</Comment>", escape_xml(&comment)));
-        }
-        lines.push(format!(
-            "\t\t\t<IncludeHelpInContents>{include_help_in_contents}</IncludeHelpInContents>"
-        ));
-        lines.push(format!(
-            "\t\t\t<IncludeInCommandInterface>{include_in_ci}</IncludeInCommandInterface>"
-        ));
-        lines.push(format!(
-            "\t\t\t<UseOneCommand>{use_one_command}</UseOneCommand>"
-        ));
-        emit_mltext(&mut lines, "\t\t\t", "Explanation", &explanation);
-        if picture.is_empty() {
-            lines.push("\t\t\t<Picture/>".to_string());
-        } else {
-            lines.push("\t\t\t<Picture>".to_string());
-            lines.push(format!("\t\t\t\t<xr:Ref>{}</xr:Ref>", escape_xml(&picture)));
-            lines.push("\t\t\t\t<xr:LoadTransparent>false</xr:LoadTransparent>".to_string());
-            lines.push("\t\t\t</Picture>".to_string());
-        }
-        if content_items.is_empty() {
-            lines.push("\t\t\t<Content/>".to_string());
-        } else {
-            lines.push("\t\t\t<Content>".to_string());
-            for item in &content_items {
-                lines.push(format!(
-                    "\t\t\t\t<xr:Item xsi:type=\"xr:MDObjectRef\">{}</xr:Item>",
-                    escape_xml(item)
-                ));
-            }
-            lines.push("\t\t\t</Content>".to_string());
-        }
-        lines.push("\t\t</Properties>".to_string());
-        if children.is_empty() {
-            lines.push("\t\t<ChildObjects/>".to_string());
-        } else {
-            lines.push("\t\t<ChildObjects>".to_string());
-            for child in &children {
-                lines.push(format!(
-                    "\t\t\t<Subsystem>{}</Subsystem>",
-                    escape_xml(child)
-                ));
-            }
-            lines.push("\t\t</ChildObjects>".to_string());
-        }
-        lines.push("\t</Subsystem>".to_string());
-        lines.push("</MetaDataObject>".to_string());
-
-        let parent = path_arg(args, &["parent", "Parent"]);
-        let subs_dir = if let Some(parent_path) = &parent {
-            let parent_path = absolutize(parent_path.clone(), &context.cwd);
-            if !parent_path.exists() {
-                return Err(format!(
-                    "Parent subsystem not found: {}",
-                    parent_path.display()
-                ));
-            }
-            let parent_dir = parent_path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| output_dir.clone());
-            let parent_base_name = parent_path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default();
-            parent_dir.join(parent_base_name).join("Subsystems")
-        } else {
-            output_dir.join("Subsystems")
-        };
-
-        let target_xml = subs_dir.join(format!("{obj_name}.xml"));
-        match fs::symlink_metadata(&target_xml) {
-            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-                let outcome = validate_subsystem(&subsystem_validation_args(&target_xml), context);
-                require_subsystem_validation(&outcome)?;
-                let message = format!(
-                    "[SKIP] Subsystem '{obj_name}' already exists at {}; no files changed\n",
-                    target_xml.display()
-                );
-                return Ok(SubsystemCompileResult {
-                    stdout: message,
-                    artifacts: Vec::new(),
-                    changes: Vec::new(),
-                    warnings: Vec::new(),
-                });
-            }
-            Ok(_) => {
-                return Err(format!(
-                    "existing subsystem target is not a regular file: {}",
-                    target_xml.display()
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "failed to inspect subsystem target {}: {error}",
-                    target_xml.display()
-                ));
-            }
-        }
-        let root_configuration_candidate = output_dir.join("Configuration.xml");
-        let parent_xml_path = if let Some(parent_path) = parent {
-            Some(absolutize(parent_path, &context.cwd))
-        } else {
-            Some(root_configuration_candidate.clone())
-        };
-        #[cfg(test)]
-        run_subsystem_compile_after_root_owner_probe_hook(&root_configuration_candidate);
-        transaction.create_utf8_bom_text(&target_xml, format!("{}\n", lines.join("\n")))?;
-        let mut artifacts = vec![target_xml.clone()];
-        let mut reused_child_subsystems = BTreeMap::<PathBuf, Vec<u8>>::new();
-        stdout.push_str(&format!("[OK] Created: {}\n", target_xml.display()));
-
-        if !children.is_empty() {
-            let child_subs_dir = subs_dir.join(&obj_name).join("Subsystems");
-            if !child_subs_dir.exists() {
-                stdout.push_str(&format!(
-                    "[OK] Created directory: {}\n",
-                    child_subs_dir.display()
-                ));
-            }
-            let mut seen = Vec::<String>::new();
-            for child in &children {
-                if seen.iter().any(|value| value == child) {
-                    continue;
-                }
-                seen.push(child.clone());
-                let child_xml = child_subs_dir.join(format!("{child}.xml"));
-                match fs::symlink_metadata(&child_xml) {
-                    Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-                        let preimage = fs::read(&child_xml).map_err(|error| {
-                            format!(
-                                "failed to read existing child subsystem {}: {error}",
-                                child_xml.display()
-                            )
-                        })?;
-                        reused_child_subsystems.insert(child_xml.clone(), preimage);
-                        stdout.push_str(&format!(
-                            "[SKIP] Child subsystem already exists: {}\n",
-                            child_xml.display()
-                        ));
-                    }
-                    Ok(_) => {
-                        return Err(format!(
-                            "existing child subsystem target is not a regular file: {}",
-                            child_xml.display()
-                        ));
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        transaction.create_utf8_bom_text(
-                            &child_xml,
-                            child_subsystem_stub_xml(child, &format_version),
-                        )?;
-                        stdout.push_str(&format!("[OK] Created stub: {}\n", child_xml.display()));
-                        artifacts.push(child_xml);
-                    }
-                    Err(error) => {
-                        return Err(format!(
-                            "failed to inspect child subsystem target {}: {error}",
-                            child_xml.display()
-                        ));
-                    }
-                }
-            }
-        }
-
-        let parent_registration_status = if let Some(parent_xml_path) = &parent_xml_path {
-            let status =
-                transaction.register_canonical_child(parent_xml_path, "Subsystem", &obj_name)?;
-            match status {
-                RegistrationStatus::Added => stdout.push_str(&format!(
-                    "[OK] Registered in: {}\n",
-                    parent_xml_path.display()
-                )),
-                RegistrationStatus::AlreadyPresent => stdout.push_str(&format!(
-                    "[SKIP] Already registered in: {}\n",
-                    parent_xml_path.display()
-                )),
-                RegistrationStatus::MissingTarget => {
-                    stdout.push_str("[INFO] No parent XML to register in\n")
-                }
-            }
-            Some(status)
-        } else {
-            stdout.push_str("[INFO] No parent XML to register in\n");
-            None
-        };
-        let parent_owner_registered = matches!(
-            parent_registration_status,
-            Some(RegistrationStatus::Added | RegistrationStatus::AlreadyPresent)
-        );
-
-        stdout.push('\n');
-        stdout.push_str("=== subsystem-compile summary ===\n");
-        stdout.push_str(&format!("  Name:     {obj_name}\n"));
-        stdout.push_str(&format!("  UUID:     {subsystem_uuid}\n"));
-        stdout.push_str(&format!("  Content:  {} objects\n", content_items.len()));
-        stdout.push_str(&format!("  Children: {}\n", children.len()));
-        stdout.push_str(&format!("  File:     {}\n", target_xml.display()));
-
-        let (artifacts, changes, warnings, output) = if dry_run {
-            if parent_owner_registered {
-                let parent_xml_path = parent_xml_path
-                    .as_deref()
-                    .expect("registered parent path must be present");
-                require_subsystem_registration_owner_validation(parent_xml_path, context)?;
-            }
-            for child_path in reused_child_subsystems.keys() {
-                let outcome = validate_subsystem(&subsystem_validation_args(child_path), context);
-                require_subsystem_validation(&outcome)?;
-            }
-            (
-                Vec::new(),
-                transaction.dry_run_changes(),
-                Vec::new(),
-                transaction.dry_run_stdout(),
-            )
-        } else {
-            for child_path in reused_child_subsystems.keys() {
-                let outcome = validate_subsystem(&subsystem_validation_args(child_path), context);
-                require_subsystem_validation(&outcome)?;
-            }
-            for (path, preimage) in &reused_child_subsystems {
-                guard_exact_preimage_if_unprotected(&mut transaction, path, preimage)?;
-            }
-            let mut validation_targets = vec![target_xml.as_path()];
-            if let Some(parent_xml_path) = &parent_xml_path {
-                validation_targets.push(parent_xml_path);
-            }
-            validation_targets.extend(reused_child_subsystems.keys().map(PathBuf::as_path));
-            let format_dependencies =
-                subsystem_validation_format_dependency_paths(&validation_targets);
-            let format_dependency_refs = format_dependencies
-                .iter()
-                .map(PathBuf::as_path)
-                .collect::<Vec<_>>();
-            guard_active_format_dependencies(&mut transaction, &format_dependency_refs, context)?;
-            let validation_args = subsystem_validation_args(&target_xml);
-            let report = transaction.commit_with_post_validation(|| {
-                if parent_owner_registered {
-                    let parent_xml_path = parent_xml_path
-                        .as_deref()
-                        .expect("registered parent path must be present");
-                    require_subsystem_registration_owner_validation(parent_xml_path, context)?;
-                }
-                for child_path in reused_child_subsystems.keys() {
-                    let outcome =
-                        validate_subsystem(&subsystem_validation_args(child_path), context);
-                    require_subsystem_validation(&outcome)?;
-                }
-                let outcome = validate_subsystem(&validation_args, context);
-                require_subsystem_validation(&outcome)
-            })?;
-            let mut changes = report
-                .created
-                .iter()
-                .map(|path| format!("created {}", path.display()))
-                .collect::<Vec<_>>();
-            changes.extend(
-                report
-                    .updated
-                    .iter()
-                    .map(|path| format!("updated {}", path.display())),
-            );
-            let mut committed_artifacts = report.created;
-            committed_artifacts.extend(report.updated);
-            (
-                committed_artifacts,
-                changes,
-                report.cleanup_warnings,
-                stdout,
-            )
-        };
-
-        Ok(SubsystemCompileResult {
-            stdout: output,
-            artifacts,
-            changes,
-            warnings,
-        })
-    })();
-
-    match write_result {
-        Ok(result) => AdapterOutcome {
-            ok: true,
-            summary: if dry_run {
-                "dry run: unica.subsystem.compile planned native subsystem compilation".to_string()
-            } else {
-                "unica.subsystem.compile completed with native XML writer".to_string()
-            },
-            changes: result.changes,
-            warnings: result.warnings,
-            errors: Vec::new(),
-            artifacts: result
-                .artifacts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            stdout: Some(result.stdout),
-            stderr: None,
-            command: None,
-        },
-        Err(error) => AdapterOutcome {
-            ok: false,
-            summary: "unica.subsystem.compile failed in native XML writer".to_string(),
-            changes: Vec::new(),
-            warnings: Vec::new(),
-            errors: vec![error.clone()],
-            artifacts: Vec::new(),
-            stdout: None,
-            stderr: Some(format!("{error}\n")),
-            command: None,
-        },
-    }
-}
-
 pub(crate) fn write_child_subsystem_stub(
     child_path: &Path,
     child_name: &str,
@@ -3954,7 +3424,6 @@ pub(crate) fn invoke_mutation(
     context: &WorkspaceContext,
 ) -> Option<AdapterOutcome> {
     match operation {
-        "subsystem-compile" => Some(compile_subsystem(args, context)),
         "subsystem-edit" => Some(edit_subsystem(args, context)),
         _ => None,
     }
@@ -3976,7 +3445,7 @@ pub(crate) mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = std::env::temp_dir().join(format!("unica-subsystem-compile-{name}-{nanos}"));
+        let root = std::env::temp_dir().join(format!("unica-subsystem-{name}-{nanos}"));
         fs::create_dir_all(&root).unwrap();
         WorkspaceContext {
             cwd: root.clone(),
@@ -3984,16 +3453,6 @@ pub(crate) mod tests {
             cache_root: root.join(".build").join("unica"),
             workspace_epoch: 1,
         }
-    }
-
-    fn compile_args(output_dir: &Path, definition: Value) -> Map<String, Value> {
-        let mut args = Map::new();
-        args.insert(
-            "OutputDir".to_string(),
-            Value::String(output_dir.display().to_string()),
-        );
-        args.insert("Value".to_string(), Value::String(definition.to_string()));
-        args
     }
 
     fn edit_definition_args(
@@ -4015,41 +3474,73 @@ pub(crate) mod tests {
         args
     }
 
-    fn create_edit_fixture(context: &WorkspaceContext, name: &str) -> PathBuf {
-        let outcome = compile_subsystem(
-            &compile_args(
-                &context.cwd,
-                json!({
-                    "name": name,
-                    "uuid": "11111111-2222-4333-8444-555555555555"
-                }),
+    /// Platform XML of a fresh top-level subsystem with platform defaults, as
+    /// the 8.3.27 dump writes it.
+    fn subsystem_fixture_xml(name: &str) -> String {
+        let mut synonym = String::new();
+        for (index, character) in name.chars().enumerate() {
+            if index > 0 && character.is_uppercase() {
+                synonym.push(' ');
+                synonym.extend(character.to_lowercase());
+            } else {
+                synonym.push(character);
+            }
+        }
+        format!(
+            concat!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+                "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:app=\"http://v8.1c.ru/8.2/managed-application/core\" xmlns:cfg=\"http://v8.1c.ru/8.1/data/enterprise/current-config\" xmlns:cmi=\"http://v8.1c.ru/8.2/managed-application/cmi\" xmlns:ent=\"http://v8.1c.ru/8.1/data/enterprise\" xmlns:lf=\"http://v8.1c.ru/8.2/managed-application/logform\" xmlns:style=\"http://v8.1c.ru/8.1/data/ui/style\" xmlns:sys=\"http://v8.1c.ru/8.1/data/ui/fonts/system\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\" xmlns:v8ui=\"http://v8.1c.ru/8.1/data/ui\" xmlns:web=\"http://v8.1c.ru/8.1/data/ui/colors/web\" xmlns:win=\"http://v8.1c.ru/8.1/data/ui/colors/windows\" xmlns:xen=\"http://v8.1c.ru/8.3/xcf/enums\" xmlns:xpr=\"http://v8.1c.ru/8.3/xcf/predef\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"2.20\">\n",
+                "\t<Subsystem uuid=\"11111111-2222-4333-8444-555555555555\">\n",
+                "\t\t<Properties>\n",
+                "\t\t\t<Name>{name}</Name>\n",
+                "\t\t\t<Synonym>\n",
+                "\t\t\t\t<v8:item>\n",
+                "\t\t\t\t\t<v8:lang>ru</v8:lang>\n",
+                "\t\t\t\t\t<v8:content>{synonym}</v8:content>\n",
+                "\t\t\t\t</v8:item>\n",
+                "\t\t\t</Synonym>\n",
+                "\t\t\t<Comment/>\n",
+                "\t\t\t<IncludeHelpInContents>true</IncludeHelpInContents>\n",
+                "\t\t\t<IncludeInCommandInterface>true</IncludeInCommandInterface>\n",
+                "\t\t\t<UseOneCommand>false</UseOneCommand>\n",
+                "\t\t\t<Explanation/>\n",
+                "\t\t\t<Picture/>\n",
+                "\t\t\t<Content/>\n",
+                "\t\t</Properties>\n",
+                "\t\t<ChildObjects/>\n",
+                "\t</Subsystem>\n",
+                "</MetaDataObject>\n"
             ),
-            context,
-        );
-        assert!(outcome.ok, "{:?}", outcome.errors);
-        context.cwd.join("Subsystems").join(format!("{name}.xml"))
+            name = name,
+            synonym = synonym,
+        )
     }
 
-    fn subsystem_uuid(output_dir: &Path, name: &str) -> String {
-        let xml_path = output_dir.join("Subsystems").join(format!("{name}.xml"));
-        let xml = fs::read_to_string(&xml_path).unwrap();
-        let marker = "<Subsystem uuid=\"";
-        let start = xml.find(marker).unwrap() + marker.len();
-        let end = xml[start..].find('"').unwrap() + start;
-        xml[start..end].to_string()
+    /// Writes a top-level subsystem under `root` and, when `root` holds a
+    /// `Configuration.xml`, registers it there in canonical position.
+    fn write_subsystem_fixture(root: &Path, name: &str) -> PathBuf {
+        let subsystem = root.join("Subsystems").join(format!("{name}.xml"));
+        fs::create_dir_all(subsystem.parent().unwrap()).unwrap();
+        fs::write(&subsystem, subsystem_fixture_xml(name)).unwrap();
+        let configuration = root.join("Configuration.xml");
+        if configuration.is_file() {
+            let text = fs::read_to_string(&configuration).unwrap();
+            let registered = text.replacen(
+                "\t\t\t<StyleItem>",
+                &format!("\t\t\t<Subsystem>{name}</Subsystem>\r\n\t\t\t<StyleItem>"),
+                1,
+            );
+            assert_ne!(
+                registered, text,
+                "fixture configuration has no StyleItem anchor"
+            );
+            fs::write(&configuration, registered).unwrap();
+        }
+        subsystem
     }
 
-    fn child_subsystem_uuid(output_dir: &Path, parent: &str, child: &str) -> String {
-        let xml_path = output_dir
-            .join("Subsystems")
-            .join(parent)
-            .join("Subsystems")
-            .join(format!("{child}.xml"));
-        let xml = fs::read_to_string(&xml_path).unwrap();
-        let marker = "<Subsystem uuid=\"";
-        let start = xml.find(marker).unwrap() + marker.len();
-        let end = xml[start..].find('"').unwrap() + start;
-        xml[start..end].to_string()
+    fn create_edit_fixture(context: &WorkspaceContext, name: &str) -> PathBuf {
+        write_subsystem_fixture(&context.cwd, name)
     }
 
     fn configuration_bytes() -> Vec<u8> {
@@ -4123,225 +3614,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn public_subsystem_compile_rejects_platform_invalid_configuration_owner_without_changes() {
-        let context = temp_context("public-invalid-owner-enum");
-        let source = context.cwd.join("src");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(
-            context.cwd.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        let valid = write_configuration(&source);
-        let invalid = String::from_utf8(valid[3..].to_vec())
-            .unwrap()
-            .replace(
-                "<ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>",
-                "<ConfigurationExtensionCompatibilityMode>Bogus</ConfigurationExtensionCompatibilityMode>",
-            );
-        let mut invalid_bytes = b"\xef\xbb\xbf".to_vec();
-        invalid_bytes.extend_from_slice(invalid.as_bytes());
-        let config_path = source.join("Configuration.xml");
-        fs::write(&config_path, &invalid_bytes).unwrap();
-        let mut args = compile_args(
-            Path::new("src"),
-            json!({
-                "name": "AuditSubsystem",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-        args.insert(
-            "cwd".to_string(),
-            Value::String(context.cwd.display().to_string()),
-        );
-        args.insert("dryRun".to_string(), Value::Bool(false));
-
-        let outcome = UnicaApplication::new()
-            .call_tool("unica.subsystem.compile", &args)
-            .unwrap();
-
-        assert!(!outcome.ok, "{outcome:?}");
-        let errors = outcome.errors.join("\n");
-        assert!(
-            errors.contains("ConfigurationExtensionCompatibilityMode"),
-            "{outcome:?}"
-        );
-        assert!(errors.contains("Bogus"), "{outcome:?}");
-        assert_eq!(fs::read(config_path).unwrap(), invalid_bytes);
-        assert!(!source.join("Subsystems/AuditSubsystem.xml").exists());
-        assert!(!source.join("Subsystems").exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    pub(crate) fn nested_subsystem_compile_rolls_back_if_format_owner_changes_during_publication() {
-        let context = temp_context("nested-format-owner-race");
-        let source = context.cwd.join("src");
-        fs::create_dir_all(&source).unwrap();
-        fs::write(
-            context.cwd.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-        )
-        .unwrap();
-        write_configuration(&source);
-        let parent_args = compile_args(
-            &source,
-            json!({
-                "name": "Parent",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-        let parent_outcome = compile_subsystem(&parent_args, &context);
-        assert!(parent_outcome.ok, "{parent_outcome:?}");
-        let parent = source.join("Subsystems/Parent.xml");
-        let parent_before = fs::read(&parent).unwrap();
-        let owner = source.join("Configuration.xml");
-        let mut concurrent_owner = fs::read(&owner).unwrap();
-        concurrent_owner.extend_from_slice(b" ");
-        let owner_for_hook = owner.clone();
-        let concurrent_for_hook = concurrent_owner.clone();
-        let mut child_args = compile_args(
-            &source,
-            json!({
-                "name": "Child",
-                "uuid": "66666666-7777-4888-8999-aaaaaaaaaaaa"
-            }),
-        );
-        child_args.insert(
-            "Parent".to_string(),
-            Value::String(parent.display().to_string()),
-        );
-
-        let outcome = with_before_commit_hook(
-            move |_| fs::write(&owner_for_hook, &concurrent_for_hook).unwrap(),
-            || compile_subsystem(&child_args, &context),
-        );
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(
-            outcome.errors.join("\n").contains("read guard"),
-            "{outcome:?}"
-        );
-        assert_eq!(fs::read(&owner).unwrap(), concurrent_owner);
-        assert_eq!(fs::read(&parent).unwrap(), parent_before);
-        assert!(!source
-            .join("Subsystems/Parent/Subsystems/Child.xml")
-            .exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn root_subsystem_compile_rejects_newer_configuration_that_appears_after_probe() {
-        let context = temp_context("root-owner-appears-after-probe");
-        let detached = temp_context("detached-root-owner-appears-after-probe");
-        let source = detached.cwd.clone();
-        fs::create_dir_all(&source).unwrap();
-        let newer = String::from_utf8(configuration_bytes())
-            .unwrap()
-            .replace(r#"version="2.20""#, r#"version="2.21""#)
-            .into_bytes();
-        let config_path = source.join("Configuration.xml");
-        let config_for_hook = config_path.clone();
-        let newer_for_hook = newer.clone();
-        let args = compile_args(
-            &source,
-            json!({
-                "name": "LateOwner",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-
-        let outcome = with_subsystem_compile_after_root_owner_probe_hook(
-            move |_| fs::write(&config_for_hook, &newer_for_hook).unwrap(),
-            || compile_subsystem(&args, &context),
-        );
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(outcome.errors.join("\n").contains("2.21"), "{outcome:?}");
-        assert_eq!(fs::read(&config_path).unwrap(), newer);
-        assert!(!source.join("Subsystems/LateOwner.xml").exists());
-        let _ = fs::remove_dir_all(&source);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn root_subsystem_compile_rolls_back_if_supported_format_owner_appears_during_publication() {
-        let context = temp_context("root-owner-appears-during-publication");
-        let detached = temp_context("detached-root-owner-appears-during-publication");
-        let source = detached.cwd.clone();
-        fs::create_dir_all(&source).unwrap();
-        let config_path = source.join("Configuration.xml");
-        let config_for_hook = config_path.clone();
-        let supported = configuration_bytes();
-        let args = compile_args(
-            &source,
-            json!({
-                "name": "LateOwner",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-
-        let outcome = with_before_commit_hook(
-            move |_| fs::write(&config_for_hook, &supported).unwrap(),
-            || compile_subsystem(&args, &context),
-        );
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(
-            outcome.errors.join("\n").contains("absence guard"),
-            "{outcome:?}"
-        );
-        assert!(config_path.is_file());
-        assert!(!source.join("Subsystems/LateOwner.xml").exists());
-        let _ = fs::remove_dir_all(&source);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn root_subsystem_compile_validates_invalid_format_owner_that_appears_after_probe() {
-        let context = temp_context("root-invalid-owner-appears-after-probe");
-        let detached = temp_context("detached-root-invalid-owner-appears-after-probe");
-        let source = detached.cwd.clone();
-        fs::create_dir_all(source.join("Languages")).unwrap();
-        fs::write(source.join("Languages/Russian.xml"), b"language marker").unwrap();
-        let invalid = String::from_utf8(configuration_bytes())
-            .unwrap()
-            .replace(
-                "<ConfigurationExtensionCompatibilityMode>Version8_3_27</ConfigurationExtensionCompatibilityMode>",
-                "<ConfigurationExtensionCompatibilityMode>Bogus</ConfigurationExtensionCompatibilityMode>",
-            )
-            .into_bytes();
-        let config_path = source.join("Configuration.xml");
-        let config_for_hook = config_path.clone();
-        let invalid_for_hook = invalid.clone();
-        let args = compile_args(
-            &source,
-            json!({
-                "name": "LateOwner",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-
-        let outcome = with_subsystem_compile_after_root_owner_probe_hook(
-            move |_| fs::write(&config_for_hook, &invalid_for_hook).unwrap(),
-            || compile_subsystem(&args, &context),
-        );
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(
-            outcome
-                .errors
-                .join("\n")
-                .contains("ConfigurationExtensionCompatibilityMode"),
-            "{outcome:?}"
-        );
-        assert_eq!(fs::read(&config_path).unwrap(), invalid);
-        assert!(!source.join("Subsystems/LateOwner.xml").exists());
-        let _ = fs::remove_dir_all(&source);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
     fn subsystem_edit_rolls_back_if_format_owner_changes_during_publication() {
         let context = temp_context("edit-format-owner-race");
         let source = context.cwd.join("src");
@@ -4352,16 +3624,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         write_configuration(&source);
-        let create_args = compile_args(
-            &source,
-            json!({
-                "name": "Editable",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-        let create_outcome = compile_subsystem(&create_args, &context);
-        assert!(create_outcome.ok, "{create_outcome:?}");
-        let subsystem = source.join("Subsystems/Editable.xml");
+        let subsystem = write_subsystem_fixture(&source, "Editable");
         let subsystem_before = fs::read(&subsystem).unwrap();
         let owner = source.join("Configuration.xml");
         let mut concurrent_owner = fs::read(&owner).unwrap();
@@ -4392,48 +3655,6 @@ pub(crate) mod tests {
         );
         assert_eq!(fs::read(&owner).unwrap(), concurrent_owner);
         assert_eq!(fs::read(&subsystem).unwrap(), subsystem_before);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    pub(crate) fn subsystem_compile_exact_binds_a_reused_existing_child() {
-        let context = temp_context("compile-reused-child-race");
-        let config_before = write_configuration(&context.cwd);
-        let child_path = context
-            .cwd
-            .join("Subsystems/Parent/Subsystems/ExistingChild.xml");
-        fs::create_dir_all(child_path.parent().unwrap()).unwrap();
-        let child_before = utf8_bom_bytes(&child_subsystem_stub_xml("ExistingChild", "2.20"));
-        fs::write(&child_path, &child_before).unwrap();
-        let mut concurrent_child = child_before.clone();
-        concurrent_child.extend_from_slice(b"<!-- concurrent -->");
-        let child_for_hook = child_path.clone();
-        let concurrent_for_hook = concurrent_child.clone();
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "Parent",
-                "uuid": "11111111-2222-4333-8444-555555555555",
-                "children": ["ExistingChild"]
-            }),
-        );
-
-        let outcome = with_before_commit_hook(
-            move |_| fs::write(&child_for_hook, &concurrent_for_hook).unwrap(),
-            || compile_subsystem(&args, &context),
-        );
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(
-            outcome.errors.join("\n").contains("read guard"),
-            "{outcome:?}"
-        );
-        assert_eq!(fs::read(&child_path).unwrap(), concurrent_child);
-        assert_eq!(
-            fs::read(context.cwd.join("Configuration.xml")).unwrap(),
-            config_before
-        );
-        assert!(!context.cwd.join("Subsystems/Parent.xml").exists());
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
@@ -4514,87 +3735,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn subsystem_compile_rejects_newer_reused_child_command_interface_without_mutation() {
-        let context = temp_context("compile-newer-reused-child-ci");
-        let config_before = write_configuration(&context.cwd);
-        let child = context
-            .cwd
-            .join("Subsystems/Parent/Subsystems/ExistingChild.xml");
-        fs::create_dir_all(child.parent().unwrap()).unwrap();
-        let child_before = utf8_bom_bytes(&child_subsystem_stub_xml("ExistingChild", "2.20"));
-        fs::write(&child, &child_before).unwrap();
-        let command_interface = write_command_interface(&child, "2.21");
-        let command_interface_before = fs::read(&command_interface).unwrap();
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "Parent",
-                "uuid": "11111111-2222-4333-8444-555555555555",
-                "children": ["ExistingChild"]
-            }),
-        );
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(
-            outcome
-                .errors
-                .join("\n")
-                .contains("newer than supported 2.20"),
-            "{outcome:?}"
-        );
-        assert_eq!(fs::read(&child).unwrap(), child_before);
-        assert_eq!(
-            fs::read(&command_interface).unwrap(),
-            command_interface_before
-        );
-        assert_eq!(
-            fs::read(context.cwd.join("Configuration.xml")).unwrap(),
-            config_before
-        );
-        assert!(!context.cwd.join("Subsystems/Parent.xml").exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn subsystem_compile_rejects_newer_direct_command_interface_without_mutation() {
-        let context = temp_context("compile-newer-direct-ci");
-        let config_before = write_configuration(&context.cwd);
-        let target = context.cwd.join("Subsystems/NewSubsystem.xml");
-        let command_interface = write_command_interface(&target, "2.21");
-        let command_interface_before = fs::read(&command_interface).unwrap();
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "NewSubsystem",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(
-            outcome
-                .errors
-                .join("\n")
-                .contains("newer than supported 2.20"),
-            "{outcome:?}"
-        );
-        assert_eq!(
-            fs::read(&command_interface).unwrap(),
-            command_interface_before
-        );
-        assert_eq!(
-            fs::read(context.cwd.join("Configuration.xml")).unwrap(),
-            config_before
-        );
-        assert!(!target.exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
     fn subsystem_edit_ignores_newer_command_interface_of_unrelated_neighbor() {
         let context = temp_context("edit-unrelated-newer-ci");
         let subsystem = create_edit_fixture(&context, "Editable");
@@ -4628,153 +3768,6 @@ pub(crate) mod tests {
             neighbor_command_interface_before
         );
         let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn subsystem_compile_prioritizes_a_newer_reused_child_over_an_older_parent() {
-        let context = temp_context("compile-mixed-dependency-versions");
-        let config_path = context.cwd.join("Configuration.xml");
-        let older_config = String::from_utf8(write_configuration(&context.cwd))
-            .unwrap()
-            .replacen(r#"version="2.20""#, r#"version="2.19""#, 1)
-            .into_bytes();
-        fs::write(&config_path, &older_config).unwrap();
-        let child_path = context
-            .cwd
-            .join("Subsystems/Parent/Subsystems/NewerChild.xml");
-        fs::create_dir_all(child_path.parent().unwrap()).unwrap();
-        let newer_child = child_subsystem_stub_xml("NewerChild", "2.21").into_bytes();
-        fs::write(&child_path, &newer_child).unwrap();
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "Parent",
-                "uuid": "11111111-2222-4333-8444-555555555555",
-                "children": ["NewerChild"]
-            }),
-        );
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(!outcome.ok, "{outcome:?}");
-        let errors = outcome.errors.join("\n");
-        assert!(errors.contains("newer than supported 2.20"), "{outcome:?}");
-        assert!(errors.contains("1C 8.5 support is planned"), "{outcome:?}");
-        assert!(!errors.contains("re-export the source"), "{outcome:?}");
-        assert_eq!(fs::read(&config_path).unwrap(), older_config);
-        assert_eq!(fs::read(&child_path).unwrap(), newer_child);
-        assert!(!context.cwd.join("Subsystems/Parent.xml").exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn compile_subsystem_preserves_explicit_uuid() {
-        let context = temp_context("explicit-uuid");
-        let explicit_uuid = "11111111-2222-3333-4444-555555555555";
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "ExplicitUuidSubsystem",
-                "uuid": explicit_uuid
-            }),
-        );
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(outcome.ok, "{:?}", outcome.errors);
-        assert_eq!(
-            subsystem_uuid(&context.cwd, "ExplicitUuidSubsystem"),
-            explicit_uuid
-        );
-        let generated =
-            fs::read_to_string(context.cwd.join("Subsystems/ExplicitUuidSubsystem.xml")).unwrap();
-        assert!(generated.contains(r#"version="2.20""#), "{generated}");
-        assert!(!generated.contains(r#"version="2.17""#), "{generated}");
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn compile_subsystem_rejects_traversal_in_name_before_writing() {
-        let context = temp_context("reject-name-traversal");
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "../EscapedSubsystem"
-            }),
-        );
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(outcome.errors.join("\n").contains("XML NCName"));
-        assert!(!context.cwd.join("EscapedSubsystem.xml").exists());
-        assert!(!context.cwd.join("Subsystems").exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn compile_subsystem_rejects_traversal_in_child_name_before_writing() {
-        let context = temp_context("reject-child-traversal");
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "SafeSubsystem",
-                "children": ["../EscapedChild"]
-            }),
-        );
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(outcome.errors.join("\n").contains("XML NCName"));
-        assert!(!context.cwd.join("Subsystems").exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn compile_subsystem_rejects_invalid_explicit_uuid_before_writing() {
-        let context = temp_context("reject-invalid-uuid");
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "InvalidUuidSubsystem",
-                "uuid": "not-a-uuid"
-            }),
-        );
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(outcome.errors.join("\n").contains("UUID"));
-        assert!(!context.cwd.join("Subsystems").exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn compile_subsystem_rejects_non_canonical_boolean_properties_before_writing() {
-        for property in [
-            "includeHelpInContents",
-            "includeInCommandInterface",
-            "useOneCommand",
-        ] {
-            let context = temp_context(&format!("reject-boolean-{property}"));
-            let mut definition = json!({
-                "name": "InvalidBooleanSubsystem"
-            });
-            definition[property] = Value::String("banana".to_string());
-            let args = compile_args(&context.cwd, definition);
-
-            let outcome = compile_subsystem(&args, &context);
-
-            assert!(!outcome.ok, "{property}: {outcome:?}");
-            assert!(
-                outcome.errors.join("\n").contains("true or false"),
-                "{property}: {:?}",
-                outcome.errors
-            );
-            assert!(!context.cwd.join("Subsystems").exists(), "{property}");
-            let _ = fs::remove_dir_all(&context.cwd);
-        }
     }
 
     #[test]
@@ -4966,211 +3959,6 @@ pub(crate) mod tests {
         assert_eq!(fs::read(&subsystem_path).unwrap(), parent_before);
         assert!(!child_path.exists());
         assert!(!context.cwd.join("Subsystems/EditableSubsystem").exists());
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn compile_subsystem_generates_unique_uuid_when_missing() {
-        let context = temp_context("generated-uuid");
-        for name in ["GeneratedUuidA", "GeneratedUuidB"] {
-            let args = compile_args(
-                &context.cwd,
-                json!({
-                    "name": name
-                }),
-            );
-
-            let outcome = compile_subsystem(&args, &context);
-            assert!(outcome.ok, "{:?}", outcome.errors);
-        }
-
-        let first_uuid = subsystem_uuid(&context.cwd, "GeneratedUuidA");
-        let second_uuid = subsystem_uuid(&context.cwd, "GeneratedUuidB");
-        assert_ne!(first_uuid, second_uuid);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn compile_subsystem_generates_unique_child_stub_uuid_when_missing() {
-        let context = temp_context("generated-child-uuid");
-        for (parent, child) in [
-            ("GeneratedParentA", "GeneratedChildA"),
-            ("GeneratedParentB", "GeneratedChildB"),
-        ] {
-            let args = compile_args(
-                &context.cwd,
-                json!({
-                    "name": parent,
-                    "children": [child]
-                }),
-            );
-
-            let outcome = compile_subsystem(&args, &context);
-            assert!(outcome.ok, "{:?}", outcome.errors);
-        }
-
-        let first_uuid = child_subsystem_uuid(&context.cwd, "GeneratedParentA", "GeneratedChildA");
-        let second_uuid = child_subsystem_uuid(&context.cwd, "GeneratedParentB", "GeneratedChildB");
-        assert_ne!(first_uuid, second_uuid);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn compile_subsystem_registers_in_canonical_position_and_preserves_crlf() {
-        let context = temp_context("canonical-registration");
-        let config_path = context.cwd.join("Configuration.xml");
-        let config_before = write_configuration(&context.cwd);
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "SampleArea",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-
-        let preview = preview_subsystem_compile(&args, &context).unwrap();
-        assert!(preview.ok, "{:?}", preview.errors);
-        assert!(preview.summary.contains("dry run"));
-        assert!(preview
-            .changes
-            .iter()
-            .any(|change| change.contains("would create") && change.contains("SampleArea.xml")));
-        assert!(preview
-            .changes
-            .iter()
-            .any(|change| change.contains("would update") && change.contains("Configuration.xml")));
-        assert!(preview.stdout.unwrap_or_default().contains("@@ bytes"));
-        assert!(preview.artifacts.is_empty());
-        assert_eq!(fs::read(&config_path).unwrap(), config_before);
-        assert!(!context.cwd.join("Subsystems/SampleArea.xml").exists());
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(outcome.ok, "{:?}", outcome.errors);
-        let bytes = fs::read(&config_path).unwrap();
-        let text = String::from_utf8(bytes).unwrap();
-        assert!(text.contains(concat!(
-            "\t\t\t<Language>Russian</Language>\r\n",
-            "\t\t\t<Subsystem>SampleArea</Subsystem>\r\n",
-            "\t\t\t<StyleItem>Accent</StyleItem>\r\n"
-        )));
-        assert!(text.ends_with("<!-- registrar-tail -->\r\n\r\n"));
-        assert!(!text.replace("\r\n", "").contains('\n'));
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn nested_subsystem_compile_sorts_names_case_insensitively_in_parent() {
-        let context = temp_context("nested-canonical-order");
-        let parent_path = context.cwd.join("Subsystems/Parent.xml");
-        fs::create_dir_all(parent_path.parent().unwrap()).unwrap();
-        let parent = child_subsystem_stub_xml("Parent", "2.20")
-            .replace(
-                "\t\t<ChildObjects/>",
-                "\t\t<ChildObjects>\n\t\t\t<Subsystem>alpha</Subsystem>\n\t\t\t<Subsystem>Zulu</Subsystem>\n\t\t</ChildObjects>",
-            )
-            .replace(
-                "</MetaDataObject>\n",
-                "</MetaDataObject><!-- parent-tail -->\n",
-            )
-            .replace('\n', "\r\n");
-        fs::write(&parent_path, utf8_bom_bytes(&parent)).unwrap();
-        let mut args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "Beta",
-                "uuid": "11111111-2222-4333-8444-555555555555"
-            }),
-        );
-        args.insert(
-            "Parent".to_string(),
-            Value::String(parent_path.display().to_string()),
-        );
-
-        let outcome = compile_subsystem(&args, &context);
-
-        assert!(outcome.ok, "{:?}", outcome.errors);
-        let parent = String::from_utf8(fs::read(&parent_path).unwrap()).unwrap();
-        assert!(parent.contains(concat!(
-            "\t\t\t<Subsystem>alpha</Subsystem>\r\n",
-            "\t\t\t<Subsystem>Beta</Subsystem>\r\n",
-            "\t\t\t<Subsystem>Zulu</Subsystem>\r\n"
-        )));
-        assert!(parent.ends_with("<!-- parent-tail -->\r\n"));
-        assert!(!parent.replace("\r\n", "").contains('\n'));
-        assert!(context
-            .cwd
-            .join("Subsystems/Parent/Subsystems/Beta.xml")
-            .is_file());
-
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    pub(crate) fn repeated_subsystem_compile_preserves_file_identities_and_reports_no_changes() {
-        use crate::infrastructure::platform::testing::file_identity_for_test;
-
-        let context = temp_context("repeat-noop");
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "StableArea",
-                "uuid": "11111111-2222-4333-8444-555555555555",
-                "children": ["StableChild"]
-            }),
-        );
-        let first = compile_subsystem(&args, &context);
-        assert!(first.ok, "{:?}", first.errors);
-        let object_path = context.cwd.join("Subsystems/StableArea.xml");
-        let child_path = context
-            .cwd
-            .join("Subsystems/StableArea/Subsystems/StableChild.xml");
-        let object_before = fs::read(&object_path).unwrap();
-        let child_before = fs::read(&child_path).unwrap();
-        let object_identity = file_identity_for_test(&object_path).unwrap();
-        let child_identity = file_identity_for_test(&child_path).unwrap();
-
-        let repeated = compile_subsystem(&args, &context);
-
-        assert!(repeated.ok, "{:?}", repeated.errors);
-        assert!(repeated.changes.is_empty(), "{:?}", repeated.changes);
-        assert!(repeated.artifacts.is_empty(), "{:?}", repeated.artifacts);
-        assert_eq!(fs::read(&object_path).unwrap(), object_before);
-        assert_eq!(fs::read(&child_path).unwrap(), child_before);
-        assert_eq!(
-            file_identity_for_test(&object_path).unwrap(),
-            object_identity
-        );
-        assert_eq!(file_identity_for_test(&child_path).unwrap(), child_identity);
-        let _ = fs::remove_dir_all(&context.cwd);
-    }
-
-    #[test]
-    fn subsystem_compile_rolls_back_after_object_files_failure() {
-        use crate::infrastructure::native_operations::compile_transaction::{
-            with_commit_failpoint, CommitFailpoint,
-        };
-
-        let context = temp_context("rollback-after-files");
-        let config_path = context.cwd.join("Configuration.xml");
-        let config_before = write_configuration(&context.cwd);
-        let args = compile_args(
-            &context.cwd,
-            json!({
-                "name": "RollbackArea",
-                "uuid": "11111111-2222-4333-8444-555555555555",
-                "children": ["RollbackChild"]
-            }),
-        );
-
-        let outcome = with_commit_failpoint(CommitFailpoint::AfterObjectFiles, || {
-            compile_subsystem(&args, &context)
-        });
-
-        assert!(!outcome.ok, "{outcome:?}");
-        assert!(outcome.errors.join("\n").contains("after object files"));
-        assert_eq!(fs::read(&config_path).unwrap(), config_before);
-        assert!(!context.cwd.join("Subsystems").exists());
         let _ = fs::remove_dir_all(&context.cwd);
     }
 }
