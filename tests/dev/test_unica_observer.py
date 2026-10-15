@@ -13,6 +13,7 @@ import http.client
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -135,12 +136,17 @@ class UnicaObserverTests(unittest.TestCase):
         self.assertIsInstance(answer["elapsedMs"], int)
         return answer["result"]
 
-    def sent_tool_calls(self) -> list[dict]:
-        with urllib.request.urlopen(self.url + "/api/log?since=0", timeout=30) as response:
-            entries = json.load(response)["entries"]
+    def log_entries(self, since: int = 0) -> list[dict]:
+        with urllib.request.urlopen(f"{self.url}/api/log?since={since}", timeout=30) as response:
+            return json.load(response)["entries"]
+
+    def last_seq(self) -> int:
+        return max((entry["seq"] for entry in self.log_entries()), default=0)
+
+    def sent_tool_calls(self, since: int = 0) -> list[dict]:
         return [
             entry["payload"]["params"]
-            for entry in entries
+            for entry in self.log_entries(since)
             if entry["dir"] == "out" and entry["payload"].get("method") == "tools/call"
         ]
 
@@ -226,7 +232,33 @@ class UnicaObserverTests(unittest.TestCase):
         catalog = self.get("/api/tools")
         tools = {tool["name"].removeprefix("unica."): tool for tool in catalog["tools"]}
         at = "main:Catalog.Валюты"
-        absent_task = "00000000-0000-4000-8000-000000000000"
+        foreign_task = "00000000-0000-4000-8000-000000000000"
+
+        # Предпросмотр `run` пропускается и уходит в unica с `dryRun: true`.
+        # Ответ может быть отказом поставщика (нет v8-runner), но вызов
+        # состоялся; долгую операцию сервер передаёт в задачу наблюдателя.
+        run_previews = (
+            {"op": "extensions.list", "args": {}, "dryRun": True},
+            {"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": True},
+        )
+        mark = self.last_seq()
+        for arguments in run_previews:
+            with self.subTest(run_preview=arguments["op"]):
+                status, answer = self.post("/api/tool", {"tool": "run", "arguments": arguments})
+                self.assertEqual(status, 200, answer)
+                self.assertIn("ok", answer["result"], answer)
+        sent = [call for call in self.sent_tool_calls(mark) if call["name"].endswith("run")]
+        self.assertEqual([call["arguments"]["op"] for call in sent], ["extensions.list", "make"])
+        self.assertTrue(all(call["arguments"]["dryRun"] is True for call in sent), sent)
+        own_tasks = {
+            match
+            for entry in self.log_entries(mark)
+            if entry["dir"] == "in"
+            for match in re.findall(r'"taskId":\s*"([0-9a-f-]{36})"', json.dumps(entry["payload"]))
+        }
+        self.assertTrue(own_tasks, "a run preview is handed off to a task the observer owns")
+        own_task = sorted(own_tasks)[0]
+
         # По вызову на каждый инструмент поверхности: новый инструмент без
         # своего случая роняет тест, а не проходит молча.
         cases = {
@@ -238,9 +270,9 @@ class UnicaObserverTests(unittest.TestCase):
             "diff": {"left": at, "right": at},
             "run": {},
             "docs": {"query": "Запрос", "limit": 1},
-            "task.get": {"taskId": absent_task},
-            "task.result": {"taskId": absent_task, "waitMs": 0},
-            "task.cancel": {"taskId": absent_task},
+            "task.get": {"taskId": own_task},
+            "task.result": {"taskId": own_task, "waitMs": 0},
+            "task.cancel": {"taskId": own_task},
         }
         self.assertEqual(set(tools), set(cases), "every tool from tools/list needs a schema-valid case")
         for verb, arguments in cases.items():
@@ -253,35 +285,35 @@ class UnicaObserverTests(unittest.TestCase):
                 self.assertIsInstance(answer["result"], dict)
                 self.assertIn("ok", answer["result"], answer)
 
-        # Нарушение схемы — 400, неизвестный инструмент — 404; оба до unica.
-        before = len(self.sent_tool_calls())
-        for body, expected in (
+        # Нарушение схемы — 400, неизвестный инструмент — 404; исполнение,
+        # запись и чужие задачи — 403. Ни один из них не доходит до unica.
+        token = "observer-test-token"
+        refused = (
             ({"tool": "search", "arguments": {}}, 400),
             ({"tool": "view", "arguments": {"at": at, "limit": 0}}, 400),
             ({"tool": "diff", "arguments": {"left": at, "right": at, "extra": 1}}, 400),
             ({"tool": "unica.write", "arguments": {}}, 404),
-        ):
-            status, refusal = self.post("/api/tool", body)
-            self.assertEqual(status, expected, (body, refusal))
-
-        # Исполнение и запись — 403 до unica, в каком бы месте ни стояли.
-        token = "observer-test-token"
-        forbidden = (
-            ("apply", {"executionToken": token}),
-            ("apply", {"at": at, "ops": [{"op": "attribute.add", "args": {"executionToken": token}}]}),
-            ("search", {"query": "x", "executionToken": token}),
-            ("run", {"op": "push", "args": {}, "dryRun": False}),
-            ("run", {"op": "push", "args": {}}),
-            ("run", {"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": "true"}),
-            ("run", {"op": "launch", "args": {"clientMode": "thin"}, "dryRun": True}),
-            ("run", {"op": "unknown.op", "args": {}, "dryRun": True}),
-            ("run", {"dryRun": False}),
+            ({"tool": "apply", "arguments": {"executionToken": token}}, 403),
+            ({"tool": "apply", "arguments": {"at": at, "ops": [{"op": "attribute.add", "args": {"executionToken": token}}]}}, 403),
+            ({"tool": "apply", "arguments": {"at": at, "ops": [{"op": "attribute.remove"}], "dryRun": False}}, 403),
+            ({"tool": "apply", "arguments": {"at": at, "ops": [{"op": "attribute.remove"}], "ifRev": "rev"}}, 403),
+            ({"tool": "search", "arguments": {"query": "x", "executionToken": token}}, 403),
+            ({"tool": "run", "arguments": {"op": "push", "args": {}, "dryRun": False}}, 403),
+            ({"tool": "run", "arguments": {"op": "push", "args": {}}}, 403),
+            ({"tool": "run", "arguments": {"op": "make", "args": {"output": "dist/main.cf"}, "dryRun": "true"}}, 403),
+            ({"tool": "run", "arguments": {"op": "launch", "args": {"clientMode": "thin"}, "dryRun": True}}, 403),
+            ({"tool": "run", "arguments": {"op": "unknown.op", "args": {}, "dryRun": True}}, 403),
+            ({"tool": "run", "arguments": {"dryRun": False}}, 403),
+            ({"tool": "task.get", "arguments": {"taskId": foreign_task}}, 403),
+            ({"tool": "task.result", "arguments": {"taskId": foreign_task}}, 403),
+            ({"tool": "task.cancel", "arguments": {"taskId": foreign_task}}, 403),
         )
-        for verb, arguments in forbidden:
-            with self.subTest(forbidden=(verb, arguments)):
-                status, refusal = self.post("/api/tool", {"tool": verb, "arguments": arguments})
-                self.assertEqual(status, 403, refusal)
-        self.assertEqual(len(self.sent_tool_calls()), before, "refused calls never reach unica")
+        mark = self.last_seq()
+        for body, expected in refused:
+            with self.subTest(refused=body):
+                status, refusal = self.post("/api/tool", body)
+                self.assertEqual(status, expected, (body, refusal))
+        self.assertEqual(self.sent_tool_calls(mark), [], "refused calls never reach unica")
 
         for call in self.sent_tool_calls():
             arguments = call["arguments"]
@@ -289,6 +321,8 @@ class UnicaObserverTests(unittest.TestCase):
             if call["name"].endswith("run") and "op" in arguments:
                 self.assertIs(arguments.get("dryRun"), True, call)
                 self.assertNotEqual(arguments["op"], "launch", call)
+            if call["name"].endswith("apply"):
+                self.assertLessEqual(set(arguments), {"at", "ops"}, call)
         self.assertEqual(tree_digest(self.workspace), self.before, "observer must not change workspace files")
 
     def test_contract_drafts_pass_preview_per_family_and_a_missing_contract_is_named(self) -> None:

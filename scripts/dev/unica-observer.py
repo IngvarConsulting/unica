@@ -19,9 +19,14 @@ MCP-клиент: видит ровно то, что видит агент на 
 `run` вне предпросмотра и инструменты, которых политика не знает, — до unica,
 поэтому файлы и база не меняются. Перечень — в `TOOL_POLICY` и `RUN_PREVIEW_OPS`.
 
+Демон unica у наблюдателя свой: по умолчанию во временном каталоге
+состояния, который удаляется при выходе; `--state-dir` сохраняет его между
+запусками, `--shared-state` подключает общий демон пользователя.
+
 Запуск:
   python3.12 scripts/dev/unica-observer.py --workspace <каталог>
       [--unica target/release/unica] [--port 0] [--no-open]
+      [--state-dir <каталог> | --shared-state]
 
 Первой строкой stdout печатается `UNICA_OBSERVER_URL=<адрес страницы>`.
 """
@@ -32,6 +37,7 @@ import collections
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -49,6 +55,7 @@ PROTOCOL_VERSION = "2025-06-18"
 # Переменные, через которые хост называет свой проект: у наблюдателя проект
 # один — `--workspace`.
 HOST_PROJECT_VARIABLES = ("CLAUDE_PROJECT_DIR", "ZCODE_PROJECT_DIR")
+STATE_VARIABLE = "UNICA_PROVIDER_STATE_DIR"
 REQUEST_TIMEOUT_SECONDS = 300.0
 LOG_CAPACITY = 2000
 TOKEN_FIELD = "executionToken"
@@ -64,6 +71,21 @@ def default_binary() -> Path:
 
 class McpError(RuntimeError):
     pass
+
+
+def task_ids(value: Any) -> set[str]:
+    """Значения `taskId` на любой глубине ответа."""
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "taskId" and isinstance(item, str):
+                found.add(item)
+            else:
+                found |= task_ids(item)
+    elif isinstance(value, list):
+        for item in value:
+            found |= task_ids(item)
+    return found
 
 
 class _Pending:
@@ -106,6 +128,8 @@ class McpClient:
         self.pending_lock = threading.Lock()
         self.next_id = 0
         self.closed = threading.Event()
+        self.own_tasks: set[str] = set()
+        self.own_tasks_lock = threading.Lock()
         child_env = dict(os.environ if env is None else env)
         for name in HOST_PROJECT_VARIABLES:
             child_env.pop(name, None)
@@ -180,6 +204,11 @@ class McpClient:
                     waiter = self.pending.pop(message["id"], None)
                 elapsed = None if waiter is None else round((time.monotonic() - waiter.started) * 1000)
                 self._record("in", message, elapsedMs=elapsed)
+                if waiter is not None:
+                    # Задачи, выданные этому наблюдателю: только их он может
+                    # опрашивать и отменять.
+                    with self.own_tasks_lock:
+                        self.own_tasks.update(task_ids(message.get("result")))
                 if waiter is not None:
                     waiter.response = message
                     waiter.event.set()
@@ -417,9 +446,31 @@ _JSON_TYPES = {
     "string": lambda v: isinstance(v, str),
     "boolean": lambda v: isinstance(v, bool),
     "null": lambda v: v is None,
-    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    # JSON не различает 1 и 1.0: целое число с точкой — тоже integer.
+    "integer": lambda v: (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and v.is_integer()),
     "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
 }
+# Ключевые слова, которые подмножество не проверяет и от которых зависит
+# ответ: схема с ними проверяется неполно, и наблюдатель так и говорит.
+UNSUPPORTED_KEYWORDS = frozenset({
+    "$ref", "$dynamicRef", "patternProperties", "prefixItems", "dependentSchemas",
+    "dependentRequired", "unevaluatedProperties", "unevaluatedItems", "multipleOf",
+    "exclusiveMinimum", "exclusiveMaximum",
+})
+
+
+def schema_unsupported(schema: Any) -> list[str]:
+    """Непроверяемые ключевые слова схемы на любой глубине, без повторов."""
+    found: list[str] = []
+    if isinstance(schema, dict):
+        found += [key for key in schema if key in UNSUPPORTED_KEYWORDS]
+        for key, value in schema.items():
+            if key not in ("enum", "const", "default", "examples"):
+                found += schema_unsupported(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            found += schema_unsupported(item)
+    return sorted(set(found))
 
 
 def _json_equal(left: Any, right: Any) -> bool:
@@ -507,7 +558,7 @@ def schema_errors(schema: Any, value: Any, path: str = "$") -> list[str]:
         branch = "then" if not schema_errors(schema["if"], value, path) else "else"
         if branch in schema:
             errors += schema_errors(schema[branch], value, path)
-    return errors
+    return list(dict.fromkeys(errors))
 
 
 # --- Политика: что наблюдатель пропускает к unica --------------------------
@@ -517,15 +568,18 @@ def schema_errors(schema: Any, value: Any, path: str = "$") -> list[str]:
 # (`crates/unica-coder/src/application/v13/*.rs`).
 #
 #   view, check, resolve, search, diff, docs — чтение: файлов и базы не меняют.
-#   task.get, task.result — опрос задачи; исполнения не начинают.
-#   task.cancel — отмена задачи по её taskId; задачи с записью наблюдатель
-#       начать не может, поэтому отмена касается только чтения.
-#   apply — только планирование `{at, ops}`: предпросмотр строит план и
-#       ничего не пишет; `executionToken` (исполнение плана) запрещён.
+#   task.get, task.result, task.cancel — только для taskId, которые
+#       наблюдатель сам получил в ответах unica. Отмена владельца задачи не
+#       проверяет (`runtime_v5.rs`, CancelTask), а демон может быть общим с
+#       другими сессиями (`--shared-state`), поэтому чужой taskId — 403.
+#   apply — только планирование: верхний уровень аргументов ровно `{at, ops}`
+#       независимо от схемы сервера; `executionToken` (исполнение плана),
+#       `dryRun`, `ifRev` и любые другие ключи — 403.
 #   run — только словарь операций (вызов без `op`) или предпросмотр операции
 #       из `RUN_PREVIEW_OPS` с `dryRun: true`. `dryRun: false` исполняет
-#       операцию; `launch` терминальна (execution `terminal`): `dryRun` она не
-#       учитывает и запускает клиент 1С (`tool_catalog.rs`, `RunOperation`).
+#       операцию (`tool_catalog.rs`, `RunOperation`). `launch` отклоняется
+#       всегда: её предпросмотр сервер строит, но наблюдателю запуск клиента
+#       1С не нужен.
 #
 # `executionToken` запрещён везде, на любой глубине аргументов.
 TOOL_POLICY: dict[str, str] = {
@@ -535,9 +589,9 @@ TOOL_POLICY: dict[str, str] = {
     "search": "read",
     "diff": "read",
     "docs": "read",
-    "task.get": "read",
-    "task.result": "read",
-    "task.cancel": "cancel",
+    "task.get": "own-task",
+    "task.result": "own-task",
+    "task.cancel": "own-task",
     "apply": "plan",
     "run": "preview",
 }
@@ -549,7 +603,8 @@ RUN_PREVIEW_OPS = frozenset({
     "infobase.dump", "infobase.restore", "extensions.list", "extensions.set",
     "apply", "reset",
 })
-RUN_DENIED_OPS = {"launch": "launch is terminal: it ignores dryRun and starts a 1C client"}
+RUN_DENIED_OPS = {"launch": "наблюдателю не нужен запуск клиента 1С"}
+APPLY_PLAN_KEYS = frozenset({"at", "ops"})
 # Инструменты, которые сами опрашивают задачу: их ответ отдаётся как есть,
 # без ожидания задачи наблюдателем.
 TASK_VERBS = frozenset({"task.get", "task.result", "task.cancel"})
@@ -559,13 +614,22 @@ def verb_of(name: str) -> str:
     return name.removeprefix("unica.")
 
 
-def enforce_policy(verb: str, arguments: dict[str, Any]) -> None:
-    """Отклоняет (403) всё, что исполняет или пишет, до обращения к unica."""
+def enforce_policy(verb: str, arguments: dict[str, Any], own_tasks: frozenset[str] | set[str] = frozenset()) -> None:
+    """Отклоняет (403) всё, что исполняет, пишет или трогает чужое, до unica."""
     if contains_token(arguments):
         raise ApiError(HTTPStatus.FORBIDDEN, "observer never executes a plan: executionToken is refused")
     mode = TOOL_POLICY.get(verb)
     if mode is None:
         raise ApiError(HTTPStatus.FORBIDDEN, f"tool {verb} is not classified by the observer policy; it is not called")
+    if mode == "plan":
+        extra = set(arguments) - APPLY_PLAN_KEYS
+        if extra:
+            raise ApiError(HTTPStatus.FORBIDDEN, f"apply only plans with at and ops; refused keys {sorted(extra)}")
+        return
+    if mode == "own-task":
+        if arguments.get("taskId") not in own_tasks:
+            raise ApiError(HTTPStatus.FORBIDDEN, f"{verb}: taskId was not issued to this observer")
+        return
     if mode != "preview":
         return
     op = arguments.get("op")
@@ -585,6 +649,7 @@ def enforce_policy(verb: str, arguments: dict[str, Any]) -> None:
 # Скелет аргументов по ключу словаря `can` — как его строит реестр операций.
 SKELETON: dict[str, Any] = {"from": "", "items": [], "values": {}, "text": "", "at": ""}
 CONTRACT_UNAVAILABLE_NOTE = "контракт недоступен (#1468)"
+CONTRACT_UNAVAILABLE_CODE = "unsupported_section"
 _MISSING = object()
 
 
@@ -769,12 +834,15 @@ class Observer:
         name, arguments = tool_arguments(body)
         tool = self.find_tool(name)
         verb = verb_of(tool["name"])
-        enforce_policy(verb, arguments)
+        with self.client.own_tasks_lock:
+            own_tasks = frozenset(self.client.own_tasks)
+        enforce_policy(verb, arguments, own_tasks)
         errors = schema_errors(tool.get("inputSchema") or {}, arguments)
         if errors:
             raise ApiError(HTTPStatus.BAD_REQUEST, f"{tool['name']}: " + "; ".join(errors[:8]))
         answer = self.client.call_tool(verb, arguments, follow_tasks=verb not in TASK_VERBS)
-        return {"tool": tool["name"], "arguments": arguments, **answer}
+        unchecked = schema_unsupported(tool.get("inputSchema"))
+        return {"tool": tool["name"], "arguments": arguments, "schemaUnchecked": unchecked, **answer}
 
     def draft(self, body: dict[str, Any]) -> dict[str, Any]:
         """Черновик `apply` для операции `op` из `can` узла `at`.
@@ -803,23 +871,30 @@ class Observer:
             note = "контракт не опубликован" + ("" if entry.get("implemented") else ": операция не реализована")
         elif result.get("ok"):
             status = "ok"
-        elif "not available yet" in json.dumps(result, ensure_ascii=False):
+        elif CONTRACT_UNAVAILABLE_CODE in {d.get("code") for d in result.get("diagnostics") or [] if isinstance(d, dict)}:
+            # Узел объявил операцию в `can`, а `view` отвечает отказом
+            # `unsupported_section`: подробный контракт ещё не опубликован.
             status = "unavailable"
             note = CONTRACT_UNAVAILABLE_NOTE
         else:
             status = "refused"
             note = f"контракт не прочитан: {result.get('summary')}"
         draft = build_draft(data.get("at") or at, entry, contract, data.get("props"))
-        validation = []
+        validation: list[str] = []
+        unchecked: list[str] = []
         if contract is not None:
             args = draft["ops"][0].get("args", {})
             validation = schema_errors(contract.get("argsSchema") or {}, args, "args")
+            unchecked = schema_unsupported(contract.get("argsSchema"))
         return {
             "draft": draft,
             "contract": status,
             "contractAt": contract_at,
             "note": note,
             "validation": validation,
+            # Ключевые слова схемы, которые наблюдатель не проверяет: пустая
+            # `validation` при них не означает, что черновик подходит.
+            "validationUnchecked": unchecked,
             "contractAnswer": result,
         }
 
@@ -967,7 +1042,7 @@ main { display: grid; grid-template-columns: var(--tree-w, 38%) 6px minmax(0, 1f
 .toollist { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
 .toollist button.on { background: var(--accent-bg); border-color: var(--accent); }
 .badge.read { color: var(--ok); border-color: var(--ok); }
-.badge.plan, .badge.preview, .badge.cancel { color: var(--warn); border-color: var(--warn); }
+.badge.plan, .badge.preview, .badge.own-task { color: var(--warn); border-color: var(--warn); }
 .badge.deny { color: var(--bad); border-color: var(--bad); }
 .form { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 10px; align-items: start; margin: 8px 0; }
 .form label { color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding-top: 5px; }
@@ -1292,8 +1367,9 @@ async function showPreview(nodeAt, entry) {
   html += `<p class="cnt">apply без executionToken строит план и ничего не пишет. Токен наблюдатель не исполняет.</p>`;
   html += answer.note
     ? `<p class="note" id="draftNote">${esc(answer.note)} <span class="cnt">${esc(answer.contractAt || "")}</span></p>`
-    : `<p class="yes" id="draftNote">черновик собран по контракту <span class="cnt">${esc(answer.contractAt || "")}</span></p>`;
+    : `<p class="${(answer.validationUnchecked || []).length ? "cnt" : "yes"}" id="draftNote">черновик собран по контракту <span class="cnt">${esc(answer.contractAt || "")}</span></p>`;
   if (answer.validation && answer.validation.length) html += `<p class="note bad">черновик не проходит схему контракта: ${esc(answer.validation.join("; "))}</p>`;
+  if (answer.validationUnchecked && answer.validationUnchecked.length) html += `<p class="note">проверка по схеме неполная: не проверяются ${esc(answer.validationUnchecked.join(", "))}</p>`;
   const draftText = pretty(answer.draft);
   html += `<textarea id="draft" spellcheck="false" rows="${Math.min(32, draftText.split("\n").length + 1)}">${esc(draftText)}</textarea>
     <p><button class="primary" id="runPreview">Построить план</button> <button id="draftToTool">в форму apply</button></p><div id="previewOut"></div>`;
@@ -1325,7 +1401,7 @@ async function showPreview(nodeAt, entry) {
 // выбранного узла. Источник истины при вызове — JSON аргументов под формой.
 let toolCatalog = null;
 let currentTool = null;
-const POLICY_LABEL = {read: "чтение", plan: "только план", preview: "только предпросмотр", cancel: "отмена задачи"};
+const POLICY_LABEL = {read: "чтение", plan: "только план", preview: "только предпросмотр", "own-task": "свои задачи"};
 // Поля, которые наблюдатель не отправляет никогда: API отклонит их до unica.
 const FORBIDDEN_FIELDS = new Set(["executionToken"]);
 
@@ -1349,23 +1425,28 @@ function fieldKind(schema) {
   return "json";
 }
 
+// Все значения из схемы попадают в атрибуты только через esc(). Умолчание
+// схемы показывается подсказкой и не отправляется: сервер подставит его сам,
+// а явная отправка умолчаний ломает часть вызовов (tool_catalog.rs, #1210).
 function fieldInput(name, schema, required) {
   const kind = fieldKind(schema);
   const id = `f_${esc(name)}`;
   const title = esc([schema.description, schema.pattern ? "pattern " + schema.pattern : ""].filter(Boolean).join(" · "));
+  const fallback = schema.default === undefined ? "" : `умолчание: ${JSON.stringify(schema.default)}`;
+  const placeholder = esc(fallback || (kind === "json" ? "JSON" : ""));
   if (kind === "enum") {
     const options = (required ? [] : [""]).concat(schema.enum);
-    return `<select id="${id}" data-field="${esc(name)}" data-kind="enum" title="${title}">${options.map((v) => `<option value="${esc(v)}">${esc(v === "" ? "—" : v)}</option>`).join("")}</select>`;
+    return `<select id="${id}" data-field="${esc(name)}" data-kind="enum" title="${title}">${options.map((v) => `<option value="${esc(v)}">${esc(v === "" ? "— " + fallback : v)}</option>`).join("")}</select>`;
   }
   if (kind === "boolean") {
-    return `<select id="${id}" data-field="${esc(name)}" data-kind="boolean" title="${title}"><option value="">—</option><option value="true">true</option><option value="false">false</option></select>`;
+    return `<select id="${id}" data-field="${esc(name)}" data-kind="boolean" title="${title}"><option value="">— ${esc(fallback)}</option><option value="true">true</option><option value="false">false</option></select>`;
   }
   if (kind === "number") {
-    const bounds = (schema.minimum !== undefined ? ` min="${schema.minimum}"` : "") + (schema.maximum !== undefined ? ` max="${schema.maximum}"` : "");
-    return `<input id="${id}" type="number" data-field="${esc(name)}" data-kind="number"${bounds} title="${title}">`;
+    const bounds = (schema.minimum !== undefined ? ` min="${esc(schema.minimum)}"` : "") + (schema.maximum !== undefined ? ` max="${esc(schema.maximum)}"` : "");
+    return `<input id="${id}" type="number" data-field="${esc(name)}" data-kind="number"${bounds} placeholder="${placeholder}" title="${title}">`;
   }
-  if (kind === "string") return `<input id="${id}" data-field="${esc(name)}" data-kind="string" spellcheck="false" title="${title}">`;
-  return `<textarea id="${id}" data-field="${esc(name)}" data-kind="json" spellcheck="false" placeholder="JSON" title="${title}"></textarea>`;
+  if (kind === "string") return `<input id="${id}" data-field="${esc(name)}" data-kind="string" spellcheck="false" placeholder="${placeholder}" title="${title}">`;
+  return `<textarea id="${id}" data-field="${esc(name)}" data-kind="json" spellcheck="false" placeholder="${placeholder}" title="${title}"></textarea>`;
 }
 
 function setField(input, value) {
@@ -1390,15 +1471,11 @@ function readFields(form) {
   return {args, errors};
 }
 
-// Начальные аргументы формы: умолчания схемы и адрес выбранного узла в `at`.
+// Начальные аргументы формы: только адрес выбранного узла в `at`;
+// умолчания схемы остаются подсказками полей.
 function toolPrefill(tool) {
   const props = (tool.inputSchema || {}).properties || {};
-  const args = {};
-  for (const [name, schema] of Object.entries(props)) {
-    if (!FORBIDDEN_FIELDS.has(name) && schema.default !== undefined) args[name] = schema.default;
-  }
-  if ("at" in props && selected) args.at = selected;
-  return args;
+  return "at" in props && selected ? {at: selected} : {};
 }
 
 async function openTool(name, args) {
@@ -1474,8 +1551,9 @@ async function callTool(tool) {
     const answer = await api("/api/tool", {tool: tool.name, arguments: args});
     stop();
     const result = answer.result || {};
+    const unchecked = (answer.schemaUnchecked || []).length ? `<p class="note">проверка аргументов по схеме неполная: не проверяются ${esc(answer.schemaUnchecked.join(", "))}</p>` : "";
     out.innerHTML = (result.ok ? `<p class="yes">ok: ${esc(result.summary || "")} ${timing(answer)}</p>` : `<p class="err">отказ: ${esc(result.summary || "")} ${timing(answer)}</p>`) +
-      nextButtons(result) + `<pre>${esc(pretty(result))}</pre>`;
+      unchecked + nextButtons(result) + `<pre>${esc(pretty(result))}</pre>`;
     bindNext(out, result);
   } catch (error) { stop(); out.innerHTML = `<p class="err">${esc(error.message)}</p>`; }
 }
@@ -1581,6 +1659,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--timeout", type=float, default=REQUEST_TIMEOUT_SECONDS, help="предел одного вызова MCP, секунды"
     )
+    state = parser.add_mutually_exclusive_group()
+    state.add_argument(
+        "--state-dir", type=Path, default=None,
+        help="состояние демона unica (UNICA_PROVIDER_STATE_DIR); сохраняется между запусками",
+    )
+    state.add_argument(
+        "--shared-state", action="store_true",
+        help="общий демон пользователя (~/.unica/provider-state) вместе с другими сессиями",
+    )
     args = parser.parse_args(argv)
 
     binary = (args.unica or default_binary()).resolve()
@@ -1590,10 +1677,29 @@ def main(argv: list[str] | None = None) -> int:
     if not workspace.is_dir():
         parser.error(f"нет каталога рабочей области: {workspace}")
 
+    # Свой демон по умолчанию: с общим демоном пользователя наблюдатель видел
+    # бы задачи и планы других сессий. Явный UNICA_PROVIDER_STATE_DIR в
+    # окружении считается выбором вызывающего (так запускают тесты).
+    env = dict(os.environ)
+    scratch_state: Path | None = None
+    if args.shared_state:
+        env.pop(STATE_VARIABLE, None)
+    elif args.state_dir is not None:
+        args.state_dir.mkdir(parents=True, exist_ok=True)
+        env[STATE_VARIABLE] = str(args.state_dir.resolve())  # без символических ссылок, как ниже
+    elif not env.get(STATE_VARIABLE):
+        # Каталог разрешается до реального пути: демон не открывает состояние
+        # через символические ссылки (на macOS /var ведёт в /private/var).
+        scratch_state = Path(tempfile.mkdtemp(prefix="unica-observer-state-")).resolve()
+        env[STATE_VARIABLE] = str(scratch_state)
+    print(f"состояние демона: {env.get(STATE_VARIABLE) or 'общее пользователя'}", file=sys.stderr, flush=True)
+
     try:
-        client = McpClient(binary, workspace, timeout=args.timeout)
+        client = McpClient(binary, workspace, env=env, timeout=args.timeout)
     except McpError as error:
         print(f"unica не поднялся: {error}", file=sys.stderr)
+        if scratch_state is not None:
+            shutil.rmtree(scratch_state, ignore_errors=True)
         return 1
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(Observer(client), PAGE.encode()))
     url = f"http://127.0.0.1:{server.server_address[1]}/"
@@ -1615,6 +1721,9 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         server.server_close()
         client.close()
+        if scratch_state is not None:
+            # Временное состояние принадлежит только этому наблюдателю.
+            shutil.rmtree(scratch_state, ignore_errors=True)
     return 0
 
 
