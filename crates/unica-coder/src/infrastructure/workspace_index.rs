@@ -2310,22 +2310,50 @@ mod tests {
     }
 
     #[test]
-    fn active_build_rejects_legacy_mutable_generation() {
-        let context = test_context("cache-readiness-legacy-db");
-        let source_root = context.workspace_root.join("src");
-        fs::create_dir_all(&source_root).unwrap();
-        let legacy_db = rlm_provider_state_root(&context, &source_root)
-            .unwrap()
-            .join("rlm-tools-bsl/index/bsl_index.db");
-        fs::create_dir_all(legacy_db.parent().unwrap()).unwrap();
-        fs::write(&legacy_db, b"builder-14-db").unwrap();
-        write_status(&context, BslIndexStatus::ready(&source_root, &legacy_db)).unwrap();
+    fn active_build_rejects_db_outside_declared_build_directory() {
+        enum InvalidDbLocation {
+            Builder14,
+            SiblingBuild,
+        }
 
-        let active = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
-            .active_build(&context, &source_root)
+        for (name, location) in [
+            ("builder-14", InvalidDbLocation::Builder14),
+            ("sibling-build", InvalidDbLocation::SiblingBuild),
+        ] {
+            let context = test_context(&format!("active-build-{name}"));
+            let source_root = default_source_root(&context);
+            fs::create_dir_all(&source_root).unwrap();
+            let build_id = "a".repeat(32);
+            let db_path = match location {
+                InvalidDbLocation::Builder14 => rlm_provider_state_root(&context, &source_root)
+                    .unwrap()
+                    .join("rlm-tools-bsl/index/bsl_index.db"),
+                InvalidDbLocation::SiblingBuild => {
+                    rlm_build_root(&context, &source_root, &"b".repeat(32))
+                        .unwrap()
+                        .join("bsl_index.db")
+                }
+            };
+            fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+            fs::write(&db_path, name).unwrap();
+            write_status(
+                &context,
+                BslIndexStatus::ready(&source_root, &db_path).with_build_id(build_id.clone()),
+            )
             .unwrap();
-        assert_eq!(active, None);
-        cleanup(&context);
+
+            assert!(db_path.is_file(), "{name}: fixture DB must exist");
+            assert_eq!(
+                read_bsl_index_status(&context).unwrap().build_id.as_deref(),
+                Some(build_id.as_str()),
+                "{name}: marker must reach the build-directory check"
+            );
+            let active = WorkspaceIndexService::with_runner(&RecordingIndexRunner::default())
+                .active_build(&context, &source_root)
+                .unwrap();
+            assert_eq!(active, None, "{name}: DB outside its build became active");
+            cleanup(&context);
+        }
     }
 
     #[test]
@@ -2794,6 +2822,62 @@ mod tests {
     }
 
     #[test]
+    fn invalid_lock_without_building_status_is_treated_as_active() {
+        let context = test_context("invalid-lock-active");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        write_usable_build(&context, &"c".repeat(32));
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"").unwrap();
+        let lock_before = fs::read(&lock).unwrap();
+
+        assert!(!bsl_index_is_ready(&context));
+        assert_eq!(
+            fs::read(&lock).unwrap(),
+            lock_before,
+            "fresh invalid lock must not be recovered"
+        );
+        cleanup(&context);
+    }
+
+    #[test]
+    fn fresh_invalid_lock_with_stale_status_is_treated_as_active() {
+        let context = test_context("invalid-lock-with-stale-status");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"").unwrap();
+        write_old_building_status(&context, "build");
+        let lock_before = fs::read(&lock).unwrap();
+        let status_before = fs::read(status_path(&context)).unwrap();
+
+        assert!(active_lock(&context, &source_root).unwrap());
+        assert_eq!(fs::read(&lock).unwrap(), lock_before);
+        assert_eq!(fs::read(status_path(&context)).unwrap(), status_before);
+        assert_eq!(read_bsl_index_status(&context).unwrap().status, "building");
+        cleanup(&context);
+    }
+
+    #[test]
+    fn stale_legacy_lock_is_recovered_by_active_lock() {
+        let context = test_context("stale-legacy-lock");
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
+        let lock = lock_path(&context);
+        fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        fs::write(&lock, b"").unwrap();
+        write_old_building_status(&context, "build");
+        make_lock_file_old(&context);
+
+        assert!(!active_lock(&context, &source_root).unwrap());
+        assert_eq!(read_lock_path(&lock).unwrap().state, "recovered");
+        assert_eq!(read_bsl_index_status(&context).unwrap().status, "failed");
+        cleanup(&context);
+    }
+
+    #[test]
     fn stale_lock_held_by_current_process_is_still_active() {
         let context = test_context("stale-held-lock");
         fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
@@ -2877,17 +2961,19 @@ mod tests {
     }
 
     #[test]
-    fn stale_structured_lock_is_marked_recovered_before_rebuild() {
+    fn stale_structured_lock_is_recovered_by_active_lock() {
         let context = test_context("stale-structured-recovered");
-        fs::create_dir_all(context.workspace_root.join("src/CommonModules")).unwrap();
+        let source_root = default_source_root(&context);
+        fs::create_dir_all(&source_root).unwrap();
         write_stale_lock(&context, "build");
         write_old_building_status(&context, "build");
 
-        assert!(!active_lock(&context, &context.workspace_root.join("src")).unwrap());
+        assert!(!active_lock(&context, &source_root).unwrap());
 
         let current =
             read_lock_path(&lock_path(&context)).expect("stale lock should remain as marker");
         assert_eq!(current.state, "recovered");
+        assert_eq!(read_bsl_index_status(&context).unwrap().status, "failed");
         cleanup(&context);
     }
 
@@ -3114,6 +3200,32 @@ mod tests {
             BslIndexStatus::building(action, Some(&context.workspace_root.join("src")));
         status.updated_at = now_secs().saturating_sub(LOCK_STALE_AFTER.as_secs() + 1);
         write_status(context, status).unwrap();
+    }
+
+    fn write_usable_build(context: &WorkspaceContext, build_id: &str) -> PathBuf {
+        let source_root = default_source_root(context);
+        let build_root = rlm_build_root(context, &source_root, build_id).unwrap();
+        let db_path = build_root.join("bsl_index.db");
+        fs::create_dir_all(&build_root).unwrap();
+        fs::write(&db_path, b"usable index").unwrap();
+        write_status(
+            context,
+            BslIndexStatus::ready(&source_root, &db_path).with_build_id(build_id.to_string()),
+        )
+        .unwrap();
+        db_path
+    }
+
+    fn make_lock_file_old(context: &WorkspaceContext) {
+        use std::fs::FileTimes;
+
+        const JANUARY_1_2000_UTC: Duration = Duration::from_secs(946_684_800);
+        let file = OpenOptions::new()
+            .write(true)
+            .open(lock_path(context))
+            .unwrap();
+        file.set_times(FileTimes::new().set_modified(UNIX_EPOCH + JANUARY_1_2000_UTC))
+            .unwrap();
     }
 
     #[test]

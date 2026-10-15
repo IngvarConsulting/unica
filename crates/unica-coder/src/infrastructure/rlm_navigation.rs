@@ -888,7 +888,7 @@ mod tests {
         };
         let result = RlmNavigationAdapter::with_client(&client).invoke_resolved_cancellable(
             &definition_request(),
-            &index_not_ready_context(),
+            &unready_index_context(),
             ProviderDeadline::no_deadline(),
             &CancellationToken::new(),
         );
@@ -910,7 +910,7 @@ mod tests {
         let outcome = RlmNavigationAdapter::with_client(&client)
             .invoke_resolved_cancellable(
                 &definition_request(),
-                &index_not_ready_context(),
+                &unready_index_context(),
                 ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
                 &CancellationToken::new(),
             )
@@ -942,7 +942,7 @@ mod tests {
         let outcome = RlmNavigationAdapter::with_client(&client)
             .invoke_resolved_cancellable(
                 &definition_request(),
-                &index_not_ready_context(),
+                &unready_index_context(),
                 ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
                 &cancellation,
             )
@@ -970,7 +970,7 @@ mod tests {
         let outcome = RlmNavigationAdapter::with_client(&client)
             .invoke_resolved_cancellable(
                 &definition_request(),
-                &index_not_ready_context(),
+                &unready_index_context(),
                 ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
                 &cancellation,
             )
@@ -1042,21 +1042,21 @@ mod tests {
         }
     }
 
-    fn index_not_ready_outcome(
+    fn unready_index_outcome(
         request: &CodeIntelligenceReadRequest,
         readiness: IndexReadiness,
     ) -> super::RlmNavigationOutcome {
         RlmNavigationAdapter::with_client(&UnreadyClient { readiness })
             .invoke_resolved_cancellable(
                 request,
-                &index_not_ready_context(),
+                &unready_index_context(),
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
                 &CancellationToken::new(),
             )
             .expect("a not-ready index must be reported as an outcome")
     }
 
-    fn index_not_ready_context() -> CodeIntelligenceContext {
+    fn unready_index_context() -> CodeIntelligenceContext {
         let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware");
         CodeIntelligenceContext::new(
@@ -1113,7 +1113,7 @@ mod tests {
                 false,
             ),
         ] {
-            let result = index_not_ready_outcome(&request, readiness);
+            let result = unready_index_outcome(&request, readiness);
             let outcome = result.outcome;
             assert!(!outcome.ok, "{prefix}: {outcome:?}");
             assert!(outcome.warnings.is_empty(), "{prefix}: {outcome:?}");
@@ -1136,7 +1136,7 @@ mod tests {
         let result = RlmNavigationAdapter::with_client(&PostExecutionUnreadyClient)
             .invoke_resolved_cancellable(
                 &definition_request(),
-                &index_not_ready_context(),
+                &unready_index_context(),
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
                 &CancellationToken::new(),
             )
@@ -1152,7 +1152,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_readiness_is_reported_as_cancellation_not_as_an_index_failure() {
-        let outcome = index_not_ready_outcome(
+        let outcome = unready_index_outcome(
             &definition_request(),
             IndexReadiness::Unavailable("cancelled: readiness stopped".to_string()),
         )
@@ -1174,7 +1174,7 @@ mod tests {
         let error = RlmNavigationAdapter::with_client(&client)
             .invoke_resolved_cancellable(
                 &outline_request(),
-                &index_not_ready_context(),
+                &unready_index_context(),
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
                 &CancellationToken::new(),
             )
