@@ -203,7 +203,7 @@ Preview и apply возвращают одинаковую типизирова�
 ### Типы элементов
 
 В `item.add` каждый `items[]` задаёт `name` и `type`; без `type`
-создаётся поле ввода. Словарь создаёт одиннадцать видов. Кроме ключей
+создаётся поле ввода. Словарь создаёт двенадцать видов. Кроме ключей
 таблицы, каждый вид принимает `after` и флаги `visible`, `hidden`,
 `userVisible` (только `false`), `enabled`, `disabled`, `readOnly`.
 
@@ -211,6 +211,7 @@ Preview и apply возвращают одинаковую типизирова�
 |------|---------|------------|------------|
 | `InputField` | InputField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `inputHint`, `width`, `height`, кнопки и флаги поля | ContextMenu, ExtendedTooltip |
 | `HTMLDocumentField` | HTMLDocumentField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight`, `skipOnInput` | ContextMenu, ExtendedTooltip |
+| `TextDocumentField` | TextDocumentField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight` | ContextMenu, ExtendedTooltip |
 | `CheckBox` | CheckBoxField | `path`, `title`, `tooltip`, `tooltipRepresentation`, `titleLocation`, `checkBoxType`, `footerDataPath` | ContextMenu, ExtendedTooltip |
 | `Label` | LabelDecoration | `title` (строка или `{text, formatted}`), `formatted`, `hyperlink`, `width`, `height`, `autoMaxWidth`, `autoMaxHeight`, `tooltipRepresentation` | ContextMenu, ExtendedTooltip |
 | `LabelField` | LabelField | `path`, `tooltip`, `tooltipRepresentation`, `footerDataPath` | ContextMenu, ExtendedTooltip |
@@ -267,10 +268,24 @@ DOM-свойство `Document` относится к выполнению 1С �
 `after` задаёт соседний элемент. Полученную форму
 прочитайте через `unica.view` и проверьте через `unica.check`.
 
+### Поле текстового документа
+
+Поле текстового документа задаётся в `item.add` через `name`,
+`type: "TextDocumentField"` и `path`. Путь должен вести к реквизиту формы
+типа `d5p1:TextDocument`; при необходимости сначала создайте реквизит через
+`attribute.add`. Внутренний ключ `textDoc` публичная операция отклоняет.
+
+Поддержаны общие свойства размещения и оформления из контракта
+`<адрес формы>.Can.item.add`; `skipOnInput` и `editMode` не поддержаны.
+Событие `OnChange` привязывается отдельной операцией `event.bind` по адресу
+поля. Для размещения в группе вызывайте `item.add` на адресе группы.
+Результат применяйте отдельным вызовом с `executionToken`, затем прочитайте
+поле через `unica.view` и проверьте форму через `unica.check`.
+
 ### Чего словарь не пишет
 
 Остальные виды платформенных полей и декораций **поверхность не создаёт**:
-поля картинки, текстового, табличного и форматированного документа,
+поля картинки, табличного и форматированного документа,
 диаграммы и сводной диаграммы, диаграммы Ганта, календаря, периода,
 индикатора, ползунка, географической схемы, дендрограммы, планировщика,
 радиокнопки, а также декоративную картинку и поле поиска.
