@@ -1,8 +1,9 @@
 //! Политика сетевого выхода поставщиков документации: `unica.toml` в корне
-//! проекта с машинным оверлеем `unica.local.toml`.
+//! проекта с локальным оверлеем `unica.local.toml` и нижним общим слоем.
 //!
 //! Это файл запрета, и правила разбора продиктованы именно этим. Отсутствие
-//! файла даёт умолчания — сеть разрешена. Всё остальное неясное — отказ:
+//! проектных файлов даёт умолчания — сеть разрешена. Явно заданный общий
+//! файл обязателен: его отсутствие вызывает отказ. Всё остальное неясное — отказ:
 //! неразбираемый файл, неизвестная секция или ключ, неизвестный идентификатор
 //! поставщика, неизвестное значение политики. Молчаливый откат к разрешающему
 //! поведению недопустим: правило запрета, которое не прочиталось и стало
@@ -11,7 +12,13 @@
 //! открытым, а автор считал бы его закрытым.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub(crate) const MACHINE_POLICY_ENV: &str = "UNICA_DOCUMENTATION_POLICY_FILE";
+
+pub(crate) fn network_failure(provider: &str, error: impl std::fmt::Display) -> String {
+    format!("{error}. Чтобы отключить сетевой поставщик {provider}, добавьте в unica.local.toml секцию [providers.{provider}] с network = \"deny\".")
+}
 
 use crate::infrastructure::workspace_config::{
     parse_workspace_config_root, WorkspaceConfigRootError, WorkspaceConfigRootErrorKind,
@@ -36,34 +43,47 @@ pub struct DocumentationPolicy {
 }
 
 impl DocumentationPolicy {
-    /// Читает политику проекта: `unica.toml`, затем оверлей
-    /// `unica.local.toml` — локальные значения перекрывают по-ключево.
-    /// `known` — идентификаторы поставщиков, которым разрешено фигурировать
-    /// в файле; любой другой — отказ.
+    /// Общий файл из окружения демона, затем проект и его локальный оверлей.
+    /// Каждый слой проверяется до наложения: ошибка запрета не становится allow.
     pub fn load(workspace_root: &Path, known: &[&str]) -> Result<DocumentationPolicy, String> {
+        let machine_path = std::env::var_os(MACHINE_POLICY_ENV).map(PathBuf::from);
+        Self::load_layers(workspace_root, known, machine_path.as_deref())
+    }
+
+    fn load_layers(
+        workspace_root: &Path,
+        known: &[&str],
+        machine_path: Option<&Path>,
+    ) -> Result<Self, String> {
+        if machine_path.is_some_and(|path| !path.is_absolute()) {
+            return Err(format!(
+                "{MACHINE_POLICY_ENV}: требуется абсолютный путь к файлу политики"
+            ));
+        }
         let mut policy = DocumentationPolicy::default();
-        for file_name in ["unica.toml", "unica.local.toml"] {
-            let path = workspace_root.join(file_name);
+        let paths = machine_path
+            .map(|path| (path.to_path_buf(), true))
+            .into_iter()
+            .chain(
+                [("unica.toml", false), ("unica.local.toml", false)]
+                    .into_iter()
+                    .map(|(name, required)| (workspace_root.join(name), required)),
+            );
+        for (path, required) in paths {
+            let file_name = path.display();
             let text = match std::fs::read_to_string(&path) {
                 Ok(text) => text,
-                // Отсутствие файла — умолчания; любой ДРУГОЙ отказ чтения —
-                // жёсткий отказ: право на чтение, снятое с файла запрета,
-                // иначе превращалось бы в молчаливое разрешение.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error) if !required && error.kind() == std::io::ErrorKind::NotFound => {
                     match std::fs::symlink_metadata(&path) {
                         Err(metadata_error)
                             if metadata_error.kind() == std::io::ErrorKind::NotFound =>
                         {
-                            continue;
+                            continue
                         }
-                        Ok(_) | Err(_) => {
-                            return Err(format!("{file_name}: файл не читается"));
-                        }
+                        Ok(_) | Err(_) => return Err(format!("{file_name}: файл не читается")),
                     }
                 }
-                Err(error) => {
-                    return Err(format!("{file_name}: файл не читается: {error}"));
-                }
+                Err(error) => return Err(format!("{file_name}: файл не читается: {error}")),
             };
             let parsed =
                 parse_policy(&text, known).map_err(|error| format!("{file_name}: {error}"))?;
@@ -158,6 +178,9 @@ fn parse_policy(text: &str, known: &[&str]) -> Result<DocumentationPolicy, Strin
                         match key.as_str() {
                             "network" => provider.network = Some(network_access(value)?),
                             "endpoint" => {
+                                if id == "kb-1ci" {
+                                    return Err("[providers.kb-1ci].endpoint не поддерживается; удалите ключ".to_string());
+                                }
                                 provider.endpoint = Some(
                                     value
                                         .as_str()
@@ -204,6 +227,114 @@ mod tests {
 
     fn workspace() -> tempfile::TempDir {
         tempfile::tempdir().expect("временный каталог")
+    }
+
+    #[test]
+    fn machine_policy_applies_to_multiple_workspaces_and_project_overlays_win_per_key() {
+        let common = workspace();
+        let path = common.path().join("policy.toml");
+        std::fs::write(&path, "[providers.kb-1ci]\nnetwork = \"deny\"\n[providers.v8std]\nnetwork = \"allow\"\nendpoint = \"http://common/mcp\"\n").unwrap();
+        let first = workspace();
+        let second = workspace();
+        for dir in [&first, &second] {
+            let policy = DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&path)).unwrap();
+            assert_eq!(policy.network("kb-1ci"), NetworkAccess::Deny);
+            assert_eq!(policy.network("v8std"), NetworkAccess::Allow);
+            assert_eq!(
+                policy.endpoint("v8std").as_deref(),
+                Some("http://common/mcp")
+            );
+        }
+        std::fs::write(
+            first.path().join("unica.toml"),
+            "[network]\ndefault = \"deny\"\n[providers.kb-1ci]\nnetwork = \"allow\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            first.path().join("unica.local.toml"),
+            "[providers.v8std]\nendpoint = \"http://local/mcp\"\n",
+        )
+        .unwrap();
+        let policy = DocumentationPolicy::load_layers(first.path(), KNOWN, Some(&path)).unwrap();
+        assert_eq!(policy.network("kb-1ci"), NetworkAccess::Allow);
+        assert_eq!(
+            policy.network("v8std"),
+            NetworkAccess::Allow,
+            "provider override remains stronger than a higher-layer default"
+        );
+        assert_eq!(
+            policy.endpoint("v8std").as_deref(),
+            Some("http://local/mcp")
+        );
+        assert_eq!(
+            DocumentationPolicy::load_layers(second.path(), KNOWN, Some(&path))
+                .unwrap()
+                .network("kb-1ci"),
+            NetworkAccess::Deny
+        );
+    }
+
+    #[test]
+    fn explicit_machine_policy_failure_cannot_be_masked_by_project_allow() {
+        let dir = workspace();
+        std::fs::write(
+            dir.path().join("unica.toml"),
+            "[network]\ndefault = \"allow\"\n",
+        )
+        .unwrap();
+        let common = workspace();
+        let path = common.path().join("policy.toml");
+        assert!(
+            DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&path)).is_err(),
+            "explicit missing file must refuse"
+        );
+        for text in [
+            "{invalid",
+            "[providers.unknown]\nnetwork = \"deny\"\n",
+            "[providers.kb-1ci]\nnetwork = \"denny\"\n",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&path)).is_err());
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&path)).is_err(),
+            "directory is not a readable policy file"
+        );
+    }
+
+    #[test]
+    fn machine_policy_requires_an_absolute_nonempty_path() {
+        let dir = workspace();
+        for path in [Path::new(""), Path::new("policy.toml")] {
+            assert!(DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(path)).is_err());
+        }
+    }
+
+    #[test]
+    fn kb_endpoint_is_rejected_in_every_policy_layer() {
+        for layer in 0..3 {
+            let common = workspace();
+            let dir = workspace();
+            let paths = [
+                common.path().join("policy.toml"),
+                dir.path().join("unica.toml"),
+                dir.path().join("unica.local.toml"),
+            ];
+            std::fs::write(&paths[0], "").unwrap();
+            std::fs::write(
+                &paths[layer],
+                "[providers.kb-1ci]\nendpoint = \"http://ignored.invalid\"\n",
+            )
+            .unwrap();
+            let error =
+                DocumentationPolicy::load_layers(dir.path(), KNOWN, Some(&paths[0])).unwrap_err();
+            assert!(
+                error.contains("providers.kb-1ci") && error.contains("endpoint"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

@@ -77,8 +77,9 @@ impl KbTransport for NetworkKbTransport {
         }
         let client = match &self.client {
             Some(client) => std::sync::Arc::clone(client),
-            None => unica_bootstrap::network::NetworkClient::shared()
-                .map_err(|error| error.to_string())?,
+            None => unica_bootstrap::network::NetworkClient::shared().map_err(|error| {
+                crate::infrastructure::documentation_policy::network_failure("kb-1ci", error)
+            })?,
         };
         client
             .get(
@@ -86,9 +87,13 @@ impl KbTransport for NetworkKbTransport {
                 &[("User-Agent", unica_bootstrap::network::DOCS_USER_AGENT)],
                 Some(Duration::from_secs(30)),
             )
-            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                crate::infrastructure::documentation_policy::network_failure("kb-1ci", error)
+            })?
             .into_string()
-            .map_err(|error| error.to_string())
+            .map_err(|error| {
+                crate::infrastructure::documentation_policy::network_failure("kb-1ci", error)
+            })
     }
 }
 
@@ -2343,12 +2348,26 @@ mod provider_tests {
         let developer = corpus_section(&sections, "kb-developer-guide");
         match &developer.status {
             DocumentationSectionStatus::Unavailable { detail, .. } => {
-                for expected in ["intercepted", "trust store", "HTTPS_PROXY"] {
+                for expected in [
+                    "intercepted",
+                    "trust store",
+                    "HTTPS_PROXY",
+                    "[providers.kb-1ci]",
+                    "network = \"deny\"",
+                ] {
                     assert!(detail.contains(expected), "{expected}: {detail}");
                 }
             }
             other => panic!("ожидался отказ площадки, получено {other:?}"),
         }
+        let error = provider.get(
+            &format!("{}/1C_Enterprise_Platform/Guides/Developer_Guides/1C_Enterprise_8.3.27_Developer_Guide/Test/", provider.base),
+            "en", &context,
+        ).unwrap().unwrap_err();
+        assert!(
+            error.contains("[providers.kb-1ci]") && error.contains("network = \"deny\""),
+            "{error}"
+        );
         assert!(stand.requests().is_empty(), "до HTTP дело не дошло");
     }
 
