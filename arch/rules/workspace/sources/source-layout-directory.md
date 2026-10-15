@@ -22,7 +22,7 @@ check:
   - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_checks_only_target_and_necessary_owner_on_public_mcp
   - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_alias
   - crates/unica-coder/tests/platform/v13_resolve_target_isolation.rs::resolve_path_does_not_inherit_the_search_source_set_limit
-gap: https://github.com/IngvarConsulting/unica/issues/976
+gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
 # Справочник раскладки связывает объект с его местом в исходниках
