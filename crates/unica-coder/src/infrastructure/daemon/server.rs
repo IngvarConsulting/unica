@@ -10545,7 +10545,7 @@ struct ActorLogicalReadLease {"#,
     }
 
     #[test]
-    fn public_metadata_apply_keeps_dry_run_and_real_plans_identical_for_four_supported_ops() {
+    fn public_metadata_apply_preview_is_index_write_free_and_matches_real_plan() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Documents")).unwrap();
@@ -10578,6 +10578,17 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
         let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
+        let index_context = crate::domain::workspace::WorkspaceContext {
+            cwd: workspace_hint.clone(),
+            workspace_root: workspace_hint.clone(),
+            cache_root: workspace_hint.join(".build/unica"),
+            workspace_epoch: 0,
+        };
+        let index_state_root = crate::infrastructure::workspace_index::rlm_provider_state_root(
+            &index_context,
+            &source,
+        )
+        .unwrap();
         let call = |arguments| {
             let request = InvocationRequest::new(
                 ToolIdentity::Apply,
@@ -10590,16 +10601,37 @@ struct ActorLogicalReadLease {"#,
         };
         let apply_pair = |operation: serde_json::Value| {
             let before = std::fs::read(&descriptor).unwrap();
+            let index_state_before = index_state_root
+                .exists()
+                .then(|| crate::test_support::tree_snapshot(&index_state_root));
+            let index_starts = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed_starts = std::rc::Rc::clone(&index_starts);
+            crate::infrastructure::workspace_index::set_isolated_build_start_observer_for_test(
+                Some(Box::new(move |_| {
+                    observed_starts.set(observed_starts.get() + 1)
+                })),
+            );
             let dry = call(serde_json::json!({
                 "at": "main:Document.Order",
                 "ops": [operation.clone()],
             }));
-            assert!(dry.ok, "dry-run failed: {dry:?}");
-            assert_eq!(std::fs::read(&descriptor).unwrap(), before);
             let repeated_dry = call(serde_json::json!({
                 "at": "main:Document.Order",
                 "ops": [operation.clone()],
             }));
+            crate::infrastructure::workspace_index::set_isolated_build_start_observer_for_test(
+                None,
+            );
+            assert!(dry.ok, "dry-run failed: {dry:?}");
+            assert_eq!(std::fs::read(&descriptor).unwrap(), before);
+            assert_eq!(index_starts.get(), 0, "preview started RLM indexing");
+            assert_eq!(
+                index_state_root
+                    .exists()
+                    .then(|| crate::test_support::tree_snapshot(&index_state_root)),
+                index_state_before,
+                "preview wrote RLM index state"
+            );
             assert_eq!(
                 dry.data.as_ref().unwrap()["planHash"],
                 repeated_dry.data.as_ref().unwrap()["planHash"],

@@ -1,7 +1,7 @@
 ---
 id: INV.CACHE.INDEX-PREVIEW-WRITE-FREE
 check:
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::dry_run_does_not_start_indexing_or_write_state
+  - crates/unica-coder/src/infrastructure/daemon/server.rs::public_metadata_apply_preview_is_index_write_free_and_matches_real_plan
 ---
 
 # Предпросмотр индексирования не запускает работу

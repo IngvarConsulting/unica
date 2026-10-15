@@ -6319,13 +6319,13 @@ fn extend_receipt_key_index<'a>(index: &mut Vec<Value>, keys: impl Iterator<Item
     }
     for key in keys {
         let digest = key.get("keyDigest").and_then(Value::as_str);
-        let already_indexed = match digest {
+        let digest_was_indexed = match digest {
             Some(digest) => by_digest
                 .get(digest)
                 .is_some_and(|positions| positions.iter().any(|&position| index[position] == *key)),
             None => index.iter().any(|existing| existing == key),
         };
-        if !already_indexed {
+        if !digest_was_indexed {
             let position = index.len();
             index.push(key.clone());
             if let Some(digest) = digest {

@@ -4,7 +4,7 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_index.rs::legacy_ready_marker_requires_an_isolated_build_before_becoming_active
   - crates/unica-coder/src/infrastructure/workspace_index.rs::legacy_status_and_lock_do_not_gate_builder_15
   - crates/unica-coder/src/infrastructure/workspace_index.rs::current_pair_scoped_builder_14_bytes_are_ignored_and_preserved
-  - crates/unica-coder/src/infrastructure/workspace_index.rs::builder_15_never_accepts_a_ready_db_reported_from_builder_14_storage
+  - crates/unica-coder/src/infrastructure/workspace_index.rs::active_build_rejects_legacy_mutable_generation
   - crates/unica-coder/src/infrastructure/workspace_index.rs::builder_17_uses_a_new_generation_and_leaves_older_generations_untouched
   - crates/unica-coder/src/infrastructure/workspace_index.rs::active_build_collects_an_idle_previous_generation_but_not_the_current_one
   - crates/unica-coder/src/infrastructure/rlm_generation_collection.rs::only_an_idle_previous_generation_is_removed_in_every_location

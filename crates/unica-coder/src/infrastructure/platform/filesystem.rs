@@ -5335,20 +5335,6 @@ pub(crate) fn host_directory_child_names_equal(
     }
 }
 
-/// Compares two path-component names using the lookup semantics of one
-/// existing host directory. This is the ambient-path counterpart of
-/// `RetainedDirectoryCapability::child_names_equivalent`.
-#[cfg(test)]
-pub(crate) fn host_directory_component_names_equivalent(
-    parent_path: &Path,
-    left: &std::ffi::OsStr,
-    right: &std::ffi::OsStr,
-) -> io::Result<bool> {
-    let parent_path = fs::canonicalize(parent_path)?;
-    let case_sensitive = host_filesystem_case_sensitive(&parent_path)?;
-    host_directory_child_names_equal(&parent_path, left, right, case_sensitive)
-}
-
 pub(crate) fn host_directory_child_identity(
     parent_path: &Path,
     child: &std::ffi::OsStr,

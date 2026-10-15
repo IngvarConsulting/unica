@@ -130,12 +130,6 @@ impl<'a> RlmNavigationAdapter<'a> {
                     &error,
                 )));
             }
-            Err(error) if error.contains("source revision") => {
-                return Ok(RlmNavigationOutcome::plain(index_unavailable_outcome(
-                    request,
-                    IndexReadiness::Unavailable(error),
-                )))
-            }
             Err(error) => return Err(error),
         };
         let _db_path = match readiness {
@@ -894,7 +888,7 @@ mod tests {
         };
         let result = RlmNavigationAdapter::with_client(&client).invoke_resolved_cancellable(
             &definition_request(),
-            &unready_index_context(),
+            &index_not_ready_context(),
             ProviderDeadline::no_deadline(),
             &CancellationToken::new(),
         );
@@ -916,7 +910,7 @@ mod tests {
         let outcome = RlmNavigationAdapter::with_client(&client)
             .invoke_resolved_cancellable(
                 &definition_request(),
-                &unready_index_context(),
+                &index_not_ready_context(),
                 ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
                 &CancellationToken::new(),
             )
@@ -948,7 +942,7 @@ mod tests {
         let outcome = RlmNavigationAdapter::with_client(&client)
             .invoke_resolved_cancellable(
                 &definition_request(),
-                &unready_index_context(),
+                &index_not_ready_context(),
                 ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
                 &cancellation,
             )
@@ -976,7 +970,7 @@ mod tests {
         let outcome = RlmNavigationAdapter::with_client(&client)
             .invoke_resolved_cancellable(
                 &definition_request(),
-                &unready_index_context(),
+                &index_not_ready_context(),
                 ProviderDeadline::with_clock(started_at + Duration::from_millis(200), manual_now),
                 &cancellation,
             )
@@ -996,32 +990,7 @@ mod tests {
         readiness: IndexReadiness,
     }
 
-    struct UnsupportedRevisionFenceClient;
-
     struct PostExecutionUnreadyClient;
-
-    impl RlmNavigationClient for UnsupportedRevisionFenceClient {
-        fn readiness(
-            &self,
-            _context: &WorkspaceContext,
-            _source_root: &Path,
-            _timeout: Duration,
-            _cancellation: &CancellationToken,
-        ) -> Result<IndexReadiness, String> {
-            Err("source revision fence is unsupported; freshness cannot be proven".to_string())
-        }
-
-        fn call(
-            &self,
-            _context: &WorkspaceContext,
-            _source_root: &Path,
-            _operation: WorkspaceRlmOperation,
-            _timeout: Duration,
-            _cancellation: &CancellationToken,
-        ) -> Result<WorkspaceServiceRlmCall, String> {
-            panic!("an unavailable revision fence must stop before the RLM call")
-        }
-    }
 
     impl RlmNavigationClient for PostExecutionUnreadyClient {
         fn readiness(
@@ -1073,21 +1042,21 @@ mod tests {
         }
     }
 
-    fn unready_index_outcome(
+    fn index_not_ready_outcome(
         request: &CodeIntelligenceReadRequest,
         readiness: IndexReadiness,
     ) -> super::RlmNavigationOutcome {
         RlmNavigationAdapter::with_client(&UnreadyClient { readiness })
             .invoke_resolved_cancellable(
                 request,
-                &unready_index_context(),
+                &index_not_ready_context(),
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
                 &CancellationToken::new(),
             )
             .expect("a not-ready index must be reported as an outcome")
     }
 
-    fn unready_index_context() -> CodeIntelligenceContext {
+    fn index_not_ready_context() -> CodeIntelligenceContext {
         let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware");
         CodeIntelligenceContext::new(
@@ -1144,7 +1113,7 @@ mod tests {
                 false,
             ),
         ] {
-            let result = unready_index_outcome(&request, readiness);
+            let result = index_not_ready_outcome(&request, readiness);
             let outcome = result.outcome;
             assert!(!outcome.ok, "{prefix}: {outcome:?}");
             assert!(outcome.warnings.is_empty(), "{prefix}: {outcome:?}");
@@ -1163,32 +1132,11 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_revision_fence_is_a_typed_unavailable_read_not_a_transport_error() {
-        let result = RlmNavigationAdapter::with_client(&UnsupportedRevisionFenceClient)
-            .invoke_resolved_cancellable(
-                &definition_request(),
-                &unready_index_context(),
-                ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
-                &CancellationToken::new(),
-            )
-            .expect("provider availability belongs in the typed tool result");
-
-        assert!(!result.outcome.ok);
-        assert_eq!(result.outcome.errors.len(), 1);
-        assert!(
-            result.outcome.errors[0].starts_with("index_unavailable:"),
-            "{:?}",
-            result.outcome.errors
-        );
-        assert!(result.data.is_none());
-    }
-
-    #[test]
     fn post_execution_stale_generation_uses_the_same_readiness_mapper() {
         let result = RlmNavigationAdapter::with_client(&PostExecutionUnreadyClient)
             .invoke_resolved_cancellable(
                 &definition_request(),
-                &unready_index_context(),
+                &index_not_ready_context(),
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
                 &CancellationToken::new(),
             )
@@ -1204,7 +1152,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_readiness_is_reported_as_cancellation_not_as_an_index_failure() {
-        let outcome = unready_index_outcome(
+        let outcome = index_not_ready_outcome(
             &definition_request(),
             IndexReadiness::Unavailable("cancelled: readiness stopped".to_string()),
         )
@@ -1226,7 +1174,7 @@ mod tests {
         let error = RlmNavigationAdapter::with_client(&client)
             .invoke_resolved_cancellable(
                 &outline_request(),
-                &unready_index_context(),
+                &index_not_ready_context(),
                 ProviderDeadline::new(Instant::now() + Duration::from_secs(1)),
                 &CancellationToken::new(),
             )
