@@ -8277,7 +8277,6 @@ pub(crate) mod tests {
             "Catalog.Items.Form.../Outside",
             "Catalog.Bad:Name",
             "Catalog.Items.Form.Bad:Name",
-            "Enum.Kinds.EnumValue.First",
             "Catalog.",
             "Catalog.Items.Form.",
         ] {
@@ -8298,6 +8297,10 @@ pub(crate) mod tests {
     fn legacy_cfe_borrow_rejects_enum_value_without_writes() {
         let context = temp_context("legacy-enum-value-rejected");
         write_minimal_borrow_fixture(&context, "2.20", "2.20", "2.20", None);
+        write_file(
+            &context.cwd.join("src/Enums/Kinds.xml"),
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Enum uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Kinds</Name></Properties><ChildObjects><EnumValue uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>First</Name></Properties></EnumValue></ChildObjects></Enum></MetaDataObject>"#,
+        );
         let mut args = minimal_borrow_args();
         args.insert("Object".to_string(), json!("Enum.Kinds.EnumValue.First"));
         let before = crate::test_support::tree_snapshot(&context.cwd);
@@ -8305,6 +8308,9 @@ pub(crate) mod tests {
         let outcome = borrow_cfe(&args, &context);
 
         assert!(!outcome.ok, "{outcome:?}");
+        let error = outcome.errors.join("\n");
+        assert!(error.contains("Source object not found"), "{error}");
+        assert!(error.contains("Kinds.EnumValue.First.xml"), "{error}");
         assert_eq!(crate::test_support::tree_snapshot(&context.cwd), before);
         fs::remove_dir_all(&context.cwd).unwrap();
     }

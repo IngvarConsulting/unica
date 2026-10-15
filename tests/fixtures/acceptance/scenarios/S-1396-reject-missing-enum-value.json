@@ -20,7 +20,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_source: EnumValue 'НесуществующееЗначение' is missing or ambiguous in parent Enum",
+      "refusal": "not_found: EnumValue 'НесуществующееЗначение' is missing in parent Enum",
       "fileAssertions": [
         {
           "kind": "exists",

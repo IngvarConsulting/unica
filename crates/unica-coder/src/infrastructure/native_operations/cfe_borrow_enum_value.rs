@@ -1,6 +1,7 @@
 //! Точечное заимствование EnumValue из описания перечисления-владельца.
 use super::common::escape_xml;
 use roxmltree::{Document, Node};
+use std::collections::BTreeMap;
 
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -54,24 +55,9 @@ fn owner<'a, 'input>(document: &'a Document<'input>) -> Result<Node<'a, 'input>,
 }
 
 fn selected<'a, 'input>(owner: Node<'a, 'input>, name: &str) -> Result<Node<'a, 'input>, String> {
-    if name.is_empty() {
-        return Err("EnumValue name must not be empty".to_string());
-    }
-    let mut matches = Vec::new();
+    let value = named_value(owner, name)?
+        .ok_or_else(|| format!("EnumValue '{name}' is missing or ambiguous in parent Enum"))?;
     let values = child(owner, "ChildObjects")?;
-    for value in values
-        .children()
-        .filter(|n| n.has_tag_name((MD, "EnumValue")))
-    {
-        if text(child(value, "Properties")?, "Name")? == name {
-            matches.push(value);
-        }
-    }
-    let [value] = matches.as_slice() else {
-        return Err(format!(
-            "EnumValue '{name}' is missing or ambiguous in parent Enum"
-        ));
-    };
     let uuid = value.attribute("uuid").unwrap_or_default();
     guid(uuid)?;
     if uuid.eq_ignore_ascii_case(owner.attribute("uuid").unwrap()) {
@@ -89,7 +75,67 @@ fn selected<'a, 'input>(owner: Node<'a, 'input>, name: &str) -> Result<Node<'a, 
     {
         return Err("Parent EnumValue UUID is ambiguous".to_string());
     }
-    Ok(*value)
+    Ok(value)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnumValueLookupErrorKind {
+    NotFound,
+    InvalidSource,
+}
+
+#[derive(Debug)]
+pub(crate) struct EnumValueLookupError {
+    pub(crate) kind: EnumValueLookupErrorKind,
+    message: String,
+}
+
+impl EnumValueLookupError {
+    fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            kind: EnumValueLookupErrorKind::NotFound,
+            message: message.into(),
+        }
+    }
+
+    fn invalid_source(message: impl Into<String>) -> Self {
+        Self {
+            kind: EnumValueLookupErrorKind::InvalidSource,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for EnumValueLookupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for EnumValueLookupError {}
+
+fn named_value<'a, 'input>(
+    owner: Node<'a, 'input>,
+    name: &str,
+) -> Result<Option<Node<'a, 'input>>, String> {
+    if name.is_empty() {
+        return Err("EnumValue name must not be empty".to_string());
+    }
+    let values = child(owner, "ChildObjects")?;
+    let mut matches = Vec::new();
+    for value in values
+        .children()
+        .filter(|node| node.has_tag_name((MD, "EnumValue")))
+    {
+        if text(child(value, "Properties")?, "Name")? == name {
+            matches.push(value);
+        }
+    }
+    match matches.as_slice() {
+        [] => Ok(None),
+        [value] => Ok(Some(*value)),
+        _ => Err(format!("EnumValue '{name}' is ambiguous in Enum")),
+    }
 }
 
 fn optional_property<'a, 'input>(
@@ -107,73 +153,130 @@ fn optional_property<'a, 'input>(
     }
 }
 
-fn desired_property(source: Option<Node<'_, '_>>, tag: &str) -> String {
-    source
-        .map(super::cfe_borrow_object::standalone_fragment)
-        .unwrap_or_else(|| format!("<{tag} xmlns=\"{MD}\"/>"))
-}
-
-fn update_transferred_properties(
-    existing_text: &str,
-    existing_value: Node<'_, '_>,
-    source_value: Node<'_, '_>,
-) -> Result<Option<String>, String> {
-    let existing_properties = child(existing_value, "Properties")?;
-    let source_properties = child(source_value, "Properties")?;
-    let mut edits = Vec::new();
-    let mut missing = Vec::new();
-
-    for tag in ["Synonym", "Comment"] {
-        let existing = optional_property(existing_properties, tag)?;
-        let desired = desired_property(optional_property(source_properties, tag)?, tag);
-        let desired_doc = Document::parse(&desired).map_err(|e| e.to_string())?;
-        if let Some(current) = existing {
-            if !super::cfe_borrow_object::equivalent(current, desired_doc.root_element()) {
-                edits.push((current.range(), desired));
-            }
+fn canonical_element(node: Node<'_, '_>, depth: usize, newline: &str) -> Result<String, String> {
+    let indent = "\t".repeat(depth);
+    let tag =
+        super::cfe::cfe_borrow_prefixed_name(node.tag_name().namespace(), node.tag_name().name());
+    let attributes = node
+        .attributes()
+        .map(|attribute| {
+            let name =
+                super::cfe::cfe_borrow_prefixed_name(attribute.namespace(), attribute.name());
+            format!(" {name}=\"{}\"", escape_xml(attribute.value()))
+        })
+        .collect::<String>();
+    let elements = node
+        .children()
+        .filter(|child| child.is_element())
+        .collect::<Vec<_>>();
+    if elements.is_empty() {
+        let value = node.text().unwrap_or_default();
+        return if value.is_empty() {
+            Ok(format!("{indent}<{tag}{attributes}/>"))
         } else {
-            missing.push(desired);
-        }
-    }
-    if edits.is_empty() && missing.is_empty() {
-        return Ok(None);
-    }
-
-    if !missing.is_empty() {
-        let properties_range = existing_properties.range();
-        let closing = properties_range.start
-            + existing_text[properties_range.clone()]
-                .rfind("</")
-                .ok_or("EnumValue Properties has no closing tag")?;
-        let newline = if existing_text.contains("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
+            Ok(format!(
+                "{indent}<{tag}{attributes}>{}</{tag}>",
+                escape_xml(value)
+            ))
         };
-        let insertion = missing
-            .into_iter()
-            .map(|property| format!("\t\t\t\t\t{property}{newline}"))
-            .collect::<String>();
-        edits.push((closing..closing, insertion));
     }
-
-    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
-    let mut result = existing_text.to_string();
-    for (range, replacement) in edits {
-        result.replace_range(range, &replacement);
+    if node
+        .children()
+        .filter(|child| child.is_text())
+        .any(|child| !child.text().unwrap_or_default().trim().is_empty())
+    {
+        return Err(format!("Mixed content is not supported in EnumValue {tag}"));
     }
-    Ok(Some(result))
+    let children = elements
+        .into_iter()
+        .map(|child| canonical_element(child, depth + 1, newline))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(newline);
+    Ok(format!(
+        "{indent}<{tag}{attributes}>{newline}{children}{newline}{indent}</{tag}>"
+    ))
 }
 
-pub(crate) fn enum_value_source_uuid(parent: &[u8], name: &str) -> Result<String, String> {
+fn canonical_property(
+    source: Option<Node<'_, '_>>,
+    tag: &str,
+    depth: usize,
+    newline: &str,
+) -> Result<String, String> {
+    source.map_or_else(
+        || Ok(format!("{}<{tag}/>", "\t".repeat(depth))),
+        |node| canonical_element(node, depth, newline),
+    )
+}
+
+pub(crate) fn enum_value_source_uuid(
+    parent: &[u8],
+    name: &str,
+) -> Result<String, EnumValueLookupError> {
     let raw = std::str::from_utf8(parent)
-        .map_err(|e| e.to_string())?
+        .map_err(|error| EnumValueLookupError::invalid_source(error.to_string()))?
         .trim_start_matches('\u{feff}');
-    let document = Document::parse(raw).map_err(|e| e.to_string())?;
-    Ok(selected(owner(&document)?, name)?
-        .attribute("uuid")
-        .unwrap()
-        .to_string())
+    let document = Document::parse(raw)
+        .map_err(|error| EnumValueLookupError::invalid_source(error.to_string()))?;
+    let owner = owner(&document).map_err(EnumValueLookupError::invalid_source)?;
+    let value = named_value(owner, name)
+        .map_err(EnumValueLookupError::invalid_source)?
+        .ok_or_else(|| {
+            EnumValueLookupError::not_found(format!("EnumValue '{name}' is missing in parent Enum"))
+        })?;
+    let uuid = value.attribute("uuid").unwrap_or_default();
+    guid(uuid).map_err(EnumValueLookupError::invalid_source)?;
+    if uuid.eq_ignore_ascii_case(owner.attribute("uuid").unwrap()) {
+        return Err(EnumValueLookupError::invalid_source(
+            "Parent EnumValue UUID collides with its owner",
+        ));
+    }
+    let values = child(owner, "ChildObjects").map_err(EnumValueLookupError::invalid_source)?;
+    if values
+        .children()
+        .filter(|node| {
+            node.has_tag_name((MD, "EnumValue"))
+                && node
+                    .attribute("uuid")
+                    .is_some_and(|id| id.eq_ignore_ascii_case(uuid))
+        })
+        .count()
+        != 1
+    {
+        return Err(EnumValueLookupError::invalid_source(
+            "Parent EnumValue UUID is ambiguous",
+        ));
+    }
+    Ok(uuid.to_string())
+}
+
+pub(crate) fn enum_value_properties(
+    descriptor: &[u8],
+    name: &str,
+) -> Result<Option<BTreeMap<String, String>>, EnumValueLookupError> {
+    let raw = std::str::from_utf8(descriptor)
+        .map_err(|error| EnumValueLookupError::invalid_source(error.to_string()))?
+        .trim_start_matches('\u{feff}');
+    let document = Document::parse(raw)
+        .map_err(|error| EnumValueLookupError::invalid_source(error.to_string()))?;
+    let owner = owner(&document).map_err(EnumValueLookupError::invalid_source)?;
+    let Some(value) = named_value(owner, name).map_err(EnumValueLookupError::invalid_source)?
+    else {
+        return Ok(None);
+    };
+    let properties = child(value, "Properties").map_err(EnumValueLookupError::invalid_source)?;
+    Ok(Some(
+        properties
+            .children()
+            .filter(|node| node.is_element())
+            .map(|node| {
+                (
+                    node.tag_name().name().to_string(),
+                    raw[node.range()].to_string(),
+                )
+            })
+            .collect(),
+    ))
 }
 
 pub(crate) fn plan_borrow_enum_value(
@@ -250,17 +353,11 @@ pub(crate) fn plan_borrow_enum_value(
     }
     match same_name.len() {
         1 => {
-            let Some(result) = update_transferred_properties(existing_text, same_name[0], source)?
-            else {
-                return Ok(existing_enum.to_vec());
-            };
-            Document::parse(&result).map_err(|e| e.to_string())?;
-            let mut bytes = Vec::new();
-            if existing_enum.starts_with(&[0xef, 0xbb, 0xbf]) {
-                bytes.extend_from_slice(&[0xef, 0xbb, 0xbf]);
+            let properties = child(same_name[0], "Properties")?;
+            for tag in ["Synonym", "Comment"] {
+                optional_property(properties, tag)?;
             }
-            bytes.extend_from_slice(result.as_bytes());
-            return Ok(bytes);
+            return Ok(existing_enum.to_vec());
         }
         0 => (),
         _ => return Err("Destination EnumValue name is ambiguous".to_string()),
@@ -272,14 +369,33 @@ pub(crate) fn plan_borrow_enum_value(
         return Err("Borrowed EnumValue must have a distinct extension UUID".to_string());
     }
     let source_props = child(source, "Properties")?;
-    let synonym = desired_property(optional_property(source_props, "Synonym")?, "Synonym");
-    let comment = desired_property(optional_property(source_props, "Comment")?, "Comment");
     let newline = if existing_text.contains("\r\n") {
         "\r\n"
     } else {
         "\n"
     };
-    let fragment = format!("\t\t\t<EnumValue xmlns=\"{MD}\" uuid=\"{}\">{newline}\t\t\t\t<Properties>{newline}\t\t\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>{newline}\t\t\t\t\t<Name>{}</Name>{newline}\t\t\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>{newline}\t\t\t\t\t{synonym}{newline}\t\t\t\t\t{comment}{newline}\t\t\t\t</Properties>{newline}\t\t\t</EnumValue>", escape_xml(value_uuid),escape_xml(name),escape_xml(source_uuid));
+    let synonym = canonical_property(
+        optional_property(source_props, "Synonym")?,
+        "Synonym",
+        5,
+        newline,
+    )?;
+    let fragment = [
+        format!("\t\t\t<EnumValue uuid=\"{}\">", escape_xml(value_uuid)),
+        "\t\t\t\t<InternalInfo/>".to_string(),
+        "\t\t\t\t<Properties>".to_string(),
+        "\t\t\t\t\t<ObjectBelonging>Adopted</ObjectBelonging>".to_string(),
+        format!("\t\t\t\t\t<Name>{}</Name>", escape_xml(name)),
+        synonym,
+        "\t\t\t\t\t<Comment/>".to_string(),
+        format!(
+            "\t\t\t\t\t<ExtendedConfigurationObject>{}</ExtendedConfigurationObject>",
+            escape_xml(source_uuid)
+        ),
+        "\t\t\t\t</Properties>".to_string(),
+        "\t\t\t</EnumValue>".to_string(),
+    ]
+    .join(newline);
     if let Some(offset) =
         super::meta::platform_child_object_insertion_offset(existing_text, "EnumValue")
     {
@@ -303,11 +419,23 @@ pub(crate) fn plan_borrow_enum_value(
         format!("{}>{newline}{fragment}{newline}\t\t</{qname}>", open)
     } else {
         let end = raw.rfind("</").ok_or("ChildObjects has no closing tag")?;
-        format!(
-            "{}{newline}{fragment}{newline}\t\t{}",
-            &raw[..end],
-            &raw[end..]
-        )
+        let line_start = raw[..end].rfind('\n').map_or(end, |index| index + 1);
+        if raw[line_start..end]
+            .chars()
+            .all(|character| character == '\t' || character == ' ' || character == '\r')
+        {
+            format!(
+                "{}{fragment}{newline}{}",
+                &raw[..line_start],
+                &raw[line_start..]
+            )
+        } else {
+            format!(
+                "{}{newline}{fragment}{newline}\t\t{}",
+                &raw[..end],
+                &raw[end..]
+            )
+        }
     };
     let mut result = existing_text.to_string();
     result.replace_range(range, &replacement);
@@ -323,6 +451,7 @@ pub(crate) fn plan_borrow_enum_value(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     pub(crate) const PARENT: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:core="http://v8.1c.ru/8.1/data/core" version="2.20"><Enum uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Kinds</Name><Synonym/><Comment/></Properties><ChildObjects><EnumValue uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>First</Name><Synonym><core:item><core:lang>ru</core:lang><core:content>Первое &amp; значение</core:content></core:item></Synonym><Comment>Источник</Comment></Properties></EnumValue><EnumValue uuid="33333333-3333-4333-8333-333333333333"><Properties><Name>Second</Name><Synonym/><Comment/></Properties></EnumValue></ChildObjects></Enum></MetaDataObject>"#;
     const VALUE_UUID: &str = "44444444-4444-4444-8444-444444444444";
 
@@ -377,6 +506,19 @@ pub(crate) mod tests {
             .has_tag_name(("http://v8.1c.ru/8.1/data/core", "content"))
             && n.text() == Some("Первое & значение")));
 
+        let mut local = String::from_utf8(second.clone())
+            .unwrap()
+            .replace("Первое &amp; значение", "Локальный синоним");
+        let comment_range = {
+            let document = Document::parse(local.trim_start_matches('\u{feff}')).unwrap();
+            let value = named_value(owner(&document).unwrap(), "First")
+                .unwrap()
+                .unwrap();
+            child(child(value, "Properties").unwrap(), "Comment")
+                .unwrap()
+                .range()
+        };
+        local.replace_range(comment_range, "<Comment>Локальный комментарий</Comment>");
         let refreshed_parent = PARENT
             .replace("Первое &amp; значение", "Обновлённое значение")
             .replace(
@@ -385,7 +527,7 @@ pub(crate) mod tests {
             );
         let refreshed = plan_borrow_enum_value(
             refreshed_parent.as_bytes(),
-            &second,
+            local.as_bytes(),
             "First",
             "77777777-7777-4777-8777-777777777777",
         )
@@ -403,11 +545,11 @@ pub(crate) mod tests {
         assert_eq!(refreshed_values[0].attribute("uuid"), Some(VALUE_UUID));
         assert_eq!(
             text(child(refreshed_values[0], "Properties").unwrap(), "Comment").unwrap(),
-            "Новый комментарий"
+            "Локальный комментарий"
         );
         assert!(refreshed_values[0].descendants().any(|n| n
             .has_tag_name(("http://v8.1c.ru/8.1/data/core", "content"))
-            && n.text() == Some("Обновлённое значение")));
+            && n.text() == Some("Локальный синоним")));
         assert_eq!(
             refreshed_values[1].attribute("uuid"),
             Some("55555555-5555-4555-8555-555555555555")
@@ -422,6 +564,45 @@ pub(crate) mod tests {
             .unwrap(),
             refreshed
         );
+    }
+
+    #[test]
+    fn emitted_enum_value_matches_platform_8_3_27_export_byte_for_byte() {
+        let expected = include_bytes!(
+            "../../../../../tests/fixtures/platform_8_3_27/cfe_borrow/extension-enum-value.xml"
+        );
+        let manifest: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../tests/fixtures/platform_8_3_27/cfe_borrow/manifest.json"
+        ))
+        .unwrap();
+        let digest = Sha256::digest(expected)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            manifest["files"]["extension-enum-value.xml"]["sha256"].as_str(),
+            Some(digest.as_str()),
+            "платформенная фикстура расходится с закреплённым manifest"
+        );
+        let expected_text = std::str::from_utf8(expected).unwrap();
+        let bomless = expected_text.trim_start_matches('\u{feff}');
+        let document = Document::parse(bomless).unwrap();
+        let children = child(owner(&document).unwrap(), "ChildObjects").unwrap();
+        let mut shell = bomless.to_string();
+        shell.replace_range(children.range(), "<ChildObjects/>");
+        let mut shell_bytes = vec![0xef, 0xbb, 0xbf];
+        shell_bytes.extend_from_slice(shell.as_bytes());
+        let parent = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20"><Enum uuid="67e85b9a-a138-49ea-b474-04475f0f8c90"><Properties><Name>ВажностьПроблемыУчета</Name></Properties><ChildObjects><EnumValue uuid="5d990585-02dd-4a13-8dfa-920df7d1dbb0"><Properties><Name>Ошибка</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Ошибка</v8:content></v8:item></Synonym><Comment>Комментарий родителя</Comment></Properties></EnumValue></ChildObjects></Enum></MetaDataObject>"#;
+
+        let actual = plan_borrow_enum_value(
+            parent.as_bytes(),
+            &shell_bytes,
+            "Ошибка",
+            "d358236d-65b3-8aa1-9d6f-61d4694dcda9",
+        )
+        .unwrap();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -456,6 +637,11 @@ pub(crate) mod tests {
     #[test]
     fn enum_value_borrow_refuses_missing_duplicate_and_foreign_values() {
         let original = shell();
+        let missing = enum_value_source_uuid(PARENT.as_bytes(), "Missing").unwrap_err();
+        assert_eq!(missing.kind, EnumValueLookupErrorKind::NotFound);
+        let damaged_owner = PARENT.replace("<ChildObjects>", "<MissingChildObjects>");
+        let damaged = enum_value_source_uuid(damaged_owner.as_bytes(), "First").unwrap_err();
+        assert_eq!(damaged.kind, EnumValueLookupErrorKind::InvalidSource);
         assert!(
             plan_borrow_enum_value(PARENT.as_bytes(), &original, "Missing", VALUE_UUID).is_err()
         );

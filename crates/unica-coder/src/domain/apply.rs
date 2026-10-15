@@ -103,13 +103,7 @@ impl ApplyRequest {
                     ApplyValidationError::bad_value(&location, error.to_string())
                 })?;
                 if !available_source_sets.contains(&parent.source_set())
-                    || parent.source_set() == at.source_set()
-                    || !(parent.segments().len() == 1
-                        || (parent.segments().len() == 2
-                            && parent.segments()[0].kind() == NodeKind::Enum
-                            && parent.segments()[1].kind() == NodeKind::EnumValue
-                            && parent.segments()[1].name().is_some()))
-                    || parent.segments()[0].name().is_none()
+                    || !valid_borrow_source(&parent, at.source_set())
                 {
                     return Err(ApplyValidationError::bad_value(&location, "from must name a top-level object or Enum.EnumValue in a distinct admitted parent source set"));
                 }
@@ -214,6 +208,16 @@ impl ApplyRequest {
     pub(crate) fn if_rev(&self) -> Option<&str> {
         self.if_rev.as_deref()
     }
+}
+
+pub(crate) fn valid_borrow_source(parent: &QualifiedAddress, destination_source_set: &str) -> bool {
+    parent.source_set() != destination_source_set
+        && (parent.segments().len() == 1
+            || (parent.segments().len() == 2
+                && parent.segments()[0].kind() == NodeKind::Enum
+                && parent.segments()[1].kind() == NodeKind::EnumValue
+                && parent.segments()[1].name().is_some()))
+        && parent.segments()[0].name().is_some()
 }
 
 fn parse_address(
