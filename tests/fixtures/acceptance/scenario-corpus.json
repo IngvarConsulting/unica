@@ -14929,7 +14929,7 @@
    "name": "code-insert-method-and-anchor-line-boundaries",
    "pr": 1292,
    "area": "Код BSL",
-   "task": "Anchor before/after учитывает только методы; method before/after сохраняет аннотацию и соседей; точный post-image и повтор без записи",
+   "task": "Anchor before/after учитывает только методы; method before встаёт над документирующим комментарием и аннотацией метода, after — после его окончания, соседи сохраняются; точный post-image и повтор без записи",
    "workspace": "tests/fixtures/acceptance/workspace-code",
    "wire": [
     {
@@ -15695,7 +15695,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15776,7 +15776,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15852,7 +15852,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -15933,7 +15933,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "565ec1fb5677a5f289304a68da605b5acf55da86728151b55fcd70bce6451156"
+       "eq": "371d0123a4fa1951c76b0ead1d7b79aeff00621ba3db75bc3d6c8f21be9950f9"
       },
       {
        "kind": "sha256",
@@ -16009,7 +16009,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -16090,7 +16090,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
@@ -16166,7 +16166,7 @@
       {
        "kind": "sha256",
        "path": "src/cf/CommonModules/Пример/Ext/Module.bsl",
-       "eq": "1d7b90d6c66aa81011f740976e882e117453ba1953a7ed1e89de8f362a07d1a5"
+       "eq": "37585470091bd6f570d628d92a804d0be7d1b4fd81f20b794a1f1aeaa6751671"
       },
       {
        "kind": "sha256",
