@@ -9283,6 +9283,97 @@ pub(crate) mod tests {
         fixture.cleanup();
     }
 
+    /// Issue #1483: ожидающие токены удерживают корни и отпечатки, но не
+    /// дескриптор исходника, кеша или родительского маршрута каждой замены.
+    #[test]
+    fn saved_apply_plans_do_not_retain_per_change_descriptors() {
+        use crate::infrastructure::platform::testing::open_handle_count_for_test;
+
+        const PLAN_COUNT: usize = 8;
+        const CHANGES_PER_PLAN: usize = 16;
+
+        let fixture = actor_fixture("saved-plan-bounded-write-descriptors", &["main"]);
+        let source = &fixture.roots[0];
+        for index in 0..CHANGES_PER_PLAN {
+            let relative = PathBuf::from(format!("Nested/Item{index}/Ext/Module.bsl"));
+            std::fs::create_dir_all(source.join(relative.parent().unwrap())).unwrap();
+            std::fs::write(source.join(relative), b"before").unwrap();
+        }
+        let cache_state = fixture.root.join(".build/unica/state.json");
+        std::fs::create_dir_all(cache_state.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cache_state,
+            serde_json::to_vec(&serde_json::json!({
+                "workspace_root": fixture.root.display().to_string(),
+                "workspace_epoch": 1,
+                "caches": {}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let binding = fixture.actor.bind_provider_root("main", source).unwrap();
+        let before = open_handle_count_for_test().unwrap();
+
+        let mut tokens = Vec::new();
+        let mut after_one_change_plan = before;
+        for plan in 0..=PLAN_COUNT {
+            let admission = fixture
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            let mut state = admission.staged_state().unwrap();
+            let mut effects = PlannedApplyEffects::default();
+            let change_count = if plan == 0 { 1 } else { CHANGES_PER_PLAN };
+            for index in 0..change_count {
+                let relative = PathBuf::from(format!("Nested/Item{index}/Ext/Module.bsl"));
+                state
+                    .replace(
+                        &relative,
+                        b"before",
+                        format!("after-{plan}-{index}").into_bytes(),
+                    )
+                    .unwrap();
+                effects.append(crate::domain::events::DomainEvent::new(
+                    DomainEventKind::ModuleChanged,
+                    format!("main:{}", relative.display()),
+                ));
+            }
+            let batch = admission.prepare_with_effects(state, effects).unwrap();
+            let preview = fixture.actor.preview_prepared_apply(&batch).unwrap();
+            tokens.push(
+                fixture
+                    .actor
+                    .save_prepared_apply(
+                        batch,
+                        crate::domain::invocation::DomainResult::success(format!(
+                            "preview-{}",
+                            preview.rev()
+                        )),
+                    )
+                    .unwrap(),
+            );
+            if plan == 0 {
+                after_one_change_plan = open_handle_count_for_test().unwrap();
+            }
+        }
+
+        let after = open_handle_count_for_test().unwrap();
+        let fixed_plan_cost = after_one_change_plan.saturating_sub(before);
+        let many_change_plan_cost = after.saturating_sub(after_one_change_plan);
+        assert!(
+            many_change_plan_cost <= PLAN_COUNT * fixed_plan_cost,
+            "{PLAN_COUNT} pending plans with {CHANGES_PER_PLAN} changes retained {many_change_plan_cost} handles after one-change plan cost {fixed_plan_cost}"
+        );
+        assert_eq!(tokens.len(), PLAN_COUNT + 1);
+        fixture.cleanup();
+    }
+
     #[test]
     fn saved_apply_executes_exact_preview_after_old_invocation_stops_and_replays_once() {
         let fixture = actor_fixture("saved-plan-delayed-execution", &["main"]);
@@ -9653,6 +9744,7 @@ pub(crate) mod tests {
         changed.extend_from_slice(b"\n");
         std::fs::write(&form, changed).unwrap();
         let before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
         let result = fixture
             .actor
             .execute_saved_apply(
@@ -9675,6 +9767,10 @@ pub(crate) mod tests {
             result.summary
         );
         assert_eq!(snapshot_tree(&fixture.roots[0]), before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
         let replay = fixture
             .actor
             .execute_saved_apply(
@@ -9685,6 +9781,127 @@ pub(crate) mod tests {
             )
             .unwrap();
         assert_eq!(replay, result);
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_rechecks_same_inode_same_length_hash_before_first_write() {
+        use crate::infrastructure::native_operations::compile_transaction::take_retained_apply_observed_events;
+        use crate::infrastructure::platform::filesystem::file_identity;
+
+        let fixture = actor_fixture("saved-plan-same-inode-hash", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let form = fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml");
+        let before = std::fs::read(&form).unwrap();
+        let identity_before = file_identity(&std::fs::File::open(&form).unwrap()).unwrap();
+        let mut changed = before.clone();
+        changed[0] ^= 1;
+        std::fs::write(&form, &changed).unwrap();
+        let identity_after = file_identity(&std::fs::File::open(&form).unwrap()).unwrap();
+        assert_eq!(
+            identity_after, identity_before,
+            "правка должна сохранить inode"
+        );
+        assert_eq!(changed.len(), before.len(), "правка должна сохранить длину");
+        assert_ne!(changed, before, "правка должна изменить байты");
+
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+        let _ = take_retained_apply_observed_events();
+        let refusal_kind = std::cell::Cell::new(None);
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                |result, publication| {
+                    refusal_kind.set(publication.as_ref().err().map(|error| error.kind()));
+                    finish_saved_apply_test(result, publication)
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !result.ok,
+            "изменённый хеш должен устарить сохранённый план"
+        );
+        assert_eq!(
+            refusal_kind.get(),
+            Some(super::ApplyPublicationErrorKind::ConcurrentRevision)
+        );
+        assert!(result.summary.contains("Form.xml"), "{}", result.summary);
+        assert!(
+            result.summary.contains("source write target"),
+            "{}",
+            result.summary
+        );
+        assert!(
+            take_retained_apply_observed_events().is_empty(),
+            "проверка хеша должна завершиться до первой записи исходников или кеша"
+        );
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
+        fixture.cleanup();
+    }
+
+    #[test]
+    fn saved_apply_refuses_a_disappeared_write_target_without_writing_cache() {
+        let fixture = actor_fixture("saved-plan-missing-write-target", &["main"]);
+        write_actor_event_fixture(&fixture.roots[0]);
+        let binding = fixture
+            .actor
+            .bind_provider_root("main", &fixture.roots[0])
+            .unwrap();
+        let batch =
+            prepare_property_effect_batch(&fixture, &binding, true, &CancellationToken::new());
+        fixture.actor.preview_prepared_apply(&batch).unwrap();
+        let token = fixture
+            .actor
+            .save_prepared_apply(
+                batch,
+                crate::domain::invocation::DomainResult::success("preview"),
+            )
+            .unwrap();
+        let form = fixture.roots[0].join("Catalogs/Products/Forms/Main/Ext/Form.xml");
+        std::fs::remove_file(&form).unwrap();
+        let source_before = snapshot_tree(&fixture.roots[0]);
+        let cache_before = snapshot_tree(&fixture.root.join(".build/unica"));
+
+        let result = fixture
+            .actor
+            .execute_saved_apply(
+                &token,
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+                finish_saved_apply_test,
+            )
+            .unwrap();
+
+        assert!(!result.ok, "исчезнувшая цель должна устарить план");
+        assert!(result.summary.contains("Form.xml"), "{}", result.summary);
+        assert_eq!(snapshot_tree(&fixture.roots[0]), source_before);
+        assert_eq!(
+            snapshot_tree(&fixture.root.join(".build/unica")),
+            cache_before
+        );
         fixture.cleanup();
     }
 

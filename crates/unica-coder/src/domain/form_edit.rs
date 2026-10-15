@@ -49,6 +49,24 @@ pub(crate) fn validate_form_edit_definition(definition: &Value) -> Result<(), St
         "FORM_EDIT_DEFINITION_NOT_OBJECT: form edit definition must be an object".to_string()
     })?;
 
+    // Поле текстового документа принадлежит только закрытой операции
+    // `item.add`; снятое JSON-описание формы не должно получать новый вид.
+    fn contains_text_document_field(value: &Value) -> bool {
+        match value {
+            Value::Object(object) => {
+                object.contains_key("textDoc") || object.values().any(contains_text_document_field)
+            }
+            Value::Array(items) => items.iter().any(contains_text_document_field),
+            _ => false,
+        }
+    }
+    if contains_text_document_field(definition) {
+        return Err(
+            "FORM_EDIT_RETIRED_TEXT_DOCUMENT_FIELD: use item.add with type TextDocumentField; legacy form edit definitions do not accept textDoc"
+                .to_string(),
+        );
+    }
+
     for (name, value) in object {
         let Some((_, kind)) = FORM_EDIT_SECTIONS
             .iter()
@@ -215,5 +233,20 @@ mod tests {
             error.contains("FORM_EDIT_REMOVE_ELEMENT_DUPLICATE") && error.contains("`Target`"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn retired_form_edit_definition_rejects_text_document_field_recursively() {
+        for definition in [
+            json!({"elements": [{"textDoc": "Protocol", "path": "ProtocolValue"}]}),
+            json!({"elements": [{"group": "Main", "children": [{"textDoc": "Protocol"}]}]}),
+        ] {
+            let error = validate_form_edit_definition(&definition).unwrap_err();
+            assert!(
+                error.contains("FORM_EDIT_RETIRED_TEXT_DOCUMENT_FIELD")
+                    && error.contains("item.add"),
+                "{error}"
+            );
+        }
     }
 }

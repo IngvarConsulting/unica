@@ -339,14 +339,15 @@ pub(crate) struct StagedApplyChange {
 #[derive(Debug)]
 struct StagedEntry {
     relative_path: PathBuf,
-    ancestor: RetainedDirectoryCapability,
+    route_identities: Vec<FileIdentity>,
     missing_parent_chain: Vec<OsString>,
     name: OsString,
     target_identity: StagedTargetIdentity,
     original: StagedFileState,
     current: StagedFileState,
-    original_file:
-        Option<crate::infrastructure::platform::filesystem::RetainedRegularFileCapability>,
+    original_file_identity: Option<FileIdentity>,
+    original_len: Option<u64>,
+    original_sha256: Option<[u8; 32]>,
 }
 
 #[derive(Debug)]
@@ -1031,12 +1032,16 @@ impl ApplyStagedState {
                     RetainedApplyChangeBinding {
                         root: Arc::clone(&self.root),
                         relative_path: entry.relative_path,
-                        ancestor: entry.ancestor,
+                        route_identities: entry.route_identities,
                         missing_parent_chain: entry.missing_parent_chain,
                         name: entry.name,
                         original: entry.original.as_option(),
                         current: entry.current.as_option(),
-                        original_file: entry.original_file,
+                        original_file_identity: entry.original_file_identity,
+                        original_len: entry.original_len,
+                        original_sha256: entry.original_sha256,
+                        deadline: self.deadline,
+                        cancellation: self.cancellation.clone(),
                     },
                     &self.writer_authority,
                 )
@@ -1104,6 +1109,7 @@ impl ApplyStagedState {
             .expect("strict non-empty relative path has a terminal name")
             .clone();
         let mut ancestor = self.root.as_ref().clone();
+        let mut route_identities = Vec::new();
         let mut missing_parent_chain = Vec::new();
         let mut generated_name_comparator = self
             .generated_subtree_forbidden
@@ -1115,6 +1121,7 @@ impl ApplyStagedState {
             match ancestor.retain_immediate_child_nofollow(component) {
                 Ok(RetainedChildCapability::Directory(directory)) => {
                     ancestor = directory;
+                    route_identities.push(ancestor.identity());
                     generated_name_comparator = self
                         .generated_subtree_forbidden
                         .then(|| ancestor.child_name_comparator())
@@ -1211,8 +1218,9 @@ impl ApplyStagedState {
                 }
             }
         }
-        let (original, original_file) = match retained_child {
-            None => (StagedFileState::Absent, None),
+        let (original, original_file_identity, original_len, original_sha256) = match retained_child
+        {
+            None => (StagedFileState::Absent, None, None, None),
             Some(Ok(RetainedChildCapability::RegularFile(file))) => {
                 if file.hard_link_count().map_err(|error| {
                     ApplyStagingError::new(
@@ -1235,7 +1243,15 @@ impl ApplyStagedState {
                         format!("staged target fixed read bound failed: {error}"),
                     )
                 })?;
-                (StagedFileState::Bytes(bytes), Some(file))
+                let identity = file.identity();
+                let len = bytes.len() as u64;
+                let sha256 = sha2::Sha256::digest(&bytes).into();
+                (
+                    StagedFileState::Bytes(bytes),
+                    Some(identity),
+                    Some(len),
+                    Some(sha256),
+                )
             }
             Some(Ok(RetainedChildCapability::ReparsePoint)) => {
                 return Err(ApplyStagingError::new(
@@ -1258,7 +1274,7 @@ impl ApplyStagedState {
                 ))
             }
             Some(Err(error)) if error.kind() == ErrorKind::NotFound => {
-                (StagedFileState::Absent, None)
+                (StagedFileState::Absent, None, None, None)
             }
             Some(Err(error)) => {
                 return Err(ApplyStagingError::new(
@@ -1316,13 +1332,15 @@ impl ApplyStagedState {
         }
         self.entries.push(StagedEntry {
             relative_path: relative.to_path_buf(),
-            ancestor,
+            route_identities,
             missing_parent_chain,
             name,
             target_identity: target_identity.expect("regular or absent target has an identity"),
             current: original.clone(),
             original,
-            original_file,
+            original_file_identity,
+            original_len,
+            original_sha256,
         });
         Ok(self.entries.len() - 1)
     }
@@ -2124,6 +2142,90 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn write_target_recheck_uses_execution_cancellation_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let original = vec![b'x'; 128 * 1024];
+        std::fs::write(root.join("Owner.bsl"), &original).unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let old_cancellation = CancellationToken::new();
+        let canonical = std::fs::canonicalize(root).unwrap();
+        let retained = Arc::new(RetainedDirectoryCapability::open(&canonical).unwrap());
+        let mut state = ApplyStagedState::from_retained_root(
+            retained,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            old_cancellation.clone(),
+            authority.clone(),
+        );
+        state
+            .replace("Owner.bsl", &original, b"after".to_vec())
+            .unwrap();
+        let mut transaction = state.finalize().unwrap();
+        old_cancellation.cancel();
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Cancelled
+        );
+        let execution_cancellation = CancellationToken::new();
+        transaction.rebind_retained_apply_execution_context(
+            ProviderDeadline::from_budget(Duration::ZERO),
+            &execution_cancellation,
+        );
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Deadline
+        );
+        transaction.rebind_retained_apply_execution_context(
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &execution_cancellation,
+        );
+        transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after");
+    }
+
+    #[test]
+    fn write_target_recheck_stops_between_hash_blocks_before_any_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let original = vec![b'x'; 128 * 1024];
+        std::fs::write(root.join("Owner.bsl"), &original).unwrap();
+        let authority = crate::infrastructure::workspace_actor::apply_writer_authority_for_test();
+        let cancellation = CancellationToken::new();
+        let mut state = ApplyStagedState::from_retained_root(
+            Arc::new(
+                RetainedDirectoryCapability::open(&std::fs::canonicalize(root).unwrap()).unwrap(),
+            ),
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            cancellation.clone(),
+            authority,
+        );
+        state
+            .replace("Owner.bsl", &original, b"after".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        let stop = cancellation.clone();
+        crate::infrastructure::native_operations::compile_transaction::
+            set_retained_apply_after_write_target_chunk_hook(move || stop.cancel());
+
+        assert_eq!(
+            transaction
+                .validate_retained_for_apply_typed()
+                .unwrap_err()
+                .kind(),
+            super::RetainedApplyValidationErrorKind::Cancelled
+        );
+        assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), original);
+    }
+
+    #[test]
     fn reference_scan_refuses_a_path_outside_the_source_root() {
         let root = temp_root("reference-root-bound");
         std::fs::create_dir_all(&root).unwrap();
@@ -2338,7 +2440,8 @@ pub(crate) mod tests {
                             b"must not redirect".to_vec(),
                         )
                         .unwrap();
-                    assert!(raced.finalize().unwrap_err().contains("link/reparse"));
+                    let error = raced.finalize().unwrap_err();
+                    assert!(error.contains("link/reparse"), "{error:?}");
                     assert_eq!(
                         std::fs::read(displaced.join("Module.bsl")).unwrap(),
                         b"original race bytes"

@@ -1002,7 +1002,7 @@ impl RetainedDirectoryCapability {
         #[cfg(windows)]
         {
             let _ = quarantine_name;
-            remove_identity_bound_empty_directory_child_unlinking_name(
+            remove_identity_bound_empty_directory_child(
                 &parent.directory.retained.directory,
                 &parent.name,
                 self.retained.identity,
@@ -1732,7 +1732,7 @@ impl RetainedRegularFileCapability {
             // workspace may still hold the file. Its name must leave the
             // source tree now, not when the last handle closes (issue #1463).
             let _ = quarantine_name;
-            remove_identity_bound_regular_child_unlinking_name(
+            remove_identity_bound_regular_child(
                 &self.parent.retained.directory,
                 &self.name,
                 self.identity,
@@ -3829,20 +3829,10 @@ fn open_child_for_delete_and_attribute_write(
 
 #[cfg(windows)]
 pub(crate) fn delete_open_child(file: &fs::File) -> io::Result<()> {
-    set_delete_disposition(file)
-}
-
-/// Deletes the opened child and removes its name from the parent at once,
-/// even while other handles to the same object remain open.
-///
-/// The classic disposition of [`delete_open_child`] leaves the name in the
-/// directory as delete-pending until the last handle closes; any reader that
-/// opens that name gets `ERROR_ACCESS_DENIED` (issue #1463). POSIX delete
-/// semantics unlinks the name immediately and keeps the data only for the open
-/// handles. A volume that does not support it falls back to the classic
-/// disposition.
-#[cfg(windows)]
-pub(crate) fn delete_open_child_unlinking_name(file: &fs::File) -> io::Result<()> {
+    // Классическая отметка оставляет имя delete-pending до закрытия последнего
+    // дескриптора. POSIX-семантика убирает имя сразу, а открытые дескрипторы
+    // продолжают читать старый объект. Неподдерживающий её том использует
+    // классическую отметку.
     use std::os::windows::io::AsRawHandle;
 
     const FILE_DISPOSITION_INFORMATION_EX: u32 = 64;
@@ -4691,7 +4681,7 @@ pub(crate) fn create_new_directory_child(
 
 #[cfg(windows)]
 pub(crate) fn discard_created_child(file: &fs::File) -> io::Result<()> {
-    set_delete_disposition(file)
+    delete_open_child(file)
 }
 
 #[cfg(windows)]
@@ -6182,32 +6172,7 @@ pub(crate) fn remove_identity_bound_regular_child(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
-    remove_identity_bound_regular_child_with(
-        parent,
-        name,
-        expected_identity,
-        retained,
-        delete_open_child,
-    )
-}
-
-/// Same identity-bound removal, but the name leaves the directory at once even
-/// while another handle to the file stays open (see
-/// [`delete_open_child_unlinking_name`]).
-#[cfg(windows)]
-pub(crate) fn remove_identity_bound_regular_child_unlinking_name(
-    parent: &fs::File,
-    name: &std::ffi::OsStr,
-    expected_identity: FileIdentity,
-    retained: &fs::File,
-) -> io::Result<()> {
-    remove_identity_bound_regular_child_with(
-        parent,
-        name,
-        expected_identity,
-        retained,
-        delete_open_child_unlinking_name,
-    )
+    remove_identity_bound_regular_child_with(parent, name, expected_identity, retained)
 }
 
 #[cfg(windows)]
@@ -6220,7 +6185,6 @@ fn remove_identity_bound_regular_child_with(
     name: &std::ffi::OsStr,
     expected_identity: FileIdentity,
     retained: &fs::File,
-    delete: fn(&fs::File) -> io::Result<()>,
 ) -> io::Result<()> {
     let named = open_child_for_delete_and_attribute_write(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::RegularFile
@@ -6248,7 +6212,7 @@ fn remove_identity_bound_regular_child_with(
         permissions.set_readonly(false);
         named.set_permissions(permissions)?;
     }
-    delete(&named)
+    delete_open_child(&named)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -6294,31 +6258,7 @@ pub(crate) fn remove_identity_bound_empty_directory_child(
     expected_identity: FileIdentity,
     retained: &fs::File,
 ) -> io::Result<()> {
-    remove_identity_bound_empty_directory_child_with(
-        parent,
-        name,
-        expected_identity,
-        retained,
-        delete_open_child,
-    )
-}
-
-/// Same identity-bound removal of an empty directory whose name leaves its
-/// parent at once even while another handle to it stays open.
-#[cfg(windows)]
-pub(crate) fn remove_identity_bound_empty_directory_child_unlinking_name(
-    parent: &fs::File,
-    name: &std::ffi::OsStr,
-    expected_identity: FileIdentity,
-    retained: &fs::File,
-) -> io::Result<()> {
-    remove_identity_bound_empty_directory_child_with(
-        parent,
-        name,
-        expected_identity,
-        retained,
-        delete_open_child_unlinking_name,
-    )
+    remove_identity_bound_empty_directory_child_with(parent, name, expected_identity, retained)
 }
 
 #[cfg(windows)]
@@ -6327,7 +6267,6 @@ fn remove_identity_bound_empty_directory_child_with(
     name: &std::ffi::OsStr,
     expected_identity: FileIdentity,
     retained: &fs::File,
-    delete: fn(&fs::File) -> io::Result<()>,
 ) -> io::Result<()> {
     let named = open_any_child_for_delete(parent, name)?;
     if opened_child_kind(&named)? != OpenedChildKind::Directory
@@ -6348,7 +6287,7 @@ fn remove_identity_bound_empty_directory_child_with(
             "directory child identity changed; replacement left untouched",
         ));
     }
-    delete(&named)
+    delete_open_child(&named)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -7378,6 +7317,51 @@ mod tests {
             drop(child);
             drop(parent);
             assert!(!child_path.exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn failed_single_file_publication_unlinks_stage_while_another_handle_is_open() {
+            use std::io::{Read, Seek, SeekFrom};
+            use std::sync::{Arc, Mutex};
+
+            let root = unique_temp_root("single-file-stage-open-handle");
+            fs::create_dir_all(&root).unwrap();
+            fs::write(root.join("target.bin"), b"existing").unwrap();
+            let directory = RetainedDirectoryCapability::open(&root).unwrap();
+            let stage_name = std::ffi::OsStr::new("stage.bin");
+            let other = Arc::new(Mutex::new(None));
+            let hook_other = Arc::clone(&other);
+            let stage_path = root.join(stage_name);
+            set_before_identity_bound_cleanup_mutation_hook(move || {
+                *hook_other.lock().unwrap() = Some(fs::File::open(&stage_path).unwrap());
+            });
+
+            directory
+                .create_regular_child_atomically(
+                    stage_name,
+                    std::ffi::OsStr::new("target.bin"),
+                    b"new bytes",
+                )
+                .expect_err("существующая цель должна отклонить create-only публикацию");
+
+            let names = read_directory_names(&directory.retained.directory).unwrap();
+            assert!(
+                !names.iter().any(|name| name == stage_name),
+                "неудачная публикация одного файла оставила delete-pending имя: {names:?}"
+            );
+            let mut other = other
+                .lock()
+                .unwrap()
+                .take()
+                .expect("перехватчик очистки должен сработать");
+            other.seek(SeekFrom::Start(0)).unwrap();
+            let mut bytes = Vec::new();
+            other.read_to_end(&mut bytes).unwrap();
+            assert_eq!(bytes, b"new bytes");
+
+            drop(other);
+            drop(directory);
             fs::remove_dir_all(root).unwrap();
         }
 

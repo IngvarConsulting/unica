@@ -1150,21 +1150,32 @@ fn parse_support_operation(
                     ))
                 }
             };
-            let [owner] = target.segments() else {
-                return Err(bad(
-                    op_index,
-                    "at",
-                    "supportRule.set targets one top-level metadata object",
-                ));
+            let raw = match target.segments() {
+                [owner] if owner.name().is_some() => {
+                    format!("{}.{}", owner.kind().as_str(), owner.name().unwrap())
+                }
+                [owner, form]
+                    if owner.name().is_some()
+                        && form.kind() == NodeKind::Form
+                        && form.name().is_some() =>
+                {
+                    format!(
+                        "{}.{}.Form.{}",
+                        owner.kind().as_str(),
+                        owner.name().unwrap(),
+                        form.name().unwrap()
+                    )
+                }
+                _ => {
+                    return Err(bad(
+                        op_index,
+                        "at",
+                        "supportRule.set targets a top-level metadata object or its form",
+                    ))
+                }
             };
-            let name = owner
-                .name()
-                .ok_or_else(|| bad(op_index, "at", "the object must be named"))?;
-            let target = MetadataAddress::parse(
-                PLATFORM_XML_8_3_27_FORMAT_2_20,
-                &format!("{}.{name}", owner.kind().as_str()),
-            )
-            .map_err(|error| bad(op_index, "at", error.to_string()))?;
+            let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &raw)
+                .map_err(|error| bad(op_index, "at", error.to_string()))?;
             Ok(FormResourcePlanKind::SupportRule { target, rule })
         }
         _ => Ok(FormResourcePlanKind::Unsupported),
@@ -1322,6 +1333,9 @@ fn legacy_element_definition(
         "HTMLDocumentField" => {
             definition.insert("html".to_string(), Value::String(name.clone()));
         }
+        "TextDocumentField" => {
+            definition.insert("textDoc".to_string(), Value::String(name.clone()));
+        }
         "Group" | "UsualGroup" => {
             definition.insert("group".to_string(), orientation());
         }
@@ -1359,7 +1373,7 @@ fn legacy_element_definition(
                 op_index,
                 &format!("{location}.type"),
                 format!(
-                    "unknown form element type `{other}`; use InputField, Group, Table, Button, Label, LabelField, CheckBox, Pages, Page, CommandBar or HTMLDocumentField"
+                    "unknown form element type `{other}`; use InputField, Group, Table, Button, Label, LabelField, CheckBox, Pages, Page, CommandBar, HTMLDocumentField or TextDocumentField"
                 ),
             ))
         }
@@ -1402,6 +1416,14 @@ fn refuse_nested_element_content(
             op_index,
             &format!("{location}.html"),
             "html is an internal discriminator; use name and type: HTMLDocumentField in item.add",
+        )
+        .with_next(contract));
+    }
+    if item.contains_key("textDoc") {
+        return Err(bad(
+            op_index,
+            &format!("{location}.textDoc"),
+            "textDoc is an internal discriminator; use name and type: TextDocumentField in item.add",
         )
         .with_next(contract));
     }
@@ -3173,6 +3195,14 @@ pub(crate) fn plan_form_resource_batch(
                         )
                         .at_path(at_path.clone())
                     })?;
+                prove_support_form_owner(
+                    &mut staged,
+                    target,
+                    &descriptor_relative,
+                    &descriptor,
+                    &authority,
+                    &at_path,
+                )?;
                 let uuid =
                     crate::infrastructure::native_operations::common::support_root_uuid_from_bytes(
                         &descriptor,
@@ -3210,6 +3240,75 @@ pub(crate) fn plan_form_resource_batch(
         }
     }
     Ok((staged, provisional))
+}
+
+// Вложенный адрес сначала доказывает регистрацию и идентичность описания,
+// только затем его UUID выбирает запись поддержки. Все чтения входят
+// в барьер исходного состояния подготовленного применения.
+fn prove_support_form_owner(
+    staged: &mut ApplyStagedState,
+    target: &MetadataAddress,
+    relative: &std::path::Path,
+    descriptor: &[u8],
+    authority: &FormResourceApplyAuthority<'_>,
+    at_path: &str,
+) -> Result<(), ApplyPlanError> {
+    use crate::infrastructure::platform_xml_owner::{
+        prove_already_read_metadata_owner, prove_already_read_source_set_owner,
+    };
+    let parts: Vec<_> = target.as_str().split('.').collect();
+    let [kind, name, "Form", form] = parts.as_slice() else {
+        return Ok(());
+    };
+    let invalid = || {
+        ApplyPlanError::new(
+            ApplyPlanErrorKind::InvalidSource,
+            "form support target does not match its registered metadata descriptor",
+        )
+        .at_path(at_path)
+    };
+    let root_path = std::path::Path::new("Configuration.xml");
+    let root = read_required(staged, root_path, "configuration descriptor", at_path)?;
+    let root = prove_already_read_source_set_owner(root_path, &root, authority.source_kind())
+        .map_err(|_| invalid())?;
+    if !root.registers(kind, name) {
+        return Err(invalid());
+    }
+    let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
+        .map_err(|_| invalid())?;
+    let owner_path = crate::infrastructure::logical_event_source::metadata_descriptor_relative(
+        &owner,
+        authority.source_kind(),
+    )
+    .map_err(|_| invalid())?;
+    let owner_bytes = read_required(staged, &owner_path, "form owner descriptor", at_path)?;
+    let owner =
+        prove_already_read_metadata_owner(&owner_path, &owner_bytes).map_err(|_| invalid())?;
+    let child = prove_already_read_metadata_owner(relative, descriptor).map_err(|_| invalid())?;
+    if owner.artifact_kind() != *kind
+        || owner.artifact_name() != Some(*name)
+        || !owner.registers("Form", form)
+        || child.artifact_kind() != "Form"
+        || child.artifact_name() != Some(*form)
+        || root.version() != Some(authority.expected_format())
+        || owner.version() != Some(authority.expected_format())
+        || child.version() != Some(authority.expected_format())
+    {
+        return Err(invalid());
+    }
+    // Контейнер не является владельцем формы. Его UUID отклоняется, чтобы
+    // общий читатель поддержки не выбрал запись другого объекта.
+    let text = std::str::from_utf8(descriptor).map_err(|_| invalid())?;
+    let document =
+        roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|_| invalid())?;
+    if document.root_element().attribute("uuid").is_some() {
+        return Err(invalid());
+    }
+    let uuid =
+        crate::infrastructure::native_operations::common::support_root_uuid_from_bytes(descriptor)
+            .ok_or_else(invalid)?;
+    uuid::Uuid::parse_str(&uuid).map_err(|_| invalid())?;
+    Ok(())
 }
 
 fn read_support_state(
@@ -3333,7 +3432,7 @@ mod tests {
         for key in crate::domain::operation_contract::FORM_ELEMENT_NESTED_KEYS
             .iter()
             .chain(crate::domain::operation_contract::FORM_ELEMENT_EVENT_KEYS)
-            .chain(&["html"])
+            .chain(&["html", "textDoc"])
         {
             let mut item = json!({"name": "Parent", "type": "Group"});
             item[*key] = json!([{"name": "Child", "type": "HTMLDocumentField"}]);
@@ -3352,10 +3451,10 @@ mod tests {
                 json!(format!("{at}.Can.item.add")),
                 "{key}"
             );
-            let follow_up = if *key == "html" {
-                "HTMLDocumentField".to_string()
-            } else {
-                format!("{at}.Item.Parent")
+            let follow_up = match *key {
+                "html" => "HTMLDocumentField".to_string(),
+                "textDoc" => "TextDocumentField".to_string(),
+                _ => format!("{at}.Item.Parent"),
             };
             assert!(error.to_string().contains(&follow_up), "{key}: {error:?}");
         }
@@ -3461,6 +3560,9 @@ mod tests {
             );
             for key in kind.keys {
                 let mut baseline = json!({"name": "Sample", "type": kind.kind});
+                if kind.kind == "TextDocumentField" {
+                    baseline["path"] = json!("Protocol");
+                }
                 if crate::domain::operation_contract::FORM_DYNAMIC_LIST_KEYS.contains(key) {
                     baseline["_dynList"] = json!(true);
                 }
@@ -3856,6 +3958,153 @@ mod tests {
                     == Path::new("Documents/First/Forms/ФормаДокумента/Ext/Form/Module.bsl")),
             "the form module is staged"
         );
+    }
+
+    #[test]
+    fn item_add_writes_a_bound_text_document_field_and_refuses_invalid_bindings() {
+        let fixture = ApplySeamFixture::new();
+        let form = "main:Document.First.Form.Main";
+        let parse = |op: &str, args: serde_json::Value, index: usize| {
+            parse_form_resource_plan_operation(op, &args, index, &fixture.binding)
+                .map(|operation| IndexedPlanOperation::new(index, operation))
+        };
+        for item in [
+            json!({"name":"ProtocolField","type":"TextDocumentField"}),
+            json!({"name":"ProtocolField","type":"TextDocumentField","path":""}),
+        ] {
+            let error = parse("item.add", json!({"at": form, "items": [item]}), 0).unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+            assert_eq!(error.path(), Some("ops[0].args.items[0].path"));
+        }
+
+        let plan = |attribute_type: Option<&str>| {
+            let admission = fixture.admission();
+            let staged = admission.staged_state().unwrap();
+            let authority = admission
+                .form_resource_planning_authority(&fixture.binding)
+                .unwrap();
+            let mut operations = vec![parse(
+                "form.add",
+                json!({"at":"main:Document.First","items":[{"name":"Main","type":"ObjectForm"}]}),
+                0,
+            )
+            .unwrap()];
+            if let Some(attribute_type) = attribute_type {
+                operations.push(
+                    parse(
+                        "attribute.add",
+                        json!({"at":form,"items":[{"name":"Protocol","type":attribute_type}]}),
+                        1,
+                    )
+                    .unwrap(),
+                );
+            }
+            let item_index = operations.len();
+            operations.push(
+                parse(
+                    "item.add",
+                    json!({"at":form,"items":[
+                        {
+                            "name":"Протокол1",
+                            "type":"TextDocumentField",
+                            "path":"Protocol",
+                            "titleLocation":"None"
+                        },
+                        {
+                            "name":"Протокол2",
+                            "type":"TextDocumentField",
+                            "path":"Protocol",
+                            "visible":false,
+                            "enabled":false,
+                            "readOnly":true,
+                            "title":"Протокол",
+                            "titleLocation":"Top",
+                            "tooltip":"Подсказка",
+                            "tooltipRepresentation":"Button",
+                            "width":35,
+                            "autoMaxWidth":false,
+                            "height":10,
+                            "autoMaxHeight":false
+                        }
+                    ]}),
+                    item_index,
+                )
+                .unwrap(),
+            );
+            plan_form_resource_batch(staged, authority, &operations).map(|(staged, _)| staged)
+        };
+
+        let before = crate::test_support::tree_snapshot(&fixture.source_dir());
+        for attribute_type in [None, Some("String")] {
+            let error = plan(attribute_type).unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{error:?}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("requires a TextDocument attribute"),
+                "{error:?}"
+            );
+            assert_eq!(
+                crate::test_support::tree_snapshot(&fixture.source_dir()),
+                before,
+                "planning an invalid field must not write the source tree"
+            );
+        }
+
+        let staged = plan(Some("d5p1:TextDocument"))
+            .unwrap_or_else(|error| panic!("{error:?} at {:?}", error.path()));
+        let text = staged_text(&staged, "Documents/First/Forms/Main/Ext/Form.xml");
+        let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let platform_export = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/platform_8_3_27/text-document-field/Form.xml"
+        ));
+        let platform = roxmltree::Document::parse(platform_export).unwrap();
+        for name in ["Протокол1", "Протокол2"] {
+            let child_tags = |root: roxmltree::Node<'_, '_>| {
+                root.descendants()
+                    .find(|node| {
+                        node.has_tag_name("TextDocumentField")
+                            && node.attribute("name") == Some(name)
+                    })
+                    .unwrap()
+                    .children()
+                    .filter(|node| node.is_element())
+                    .map(|node| node.tag_name().name().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                child_tags(document.root()),
+                child_tags(platform.root()),
+                "{name}"
+            );
+        }
+        assert_eq!(document.root_element().attribute("version"), Some("2.20"));
+        let field = document
+            .descendants()
+            .find(|node| {
+                node.has_tag_name("TextDocumentField")
+                    && node.attribute("name") == Some("Протокол2")
+            })
+            .unwrap();
+        assert!(field.children().all(|node| !node.has_tag_name("Height")));
+        assert_eq!(
+            field
+                .children()
+                .find(|node| node.has_tag_name("DataPath"))
+                .and_then(|node| node.text()),
+            Some("Protocol")
+        );
+        let type_node = document
+            .descendants()
+            .find(|node| node.text() == Some("d5p1:TextDocument"))
+            .unwrap();
+        assert_eq!(
+            type_node.lookup_namespace_uri(Some("d5p1")),
+            Some("http://v8.1c.ru/8.1/data/txtedt")
+        );
+        assert!(!text.contains("<HTMLDocumentField name=\"Протокол2\""));
+        assert!(!text.contains("<InputField name=\"Протокол2\""));
     }
 
     /// Узел правки формы — ровно адрес (#1355): цепочка `Item` сверяется
@@ -4708,6 +4957,118 @@ mod tests {
         assert!(!doc
             .descendants()
             .any(|n| n.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "Item"))));
+    }
+
+    #[test]
+    fn support_rule_form_requires_registered_identity_and_changes_only_its_record() {
+        let fixture = ApplySeamFixture::new();
+        let source = fixture.source_dir();
+        let form_path = source.join("Documents/First/Forms/Card.xml");
+        std::fs::create_dir_all(form_path.parent().unwrap()).unwrap();
+        let form = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Form uuid="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"><Properties><Name>Card</Name></Properties></Form></MetaDataObject>"#;
+        let owner_path = source.join("Documents/First.xml");
+        let owner = std::fs::read_to_string(&owner_path).unwrap();
+        let registered = owner.replacen("<ChildObjects>", "<ChildObjects><Form>Card</Form>", 1);
+        let marker = "\u{feff}{6,0,1,dddddddd-dddd-4ddd-8ddd-dddddddddddd,0,eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee,\"1.0\",\"Vendor\",\"VendorConf\",3,1,0,aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa,aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa,1,0,11111111-1111-4111-8111-111111111111,11111111-1111-4111-8111-111111111111,0,0,bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb,bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb,0,0,cccccccc-cccc-4ccc-8ccc-cccccccccccc,cccccccc-cccc-4ccc-8ccc-cccccccccccc}";
+        std::fs::create_dir_all(source.join("Ext")).unwrap();
+        std::fs::write(source.join("Ext/ParentConfigurations.bin"), marker).unwrap();
+        let operation = parse_form_resource_plan_operation(
+            "supportRule.set",
+            &json!({"at": "main:Document.First.Form.Card", "values": {"rule": "editable"}}),
+            0,
+            &fixture.binding,
+        )
+        .unwrap();
+        for (owner_image, form_image, succeeds) in [
+            (registered.clone(), Some(form.to_string()), true),
+            (owner.clone(), Some(form.to_string()), false),
+            (registered.clone(), None, false),
+            (
+                registered.clone(),
+                Some(form.replace(
+                    "<MetaDataObject ",
+                    "<MetaDataObject uuid=\"11111111-1111-4111-8111-111111111111\" ",
+                )),
+                false,
+            ),
+            (
+                registered.clone(),
+                Some(form.replace("<Name>Card</Name>", "<Name>Other</Name>")),
+                false,
+            ),
+            (
+                registered.clone(),
+                Some(form.replace("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "invalid")),
+                false,
+            ),
+            (
+                registered.clone(),
+                Some(form.replace(" uuid=\"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\"", "")),
+                false,
+            ),
+        ] {
+            std::fs::write(&owner_path, owner_image).unwrap();
+            match form_image {
+                Some(text) => std::fs::write(&form_path, text).unwrap(),
+                None => std::fs::remove_file(&form_path).unwrap(),
+            }
+            let admission = fixture.admission();
+            let result = plan_form_resource_batch(
+                admission.staged_state().unwrap(),
+                admission
+                    .form_resource_planning_authority(&fixture.binding)
+                    .unwrap(),
+                &[IndexedPlanOperation::new(0, operation.clone())],
+            );
+            assert_eq!(result.is_ok(), succeeds, "{result:?}");
+            if let Ok((staged, _)) = result {
+                let expected = marker.replace("0,0,bbbbbbbb", "1,0,bbbbbbbb");
+                assert_eq!(
+                    staged_text(&staged, "Ext/ParentConfigurations.bin")
+                        .trim_start_matches('\u{feff}'),
+                    expected.trim_start_matches('\u{feff}')
+                );
+                let batch = admission
+                    .prepare_with_effects(staged, Default::default())
+                    .unwrap();
+                fixture.actor().preview_prepared_apply(&batch).unwrap();
+                let token = fixture
+                    .actor()
+                    .save_prepared_apply(
+                        batch,
+                        crate::domain::invocation::DomainResult::success("support preview"),
+                    )
+                    .unwrap();
+                std::fs::write(
+                    &form_path,
+                    form.replace("<Name>Card</Name>", "<Name>Changed</Name>"),
+                )
+                .unwrap();
+                let result = fixture
+                    .actor()
+                    .execute_saved_apply(
+                        &token,
+                        crate::domain::code_intelligence::ProviderDeadline::from_budget(
+                            std::time::Duration::from_secs(5),
+                        ),
+                        &crate::domain::cancellation::CancellationToken::new(),
+                        |mut result, publication| {
+                            let error = publication
+                                .expect_err("changed form descriptor must refuse publication");
+                            result.ok = false;
+                            result.summary = error.to_string();
+                            result
+                        },
+                    )
+                    .unwrap();
+                assert!(!result.ok);
+                assert!(result.summary.contains("Card.xml"), "{}", result.summary);
+            }
+            assert_eq!(
+                std::fs::read_to_string(source.join("Ext/ParentConfigurations.bin")).unwrap(),
+                marker
+            );
+        }
     }
 
     #[test]

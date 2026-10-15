@@ -1,0 +1,11 @@
+{
+  "platformVersion": "8.3.27.2074",
+  "formatVersion": "2.20",
+  "source": "Выгрузка 8.3.27.2074 после импорта формы, собранной Unica, на базе MIT-фикстуры support-edit-bin-only; BOM удалён, CRLF нормализованы в LF, добавлен завершающий перевод строки.",
+  "files": {
+    "Form.xml": {
+      "sha256": "b2dcbf8919e158944e0b9328268f443f28b3b705ac6f39a8a3f6ad3f58b3ce2f",
+      "size": 4294
+    }
+  }
+}
