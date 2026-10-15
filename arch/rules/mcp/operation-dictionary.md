@@ -37,6 +37,8 @@ check:
   - crates/unica-coder/src/domain/apply.rs::a_subnode_named_by_an_argument_is_refused_with_its_address
   - crates/unica-coder/src/domain/apply.rs::a_retired_creation_names_the_parent_operation
   - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::operation_dictionary_tests::a_retired_operation_contract_names_its_replacement
+  - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::operation_dictionary_tests::a_retired_operation_route_follows_roles_and_inherited_content
+  - crates/unica-coder/src/domain/apply.rs::a_renamed_operation_target_respects_the_item_role
   - crates/unica-coder/src/domain/operation_contract.rs::role_contracts_publish_the_entry_shape
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::retired_subnode_arguments_route_next_to_the_subnode_address
   - crates/unica-coder/src/infrastructure/native_operations/apply_families/form_resource.rs::right_set_grants_lists_and_restricts_rights_on_the_staged_document
@@ -205,10 +207,13 @@ gap: https://github.com/IngvarConsulting/unica/issues/1358
 снятые `element.add` и `element.remove` в реестре отсутствуют. Вызов
 получает `bad_value` без записи, а `next` ведёт к контракту `item.add`
 или `item.remove` на ближайшем узле, где она исполнима: на адресе вызова
-или на его предке, как отказ «не тот узел». Если такого узла в цепочке
-адреса нет, отказ называет форму адреса заменившей операции и словарь
-узла. Чтение `<узел>.Can.<снятая>` отвечает `bad_value` с `next`
-к контракту заменившей, у `form.create` — к `form.add` владельца.
+или на его предке, как отказ «не тот узел», с учётом роли элемента.
+Удаление узла, которое его роль не принимает (автоматическая командная
+панель), другим узлом не подменяется. Если такого узла в цепочке адреса
+нет, отказ называет форму адреса заменившей операции и словарь узла.
+Чтение `<узел>.Can.<снятая>` отвечает `bad_value` с `next` к контракту
+заменившей, у `form.create` — к `form.add` владельца; у заимствованного
+узла с содержимым родителя `next` ведёт к словарю узла.
 Словарь элемента учитывает его роль: в поле, декорацию
 и кнопку элемент не добавляется, автоматическая командная панель отдельно
 от владельца не удаляется. Позиция `after` остаётся именем соседа в том же

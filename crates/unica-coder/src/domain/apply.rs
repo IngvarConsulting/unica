@@ -2454,13 +2454,20 @@ impl RetiredOperation {
             return Some(self.replacement_at(site.at));
         }
         let replacement = OperationRegistry::closed().lookup(self.replacement)?;
-        let here = replacement.applies_at(site)
+        let placed = replacement.applies_at(site);
+        let here = placed
             && (site.terminal().kind() != NodeKind::Template
                 || replacement.admits_template_format(template_format(site.at)))
             && (site.terminal().kind() != NodeKind::Item
                 || replacement.admits_form_item(form_item(site.at)));
         if here {
             return Some(site.at.clone());
+        }
+        // Операция над самим узлом (`item.remove`), которую его роль не
+        // принимает: автоматическую командную панель отдельно не удалить, и
+        // другой узел — например, её таблица — вместо неё не подставляется.
+        if placed && replacement.skeleton_key() == "at" {
+            return None;
         }
         replacement.nearest_applicable_ancestor_with(site, template_format, form_item)
     }
@@ -4290,6 +4297,52 @@ mod tests {
             redirect.at.to_string(),
             format!("{setting}.Item.Table.Item.Details")
         );
+    }
+
+    /// Переименованная операция ведёт к ближайшему узлу, где исполнима
+    /// заменившая, с учётом роли элемента (#1465): элемент добавляется
+    /// в контейнер над полем, а автоматическую командную панель, которую
+    /// отдельно не удалить, не подменяет её таблица.
+    #[test]
+    fn a_renamed_operation_target_respects_the_item_role() {
+        use super::{FormItemRole, RetiredOperation};
+        let form = "main:Catalog.Items.Form.List";
+        let bar = format!("{form}.Item.List.Item.ListCommandBar");
+        let field = format!("{form}.Item.Header.Item.Code");
+        let role = |at: &QualifiedAddress| match at.to_string() {
+            text if text == bar => Some(FormItemRole::AutoCommandBar),
+            text if text == field => Some(FormItemRole::Leaf),
+            _ => Some(FormItemRole::Container),
+        };
+        let traits =
+            SourceSetTraits::read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        for (op, raw, expected) in [
+            ("element.remove", bar.clone(), None),
+            ("element.add", bar.clone(), Some(bar.clone())),
+            ("element.remove", field.clone(), Some(field.clone())),
+            (
+                "element.add",
+                field.clone(),
+                Some(format!("{form}.Item.Header")),
+            ),
+            (
+                "element.add",
+                format!("{field}.Event.OnChange"),
+                Some(format!("{form}.Item.Header")),
+            ),
+        ] {
+            let at = address(&raw);
+            let site = OperationSite::new(&at, traits).unwrap();
+            let target =
+                RetiredOperation::lookup(op)
+                    .unwrap()
+                    .replacement_target(&site, &|_| None, &role);
+            assert_eq!(
+                target.map(|target| target.to_string()),
+                expected,
+                "{op} at {raw}"
+            );
+        }
     }
 
     /// Узел создаёт операция родителя: снятая `form.create` называет
