@@ -411,6 +411,26 @@ fn batch_effects_as_provisional(
 /// Пишет ли семейство операции в допущенный набор — ответ единственного
 /// владельца признака (`SourceSetTraits::writes`), общий с предварительной
 /// проверкой `apply` и словарём `can`.
+/// Запись реестра для вызова: общее имя (`attribute.add` и `command.add`
+/// объекта и формы, #1465) выбирает её адрес вызова, как предварительная
+/// проверка `apply`.
+pub(super) fn resolved_descriptor(
+    operation: &str,
+    at: Option<&crate::domain::address::QualifiedAddress>,
+    binding: &ProviderRootBinding,
+) -> Option<crate::domain::apply::OperationDescriptor> {
+    use crate::domain::apply::{OperationRegistry, OperationSite, SourceSetTraits};
+    let registry = OperationRegistry::closed();
+    let traits = SourceSetTraits::of_source(
+        binding.source_kind(),
+        binding.source_format(),
+        binding.source_profile(),
+    );
+    at.and_then(|at| OperationSite::new(at, traits))
+        .and_then(|site| registry.lookup_at(operation, &site))
+        .or_else(|| registry.lookup(operation))
+}
+
 fn validate_platform_xml_binding(
     binding: &ProviderRootBinding,
     operation: &str,
@@ -443,8 +463,9 @@ fn refuse_misplaced_operation(
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
 ) -> Result<(), ApplyPlanError> {
-    use crate::domain::apply::{OperationRegistry, OperationSite, SourceSetTraits};
-    let Some(descriptor) = OperationRegistry::closed().lookup(operation.name()) else {
+    use crate::domain::apply::{OperationSite, SourceSetTraits};
+    let Some(descriptor) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
+    else {
         return Ok(());
     };
     validate_platform_xml_binding(binding, operation.name(), op_index)?;
@@ -500,8 +521,7 @@ fn refuse_inherited_content(
     binding: &ProviderRootBinding,
 ) -> Result<(), ApplyPlanError> {
     use crate::infrastructure::v13_read_port::{companion_owner, inherited_companion};
-    let Some(resource) = crate::domain::apply::OperationRegistry::closed()
-        .lookup(operation.name())
+    let Some(resource) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
         .and_then(|descriptor| descriptor.content_resource())
     else {
         return Ok(());
@@ -547,7 +567,9 @@ fn parse_family_operation(
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
 ) -> Result<ParsedApplyOperation, ApplyPlanError> {
-    let Some(family) = crate::application::v13::apply::dispatch_family(operation.name()) else {
+    let Some(family) = resolved_descriptor(operation.name(), Some(operation.at()), binding)
+        .map(|descriptor| descriptor.family())
+    else {
         return Err(hidden_apply_family_unimplemented(op_index));
     };
     let args = serde_json::Value::Object(operation.args().clone());
@@ -572,7 +594,8 @@ fn parse_family_operation(
         | OperationFamily::Subsystem
         | OperationFamily::Interface
         | OperationFamily::Support => {
-            let parsed = form_resource::parse_form_resource_plan_operation(
+            let parsed = form_resource::parse_form_resource_plan_operation_in(
+                Some(family),
                 operation.name(),
                 &args,
                 op_index,
@@ -617,11 +640,10 @@ fn parse_family_operation(
     Ok(parsed)
 }
 
-/// Разбор операции планировщиком без стадирования: проверка, что разбор цели
-/// и аргументов семейства принимает вызов. Им двусторонняя проверка `can`
-/// сверяет словарь узла с планировщиком.
-/// Разбор семейством в обход реестра: двусторонняя проверка ищет адреса,
-/// которые семейство приняло бы, а реестр — нет.
+/// Разбор семейством без проверки места реестром: семейство выбирает запись
+/// реестра для адреса вызова (общее имя `attribute.add` объекта и формы,
+/// #1465), но применимость не проверяется. Двусторонняя проверка `can`
+/// ищет так адреса, которые семейство приняло бы, а реестр — нет.
 #[cfg(test)]
 pub(crate) fn parse_family_operation_for_test(
     op_index: usize,
@@ -1424,7 +1446,7 @@ mod tests {
             ),
             (
                 "main:Document.First.Form.Main.Item.Header",
-                "formAttribute.add",
+                "attribute.add",
                 serde_json::json!({"items": [{"name": "Comment"}]}),
             ),
             (
