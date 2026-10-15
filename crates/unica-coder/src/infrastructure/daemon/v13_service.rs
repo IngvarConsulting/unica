@@ -4216,6 +4216,11 @@ pub(super) fn preflight_apply_operations_with(
                 &operation.at().to_string(),
             )));
         };
+        // Общее имя (`attribute.add` объекта и формы, #1465) выбирает
+        // запись по адресу вызова.
+        let descriptor = OperationSite::new(operation.at(), source)
+            .and_then(|site| registry.lookup_at(operation.name(), &site))
+            .unwrap_or(descriptor);
         // Набор, который семейство не пишет, — свойство набора, а не «не тот
         // узел»: тот же отказ даёт разбор планировщиком.
         if !source.writes(descriptor.family()) {
@@ -4415,10 +4420,14 @@ pub(super) fn preflight_apply_operations_with(
             target_kind.as_str(),
             operation.at()
         );
-        let nearest =
-            descriptor.nearest_applicable_ancestor_with(&site, template_format, form_item);
+        let nearest = registry.nearest_applicable_ancestor_with(
+            operation.name(),
+            &site,
+            template_format,
+            form_item,
+        );
         let refusal = match nearest {
-            Some(target) => with_operation_dictionary(
+            Some((descriptor, target)) => with_operation_dictionary(
                 error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
@@ -4428,7 +4437,13 @@ pub(super) fn preflight_apply_operations_with(
                 descriptor,
             ),
             None => {
-                let message = format!("{refused}; it addresses {}", descriptor.address_shape());
+                // Общее имя (#1465) исполнимо по формам адреса обеих записей.
+                let shapes = registry
+                    .named(operation.name())
+                    .map(|descriptor| descriptor.address_shape())
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                let message = format!("{refused}; it addresses {shapes}");
                 let refusal = error_result(
                     Some(format!("ops[{index}].at")),
                     RefusalCode::BadValue,
@@ -4473,7 +4488,7 @@ fn retired_operation_refusal(
     let target = site
         .as_ref()
         .and_then(|site| retired.replacement_target(site, template_format, form_item));
-    let replacement = OperationRegistry::closed().lookup(retired.replacement);
+    let replacement = retired.descriptor();
     match (target, replacement) {
         (Some(target), Some(replacement)) => {
             let refusal = error_result(
